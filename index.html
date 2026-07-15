@@ -177,6 +177,14 @@ main{max-width:1100px;margin:0 auto;padding:16px;}
     <div id="doc-area"><div class="muted">라인을 입력하고 창고를 지정하면 창고별 문서가 여기 나타납니다.</div></div>
   </div>
 
+  <!-- 6. Packing List / Invoice (저장된 PR에서 열림) -->
+  <div class="card" id="pl-card" style="display:none;">
+    <div class="card-title">⑥ Packing List / Invoice
+      <span class="muted" style="font-weight:400;">pick 완료 후: 연속번호(수동)·Via·Tracking# 입력 → 저장 → PDF</span>
+    </div>
+    <div id="pl-area"></div>
+  </div>
+
   <!-- 5. 저장된 Pull Requests -->
   <div class="card">
     <div class="card-title">⑤ 저장된 Pull Requests <span class="muted" style="font-weight:400;">(이 브라우저에 저장됨)</span></div>
@@ -200,9 +208,6 @@ const LS_SAVED = 'psi_pull_requests';
 const LS_CODES = 'psi_customer_codes';
 const LS_DRAFT = 'psi_pr_draft';
 const LS_STYLES = 'psi_style_map';   // 고객 설명 → 우리 스타일# 학습
-const LS_SERIAL = 'psi_serials';     // 창고별 연속번호 카운터
-const SERIAL_SUFFIX = { SC:'S', CA:'C', BO:'B' };
-let docSerials = {};                 // 현재 문서의 연속번호 (수정 가능)
 const DEFAULT_PPB = 72;
 
 // ═══════════════ 유틸 ═══════════════
@@ -267,17 +272,6 @@ function rememberStyle(desc, style){
   const k = descKey(desc);
   const s = String(style||'').trim();
   if(k && s){ const m = getStyleMap(); m[k] = s; saveStyleMap(m); }
-}
-// ═══ 연속번호 (SC: 4071S부터) ═══
-function getSerials(){ try{ return JSON.parse(localStorage.getItem(LS_SERIAL)||'{"SC":4070,"CA":0,"BO":0}'); }catch(e){ return {SC:4070,CA:0,BO:0}; } }
-function saveSerials(m){ localStorage.setItem(LS_SERIAL, JSON.stringify(m)); }
-function nextSerial(wh){ const m = getSerials(); return (Number(m[wh]||0)+1) + (SERIAL_SUFFIX[wh]||''); }
-function currentSerial(wh){ return (docSerials[wh]!==undefined && docSerials[wh]!=='') ? docSerials[wh] : nextSerial(wh); }
-function setSerial(wh, v){ docSerials[wh] = String(v).trim(); saveDraft(); renderDocs(); }
-function commitSerials(whs){
-  const m = getSerials();
-  whs.forEach(wh=>{ const n = parseInt(String(currentSerial(wh)).replace(/\D/g,'')); if(n && n > Number(m[wh]||0)) m[wh] = n; });
-  saveSerials(m);
 }
 // Partial 박스 번호 자동 배정 (창고별 1,2,3... — 이미 지정된 건 유지)
 function autoAssignPbox(){
@@ -536,7 +530,6 @@ function buildDocHtml(wh){
       <div>
         <div class="inv-doc-type">PULL REQUEST</div>
         <div class="inv-meta-row"><span>Ref No.</span><span>${esc(num)}</span></div>
-        <div class="inv-meta-row"><span>Serial No.</span><span>${esc(currentSerial(wh))}</span></div>
         <div class="inv-meta-row"><span>Date</span><span>${dateStr}</span></div>
         <div class="inv-meta-row"><span>Warehouse</span><span>${esc(WH_LABEL[wh])}</span></div>
       </div>
@@ -573,9 +566,6 @@ function renderDocs(){
     </div>
     <div class="doc-view">
       <div style="display:flex;gap:6px;justify-content:flex-end;align-items:center;margin-bottom:12px;" class="no-print">
-        <span style="display:inline-flex;align-items:center;gap:5px;font-size:11px;color:var(--text2);margin-right:auto;">연속번호
-          <input value="${esc(currentSerial(currentDocWh))}" onchange="setSerial('${currentDocWh}',this.value)" style="width:80px;padding:4px 6px;border:1px solid var(--border);border-radius:4px;font-family:Consolas,monospace;font-weight:700;">
-        </span>
         <button class="btn btn-sm" onclick="printDoc('${currentDocWh}')">🖨 인쇄 / PDF 저장</button>
         <button class="btn btn-sm btn-primary" onclick="downloadPdf('${currentDocWh}')" id="pdf-btn-${currentDocWh}">⬇ PDF 다운로드</button>
         <button class="btn btn-sm" onclick="emailDoc('${currentDocWh}')">📧 이멜 초안</button>
@@ -609,19 +599,18 @@ function loadPdfLib(){
   });
   return _pdfLibP;
 }
-async function downloadPdf(wh){
-  const btn = document.getElementById('pdf-btn-'+wh);
+async function downloadPdfHtml(docHtml, filename, btn){
   const orig = btn ? btn.textContent : '';
   if(btn){ btn.textContent = '⏳ PDF 만드는 중...'; btn.disabled = true; }
   try{
     await loadPdfLib();
     const holder = document.createElement('div');
     holder.style.cssText = 'position:fixed;left:-10000px;top:0;width:820px;background:#fff;padding:20px;';
-    holder.innerHTML = buildDocHtml(wh);
+    holder.innerHTML = docHtml;
     document.body.appendChild(holder);
     await html2pdf().set({
       margin: [10,10,12,10],
-      filename: docNumber(wh) + '.pdf',
+      filename: filename,
       image: { type:'jpeg', quality: 0.98 },
       html2canvas: { scale: 2, useCORS: true, backgroundColor: '#ffffff' },
       jsPDF: { unit:'mm', format:'letter', orientation:'portrait' },
@@ -633,6 +622,9 @@ async function downloadPdf(wh){
   }finally{
     if(btn){ btn.textContent = orig; btn.disabled = false; }
   }
+}
+async function downloadPdf(wh){
+  await downloadPdfHtml(buildDocHtml(wh), docNumber(wh) + '.pdf', document.getElementById('pdf-btn-'+wh));
 }
 function downloadDoc(wh){
   const blob = new Blob([docWindowHtml(wh)], {type:'text/html'});
@@ -694,18 +686,17 @@ function saveCurrent(){
   const saved = getSaved();
   const base = baseNumber();
   const idx = saved.findIndex(s=>s.base===base);
-  const serialsObj = Object.fromEntries(activeWhs().map(w=>[w, currentSerial(w)]));
-  const rec = { base, meta:getMeta(), lines:poLines, whs:activeWhs(), serials:serialsObj, savedAt:new Date().toISOString() };
-  if(idx>=0){ if(!confirm(`${base} 는 이미 저장되어 있습니다. 덮어쓸까요?`)) return; saved[idx]=rec; }
+  const rec = { base, meta:getMeta(), lines:poLines, whs:activeWhs(), savedAt:new Date().toISOString() };
+  if(idx>=0){ if(!confirm(`${base} 는 이미 저장되어 있습니다. 덮어쓸까요?`)) return; rec.pl = saved[idx].pl || {}; saved[idx]=rec; }
   else saved.unshift(rec);
   localStorage.setItem(LS_SAVED, JSON.stringify(saved));
-  commitSerials(activeWhs());
+  renderSaved();
   alert(`✅ 저장됨: ${activeWhs().map(w=>docNumber(w)).join(' · ')}`);
 }
 function loadSaved(base){
   const rec = getSaved().find(s=>s.base===base);
   if(!rec) return;
-  setMeta(rec.meta); poLines = normalizeLines(rec.lines); docSerials = {...(rec.serials||{})};
+  setMeta(rec.meta); poLines = normalizeLines(rec.lines);
   renderTable(); updateNumPreview(); renderDocs();
   window.scrollTo({top:0,behavior:'smooth'});
 }
@@ -714,17 +705,158 @@ function delSaved(base){
   localStorage.setItem(LS_SAVED, JSON.stringify(getSaved().filter(s=>s.base!==base)));
   renderSaved();
 }
+// ═══════════════ Packing List / Invoice (2단계) ═══════════════
+let plBase = null, plWh = null, plShowInv = false, plDrafts = {};
+function plNum(base, wh){ return base + (wh==='SC' ? '' : wh); }
+function plInfo(rec, wh){ return (rec.pl && rec.pl[wh]) || {}; }
+function recAddr(meta, p){
+  const line2 = [meta[p+'City'], [String(meta[p+'State']||'').toUpperCase(), meta[p+'Zip']].filter(Boolean).join(' ')].filter(Boolean).join(', ');
+  return [meta[p+'Addr'], line2].filter(Boolean).join('\n');
+}
+function openPL(base){
+  const rec = getSaved().find(s=>s.base===base); if(!rec) return;
+  plBase = base; plWh = (rec.whs||[])[0] || 'SC'; plShowInv = false;
+  plDrafts = {};
+  (rec.whs||[]).forEach(w=>{ const i = plInfo(rec,w); plDrafts[w] = { serial:i.serial||'', via:i.via||'', tracking:i.tracking||'', date:i.date||todayStr(), note:i.note||'' }; });
+  $('pl-card').style.display = 'block';
+  renderPL();
+  if($('pl-card').scrollIntoView) $('pl-card').scrollIntoView({behavior:'smooth'});
+}
+function closePL(){ plBase = null; $('pl-card').style.display = 'none'; }
+function plFieldChanged(){
+  const g = id => ($(id)?$(id).value:'');
+  plDrafts[plWh] = { serial:g('plf-serial'), via:g('plf-via'), tracking:g('plf-tracking'), date:g('plf-date'), note:g('plf-note') };
+  renderPL();
+}
+function savePL(){
+  const saved = getSaved();
+  const rec = saved.find(s=>s.base===plBase); if(!rec) return;
+  plFieldsToDraft();
+  rec.pl = rec.pl || {};
+  rec.pl[plWh] = { ...plDrafts[plWh], savedAt: new Date().toISOString() };
+  localStorage.setItem(LS_SAVED, JSON.stringify(saved));
+  renderSaved(); renderPL();
+  alert(`✅ Packing List 저장됨: ${plNum(plBase, plWh)}` + (plDrafts[plWh].serial ? ` (연속번호 ${plDrafts[plWh].serial})` : ''));
+}
+function plFieldsToDraft(){
+  const g = id => ($(id)?$(id).value:'');
+  if($('plf-serial')) plDrafts[plWh] = { serial:g('plf-serial'), via:g('plf-via'), tracking:g('plf-tracking'), date:g('plf-date'), note:g('plf-note') };
+}
+async function downloadPLPdf(kind){
+  const rec = getSaved().find(s=>s.base===plBase); if(!rec) return;
+  plFieldsToDraft();
+  const suffix = kind==='invoice' ? '-INV' : '-PL';
+  const btn = document.getElementById(kind==='invoice' ? 'invpdf-btn' : 'plpdf-btn');
+  await downloadPdfHtml(buildStageDoc(rec, plWh, kind, plDrafts[plWh]||{}), plNum(plBase,plWh) + suffix + '.pdf', btn);
+}
+function buildStageDoc(rec, wh, kind, d){
+  const meta = rec.meta || {};
+  const lines = (rec.lines||[]).filter(l=>l.wh===wh && (l.qty||0)>0);
+  const num = plNum(rec.base, wh);
+  const dateStr = (d.date ? new Date(d.date+'T00:00:00') : new Date()).toLocaleDateString('en-US');
+  const isInv = kind==='invoice';
+  let theadHtml, rowsHtml, tfootHtml;
+  if(isInv){
+    const totQ = lines.reduce((a,l)=>a+(l.qty||0),0);
+    const totAmt = lines.reduce((a,l)=>a+(l.qty||0)*(l.price||0),0);
+    const money = n => '$'+Number(n).toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2});
+    theadHtml = '<tr><th>Style#</th><th>Item</th><th>Color</th><th>Size</th><th style="text-align:right;">Qty</th><th style="text-align:right;">Unit Price</th><th style="text-align:right;">Amount</th></tr>';
+    rowsHtml = lines.map(l=>`<tr><td style="font-weight:700;">${esc(l.style||'')}</td><td>${esc(l.desc||'')}</td><td>${esc(l.color)}</td><td>${esc(l.size)}</td>
+      <td style="text-align:right;">${(l.qty||0).toLocaleString()}</td>
+      <td style="text-align:right;">${money(l.price||0)}</td>
+      <td style="text-align:right;font-weight:700;">${money((l.qty||0)*(l.price||0))}</td></tr>`).join('');
+    tfootHtml = `<tr><td colspan="4">TOTAL — ${lines.length} lines</td>
+      <td style="text-align:right;">${totQ.toLocaleString()}</td><td></td>
+      <td style="text-align:right;font-size:15px;">${money(totAmt)}</td></tr>`;
+  } else {
+    const tot = lines.reduce((a,l)=>{const b=boxCalc(l);a.q+=l.qty||0;a.f+=b.full;a.l+=b.loose;return a;},{q:0,f:0,l:0});
+    theadHtml = '<tr><th>Style#</th><th>Item</th><th>Color</th><th>Size</th><th style="text-align:right;">Total Pcs</th><th style="text-align:right;background:#1d4ed8;">📦 Full Boxes</th><th style="text-align:right;background:#c2410c;">Partial Pcs</th><th style="text-align:right;background:#c2410c;">Partial Box#</th></tr>';
+    rowsHtml = lines.map(l=>{
+      const b = boxCalc(l);
+      return `<tr><td style="font-weight:700;">${esc(l.style||'')}</td><td>${esc(l.desc||'')}</td><td>${esc(l.color)}</td><td>${esc(l.size)}</td>
+      <td class="c-tot" style="text-align:right;">${(l.qty||0).toLocaleString()}</td>
+      <td class="c-full" style="text-align:right;">${b.full||''}</td>
+      <td class="c-part" style="text-align:right;">${b.loose||''}</td>
+      <td class="c-pbox" style="text-align:right;">${b.loose&&l.pbox ? 'Box '+esc(l.pbox) : ''}</td></tr>`;
+    }).join('');
+    tfootHtml = `<tr><td colspan="4">TOTAL — ${lines.length} lines</td>
+      <td class="c-tot" style="text-align:right;">${tot.q.toLocaleString()}</td>
+      <td class="c-full" style="text-align:right;">${tot.f}</td>
+      <td class="c-part" style="text-align:right;">${tot.l}</td><td class="c-pbox"></td></tr>`;
+  }
+  const note = d.note ? `<div style="margin-top:12px;font-size:11px;"><b>Note:</b> ${esc(d.note)}</div>` : '';
+  return `<div class="inv-doc">
+    <div class="inv-doc-header">
+      <div><div class="inv-co">PACIFIC SPORTS INC</div><div class="inv-co-addr">${esc(WH_ADDR[wh]||'')}</div></div>
+      <div>
+        <div class="inv-doc-type" style="color:${isInv?'#065f46':'#0891b2'}">${isInv?'INVOICE':'PACKING LIST'}</div>
+        <div class="inv-meta-row"><span>${isInv?'Invoice No.':'Ref No.'}</span><span>${esc(num)}</span></div>
+        <div class="inv-meta-row"><span>Serial No.</span><span>${esc(d.serial||'—')}</span></div>
+        <div class="inv-meta-row"><span>Date</span><span>${dateStr}</span></div>
+        <div class="inv-meta-row"><span>Via</span><span>${esc(d.via||'—')}</span></div>
+        <div class="inv-meta-row"><span>Tracking #</span><span>${esc(d.tracking||'—')}</span></div>
+      </div>
+    </div>
+    <div class="inv-addr-row" style="grid-template-columns:1fr 1.4fr 1.4fr .8fr;">
+      <div><div class="inv-addr-label">Customer</div><div class="inv-addr-val">${esc(meta.cust||'')}</div></div>
+      <div><div class="inv-addr-label">Bill To</div><div class="inv-addr-val">${esc(recAddr(meta,'bill'))}</div></div>
+      <div><div class="inv-addr-label">Ship To</div><div class="inv-addr-val">${esc(recAddr(meta,'ship'))}</div></div>
+      <div><div class="inv-addr-label">PO Number</div><div class="inv-addr-val">${esc(meta.po||'')}</div></div>
+    </div>
+    <table class="inv-tbl">
+      <thead>${theadHtml}</thead>
+      <tbody>${rowsHtml}</tbody>
+      <tfoot>${tfootHtml}</tfoot>
+    </table>
+    ${note}
+  </div>`;
+}
+function renderPL(){
+  const rec = getSaved().find(s=>s.base===plBase);
+  if(!rec){ closePL(); return; }
+  if(!(rec.whs||[]).includes(plWh)) plWh = (rec.whs||[])[0];
+  const d = plDrafts[plWh] || {};
+  $('pl-area').innerHTML = `
+    <div class="doc-tabs" style="margin-top:0;">${(rec.whs||[]).map(w=>
+      `<div class="doc-tab ${w===plWh?'active':''}" onclick="plFieldsToDraft();plWh='${w}';plShowInv=false;renderPL();">
+        ${w} <span style="font-family:Consolas,monospace;font-size:10px;">${plNum(rec.base,w)}</span>${plInfo(rec,w).savedAt?' ✓':''}
+      </div>`).join('')}
+    </div>
+    <div class="doc-view">
+      <div class="grid g6 no-print" style="margin-bottom:12px;">
+        <div class="ff"><label>연속번호 (수동)</label><input class="fi" id="plf-serial" value="${esc(d.serial||'')}" placeholder="예: 4072S" onchange="plFieldChanged()" style="font-family:Consolas,monospace;font-weight:700;"></div>
+        <div class="ff"><label>Via</label><input class="fi" id="plf-via" value="${esc(d.via||'')}" placeholder="UPS Ground" onchange="plFieldChanged()"></div>
+        <div class="ff" style="grid-column:span 2;"><label>Tracking #</label><input class="fi" id="plf-tracking" value="${esc(d.tracking||'')}" onchange="plFieldChanged()"></div>
+        <div class="ff"><label>Ship Date</label><input class="fi" id="plf-date" type="date" value="${esc(d.date||todayStr())}" onchange="plFieldChanged()"></div>
+        <div class="ff"><label>Note</label><input class="fi" id="plf-note" value="${esc(d.note||'')}" onchange="plFieldChanged()"></div>
+      </div>
+      <div class="no-print" style="display:flex;gap:6px;justify-content:flex-end;margin-bottom:12px;flex-wrap:wrap;">
+        <button class="btn btn-sm btn-primary" onclick="savePL()">💾 Packing List 저장</button>
+        <button class="btn btn-sm" id="plpdf-btn" onclick="downloadPLPdf('packing')">⬇ Packing List PDF</button>
+        <button class="btn btn-sm" style="background:#065f46;color:#fff;border-color:#065f46;" onclick="plFieldsToDraft();plShowInv=!plShowInv;renderPL();">🧾 ${plShowInv?'Invoice 접기':'Create Invoice'}</button>
+        ${plShowInv?`<button class="btn btn-sm" id="invpdf-btn" onclick="downloadPLPdf('invoice')">⬇ Invoice PDF</button>`:''}
+        <button class="btn btn-sm" onclick="closePL()">✕ 닫기</button>
+      </div>
+      ${buildStageDoc(rec, plWh, 'packing', d)}
+      ${plShowInv ? '<hr style="margin:24px 0;border:none;border-top:2px dashed var(--border);">' + buildStageDoc(rec, plWh, 'invoice', d) : ''}
+    </div>`;
+}
+
 function renderSaved(){
   const saved = getSaved();
   $('saved-list').innerHTML = saved.length ? saved.map(s=>{
     const tot = (s.lines||[]).reduce((a,l)=>a+(l.qty||0),0);
+    const amt = (s.lines||[]).reduce((a,l)=>a+(l.qty||0)*(l.price||0),0);
     const whs = s.whs||[];
     return `<div class="saved-item">
-      <span class="n">${esc(s.base)}</span>
-      <span>${esc(s.meta.cust||'')}</span>
-      <span class="muted">${(s.lines||[]).length}라인 · ${tot.toLocaleString()} pcs</span>
+      <span style="font-weight:800;font-size:13px;">${esc(s.meta.cust||'')}</span>
+      <span class="n">PO ${esc(s.meta.po||'')}</span>
+      <span style="font-weight:700;">${tot.toLocaleString()} pcs</span>
+      <span style="font-weight:800;color:var(--ok);">$${amt.toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2})}</span>
       ${whs.map(w=>`<span class="chip chip-${w}">${w}</span>`).join('')}
-      <span class="muted" style="margin-left:auto;">${new Date(s.savedAt).toLocaleDateString()}</span>
+      <span style="margin-left:auto;"></span>
+      ${s.pl&&Object.keys(s.pl).length ? '<span class="chip" style="background:#cffafe;color:#0e7490;">PL ✓</span>' : ''}
+      <button class="btn btn-sm" style="background:#0891b2;color:#fff;border-color:#0891b2;" onclick="openPL('${esc(s.base)}')">📦 Packing List</button>
       <button class="btn btn-sm" onclick="loadSaved('${esc(s.base)}')">✏️ 열기/수정</button>
       <button class="btn btn-sm" style="color:var(--bad);" onclick="delSaved('${esc(s.base)}')">삭제</button>
     </div>`;
@@ -733,12 +865,12 @@ function renderSaved(){
 
 // ═══════════════ 초안 자동저장 ═══════════════
 function saveDraft(){
-  localStorage.setItem(LS_DRAFT, JSON.stringify({meta:getMeta(), lines:poLines, serials:docSerials}));
+  localStorage.setItem(LS_DRAFT, JSON.stringify({meta:getMeta(), lines:poLines}));
 }
 function loadDraft(){
   try{
     const d = JSON.parse(localStorage.getItem(LS_DRAFT)||'null');
-    if(d && d.lines && d.lines.length){ setMeta(d.meta||{}); poLines = normalizeLines(d.lines); docSerials = d.serials||{}; }
+    if(d && d.lines && d.lines.length){ setMeta(d.meta||{}); poLines = normalizeLines(d.lines); }
   }catch(e){}
 }
 document.addEventListener('input', e=>{ if(e.target.classList.contains('fi')) saveDraft(); });
