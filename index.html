@@ -111,12 +111,10 @@ main{max-width:1100px;margin:0 auto;padding:16px;}
     <div class="grid g6">
       <div class="ff" style="grid-column:span 2;"><label>거래처</label><input class="fi" id="m-cust" placeholder="예: T-Shirt Tycoon" oninput="onCustName()"></div>
       <div class="ff"><label>거래처 코드</label><input class="fi" id="m-code" placeholder="TTY" maxlength="5" style="text-transform:uppercase;font-family:Consolas,monospace;font-weight:700;" oninput="updateNumPreview()"></div>
-      <div class="ff"><label>Customer PO #</label><input class="fi" id="m-po" placeholder="53378" oninput="updateNumPreview()"></div>
+      <div class="ff" style="grid-column:span 2;"><label>Customer PO #</label><input class="fi" id="m-po" placeholder="53378" oninput="updateNumPreview()"></div>
       <div class="ff"><label>날짜</label><input class="fi" id="m-date" type="date" onchange="updateNumPreview()"></div>
-      <div class="ff"><label>Via</label><input class="fi" id="m-via" placeholder="Ground"></div>
+      <div class="ff" style="grid-column:span 3;"><label>Bill To</label><input class="fi" id="m-billto" placeholder="청구지 주소"></div>
       <div class="ff" style="grid-column:span 3;"><label>Ship To</label><input class="fi" id="m-shipto" placeholder="배송지 주소"></div>
-      <div class="ff"><label>F.O.B.</label><input class="fi" id="m-fob" placeholder=""></div>
-      <div class="ff" style="grid-column:span 2;"><label>메모</label><input class="fi" id="m-note" placeholder=""></div>
     </div>
     <div style="margin-top:10px;font-size:12px;">
       Pull Request 번호: <b id="num-preview" style="font-family:Consolas,monospace;color:var(--primary);">—</b>
@@ -137,7 +135,7 @@ main{max-width:1100px;margin:0 auto;padding:16px;}
     <div style="overflow-x:auto;">
     <table class="etbl">
       <thead><tr>
-        <th style="width:28px;">#</th><th>Style</th><th>Color</th><th>Size</th>
+        <th style="width:28px;">#</th><th>우리 Style#</th><th>고객 Item/설명</th><th>Color</th><th>Size</th>
         <th style="text-align:right;">Qty</th><th style="text-align:right;">단가</th>
         <th style="text-align:right;">박스입수(PPB)</th><th style="text-align:right;">Full Box</th><th style="text-align:right;">Loose</th>
         <th style="width:90px;">창고</th><th style="width:30px;"></th>
@@ -185,6 +183,7 @@ const WH_LABEL = { SC:'SC 창고', CA:'CA 창고', BO:'Back Order' };
 const LS_SAVED = 'psi_pull_requests';
 const LS_CODES = 'psi_customer_codes';
 const LS_DRAFT = 'psi_pr_draft';
+const LS_STYLES = 'psi_style_map';   // 고객 설명 → 우리 스타일# 학습
 const DEFAULT_PPB = 72;
 
 // ═══════════════ 유틸 ═══════════════
@@ -246,6 +245,20 @@ function rememberCode(){
   if(name && code){ const m = getCodeMap(); m[name] = code; saveCodeMap(m); }
 }
 
+// ═══════════════ 스타일 매핑 (고객 설명 → 우리 스타일#) ═══════════════
+function getStyleMap(){ try{ return JSON.parse(localStorage.getItem(LS_STYLES)||'{}'); }catch(e){ return {}; } }
+function saveStyleMap(m){ localStorage.setItem(LS_STYLES, JSON.stringify(m)); }
+function descKey(desc){ return String(desc||'').trim().toLowerCase().replace(/\s+/g,' '); }
+function guessStyle(desc){
+  const m = getStyleMap();
+  return m[descKey(desc)] || '';
+}
+function rememberStyle(desc, style){
+  const k = descKey(desc);
+  const s = String(style||'').trim();
+  if(k && s){ const m = getStyleMap(); m[k] = s; saveStyleMap(m); }
+}
+
 // ═══════════════ Pull Request 번호 ═══════════════
 function baseNumber(){
   const d = $('m-date').value ? new Date($('m-date').value+'T00:00:00') : new Date();
@@ -305,17 +318,23 @@ async function parsePoPdf(input){
     }
     parsed.po_number = parsed.po_number || parsed.customer_po || '';
     parsed.customer_name = parsed.customer_name || '';
-    const lines = (parsed.lines||[]).map(l=>({
-      style: String(l.style_number || l.style || l.item_code || ''),
-      color: normalizePoColor(l.color || ''),
-      size: normalizePoSize(l.size || ''),
-      qty: Number(l.qty || l.quantity || 0),
-      price: Number(l.unit_price || l.price || 0),
-      ppb: DEFAULT_PPB,
-      wh: 'SC'
-    })).filter(l=>l.qty>0);
-    // 스타일 번호 앞 4자리 정규화 (2388N → 2388)
-    lines.forEach(l=>{ const m = l.style.match(/^(\d{4})/); if(m) l.style = m[1]; });
+    const lines = (parsed.lines||[]).map(l=>{
+      const rawStyle = String(l.style_number || l.style || '').trim();
+      const itemCode = String(l.item_code || '').trim();
+      const numM = rawStyle.match(/^(\d{4})/) || itemCode.match(/^(\d{4})/);
+      // 숫자 스타일이면 그대로, 아니면 설명으로 두고 학습된 매핑에서 우리 스타일# 찾기
+      const desc = numM ? (rawStyle !== numM[1] ? rawStyle : '') : [rawStyle, itemCode].filter(Boolean).join(' · ');
+      return {
+        style: numM ? numM[1] : guessStyle(desc),
+        desc: desc,
+        color: normalizePoColor(l.color || ''),
+        size: normalizePoSize(l.size || ''),
+        qty: Number(l.qty || l.quantity || 0),
+        price: Number(l.unit_price || l.price || 0),
+        ppb: DEFAULT_PPB,
+        wh: 'SC'
+      };
+    }).filter(l=>l.qty>0);
 
     if(lines.length===0) throw new Error('라인아이템을 인식하지 못했습니다. 수동으로 추가해주세요.');
 
@@ -323,7 +342,10 @@ async function parsePoPdf(input){
     sortLines();
     if(parsed.customer_name){ $('m-cust').value = parsed.customer_name; $('m-code').value = guessCode(parsed.customer_name); }
     if(parsed.po_number) $('m-po').value = parsed.po_number;
-    if(parsed.ship_to_address) $('m-shipto').value = String(parsed.ship_to_address).replace(/\n/g, ', ');
+    const shipTo = parsed.ship_to_address || parsed.ship_to;
+    const billTo = parsed.bill_to_address || parsed.bill_to;
+    if(shipTo) $('m-shipto').value = String(shipTo).replace(/\n/g, ', ');
+    if(billTo) $('m-billto').value = String(billTo).replace(/\n/g, ', ');
     renderTable(); updateNumPreview(); saveDraft();
   }catch(err){
     alert('파싱 실패: ' + err.message);
@@ -336,7 +358,7 @@ async function parsePoPdf(input){
 
 // ═══════════════ 라인 테이블 ═══════════════
 function addLine(){
-  poLines.push({style:'',color:'',size:'',qty:0,price:0,ppb:DEFAULT_PPB,wh:'SC'});
+  poLines.push({style:'',desc:'',color:'',size:'',qty:0,price:0,ppb:DEFAULT_PPB,wh:'SC'});
   renderTable();
 }
 function delLine(i){ poLines.splice(i,1); renderTable(); renderDocs(); saveDraft(); }
@@ -346,6 +368,11 @@ function updLine(i,field,val){
   else if(field==='size') val = normalizePoSize(val);
   else if(field==='color') val = normalizePoColor(val);
   poLines[i][field] = val;
+  // 스타일# 입력하면 설명→스타일 매핑 학습 + 같은 설명 라인들 자동 채움
+  if(field==='style' && val && poLines[i].desc){
+    rememberStyle(poLines[i].desc, val);
+    poLines.forEach(l=>{ if(!l.style && descKey(l.desc)===descKey(poLines[i].desc)) l.style = val; });
+  }
   renderTable(); renderDocs(); saveDraft();
 }
 function bulkWh(wh){
@@ -362,7 +389,8 @@ function renderTable(){
     const b = boxCalc(l);
     return `<tr>
       <td class="muted">${i+1}</td>
-      <td><input value="${esc(l.style)}" onchange="updLine(${i},'style',this.value)" style="min-width:60px;"></td>
+      <td><input value="${esc(l.style)}" onchange="updLine(${i},'style',this.value)" placeholder="1315" style="min-width:60px;max-width:80px;font-weight:700;${l.style?'':'background:#fef9c3;border-color:#facc15;'}"></td>
+      <td><input value="${esc(l.desc||'')}" onchange="updLine(${i},'desc',this.value)" placeholder="(PO 설명)" style="min-width:140px;color:#6b7280;font-size:11px;"></td>
       <td><input value="${esc(l.color)}" onchange="updLine(${i},'color',this.value)" style="min-width:110px;"></td>
       <td><input value="${esc(l.size)}" onchange="updLine(${i},'size',this.value)" style="min-width:45px;max-width:70px;"></td>
       <td><input class="num" value="${l.qty||''}" onchange="updLine(${i},'qty',this.value)" style="max-width:80px;"></td>
@@ -375,11 +403,11 @@ function renderTable(){
       </select></td>
       <td><button class="btn btn-sm" style="color:var(--bad);border:none;" onclick="delLine(${i})">✕</button></td>
     </tr>`;
-  }).join('') || `<tr><td colspan="11" class="muted" style="padding:14px;text-align:center;">PO를 업로드하거나 라인을 추가하세요</td></tr>`;
+  }).join('') || `<tr><td colspan="12" class="muted" style="padding:14px;text-align:center;">PO를 업로드하거나 라인을 추가하세요</td></tr>`;
 
   const tot = poLines.reduce((a,l)=>{const b=boxCalc(l);a.q+=l.qty||0;a.f+=b.full;a.l+=b.loose;a.amt+=(l.qty||0)*(l.price||0);return a;},{q:0,f:0,l:0,amt:0});
   $('lines-foot').innerHTML = poLines.length ? `<tr class="totrow">
-    <td colspan="4" style="padding:6px 8px;">합계 ${poLines.length}라인</td>
+    <td colspan="5" style="padding:6px 8px;">합계 ${poLines.length}라인</td>
     <td style="text-align:right;font-family:Consolas,monospace;padding:6px;">${tot.q.toLocaleString()}</td>
     <td style="text-align:right;font-family:Consolas,monospace;padding:6px;">$${tot.amt.toLocaleString(undefined,{maximumFractionDigits:2})}</td>
     <td></td>
@@ -402,13 +430,13 @@ function buildDocHtml(wh){
   const dateStr = d.toLocaleDateString('en-US');
   const rows = lines.map(l=>{
     const b = boxCalc(l);
-    return `<tr><td>${esc(l.style)}</td><td>${esc(l.color)}</td><td>${esc(l.size)}</td>
+    const styleCell = esc(l.style || '') + (l.desc ? `<div style="font-size:9px;color:#888;">${esc(l.desc)}</div>` : '');
+    return `<tr><td style="font-weight:700;">${styleCell}</td><td>${esc(l.color)}</td><td>${esc(l.size)}</td>
       <td style="text-align:right;">${(l.qty||0).toLocaleString()}</td>
       <td style="text-align:right;">${b.full||''}</td>
       <td style="text-align:right;">${b.loose||''}</td></tr>`;
   }).join('');
   const tot = lines.reduce((a,l)=>{const b=boxCalc(l);a.q+=l.qty||0;a.f+=b.full;a.l+=b.loose;return a;},{q:0,f:0,l:0});
-  const note = $('m-note').value ? `<div style="margin-top:12px;font-size:11px;"><b>Note:</b> ${esc($('m-note').value)}</div>` : '';
   const boWarn = wh==='BO' ? `<div style="margin-top:12px;padding:8px 12px;background:#fef2f2;border:1px solid #fecaca;border-radius:4px;font-size:11px;color:#b91c1c;font-weight:700;">⚠ BACK ORDER — 재고 확보 후 진행</div>` : '';
   return `<div class="inv-doc">
     <div class="inv-doc-header">
@@ -420,12 +448,11 @@ function buildDocHtml(wh){
         <div class="inv-meta-row"><span>Warehouse</span><span>${esc(WH_LABEL[wh])}</span></div>
       </div>
     </div>
-    <div class="inv-addr-row">
-      <div><div class="inv-addr-label">Sold To</div><div class="inv-addr-val">${esc($('m-cust').value||'')}</div></div>
+    <div class="inv-addr-row" style="grid-template-columns:1fr 1.4fr 1.4fr .8fr;">
+      <div><div class="inv-addr-label">Customer</div><div class="inv-addr-val">${esc($('m-cust').value||'')}</div></div>
+      <div><div class="inv-addr-label">Bill To</div><div class="inv-addr-val">${esc($('m-billto').value||'')}</div></div>
       <div><div class="inv-addr-label">Ship To</div><div class="inv-addr-val">${esc($('m-shipto').value||'')}</div></div>
       <div><div class="inv-addr-label">PO Number</div><div class="inv-addr-val">${esc($('m-po').value||'')}</div></div>
-      <div><div class="inv-addr-label">Via</div><div class="inv-addr-val">${esc($('m-via').value||'')}</div></div>
-      <div><div class="inv-addr-label">F.O.B.</div><div class="inv-addr-val">${esc($('m-fob').value||'')}</div></div>
     </div>
     <table class="inv-tbl">
       <thead><tr><th>Style</th><th>Color</th><th>Size</th><th style="text-align:right;">Total Pcs</th><th style="text-align:right;">Full Boxes</th><th style="text-align:right;">Partial Pcs</th></tr></thead>
@@ -435,7 +462,7 @@ function buildDocHtml(wh){
         <td style="text-align:right;">${tot.f}</td>
         <td style="text-align:right;">${tot.l}</td></tr></tfoot>
     </table>
-    ${boWarn}${note}
+    ${boWarn}
   </div>`;
 }
 
@@ -497,17 +524,18 @@ function emailDoc(wh){
 // ═══════════════ 저장 / 불러오기 ═══════════════
 function getMeta(){
   return { cust:$('m-cust').value, code:$('m-code').value, po:$('m-po').value, date:$('m-date').value,
-           shipto:$('m-shipto').value, via:$('m-via').value, fob:$('m-fob').value, note:$('m-note').value };
+           billto:$('m-billto').value, shipto:$('m-shipto').value };
 }
 function setMeta(m){
   $('m-cust').value=m.cust||''; $('m-code').value=m.code||''; $('m-po').value=m.po||''; $('m-date').value=m.date||todayStr();
-  $('m-shipto').value=m.shipto||''; $('m-via').value=m.via||''; $('m-fob').value=m.fob||''; $('m-note').value=m.note||'';
+  $('m-billto').value=m.billto||''; $('m-shipto').value=m.shipto||'';
 }
 function getSaved(){ try{ return JSON.parse(localStorage.getItem(LS_SAVED)||'[]'); }catch(e){ return []; } }
 function saveCurrent(){
   if(!poLines.length){ alert('저장할 라인이 없습니다.'); return; }
   if(!$('m-code').value || !$('m-po').value){ alert('거래처 코드와 PO 번호를 입력해주세요.'); return; }
   rememberCode();
+  poLines.forEach(l=>{ if(l.style && l.desc) rememberStyle(l.desc, l.style); });
   const saved = getSaved();
   const base = baseNumber();
   const idx = saved.findIndex(s=>s.base===base);
@@ -534,16 +562,17 @@ function renderSaved(){
   const saved = getSaved();
   $('saved-list').innerHTML = saved.length ? saved.map(s=>{
     const tot = (s.lines||[]).reduce((a,l)=>a+(l.qty||0),0);
+    const whs = s.whs||[];
     return `<div class="saved-item">
       <span class="n">${esc(s.base)}</span>
       <span>${esc(s.meta.cust||'')}</span>
       <span class="muted">${(s.lines||[]).length}라인 · ${tot.toLocaleString()} pcs</span>
-      ${(s.whs||[]).map(w=>`<span class="chip chip-${w}">${w}</span>`).join('')}
+      ${whs.map(w=>`<span class="chip chip-${w}">${w}</span>`).join('')}
       <span class="muted" style="margin-left:auto;">${new Date(s.savedAt).toLocaleDateString()}</span>
-      <button class="btn btn-sm" onclick="loadSaved('${esc(s.base)}')">열기</button>
+      <button class="btn btn-sm" onclick="loadSaved('${esc(s.base)}')">✏️ 열기/수정</button>
       <button class="btn btn-sm" style="color:var(--bad);" onclick="delSaved('${esc(s.base)}')">삭제</button>
     </div>`;
-  }).join('') : '<div class="muted">저장된 항목이 없습니다.</div>';
+  }).join('') : '<div class="muted">저장된 항목이 없습니다. 문서 생성 후 💾 저장을 누르면 여기 쌓여요 — 나중에 열어서 창고(SC↔CA)를 바꾸고 다시 저장할 수 있어요.</div>';
 }
 
 // ═══════════════ 초안 자동저장 ═══════════════
