@@ -572,7 +572,7 @@ function renderDocs(){
           <input value="${esc(currentSerial(currentDocWh))}" onchange="setSerial('${currentDocWh}',this.value)" style="width:80px;padding:4px 6px;border:1px solid var(--border);border-radius:4px;font-family:Consolas,monospace;font-weight:700;">
         </span>
         <button class="btn btn-sm" onclick="printDoc('${currentDocWh}')">🖨 인쇄 / PDF 저장</button>
-        <button class="btn btn-sm" onclick="downloadDoc('${currentDocWh}')">⬇ 다운로드 (HTML)</button>
+        <button class="btn btn-sm btn-primary" onclick="downloadPdf('${currentDocWh}')" id="pdf-btn-${currentDocWh}">⬇ PDF 다운로드</button>
         <button class="btn btn-sm" onclick="emailDoc('${currentDocWh}')">📧 이멜 초안</button>
       </div>
       ${buildDocHtml(currentDocWh)}
@@ -590,6 +590,44 @@ function printDoc(wh){
   if(!w){ alert('팝업이 차단되었습니다. 팝업을 허용해주세요.'); return; }
   w.document.write(docWindowHtml(wh) + '<script>window.onload=function(){window.print();}<\/script>');
   w.document.close();
+}
+let _pdfLibP = null;
+function loadPdfLib(){
+  if(window.html2pdf) return Promise.resolve();
+  if(_pdfLibP) return _pdfLibP;
+  _pdfLibP = new Promise((res,rej)=>{
+    const s = document.createElement('script');
+    s.src = 'https://cdnjs.cloudflare.com/ajax/libs/html2pdf.js/0.10.1/html2pdf.bundle.min.js';
+    s.onload = res;
+    s.onerror = ()=>{ _pdfLibP=null; rej(new Error('PDF 라이브러리 로드 실패 — 인터넷 연결을 확인하세요')); };
+    document.head.appendChild(s);
+  });
+  return _pdfLibP;
+}
+async function downloadPdf(wh){
+  const btn = document.getElementById('pdf-btn-'+wh);
+  const orig = btn ? btn.textContent : '';
+  if(btn){ btn.textContent = '⏳ PDF 만드는 중...'; btn.disabled = true; }
+  try{
+    await loadPdfLib();
+    const holder = document.createElement('div');
+    holder.style.cssText = 'position:fixed;left:-10000px;top:0;width:820px;background:#fff;padding:20px;';
+    holder.innerHTML = buildDocHtml(wh);
+    document.body.appendChild(holder);
+    await html2pdf().set({
+      margin: [10,10,12,10],
+      filename: docNumber(wh) + '.pdf',
+      image: { type:'jpeg', quality: 0.98 },
+      html2canvas: { scale: 2, useCORS: true, backgroundColor: '#ffffff' },
+      jsPDF: { unit:'mm', format:'letter', orientation:'portrait' },
+      pagebreak: { mode: ['avoid-all','css'] }
+    }).from(holder).save();
+    document.body.removeChild(holder);
+  }catch(e){
+    alert('PDF 생성 실패: ' + e.message + '\n\n🖨 인쇄 버튼에서 "PDF로 저장"을 대신 이용할 수 있어요.');
+  }finally{
+    if(btn){ btn.textContent = orig; btn.disabled = false; }
+  }
 }
 function downloadDoc(wh){
   const blob = new Blob([docWindowHtml(wh)], {type:'text/html'});
