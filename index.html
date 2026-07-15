@@ -273,13 +273,13 @@ function rememberStyle(desc, style){
   const s = String(style||'').trim();
   if(k && s){ const m = getStyleMap(); m[k] = s; saveStyleMap(m); }
 }
-// Partial 박스 번호 자동 배정 (창고별 1,2,3... — 이미 지정된 건 유지)
-function autoAssignPbox(){
-  WH_LIST.forEach(wh=>{
-    const used = poLines.filter(l=>l.wh===wh && boxCalc(l).loose>0 && l.pbox).map(l=>Number(l.pbox)||0);
-    let n = used.length ? Math.max(...used) : 0;
-    poLines.forEach(l=>{ if(l.wh===wh && boxCalc(l).loose>0 && !l.pbox) l.pbox = ++n; });
-  });
+// 박스입수(PPB) 자동 규칙: 3XL~5XL=48 · L/S=60 · 그외(S/S 등)=72
+function autoPpb(l){
+  const size = String(l.size||'').toUpperCase();
+  if(['3XL','4XL','5XL','6XL'].includes(size)) return 48;
+  const d = (String(l.desc||'') + ' ' + String(l.rawDesc||'')).toUpperCase();
+  if(/L\/S|LONG\s*SLEEVE|LONGSLEEVE|HOODIE|SWEATSHIRT/.test(d)) return 60;
+  return 72;
 }
 
 // 원본 설명 → 간단 표기 (Adult S/S, Youth L/S, Adult Hoodie L/S ...)
@@ -419,6 +419,7 @@ async function parsePoPdf(input){
         wh: 'SC'
       };
     }).filter(l=>l.qty>0);
+    lines.forEach(l=>{ l.ppb = autoPpb(l); });
 
     if(lines.length===0) throw new Error('라인아이템을 인식하지 못했습니다. 수동으로 추가해주세요.');
 
@@ -451,6 +452,8 @@ function updLine(i,field,val){
   else if(field==='size') val = normalizePoSize(val);
   else if(field==='color') val = normalizePoColor(val);
   poLines[i][field] = val;
+  if(field==='ppb') poLines[i].ppbManual = true;
+  if((field==='desc'||field==='size') && !poLines[i].ppbManual) poLines[i].ppb = autoPpb(poLines[i]);
   // 스타일# 입력하면 설명→스타일 매핑 학습 + 같은 설명 라인들 자동 채움 (원본 설명 기준)
   const mk = l => descKey(l.rawDesc || l.desc);
   if(field==='style' && val && mk(poLines[i])){
@@ -468,7 +471,6 @@ function boxCalc(l){
   return { full: Math.floor((l.qty||0)/ppb), loose: (l.qty||0)%ppb };
 }
 function renderTable(){
-  autoAssignPbox();
   const tb = $('lines-body');
   tb.innerHTML = poLines.map((l,i)=>{
     const b = boxCalc(l);
