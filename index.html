@@ -607,16 +607,17 @@ async function downloadPdfHtml(docHtml, filename, btn){
   try{
     await loadPdfLib();
     const holder = document.createElement('div');
-    holder.style.cssText = 'position:fixed;left:-10000px;top:0;width:820px;background:#fff;padding:20px;';
+    holder.style.cssText = 'position:absolute;top:0;left:0;z-index:-9999;width:820px;background:#fff;padding:20px;pointer-events:none;';
     holder.innerHTML = docHtml;
     document.body.appendChild(holder);
+    await new Promise(r=>setTimeout(r, 80));
     await html2pdf().set({
       margin: [10,10,12,10],
       filename: filename,
       image: { type:'jpeg', quality: 0.98 },
-      html2canvas: { scale: 2, useCORS: true, backgroundColor: '#ffffff' },
+      html2canvas: { scale: 2, useCORS: true, backgroundColor: '#ffffff', scrollX: 0, scrollY: 0, windowWidth: 900 },
       jsPDF: { unit:'mm', format:'letter', orientation:'portrait' },
-      pagebreak: { mode: ['avoid-all','css'] }
+      pagebreak: { mode: ['css','legacy'] }
     }).from(holder).save();
     document.body.removeChild(holder);
   }catch(e){
@@ -719,16 +720,38 @@ function openPL(base){
   const rec = getSaved().find(s=>s.base===base); if(!rec) return;
   plBase = base; plWh = (rec.whs||[])[0] || 'SC'; plShowInv = false;
   plDrafts = {};
-  (rec.whs||[]).forEach(w=>{ const i = plInfo(rec,w); plDrafts[w] = { serial:i.serial||'', via:i.via||'', tracking:i.tracking||'', date:i.date||todayStr(), note:i.note||'' }; });
+  (rec.whs||[]).forEach(w=>{ const i = plInfo(rec,w); plDrafts[w] = { serial:i.serial||'', via:i.via||'', trackings:(i.trackings&&i.trackings.length?i.trackings:(i.tracking?[i.tracking]:[''])), date:i.date||todayStr(), note:i.note||'' }; });
   $('pl-card').style.display = 'block';
   renderPL();
   if($('pl-card').scrollIntoView) $('pl-card').scrollIntoView({behavior:'smooth'});
 }
 function closePL(){ plBase = null; $('pl-card').style.display = 'none'; }
-function plFieldChanged(){
-  const g = id => ($(id)?$(id).value:'');
-  plDrafts[plWh] = { serial:g('plf-serial'), via:g('plf-via'), tracking:g('plf-tracking'), date:g('plf-date'), note:g('plf-note') };
+function openInvoice(base){
+  openPL(base);
+  const rec = getSaved().find(s=>s.base===base);
+  if(rec && rec.pl){
+    const w = (rec.whs||[]).find(w=>rec.pl[w] && rec.pl[w].savedAt);
+    if(w) plWh = w;
+  }
+  plShowInv = true;
   renderPL();
+}
+function plFieldChanged(){ plFieldsToDraft(); renderPL(); }
+function addTracking(){
+  plFieldsToDraft();
+  plDrafts[plWh] = plDrafts[plWh] || {};
+  (plDrafts[plWh].trackings = plDrafts[plWh].trackings || ['']).push('');
+  renderPL();
+}
+function saveInvStage(){
+  const saved = getSaved();
+  const rec = saved.find(s=>s.base===plBase); if(!rec) return;
+  plFieldsToDraft();
+  rec.inv = rec.inv || {};
+  rec.inv[plWh] = { savedAt: new Date().toISOString() };
+  localStorage.setItem(LS_SAVED, JSON.stringify(saved));
+  renderSaved(); renderPL();
+  alert('✅ Invoice 저장됨: ' + plNum(plBase, plWh));
 }
 function savePL(){
   const saved = getSaved();
@@ -741,8 +764,10 @@ function savePL(){
   alert(`✅ Packing List 저장됨: ${plNum(plBase, plWh)}` + (plDrafts[plWh].serial ? ` (연속번호 ${plDrafts[plWh].serial})` : ''));
 }
 function plFieldsToDraft(){
+  if(!$('plf-serial')) return;
   const g = id => ($(id)?$(id).value:'');
-  if($('plf-serial')) plDrafts[plWh] = { serial:g('plf-serial'), via:g('plf-via'), tracking:g('plf-tracking'), date:g('plf-date'), note:g('plf-note') };
+  const trackings = [...document.querySelectorAll('[id^="plf-tracking-"]')].map(el=>el.value);
+  plDrafts[plWh] = { serial:g('plf-serial'), via:g('plf-via'), trackings:(trackings.length?trackings:['']), date:g('plf-date'), note:g('plf-note') };
 }
 async function downloadPLPdf(kind){
   const rec = getSaved().find(s=>s.base===plBase); if(!rec) return;
@@ -796,7 +821,7 @@ function buildStageDoc(rec, wh, kind, d){
         <div class="inv-meta-row"><span>Serial No.</span><span>${esc(d.serial||'—')}</span></div>
         <div class="inv-meta-row"><span>Date</span><span>${dateStr}</span></div>
         <div class="inv-meta-row"><span>Via</span><span>${esc(d.via||'—')}</span></div>
-        <div class="inv-meta-row"><span>Tracking #</span><span>${esc(d.tracking||'—')}</span></div>
+        ${(()=>{const ts=(d.trackings||(d.tracking?[d.tracking]:[])).filter(Boolean); return ts.length? ts.map((t,i)=>`<div class="inv-meta-row"><span>Tracking${ts.length>1?' '+(i+1):''} #</span><span>${esc(t)}</span></div>`).join('') : '<div class="inv-meta-row"><span>Tracking #</span><span>—</span></div>';})()}
       </div>
     </div>
     <div class="inv-addr-row" style="grid-template-columns:1fr 1.4fr 1.4fr .8fr;">
@@ -828,7 +853,9 @@ function renderPL(){
       <div class="grid g6 no-print" style="margin-bottom:12px;">
         <div class="ff"><label>연속번호 (수동)</label><input class="fi" id="plf-serial" value="${esc(d.serial||'')}" placeholder="예: 4072S" onchange="plFieldChanged()" style="font-family:Consolas,monospace;font-weight:700;"></div>
         <div class="ff"><label>Via</label><input class="fi" id="plf-via" value="${esc(d.via||'')}" placeholder="UPS Ground" onchange="plFieldChanged()"></div>
-        <div class="ff" style="grid-column:span 2;"><label>Tracking #</label><input class="fi" id="plf-tracking" value="${esc(d.tracking||'')}" onchange="plFieldChanged()"></div>
+        <div class="ff" style="grid-column:span 2;"><label>Tracking # <button class="btn btn-sm" style="padding:0 7px;margin-left:6px;" onclick="addTracking()" title="패키지 여러 개면 추가">＋</button></label>
+          ${(d.trackings&&d.trackings.length?d.trackings:['']).map((t,i)=>`<input class="fi" id="plf-tracking-${i}" value="${esc(t)}" onchange="plFieldChanged()" placeholder="Tracking ${i+1}" style="margin-bottom:4px;">`).join('')}
+        </div>
         <div class="ff"><label>Ship Date</label><input class="fi" id="plf-date" type="date" value="${esc(d.date||todayStr())}" onchange="plFieldChanged()"></div>
         <div class="ff"><label>Note</label><input class="fi" id="plf-note" value="${esc(d.note||'')}" onchange="plFieldChanged()"></div>
       </div>
@@ -836,7 +863,7 @@ function renderPL(){
         <button class="btn btn-sm btn-primary" onclick="savePL()">💾 Packing List 저장</button>
         <button class="btn btn-sm" id="plpdf-btn" onclick="downloadPLPdf('packing')">⬇ Packing List PDF</button>
         <button class="btn btn-sm" style="background:#065f46;color:#fff;border-color:#065f46;" onclick="plFieldsToDraft();plShowInv=!plShowInv;renderPL();">🧾 ${plShowInv?'Invoice 접기':'Create Invoice'}</button>
-        ${plShowInv?`<button class="btn btn-sm" id="invpdf-btn" onclick="downloadPLPdf('invoice')">⬇ Invoice PDF</button>`:''}
+        ${plShowInv?`<button class="btn btn-sm btn-primary" onclick="saveInvStage()">💾 Invoice 저장</button><button class="btn btn-sm" id="invpdf-btn" onclick="downloadPLPdf('invoice')">⬇ Invoice PDF</button>`:''}
         <button class="btn btn-sm" onclick="closePL()">✕ 닫기</button>
       </div>
       ${buildStageDoc(rec, plWh, 'packing', d)}
@@ -857,8 +884,8 @@ function renderSaved(){
       <span style="font-weight:800;color:var(--ok);">$${amt.toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2})}</span>
       ${whs.map(w=>`<span class="chip chip-${w}">${w}</span>`).join('')}
       <span style="margin-left:auto;"></span>
-      ${s.pl&&Object.keys(s.pl).length ? '<span class="chip" style="background:#cffafe;color:#0e7490;">PL ✓</span>' : ''}
-      <button class="btn btn-sm" style="background:#0891b2;color:#fff;border-color:#0891b2;" onclick="openPL('${esc(s.base)}')">📦 Packing List</button>
+      <button class="btn btn-sm" style="${s.pl&&Object.keys(s.pl).length ? 'background:#16a34a;border-color:#16a34a;' : 'background:#f59e0b;border-color:#f59e0b;'}color:#fff;" onclick="openPL('${esc(s.base)}')">📦 Packing List</button>
+      ${s.pl&&Object.keys(s.pl).length ? `<button class="btn btn-sm" style="${s.inv&&Object.keys(s.inv).length ? 'background:#16a34a;border-color:#16a34a;' : 'background:#f59e0b;border-color:#f59e0b;'}color:#fff;" onclick="openInvoice('${esc(s.base)}')">🧾 Invoice</button>` : ''}
       <button class="btn btn-sm" onclick="loadSaved('${esc(s.base)}')">✏️ 열기/수정</button>
       <button class="btn btn-sm" style="color:var(--bad);" onclick="delSaved('${esc(s.base)}')">삭제</button>
     </div>`;
