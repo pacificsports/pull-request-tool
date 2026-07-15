@@ -148,7 +148,7 @@ main{max-width:1100px;margin:0 auto;padding:16px;}
       <thead><tr>
         <th style="width:28px;">#</th><th>우리 Style#</th><th>고객 Item/설명</th><th>Color</th><th>Size</th>
         <th style="text-align:right;">Qty</th><th style="text-align:right;">단가</th>
-        <th style="text-align:right;">박스입수(PPB)</th><th style="text-align:right;">Full Box</th><th style="text-align:right;">Loose</th>
+        <th style="text-align:right;">박스입수(PPB)</th><th style="text-align:right;">Full Box</th><th style="text-align:right;">Loose</th><th style="text-align:right;">P.Box#</th>
         <th style="width:90px;">창고</th><th style="width:30px;"></th>
       </tr></thead>
       <tbody id="lines-body"></tbody>
@@ -195,6 +195,9 @@ const LS_SAVED = 'psi_pull_requests';
 const LS_CODES = 'psi_customer_codes';
 const LS_DRAFT = 'psi_pr_draft';
 const LS_STYLES = 'psi_style_map';   // 고객 설명 → 우리 스타일# 학습
+const LS_SERIAL = 'psi_serials';     // 창고별 연속번호 카운터
+const SERIAL_SUFFIX = { SC:'S', CA:'C', BO:'B' };
+let docSerials = {};                 // 현재 문서의 연속번호 (수정 가능)
 const DEFAULT_PPB = 72;
 
 // ═══════════════ 유틸 ═══════════════
@@ -260,6 +263,26 @@ function rememberStyle(desc, style){
   const s = String(style||'').trim();
   if(k && s){ const m = getStyleMap(); m[k] = s; saveStyleMap(m); }
 }
+// ═══ 연속번호 (SC: 4071S부터) ═══
+function getSerials(){ try{ return JSON.parse(localStorage.getItem(LS_SERIAL)||'{"SC":4070,"CA":0,"BO":0}'); }catch(e){ return {SC:4070,CA:0,BO:0}; } }
+function saveSerials(m){ localStorage.setItem(LS_SERIAL, JSON.stringify(m)); }
+function nextSerial(wh){ const m = getSerials(); return (Number(m[wh]||0)+1) + (SERIAL_SUFFIX[wh]||''); }
+function currentSerial(wh){ return (docSerials[wh]!==undefined && docSerials[wh]!=='') ? docSerials[wh] : nextSerial(wh); }
+function setSerial(wh, v){ docSerials[wh] = String(v).trim(); saveDraft(); renderDocs(); }
+function commitSerials(whs){
+  const m = getSerials();
+  whs.forEach(wh=>{ const n = parseInt(String(currentSerial(wh)).replace(/\D/g,'')); if(n && n > Number(m[wh]||0)) m[wh] = n; });
+  saveSerials(m);
+}
+// Partial 박스 번호 자동 배정 (창고별 1,2,3... — 이미 지정된 건 유지)
+function autoAssignPbox(){
+  WH_LIST.forEach(wh=>{
+    const used = poLines.filter(l=>l.wh===wh && boxCalc(l).loose>0 && l.pbox).map(l=>Number(l.pbox)||0);
+    let n = used.length ? Math.max(...used) : 0;
+    poLines.forEach(l=>{ if(l.wh===wh && boxCalc(l).loose>0 && !l.pbox) l.pbox = ++n; });
+  });
+}
+
 // 원본 설명 → 간단 표기 (Adult S/S, Youth L/S, Adult Hoodie L/S ...)
 function simplifyDesc(raw){
   const s = String(raw||'').toLowerCase();
@@ -423,7 +446,8 @@ function addLine(){
 }
 function delLine(i){ poLines.splice(i,1); renderTable(); renderDocs(); saveDraft(); }
 function updLine(i,field,val){
-  if(field==='qty'||field==='ppb') val = Math.max(0, parseInt(val)||0);
+  if(field==='pbox') val = String(val).trim()==='' ? '' : Math.max(1, parseInt(val)||1);
+  else if(field==='qty'||field==='ppb') val = Math.max(0, parseInt(val)||0);
   else if(field==='price') val = Math.max(0, parseFloat(val)||0);
   else if(field==='size') val = normalizePoSize(val);
   else if(field==='color') val = normalizePoColor(val);
@@ -445,6 +469,7 @@ function boxCalc(l){
   return { full: Math.floor((l.qty||0)/ppb), loose: (l.qty||0)%ppb };
 }
 function renderTable(){
+  autoAssignPbox();
   const tb = $('lines-body');
   tb.innerHTML = poLines.map((l,i)=>{
     const b = boxCalc(l);
@@ -459,12 +484,13 @@ function renderTable(){
       <td><input class="num" value="${l.ppb||DEFAULT_PPB}" onchange="updLine(${i},'ppb',this.value)" style="max-width:65px;"></td>
       <td style="text-align:right;font-family:Consolas,monospace;">${b.full||''}</td>
       <td style="text-align:right;font-family:Consolas,monospace;color:${b.loose?'#d97706':'#9ca3af'};">${b.loose||''}</td>
+      <td>${b.loose ? `<input class="num" value="${l.pbox||''}" onchange="updLine(${i},'pbox',this.value)" style="max-width:50px;">` : ''}</td>
       <td><select class="wh-${l.wh}" onchange="updLine(${i},'wh',this.value)">
         ${WH_LIST.map(w=>`<option value="${w}" ${l.wh===w?'selected':''}>${w}</option>`).join('')}
       </select></td>
       <td><button class="btn btn-sm" style="color:var(--bad);border:none;" onclick="delLine(${i})">✕</button></td>
     </tr>`;
-  }).join('') || `<tr><td colspan="12" class="muted" style="padding:14px;text-align:center;">PO를 업로드하거나 라인을 추가하세요</td></tr>`;
+  }).join('') || `<tr><td colspan="13" class="muted" style="padding:14px;text-align:center;">PO를 업로드하거나 라인을 추가하세요</td></tr>`;
 
   const tot = poLines.reduce((a,l)=>{const b=boxCalc(l);a.q+=l.qty||0;a.f+=b.full;a.l+=b.loose;a.amt+=(l.qty||0)*(l.price||0);return a;},{q:0,f:0,l:0,amt:0});
   $('lines-foot').innerHTML = poLines.length ? `<tr class="totrow">
@@ -474,7 +500,7 @@ function renderTable(){
     <td></td>
     <td style="text-align:right;font-family:Consolas,monospace;padding:6px;">${tot.f}</td>
     <td style="text-align:right;font-family:Consolas,monospace;padding:6px;">${tot.l}</td>
-    <td colspan="2"></td></tr>` : '';
+    <td colspan="3"></td></tr>` : '';
 
   const sum = {};
   poLines.forEach(l=>{ sum[l.wh]=(sum[l.wh]||0)+(l.qty||0); });
@@ -491,11 +517,11 @@ function buildDocHtml(wh){
   const dateStr = d.toLocaleDateString('en-US');
   const rows = lines.map(l=>{
     const b = boxCalc(l);
-    const styleCell = esc(l.style || '') + (l.desc ? `<div style="font-size:9px;color:#888;">${esc(l.desc)}</div>` : '');
-    return `<tr><td style="font-weight:700;">${styleCell}</td><td>${esc(l.color)}</td><td>${esc(l.size)}</td>
+    return `<tr><td style="font-weight:700;">${esc(l.style||'')}</td><td>${esc(l.desc||'')}</td><td>${esc(l.color)}</td><td>${esc(l.size)}</td>
       <td style="text-align:right;">${(l.qty||0).toLocaleString()}</td>
       <td style="text-align:right;">${b.full||''}</td>
-      <td style="text-align:right;">${b.loose||''}</td></tr>`;
+      <td style="text-align:right;">${b.loose||''}</td>
+      <td style="text-align:right;">${b.loose&&l.pbox ? 'Box '+esc(l.pbox) : ''}</td></tr>`;
   }).join('');
   const tot = lines.reduce((a,l)=>{const b=boxCalc(l);a.q+=l.qty||0;a.f+=b.full;a.l+=b.loose;return a;},{q:0,f:0,l:0});
   const boWarn = wh==='BO' ? `<div style="margin-top:12px;padding:8px 12px;background:#fef2f2;border:1px solid #fecaca;border-radius:4px;font-size:11px;color:#b91c1c;font-weight:700;">⚠ BACK ORDER — 재고 확보 후 진행</div>` : '';
@@ -505,6 +531,7 @@ function buildDocHtml(wh){
       <div>
         <div class="inv-doc-type">PULL REQUEST</div>
         <div class="inv-meta-row"><span>Ref No.</span><span>${esc(num)}</span></div>
+        <div class="inv-meta-row"><span>Serial No.</span><span>${esc(currentSerial(wh))}</span></div>
         <div class="inv-meta-row"><span>Date</span><span>${dateStr}</span></div>
         <div class="inv-meta-row"><span>Warehouse</span><span>${esc(WH_LABEL[wh])}</span></div>
       </div>
@@ -516,12 +543,12 @@ function buildDocHtml(wh){
       <div><div class="inv-addr-label">PO Number</div><div class="inv-addr-val">${esc($('m-po').value||'')}</div></div>
     </div>
     <table class="inv-tbl">
-      <thead><tr><th>Style</th><th>Color</th><th>Size</th><th style="text-align:right;">Total Pcs</th><th style="text-align:right;">Full Boxes</th><th style="text-align:right;">Partial Pcs</th></tr></thead>
+      <thead><tr><th>Style#</th><th>Item</th><th>Color</th><th>Size</th><th style="text-align:right;">Total Pcs</th><th style="text-align:right;">Full Boxes</th><th style="text-align:right;">Partial Pcs</th><th style="text-align:right;">Partial Box#</th></tr></thead>
       <tbody>${rows}</tbody>
-      <tfoot><tr><td colspan="3">TOTAL — ${lines.length} lines</td>
+      <tfoot><tr><td colspan="4">TOTAL — ${lines.length} lines</td>
         <td style="text-align:right;">${tot.q.toLocaleString()}</td>
         <td style="text-align:right;">${tot.f}</td>
-        <td style="text-align:right;">${tot.l}</td></tr></tfoot>
+        <td style="text-align:right;">${tot.l}</td><td></td></tr></tfoot>
     </table>
     ${boWarn}
   </div>`;
@@ -540,7 +567,10 @@ function renderDocs(){
       </div>`).join('')}
     </div>
     <div class="doc-view">
-      <div style="display:flex;gap:6px;justify-content:flex-end;margin-bottom:12px;" class="no-print">
+      <div style="display:flex;gap:6px;justify-content:flex-end;align-items:center;margin-bottom:12px;" class="no-print">
+        <span style="display:inline-flex;align-items:center;gap:5px;font-size:11px;color:var(--text2);margin-right:auto;">연속번호
+          <input value="${esc(currentSerial(currentDocWh))}" onchange="setSerial('${currentDocWh}',this.value)" style="width:80px;padding:4px 6px;border:1px solid var(--border);border-radius:4px;font-family:Consolas,monospace;font-weight:700;">
+        </span>
         <button class="btn btn-sm" onclick="printDoc('${currentDocWh}')">🖨 인쇄 / PDF 저장</button>
         <button class="btn btn-sm" onclick="downloadDoc('${currentDocWh}')">⬇ 다운로드 (HTML)</button>
         <button class="btn btn-sm" onclick="emailDoc('${currentDocWh}')">📧 이멜 초안</button>
@@ -621,16 +651,18 @@ function saveCurrent(){
   const saved = getSaved();
   const base = baseNumber();
   const idx = saved.findIndex(s=>s.base===base);
-  const rec = { base, meta:getMeta(), lines:poLines, whs:activeWhs(), savedAt:new Date().toISOString() };
+  const serialsObj = Object.fromEntries(activeWhs().map(w=>[w, currentSerial(w)]));
+  const rec = { base, meta:getMeta(), lines:poLines, whs:activeWhs(), serials:serialsObj, savedAt:new Date().toISOString() };
   if(idx>=0){ if(!confirm(`${base} 는 이미 저장되어 있습니다. 덮어쓸까요?`)) return; saved[idx]=rec; }
   else saved.unshift(rec);
   localStorage.setItem(LS_SAVED, JSON.stringify(saved));
+  commitSerials(activeWhs());
   alert(`✅ 저장됨: ${activeWhs().map(w=>docNumber(w)).join(' · ')}`);
 }
 function loadSaved(base){
   const rec = getSaved().find(s=>s.base===base);
   if(!rec) return;
-  setMeta(rec.meta); poLines = normalizeLines(rec.lines);
+  setMeta(rec.meta); poLines = normalizeLines(rec.lines); docSerials = {...(rec.serials||{})};
   renderTable(); updateNumPreview(); renderDocs();
   window.scrollTo({top:0,behavior:'smooth'});
 }
@@ -658,12 +690,12 @@ function renderSaved(){
 
 // ═══════════════ 초안 자동저장 ═══════════════
 function saveDraft(){
-  localStorage.setItem(LS_DRAFT, JSON.stringify({meta:getMeta(), lines:poLines}));
+  localStorage.setItem(LS_DRAFT, JSON.stringify({meta:getMeta(), lines:poLines, serials:docSerials}));
 }
 function loadDraft(){
   try{
     const d = JSON.parse(localStorage.getItem(LS_DRAFT)||'null');
-    if(d && d.lines && d.lines.length){ setMeta(d.meta||{}); poLines = normalizeLines(d.lines); }
+    if(d && d.lines && d.lines.length){ setMeta(d.meta||{}); poLines = normalizeLines(d.lines); docSerials = d.serials||{}; }
   }catch(e){}
 }
 document.addEventListener('input', e=>{ if(e.target.classList.contains('fi')) saveDraft(); });
