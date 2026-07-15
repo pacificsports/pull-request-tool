@@ -260,6 +260,32 @@ function rememberStyle(desc, style){
   const s = String(style||'').trim();
   if(k && s){ const m = getStyleMap(); m[k] = s; saveStyleMap(m); }
 }
+// 원본 설명 → 간단 표기 (Adult S/S, Youth L/S, Adult Hoodie L/S ...)
+function simplifyDesc(raw){
+  const s = String(raw||'').toLowerCase();
+  if(!s) return '';
+  let age = 'Adult';
+  if(/youth/.test(s)) age='Youth';
+  else if(/juvy/.test(s)) age='Juvy';
+  else if(/toddler/.test(s)) age='Toddler';
+  else if(/junior|\bjrs?\b/.test(s)) age='Junior';
+  else if(/infant|onesie|baby/.test(s)) age='Infant';
+  else if(/ladies|women/.test(s)) age='Ladies';
+  const isLong = /long\s*sleeve|\bl\/?s\b|longsleeve/.test(s);
+  const isShort = /short\s*sleeve|\bs\/?s\b|shortsleeve/.test(s);
+  let type;
+  if(/hood/.test(s)) type = 'Hoodie ' + (isShort ? 'S/S' : 'L/S');
+  else if(/crew\s*neck\s*sweat|sweatshirt|fleece/.test(s)) type = 'Sweatshirt';
+  else if(/tank/.test(s)) type = 'Tank Top';
+  else if(isLong) type = 'L/S';
+  else type = 'S/S';
+  let extra = '';
+  if(/v[\s-]?neck/.test(s)) extra = 'V-Neck ';
+  else if(/raglan/.test(s)) extra = 'Raglan ';
+  else if(/pocket/.test(s)) extra = 'Pocket ';
+  else if(/performance/.test(s)) extra = 'Performance ';
+  return `${age} ${extra}${type}`;
+}
 
 // ═══════════════ Pull Request 번호 ═══════════════
 function baseNumber(){
@@ -357,10 +383,12 @@ async function parsePoPdf(input){
       const itemCode = String(l.item_code || '').trim();
       const numM = rawStyle.match(/^(\d{4})/) || itemCode.match(/^(\d{4})/);
       // 숫자 스타일이면 그대로, 아니면 설명으로 두고 학습된 매핑에서 우리 스타일# 찾기
-      const desc = numM ? (rawStyle !== numM[1] ? rawStyle : '') : [rawStyle, itemCode].filter(Boolean).join(' · ');
+      const parts = [...new Set([rawStyle, itemCode].filter(Boolean))];
+      const rawDesc = numM ? (rawStyle !== numM[1] ? rawStyle : '') : parts.join(' · ');
       return {
-        style: numM ? numM[1] : guessStyle(desc),
-        desc: desc,
+        style: numM ? numM[1] : guessStyle(rawDesc),
+        rawDesc: rawDesc,
+        desc: simplifyDesc(rawDesc),
         color: normalizePoColor(l.color || ''),
         size: normalizePoSize(l.size || ''),
         qty: Number(l.qty || l.quantity || 0),
@@ -400,10 +428,11 @@ function updLine(i,field,val){
   else if(field==='size') val = normalizePoSize(val);
   else if(field==='color') val = normalizePoColor(val);
   poLines[i][field] = val;
-  // 스타일# 입력하면 설명→스타일 매핑 학습 + 같은 설명 라인들 자동 채움
-  if(field==='style' && val && poLines[i].desc){
-    rememberStyle(poLines[i].desc, val);
-    poLines.forEach(l=>{ if(!l.style && descKey(l.desc)===descKey(poLines[i].desc)) l.style = val; });
+  // 스타일# 입력하면 설명→스타일 매핑 학습 + 같은 설명 라인들 자동 채움 (원본 설명 기준)
+  const mk = l => descKey(l.rawDesc || l.desc);
+  if(field==='style' && val && mk(poLines[i])){
+    rememberStyle(poLines[i].rawDesc || poLines[i].desc, val);
+    poLines.forEach(l=>{ if(!l.style && mk(l)===mk(poLines[i])) l.style = val; });
   }
   renderTable(); renderDocs(); saveDraft();
 }
@@ -422,7 +451,7 @@ function renderTable(){
     return `<tr>
       <td class="muted">${i+1}</td>
       <td><input value="${esc(l.style)}" onchange="updLine(${i},'style',this.value)" placeholder="1315" style="min-width:60px;max-width:80px;font-weight:700;${l.style?'':'background:#fef9c3;border-color:#facc15;'}"></td>
-      <td><input value="${esc(l.desc||'')}" onchange="updLine(${i},'desc',this.value)" placeholder="(PO 설명)" style="min-width:140px;color:#6b7280;font-size:11px;"></td>
+      <td><input value="${esc(l.desc||'')}" onchange="updLine(${i},'desc',this.value)" placeholder="(PO 설명)" title="${esc(l.rawDesc||'')}" style="min-width:110px;color:#6b7280;font-size:11px;"></td>
       <td><input value="${esc(l.color)}" onchange="updLine(${i},'color',this.value)" style="min-width:110px;"></td>
       <td><input value="${esc(l.size)}" onchange="updLine(${i},'size',this.value)" style="min-width:45px;max-width:70px;"></td>
       <td><input class="num" value="${l.qty||''}" onchange="updLine(${i},'qty',this.value)" style="max-width:80px;"></td>
@@ -570,14 +599,17 @@ function setMeta(m){
     $('m-ship-addr').value=m.shipAddr||''; $('m-ship-city').value=m.shipCity||''; $('m-ship-state').value=m.shipState||''; $('m-ship-zip').value=m.shipZip||'';
   }
 }
-// 구버전 라인 호환: 설명이 style 칸에 들어있던 데이터 교정
+// 구버전 라인 호환: 설명이 style 칸에 들어있던 데이터 교정 + 간단 표기 변환
 function normalizeLines(lines){
   return (lines||[]).map(l=>{
     const out = {...l};
     if(out.desc === undefined) out.desc = '';
     const st = String(out.style||'').trim();
-    if(st && !/^\d{3,4}/.test(st)){ out.desc = out.desc || st; out.style = guessStyle(out.desc); }
-    if(!out.style && out.desc) out.style = guessStyle(out.desc);
+    if(st && !/^\d{3,4}/.test(st)){ out.rawDesc = out.rawDesc || out.desc || st; out.style = guessStyle(out.rawDesc); }
+    // 긴 원본 설명이 desc에 그대로 있으면 rawDesc로 옮기고 간단 표기로
+    if(!out.rawDesc && out.desc && /crew|sleeve|neck|tee|shirt|hood|tank|cotton|\d+\/\d+/i.test(out.desc)){ out.rawDesc = out.desc; }
+    if(out.rawDesc) out.desc = simplifyDesc(out.rawDesc) || out.desc;
+    if(!out.style && (out.rawDesc||out.desc)) out.style = guessStyle(out.rawDesc || out.desc);
     return out;
   });
 }
@@ -585,7 +617,7 @@ function getSaved(){ try{ return JSON.parse(localStorage.getItem(LS_SAVED)||'[]'
 function saveCurrent(){
   if(!poLines.length){ alert('저장할 라인이 없습니다.'); return; }
   if(!$('m-cust').value || !$('m-po').value){ alert('거래처와 PO 번호를 입력해주세요.'); return; }
-  poLines.forEach(l=>{ if(l.style && l.desc) rememberStyle(l.desc, l.style); });
+  poLines.forEach(l=>{ if(l.style && (l.rawDesc||l.desc)) rememberStyle(l.rawDesc||l.desc, l.style); });
   const saved = getSaved();
   const base = baseNumber();
   const idx = saved.findIndex(s=>s.base===base);
