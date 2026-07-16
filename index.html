@@ -109,7 +109,7 @@ main{max-width:1100px;margin:0 auto;padding:16px;}
     <button class="btn btn-sm" onclick="doLogout()" style="padding:2px 8px;font-size:10px;" data-i18n="logout">로그아웃</button>
   </span>
   <select id="lang-sel" onchange="setLang(this.value)" style="font-size:11px;padding:3px 6px;border-radius:5px;border:none;background:#1d3f66;color:#fff;"><option value="ko">한국어</option><option value="en">English</option><option value="es">Español</option></select>
-  <span style="font-size:10px;color:#9fb8d4;">v54</span>
+  <span style="font-size:10px;color:#9fb8d4;">v55</span>
 </div>
 <div id="po-viewer" style="display:none;position:fixed;top:0;right:0;width:44%;height:100vh;background:#fff;border-left:2px solid var(--border);z-index:60;box-shadow:-6px 0 20px rgba(0,0,0,.15);">
   <div style="display:flex;align-items:center;gap:8px;padding:7px 12px;background:var(--header);color:#fff;font-size:12px;font-weight:700;">
@@ -888,7 +888,44 @@ function loadPdfLib(){
   });
   return _pdfLibP;
 }
-async function downloadPdfHtml(docHtml, filename, btn){
+function loadPdfMergeLib(){
+  if(window.PDFLib) return Promise.resolve();
+  return new Promise((res, rej)=>{
+    const s = document.createElement('script');
+    s.src = 'https://cdnjs.cloudflare.com/ajax/libs/pdf-lib/1.17.1/pdf-lib.min.js';
+    s.onload = res; s.onerror = ()=>rej(new Error('pdf-lib load fail'));
+    document.head.appendChild(s);
+  });
+}
+async function mergePdfWithFiles(blob, files){
+  await loadPdfMergeLib();
+  const main = await PDFLib.PDFDocument.load(await blob.arrayBuffer());
+  for(const f of (files||[])){
+    try{
+      const b64 = (f.data||'').split(',')[1]; if(!b64) continue;
+      const bin = atob(b64);
+      const bytes = new Uint8Array(bin.length);
+      for(let i=0;i<bin.length;i++) bytes[i] = bin.charCodeAt(i);
+      const ty = (f.type||'').toLowerCase();
+      if(ty.includes('pdf')){
+        const src = await PDFLib.PDFDocument.load(bytes, {ignoreEncryption:true});
+        const pages = await main.copyPages(src, src.getPageIndices());
+        pages.forEach(p=>main.addPage(p));
+      }else if(ty.includes('png') || ty.includes('jpg') || ty.includes('jpeg')){
+        const img = ty.includes('png') ? await main.embedPng(bytes) : await main.embedJpg(bytes);
+        const pw = 612, ph = 792, m = 36;
+        const sc = Math.min((pw-m*2)/img.width, (ph-m*2)/img.height, 1);
+        const w = img.width*sc, h = img.height*sc;
+        const page = main.addPage([pw, ph]);
+        page.drawImage(img, {x:(pw-w)/2, y:(ph-h)/2, width:w, height:h});
+      }else{
+        console.warn('첨부 병합 미지원 형식:', f.name, f.type);
+      }
+    }catch(e){ console.warn('첨부 병합 실패:', f.name, e); }
+  }
+  return new Blob([await main.save()], {type:'application/pdf'});
+}
+async function downloadPdfHtml(docHtml, filename, btn, attachFiles){
   const orig = btn ? btn.textContent : '';
   if(btn){ btn.textContent = '⏳ PDF 만드는 중...'; btn.disabled = true; }
   try{
@@ -912,12 +949,16 @@ async function downloadPdfHtml(docHtml, filename, btn){
       html2canvas: { scale: 2, useCORS: true, backgroundColor: '#ffffff' },
       jsPDF: { unit:'mm', format:'letter', orientation:'portrait' },
       pagebreak: { mode: ['css','legacy'] }
-    }).from(holder).outputPdf('blob').then(blob=>{
+    }).from(holder).outputPdf('blob').then(async blob=>{
       document.body.removeChild(wrap);
       window.scrollTo(_sx, _sy);
       if(blob.size < 30000){
         alert('⚠ PDF 생성이 비정상입니다 (' + Math.round(blob.size/1024) + 'KB). 페이지를 새로고침(Ctrl+Shift+R) 후 다시 시도해주세요.');
         return;
+      }
+      if(attachFiles && attachFiles.length){
+        try{ blob = await mergePdfWithFiles(blob, attachFiles); }
+        catch(e){ console.warn('첨부 병합 실패, 본문만 다운로드:', e); }
       }
       const a = document.createElement('a');
       a.href = URL.createObjectURL(blob);
@@ -1392,7 +1433,8 @@ async function downloadPLPdf(kind){
   const suffix = kind==='invoice' ? '-INV' : '-PL';
   const btn = document.getElementById(kind==='invoice' ? 'invpdf-btn' : 'plpdf-btn');
   const data = (kind==='invoice') ? invDocData() : (plDrafts[plWh]||{});
-  await downloadPdfHtml(buildStageDoc(rec, plWh, kind, data), plNum(plBase,plWh) + suffix + '.pdf', btn);
+  const attach = (kind==='packing') ? ((plDrafts[plWh]||{}).files||[]) : [];
+  await downloadPdfHtml(buildStageDoc(rec, plWh, kind, data), plNum(plBase,plWh) + suffix + '.pdf', btn, attach);
   if(kind==='invoice') markInvPrinted();
 }
 async function markInvPrinted(){
