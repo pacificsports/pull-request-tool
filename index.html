@@ -113,7 +113,7 @@ main{max-width:1100px;margin:0 auto;padding:16px;}
     <button class="btn btn-sm" onclick="doLogout()" style="padding:2px 8px;font-size:10px;" data-i18n="logout">로그아웃</button>
   </span>
   <select id="lang-sel" onchange="setLang(this.value)" style="font-size:11px;padding:3px 6px;border-radius:5px;border:none;background:#1d3f66;color:#fff;"><option value="ko">한국어</option><option value="en">English</option><option value="es">Español</option></select>
-  <span style="font-size:10px;color:#9fb8d4;">v100</span>
+  <span style="font-size:10px;color:#9fb8d4;">v101</span>
 </div>
 <div id="po-viewer" style="display:none;position:fixed;top:0;right:0;width:44%;height:100vh;background:#fff;border-left:2px solid var(--border);z-index:60;box-shadow:-6px 0 20px rgba(0,0,0,.15);">
   <div style="display:flex;align-items:center;gap:8px;padding:7px 12px;background:var(--header);color:#fff;font-size:12px;font-weight:700;">
@@ -272,8 +272,12 @@ main{max-width:1100px;margin:0 auto;padding:16px;}
     <div id="batch-bar" style="display:none;align-items:center;gap:8px;background:#eff6ff;border:1px solid #bfdbfe;border-radius:8px;padding:8px 12px;margin-bottom:10px;flex-wrap:wrap;">
       <span style="font-size:12px;font-weight:800;color:#1e40af;">🚛 Batch Shipping</span>
       <span class="muted" style="font-size:11px;">체크한 오더들을 한 번에 출고</span>
-      <button id="bb-sc" class="btn btn-sm" style="display:none;background:#1d4ed8;color:#fff;border-color:#1d4ed8;margin-left:auto;" onclick="openBatchShip('SC')">🚛 SC Batch Ship (<span id="bb-sc-n">0</span>)</button>
+      <span style="margin-left:auto;display:flex;gap:6px;flex-wrap:wrap;">
+      <button id="bb-sc" class="btn btn-sm" style="display:none;background:#1d4ed8;color:#fff;border-color:#1d4ed8;" onclick="openBatchShip('SC')">🚛 SC Batch Ship (<span id="bb-sc-n">0</span>)</button>
       <button id="bb-ca" class="btn btn-sm" style="display:none;background:#c2410c;color:#fff;border-color:#c2410c;" onclick="openBatchShip('CA')">🚛 CA Batch Ship (<span id="bb-ca-n">0</span>)</button>
+      <button id="bb-inv-sc" class="btn btn-sm" style="display:none;background:#065f46;color:#fff;border-color:#065f46;" onclick="printBatchInvoices('SC')">🧾 SC Invoice Print (<span id="bb-inv-sc-n">0</span>)</button>
+      <button id="bb-inv-ca" class="btn btn-sm" style="display:none;background:#065f46;color:#fff;border-color:#065f46;" onclick="printBatchInvoices('CA')">🧾 CA Invoice Print (<span id="bb-inv-ca-n">0</span>)</button>
+      </span>
     </div>
     <div id="saved-list"><div class="muted" data-i18n="saved_empty">저장된 항목이 없습니다.</div></div>
   </div>
@@ -2549,15 +2553,46 @@ function whStatus(s, w){
 }
 function updateBatchBar(){
   const cbs = [...document.querySelectorAll('.bship-cb:checked')];
-  const nSc = cbs.filter(c=>c.dataset.wh==='SC').length;
-  const nCa = cbs.filter(c=>c.dataset.wh==='CA').length;
   const bar = $('batch-bar'); if(!bar) return;
   bar.style.display = cbs.length ? 'flex' : 'none';
-  $('bb-sc').style.display = nSc ? 'inline-flex' : 'none'; $('bb-sc-n').textContent = nSc;
-  $('bb-ca').style.display = nCa ? 'inline-flex' : 'none'; $('bb-ca-n').textContent = nCa;
+  const cnt = w => {
+    let ship = 0, inv = 0;
+    cbs.filter(c=>c.dataset.wh===w).forEach(c=>{
+      const r = savedCache.find(s=>s.base===c.dataset.base);
+      const shipped = r && r.pl && r.pl[w] && r.pl[w].savedAt;
+      if(shipped) inv++; else ship++;
+    });
+    return { ship, inv };
+  };
+  const sc = cnt('SC'), ca = cnt('CA');
+  $('bb-sc').style.display = sc.ship ? 'inline-flex' : 'none'; $('bb-sc-n').textContent = sc.ship;
+  $('bb-ca').style.display = ca.ship ? 'inline-flex' : 'none'; $('bb-ca-n').textContent = ca.ship;
+  $('bb-inv-sc').style.display = sc.inv ? 'inline-flex' : 'none'; $('bb-inv-sc-n').textContent = sc.inv;
+  $('bb-inv-ca').style.display = ca.inv ? 'inline-flex' : 'none'; $('bb-inv-ca-n').textContent = ca.inv;
+}
+async function printBatchInvoices(wh){
+  const bases = [...document.querySelectorAll('.bship-cb:checked')].filter(c=>c.dataset.wh===wh).map(c=>c.dataset.base);
+  const recs = bases.map(b=>savedCache.find(s=>s.base===b)).filter(r=>r && r.pl && r.pl[wh] && r.pl[wh].savedAt);
+  if(!recs.length){ showToast('🧾 인쇄할 인보이스 없음 — 출고(PL 저장)된 오더를 선택하세요'); return; }
+  const docs = [];
+  for(const rec of recs){
+    rec.inv = rec.inv || {};
+    const iv = rec.inv[wh] || {};
+    const pld = rec.pl[wh] || {};
+    if(!iv.invNo) iv.invNo = nextInvNo();
+    const lines = (Array.isArray(iv.lines) && iv.lines.length) ? iv.lines : JSON.parse(JSON.stringify(pld.lines||[]));
+    rec.inv[wh] = { ...iv, savedAt: iv.savedAt || new Date().toISOString(), auto: false, printed: true, lines: lines, freight: Number(iv.freight)||0 };
+    const d = { ...pld, lines: lines, freight: Number(iv.freight)||0, invNo: iv.invNo, termType: iv.termType||'', termDays: iv.termDays||0 };
+    docs.push(buildStageDoc(rec, wh, 'invoice', d));
+    try{ await sbFetch('/rest/v1/pr_orders?base=eq.'+encodeURIComponent(rec.base), {method:'PATCH', headers:{Prefer:'return=minimal'}, body:JSON.stringify({inv:rec.inv, updated_at:new Date().toISOString()})}); }catch(e){}
+  }
+  printDocHtml(docs.join('<div style="page-break-before:always;break-before:page;"></div>'), wh + '-INVOICES');
+  renderSaved();
+  showToast('🧾 ' + recs.length + '건 인보이스 인쇄 → Complete 처리됨');
 }
 function openBatchShip(wh){
-  const bases = [...document.querySelectorAll('.bship-cb:checked')].filter(c=>c.dataset.wh===wh).map(c=>c.dataset.base);
+  const bases = [...document.querySelectorAll('.bship-cb:checked')].filter(c=>c.dataset.wh===wh).map(c=>c.dataset.base)
+    .filter(b=>{ const r = savedCache.find(s=>s.base===b); return !(r && r.pl && r.pl[wh] && r.pl[wh].savedAt); });
   if(!bases.length) return;
   window._bship = { wh, bases };
   const ex = document.getElementById('modal-batch-ship'); if(ex) ex.remove();
@@ -2754,7 +2789,7 @@ function renderSaved(){
         const plSaved = s.pl && s.pl[w] && s.pl[w].savedAt;
         const invPr = s.inv && s.inv[w] && s.inv[w].printed;
         return `<div style="display:flex;align-items:center;gap:6px;flex-wrap:wrap;margin-top:6px;padding-top:6px;border-top:1px dashed var(--border);">
-        ${w!=='BO' && !plSaved ? `<input type="checkbox" class="bship-cb" data-base="${esc(s.base)}" data-wh="${w}" onchange="updateBatchBar()" title="Batch shipping에 포함" style="width:15px;height:15px;accent-color:#1d4ed8;cursor:pointer;">` : ''}
+        ${w!=='BO' ? `<input type="checkbox" class="bship-cb" data-base="${esc(s.base)}" data-wh="${w}" onchange="updateBatchBar()" title="Batch 작업에 포함 (출고 전=Batch Ship / 출고 후=Invoice Print)" style="width:15px;height:15px;accent-color:#1d4ed8;cursor:pointer;">` : ''}
         <span class="chip chip-${w}" style="min-width:34px;text-align:center;">${w}</span>
         <button class="btn btn-sm" style="background:${c};color:#fff;border-color:${c};" onclick="printSavedPRWh('${esc(s.base)}','${w}')">🖨 Pull Request</button>
         ${w!=='BO' ? `<button class="btn btn-sm" style="background:#7c3aed;color:#fff;border-color:#7c3aed;" onclick="openBoxLabelForRecWh('${esc(s.base)}','${w}')">🏷 Box Label</button>
