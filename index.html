@@ -113,7 +113,7 @@ main{max-width:1100px;margin:0 auto;padding:16px;}
     <button class="btn btn-sm" onclick="doLogout()" style="padding:2px 8px;font-size:10px;" data-i18n="logout">로그아웃</button>
   </span>
   <select id="lang-sel" onchange="setLang(this.value)" style="font-size:11px;padding:3px 6px;border-radius:5px;border:none;background:#1d3f66;color:#fff;"><option value="ko">한국어</option><option value="en">English</option><option value="es">Español</option></select>
-  <span style="font-size:10px;color:#9fb8d4;">v78</span>
+  <span style="font-size:10px;color:#9fb8d4;">v80</span>
 </div>
 <div id="po-viewer" style="display:none;position:fixed;top:0;right:0;width:44%;height:100vh;background:#fff;border-left:2px solid var(--border);z-index:60;box-shadow:-6px 0 20px rgba(0,0,0,.15);">
   <div style="display:flex;align-items:center;gap:8px;padding:7px 12px;background:var(--header);color:#fff;font-size:12px;font-weight:700;">
@@ -161,7 +161,9 @@ main{max-width:1100px;margin:0 auto;padding:16px;}
         <div class="muted" data-i18n="upl_desc">고객 PO PDF를 업로드하면 스타일/컬러/사이즈/수량/단가를 자동 인식합니다</div>
       </div>
       <input type="file" id="po-pdf-input" accept=".pdf" style="display:none" onchange="parsePoPdf(this)">
+      <input type="file" id="po-attach-input" accept=".pdf" style="display:none" onchange="attachPoOnly(this)">
       <label for="po-pdf-input" class="btn btn-primary" style="cursor:pointer;" data-i18n="btn_upload">📎 PO PDF 업로드</label>
+      <label for="po-attach-input" class="btn" style="cursor:pointer;" title="파싱하지 않고 PO만 오더에 첨부 (스캔본 등)" data-i18n="btn_attach_only">📄 PO 첨부만 (파싱 없이)</label>
       <button class="btn" onclick="addLine()" data-i18n="btn_manual">✏️ 수동으로 라인 추가</button>
     </div>
     <div class="spin" id="parsing-status">
@@ -341,6 +343,9 @@ const I18N = {
  a_plsaved:{ko:'✅ Packing List 저장됨: {x}',en:'✅ Packing List saved: {x}',es:'✅ Packing List guardado: {x}'},
  a_invsaved:{ko:'✅ Invoice 저장됨: {x}',en:'✅ Invoice saved: {x}',es:'✅ Factura guardada: {x}'},
  a_parsefail:{ko:'파싱 실패: ',en:'Parsing failed: ',es:'Error de análisis: '},
+ a_parsefail_note:{ko:'\n\n📄 업로드한 PO는 오더에 첨부되어 있어요.\n오른쪽 PO 뷰어를 보면서 라인을 수동으로 입력하고 저장하면, 저장된 오더의 📄 PO 버튼으로 언제든 원본을 볼 수 있습니다.\n\n💡 참고: 여러 PO가 한 파일에 스캔된 경우엔 PO별로 나눠 올려야 자동 인식이 됩니다.',en:'\n\n📄 The uploaded PO is attached to this order.\nEnter lines manually using the PO viewer, then Save — the 📄 PO button will show the original.\n\n💡 Note: if multiple POs are scanned into one file, upload them one PO at a time for auto-parsing.',es:'\n\n📄 El PO subido quedó adjunto. Ingrese las líneas manualmente y guarde.'},
+ btn_attach_only:{ko:'📄 PO 첨부만 (파싱 없이)',en:'📄 Attach PO only (no parsing)',es:'📄 Solo adjuntar PO'},
+ a_attached:{ko:'📄 PO 첨부됨 — 뷰어를 보면서 수동 입력 후 저장하세요',en:'📄 PO attached — enter lines manually and save',es:'📄 PO adjunto'},
  a_popup:{ko:'팝업이 차단되었습니다. 팝업을 허용해주세요.',en:'Popup blocked. Please allow popups.',es:'Ventana emergente bloqueada. Permite las ventanas emergentes.'},
  pdf_made:{ko:'✅ PDF 생성됨: {f} ({k}KB)',en:'✅ PDF created: {f} ({k}KB)',es:'✅ PDF creado: {f} ({k}KB)'},
  logout:{ko:'로그아웃',en:'Log out',es:'Salir'},
@@ -589,6 +594,23 @@ function joinAddr(prefix){
   return [name, addr, line2].filter(Boolean).join('\n');
 }
 
+async function attachPoOnly(input){
+  const file = input.files[0];
+  if(!file) return;
+  try{
+    const base64 = await new Promise((res,rej)=>{
+      const r = new FileReader();
+      r.onload = ()=>res(r.result.split(',')[1]);
+      r.onerror = ()=>rej(new Error('파일 읽기 실패'));
+      r.readAsDataURL(file);
+    });
+    window._poPdfB64 = base64;
+    showPoViewer(file);
+    showToast(t('a_attached'));
+  }catch(e){ alert('첨부 실패: ' + e.message); }
+  finally{ input.value = ''; }
+}
+
 // ═══════════════ 원본 PO 나란히 보기 (IMS AP 방식) ═══════════════
 let _poBlobUrl = null;
 function showPoViewer(file){
@@ -693,7 +715,7 @@ async function parsePoPdf(input){
     fillAddr('ship', parsed.ship_to_address || parsed.ship_to);
     renderTable(); updateNumPreview(); saveDraft();
   }catch(err){
-    alert(t('a_parsefail') + err.message);
+    alert(t('a_parsefail') + err.message + t('a_parsefail_note'));
   }finally{
     $('parsing-status').style.display = 'none';
     $('upl-box').style.display = 'flex';
@@ -2351,6 +2373,21 @@ loadDraft();
 applyStaticLang();
 renderTable(); updateNumPreview(); renderDocs(); renderSaved();
 initAuth();
+
+// ═══ 자동 새로고침: 다른 직원이 저장한 오더가 자동으로 나타나게 ═══
+let _lastEditTs = 0;
+document.addEventListener('input', ()=>{ _lastEditTs = Date.now(); }, true);
+function safeToAutoRefresh(){
+  if(!SESS) return false;
+  if(document.visibilityState === 'hidden') return false;
+  if(document.getElementById('modal-batch-ship')) return false;      // 배치 모달 열림
+  if(document.getElementById('modal-box-select')) return false;      // 라벨 모달 열림
+  if(document.querySelector('.bship-cb:checked')) return false;      // 배치 체크 중
+  if(Date.now() - _lastEditTs < 15000) return false;                 // 방금 입력 중
+  return true;
+}
+setInterval(()=>{ if(safeToAutoRefresh()) loadSavedList(); }, 30000);
+window.addEventListener('focus', ()=>{ if(safeToAutoRefresh()) loadSavedList(); });
 </script>
 </body>
 </html>
