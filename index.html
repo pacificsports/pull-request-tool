@@ -105,7 +105,7 @@ main{max-width:1100px;margin:0 auto;padding:16px;}
     <button class="btn btn-sm" onclick="doLogout()" style="padding:2px 8px;font-size:10px;" data-i18n="logout">로그아웃</button>
   </span>
   <select id="lang-sel" onchange="setLang(this.value)" style="font-size:11px;padding:3px 6px;border-radius:5px;border:none;background:#1d3f66;color:#fff;"><option value="ko">한국어</option><option value="en">English</option><option value="es">Español</option></select>
-  <span style="font-size:10px;color:#9fb8d4;">v36</span>
+  <span style="font-size:10px;color:#9fb8d4;">v37</span>
 </div>
 <div id="po-viewer" style="display:none;position:fixed;top:0;right:0;width:44%;height:100vh;background:#fff;border-left:2px solid var(--border);z-index:60;box-shadow:-6px 0 20px rgba(0,0,0,.15);">
   <div style="display:flex;align-items:center;gap:8px;padding:7px 12px;background:var(--header);color:#fff;font-size:12px;font-weight:700;">
@@ -295,6 +295,8 @@ const I18N = {
  logout:{ko:'로그아웃',en:'Log out',es:'Salir'},
  a_needcred:{ko:'이메일과 비밀번호를 입력해주세요.',en:'Please enter email and password.',es:'Ingresa correo y contraseña.'},
  a_staffonly:{ko:'직원 계정이 아닙니다. 접근이 거부되었습니다.',en:'Not a staff account. Access denied.',es:'No es una cuenta de personal. Acceso denegado.'},
+ inv_edit:{ko:'Invoice 수정 (가격·배송비)',en:'Adjust invoice (prices · shipping)',es:'Ajustar factura (precios · envío)'},
+ shipping:{ko:'배송비 (Shipping/Freight)',en:'Shipping / Freight',es:'Envío / Flete'},
  pl_edit:{ko:'출고 수정 (pick 결과 반영)',en:'Adjust lines (as picked)',es:'Ajustar líneas (según picking)'},
  no_po_pdf:{ko:'이 오더에는 저장된 PO PDF가 없습니다.',en:'No PO PDF stored for this order.',es:'No hay PDF del PO guardado para este pedido.'},
  save_fail:{ko:'❌ 저장 실패 — 인터넷 연결을 확인하세요.',en:'❌ Save failed — check your connection.',es:'❌ Error al guardar — revisa tu conexión.'},
@@ -1063,7 +1065,7 @@ async function delSaved(base){
   await loadSavedList();
 }
 // ═══════════════ Packing List / Invoice (2단계) ═══════════════
-let plBase = null, plWh = null, plShowInv = false, plDrafts = {};
+let plBase = null, plWh = null, plShowInv = false, plDrafts = {}, invDrafts = {};
 function plNum(base, wh){ return base + (wh==='SC' ? '' : wh); }
 function plInfo(rec, wh){ return (rec.pl && rec.pl[wh]) || {}; }
 function recAddr(meta, p){
@@ -1120,6 +1122,12 @@ function openPL(base){
       ? JSON.parse(JSON.stringify(i.lines))
       : (rec.lines||[]).filter(l=>l.wh===w && (l.qty||0)>0).map(l=>({style:l.style||'', desc:l.desc||'', color:l.color||'', size:l.size||'', qty:l.qty||0, price:l.price||0, ppb:l.ppb||72, pbox:l.pbox||''}));
     plDrafts[w] = { serial:i.serial||'', via:i.via||'', trackings:(i.trackings&&i.trackings.length?i.trackings:(i.tracking?[i.tracking]:[''])), date:i.date||todayStr(), note:i.note||'', lines: baseLines };
+    const iv = (rec.inv && rec.inv[w]) || {};
+    invDrafts[w] = {
+      freight: Number(iv.freight)||0,
+      _touched: Array.isArray(iv.lines) && iv.lines.length > 0,
+      lines: (Array.isArray(iv.lines) && iv.lines.length) ? JSON.parse(JSON.stringify(iv.lines)) : JSON.parse(JSON.stringify(baseLines))
+    };
   });
   $('pl-card').style.display = 'block';
   renderPL();
@@ -1154,7 +1162,8 @@ async function saveInvStage(){
   const rec = savedCache.find(s=>s.base===plBase); if(!rec) return;
   plFieldsToDraft();
   rec.inv = rec.inv || {};
-  rec.inv[plWh] = { savedAt: new Date().toISOString() };
+  const iv = invDrafts[plWh] || {};
+  rec.inv[plWh] = { savedAt: new Date().toISOString(), freight: Number(iv.freight)||0, lines: iv.lines||[] };
   const r = await sbFetch('/rest/v1/pr_orders?base=eq.'+encodeURIComponent(plBase), {method:'PATCH', headers:{Prefer:'return=minimal'}, body:JSON.stringify({inv:rec.inv, updated_at:new Date().toISOString()})});
   if(!r.ok){ alert(t('save_fail')); return; }
   renderSaved(); renderPL();
@@ -1182,7 +1191,8 @@ async function downloadPLPdf(kind){
   plFieldsToDraft();
   const suffix = kind==='invoice' ? '-INV' : '-PL';
   const btn = document.getElementById(kind==='invoice' ? 'invpdf-btn' : 'plpdf-btn');
-  await downloadPdfHtml(buildStageDoc(rec, plWh, kind, plDrafts[plWh]||{}), plNum(plBase,plWh) + suffix + '.pdf', btn);
+  const data = (kind==='invoice') ? invDocData() : (plDrafts[plWh]||{});
+  await downloadPdfHtml(buildStageDoc(rec, plWh, kind, data), plNum(plBase,plWh) + suffix + '.pdf', btn);
 }
 function buildStageDoc(rec, wh, kind, d){
   const meta = rec.meta || {};
@@ -1200,9 +1210,12 @@ function buildStageDoc(rec, wh, kind, d){
       <td>${(l.qty||0).toLocaleString()}</td>
       <td>${money(l.price||0)}</td>
       <td style="font-weight:700;">${money((l.qty||0)*(l.price||0))}</td></tr>`).join('');
-    tfootHtml = `<tr><td colspan="4" class="tl">TOTAL — ${lines.length} lines</td>
+    const freight = Number(d.freight)||0;
+    tfootHtml = `<tr><td colspan="4" class="tl">Subtotal — ${lines.length} lines</td>
       <td>${totQ.toLocaleString()}</td><td></td>
-      <td style="font-size:15px;">${money(totAmt)}</td></tr>`;
+      <td>${money(totAmt)}</td></tr>`
+      + (freight > 0 ? `<tr><td colspan="6" class="tl" style="color:#555;">Shipping / Freight</td><td>${money(freight)}</td></tr>` : '')
+      + `<tr style="background:#0f2a4a;"><td colspan="6" class="tl" style="color:#fff;border-color:#0f2a4a;">INVOICE TOTAL</td><td style="color:#fff;font-size:15px;border-color:#0f2a4a;">${money(totAmt + freight)}</td></tr>`;
   } else {
     const tot = lines.reduce((a,l)=>{const b=boxCalc(l);a.q+=l.qty||0;a.f+=b.full;a.l+=b.loose;return a;},{q:0,f:0,l:0});
     theadHtml = '<tr><th>Style#</th><th class="tl">Item</th><th class="tl">Color</th><th>Size</th><th>Total Pcs</th><th style="background:#1d4ed8;">📦 Full Boxes</th><th style="background:#c2410c;">Partial Pcs</th><th style="background:#c2410c;">Partial Box#</th></tr>';
@@ -1250,7 +1263,30 @@ function buildStageDoc(rec, wh, kind, d){
     ${note}
   </div>`;
 }
-let plEditOpen = false;
+let plEditOpen = false, invEditOpen = false;
+function invDocData(){
+  const d = plDrafts[plWh] || {};
+  const iv = invDrafts[plWh] || {};
+  return {...d, lines: Array.isArray(iv.lines) ? iv.lines : d.lines, freight: Number(iv.freight)||0};
+}
+function syncInvDraft(){
+  // 인보이스를 아직 손대지 않았으면 PL 수정본을 그대로 따라감
+  const iv = invDrafts[plWh];
+  if(iv && !iv._touched){
+    iv.lines = JSON.parse(JSON.stringify((plDrafts[plWh]&&plDrafts[plWh].lines)||[]));
+  }
+}
+function invLineUpd(idx, f, v){
+  const L = (invDrafts[plWh]&&invDrafts[plWh].lines||[])[idx]; if(!L) return;
+  if(f==='qty') L[f] = Math.max(0, parseInt(v)||0);
+  else if(f==='price') L[f] = Math.max(0, parseFloat(v)||0);
+  else L[f] = v;
+  invDrafts[plWh]._touched = true;
+  refreshPLPreview();
+}
+function invLineDel(idx){ if(invDrafts[plWh]&&invDrafts[plWh].lines){ invDrafts[plWh].lines.splice(idx,1); invDrafts[plWh]._touched = true; renderPL(); } }
+function invLineAdd(){ if(invDrafts[plWh]){ (invDrafts[plWh].lines=invDrafts[plWh].lines||[]).push({style:'',desc:'',color:'',size:'',qty:0,price:0,ppb:72,pbox:''}); invDrafts[plWh]._touched = true; invEditOpen = true; renderPL(); } }
+function invFreightUpd(v){ if(invDrafts[plWh]){ invDrafts[plWh].freight = Math.max(0, parseFloat(v)||0); invDrafts[plWh]._touched = true; refreshPLPreview(); } }
 function plLineUpd(idx, f, v){
   const L = (plDrafts[plWh]&&plDrafts[plWh].lines||[])[idx]; if(!L) return;
   if(f==='qty'||f==='ppb') L[f] = Math.max(0, parseInt(v)||0);
@@ -1263,7 +1299,7 @@ function refreshPLPreview(){
   const rec = savedCache.find(s=>s.base===plBase); if(!rec) return;
   const d = plDrafts[plWh]||{};
   const pv = $('pl-doc-preview');
-  if(pv) pv.innerHTML = buildStageDoc(rec, plWh, 'packing', d) + (plShowInv ? '<hr style="margin:24px 0;border:none;border-top:2px dashed var(--border);">' + buildStageDoc(rec, plWh, 'invoice', d) : '');
+  if(pv) pv.innerHTML = buildStageDoc(rec, plWh, 'packing', d) + (plShowInv ? '<hr style="margin:24px 0;border:none;border-top:2px dashed var(--border);">' + buildStageDoc(rec, plWh, 'invoice', invDocData()) : '');
 }
 function renderPL(){
   const rec = getSaved().find(s=>s.base===plBase);
@@ -1292,7 +1328,7 @@ function renderPL(){
       <div class="no-print" style="display:flex;gap:6px;justify-content:flex-end;margin-bottom:12px;flex-wrap:wrap;">
         <button class="btn btn-sm btn-primary" onclick="savePL()">${t('save_pl')}</button>
         <button class="btn btn-sm" id="plpdf-btn" onclick="downloadPLPdf('packing')">${t('pl_pdf')}</button>
-        <button class="btn btn-sm" style="background:#065f46;color:#fff;border-color:#065f46;" onclick="plFieldsToDraft();plShowInv=!plShowInv;renderPL();">${plShowInv?t('fold_inv'):t('create_inv')}</button>
+        <button class="btn btn-sm" style="background:#065f46;color:#fff;border-color:#065f46;" onclick="plFieldsToDraft();plShowInv=!plShowInv;if(plShowInv)syncInvDraft();renderPL();">${plShowInv?t('fold_inv'):t('create_inv')}</button>
         ${plShowInv?`<button class="btn btn-sm btn-primary" onclick="saveInvStage()">${t('save_inv')}</button><button class="btn btn-sm" id="invpdf-btn" onclick="downloadPLPdf('invoice')">${t('inv_pdf')}</button>`:''}
         <button class="btn btn-sm" onclick="closePL()">${t('close')}</button>
       </div>
@@ -1314,9 +1350,30 @@ function renderPL(){
         </div>
         <button class="btn btn-sm" style="margin-top:6px;" onclick="plLineAdd()">＋</button>
       </details>
+      ${plShowInv ? `<details class="no-print" style="margin-bottom:14px;border:1px solid #a7f3d0;border-radius:8px;padding:8px 12px;background:#f0fdf4;" ${invEditOpen?'open':''} ontoggle="invEditOpen=this.open">
+        <summary style="cursor:pointer;font-weight:700;font-size:12px;color:#065f46;">🧾 ${t('inv_edit')}</summary>
+        <div style="overflow-x:auto;margin-top:8px;">
+        <table class="etbl">
+          <thead><tr><th>Style#</th><th class="tl">Color</th><th>Size</th><th>Qty</th><th data-i18n="h_price">단가</th><th style="width:30px;"></th></tr></thead>
+          <tbody>${((invDrafts[plWh]||{}).lines||[]).map((L,idx)=>`<tr>
+            <td><input value="${esc(L.style||'')}" onchange="invLineUpd(${idx},'style',this.value)" style="max-width:75px;font-weight:700;"></td>
+            <td class="tl"><input class="tl" value="${esc(L.color||'')}" onchange="invLineUpd(${idx},'color',this.value)" style="min-width:100px;"></td>
+            <td><input value="${esc(L.size||'')}" onchange="invLineUpd(${idx},'size',this.value)" style="max-width:55px;"></td>
+            <td><input class="num" value="${L.qty||''}" onchange="invLineUpd(${idx},'qty',this.value)" style="max-width:70px;"></td>
+            <td><input class="num" value="${L.price||''}" onchange="invLineUpd(${idx},'price',this.value)" style="max-width:75px;"></td>
+            <td><button class="btn btn-sm" style="color:var(--bad);border:none;" onclick="invLineDel(${idx})">✕</button></td>
+          </tr>`).join('')}</tbody>
+        </table>
+        </div>
+        <div style="display:flex;align-items:center;gap:10px;margin-top:8px;">
+          <button class="btn btn-sm" onclick="invLineAdd()">＋</button>
+          <label style="margin-left:auto;font-size:11px;font-weight:700;color:#065f46;">${t('shipping')} $</label>
+          <input class="fi num" value="${(invDrafts[plWh]||{}).freight||''}" onchange="invFreightUpd(this.value)" placeholder="0.00" style="width:100px;text-align:center;font-family:Consolas,monospace;">
+        </div>
+      </details>` : ''}
       <div id="pl-doc-preview">
       ${buildStageDoc(rec, plWh, 'packing', d)}
-      ${plShowInv ? '<hr style="margin:24px 0;border:none;border-top:2px dashed var(--border);">' + buildStageDoc(rec, plWh, 'invoice', d) : ''}
+      ${plShowInv ? '<hr style="margin:24px 0;border:none;border-top:2px dashed var(--border);">' + buildStageDoc(rec, plWh, 'invoice', invDocData()) : ''}
       </div>
     </div>`;
 }
