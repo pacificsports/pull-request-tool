@@ -113,7 +113,7 @@ main{max-width:1100px;margin:0 auto;padding:16px;}
     <button class="btn btn-sm" onclick="doLogout()" style="padding:2px 8px;font-size:10px;" data-i18n="logout">로그아웃</button>
   </span>
   <select id="lang-sel" onchange="setLang(this.value)" style="font-size:11px;padding:3px 6px;border-radius:5px;border:none;background:#1d3f66;color:#fff;"><option value="ko">한국어</option><option value="en">English</option><option value="es">Español</option></select>
-  <span style="font-size:10px;color:#9fb8d4;">v69</span>
+  <span style="font-size:10px;color:#9fb8d4;">v71</span>
 </div>
 <div id="po-viewer" style="display:none;position:fixed;top:0;right:0;width:44%;height:100vh;background:#fff;border-left:2px solid var(--border);z-index:60;box-shadow:-6px 0 20px rgba(0,0,0,.15);">
   <div style="display:flex;align-items:center;gap:8px;padding:7px 12px;background:var(--header);color:#fff;font-size:12px;font-weight:700;">
@@ -819,6 +819,10 @@ function buildDocHtml(wh){
       <td class="c-pbox">${b.loose&&l.pbox ? 'Box '+esc(l.pbox) : ''}</td></tr>`;
   }).join('');
   const tot = lines.reduce((a,l)=>{const b=boxCalc(l);a.q+=l.qty||0;a.f+=b.full;a.l+=b.loose;return a;},{q:0,f:0,l:0});
+  const _pboxSet = new Set();
+  lines.forEach(l=>{ const b=boxCalc(l); if(b.loose>0 && l.pbox) _pboxSet.add(String(l.pbox).trim()); });
+  const partialBoxCnt = _pboxSet.size;
+  const grandBoxes = tot.f + partialBoxCnt;
   const boWarn = wh==='BO' ? `<div style="margin-top:12px;padding:8px 12px;background:#fef2f2;border:1px solid #fecaca;border-radius:4px;font-size:11px;color:#b91c1c;font-weight:700;">⚠ BACK ORDER — To be fulfilled when stock is available</div>` : '';
   return `<div class="inv-doc">
     <div style="background:#0f2a4a;padding:12px 20px;display:flex;justify-content:space-between;align-items:center;">
@@ -847,7 +851,10 @@ function buildDocHtml(wh){
       <tfoot><tr><td colspan="4" class="tl">TOTAL — ${lines.length} lines</td>
         <td class="c-tot">${tot.q.toLocaleString()}</td>
         <td class="c-full">${tot.f}</td>
-        <td class="c-part">${tot.l}</td><td class="c-pbox"></td></tr></tfoot>
+        <td class="c-part">${tot.l}</td><td class="c-pbox"></td></tr>
+      <tr><td colspan="4" class="tl" style="background:#0f2a4a;color:#fff;border-color:#0f2a4a;">📦 GRAND TOTAL BOXES</td>
+        <td style="background:#0f2a4a;color:#fff;border-color:#0f2a4a;font-size:15px;">${grandBoxes}</td>
+        <td colspan="3" class="tl" style="background:#0f2a4a;color:#fff;border-color:#0f2a4a;font-weight:600;">${tot.f} full + ${partialBoxCnt} partial</td></tr></tfoot>
     </table>
     ${boWarn}
   </div>`;
@@ -2000,6 +2007,63 @@ function inDashPeriod(rec){
   if(dashPeriod==='30d') return (now - d) < 30*86400000;
   return true;
 }
+let trendGran = 'daily', trendCust = 'all';
+function trendLabel(k){
+  if(trendGran==='yearly') return k;
+  if(trendGran==='monthly'){ return (+k.slice(5,7)) + '/' + k.slice(2,4); }
+  const d = new Date(k+'T00:00:00');
+  const md = (d.getMonth()+1) + '/' + d.getDate();
+  return trendGran==='weekly' ? md + '~' : md;
+}
+function trendBuckets(){
+  const data = {};
+  (savedCache||[]).forEach(rec=>{
+    const cust = (rec.meta&&rec.meta.cust)||'—';
+    if(trendCust!=='all' && cust!==trendCust) return;
+    const dstr = String((rec.meta&&rec.meta.date)||rec.savedAt||'').slice(0,10);
+    if(!dstr) return;
+    const d = new Date(dstr+'T00:00:00'); if(isNaN(d)) return;
+    let key;
+    if(trendGran==='yearly') key = String(d.getFullYear());
+    else if(trendGran==='monthly') key = d.getFullYear()+'-'+String(d.getMonth()+1).padStart(2,'0');
+    else if(trendGran==='weekly'){ const wd=(d.getDay()+6)%7; const ws=new Date(d); ws.setDate(d.getDate()-wd); key = ws.getFullYear()+'-'+String(ws.getMonth()+1).padStart(2,'0')+'-'+String(ws.getDate()).padStart(2,'0'); }
+    else key = dstr;
+    let amt=0, q=0;
+    (rec.whs||[]).forEach(wh=>salesLines(rec,wh).forEach(l=>{ const n=Number(l.qty)||0; q+=n; amt+=n*(Number(l.price)||0); }));
+    if(!data[key]) data[key]={a:0,q:0,o:0};
+    data[key].a+=amt; data[key].q+=q; data[key].o++;
+  });
+  const keys = Object.keys(data).sort();
+  const lim = trendGran==='daily'?30:(trendGran==='weekly'?26:(trendGran==='monthly'?24:100));
+  return keys.slice(-lim).map(k=>({k:k, a:data[k].a, q:data[k].q, o:data[k].o}));
+}
+function buildTrendHtml(){
+  const custs = [...new Set((savedCache||[]).map(r=>(r.meta&&r.meta.cust)||'—'))].sort();
+  const tb = trendBuckets();
+  const mx = Math.max(1, ...tb.map(b=>b.a));
+  const money = n => '$' + n.toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2});
+  const bars = tb.length ? tb.map(b=>{
+    const h = Math.max(3, Math.round(b.a/mx*140));
+    const lbl = trendLabel(b.k);
+    return `<div style="display:flex;flex-direction:column;align-items:center;gap:4px;flex:1;min-width:30px;" title="${lbl} — ${money(b.a)} · ${b.q.toLocaleString()} pcs · ${b.o} orders">
+      <div style="font-size:9px;font-weight:700;color:var(--text2);white-space:nowrap;">${b.a>=1000?('$'+(b.a/1000).toFixed(1)+'k'):('$'+Math.round(b.a))}</div>
+      <div style="width:70%;max-width:36px;height:${h}px;background:linear-gradient(180deg,#1d4ed8,#0f2a4a);border-radius:4px 4px 0 0;"></div>
+      <div style="font-size:9px;color:var(--text2);white-space:nowrap;">${lbl}</div>
+    </div>`;
+  }).join('') : `<div class="muted" style="padding:24px;">데이터 없음</div>`;
+  const granBtn = g => `<button class="btn btn-sm" style="${trendGran===g?'background:var(--header);color:#fff;border-color:var(--header);':''}" onclick="trendGran='${g}';renderDash();">${{daily:'Daily',weekly:'Weekly',monthly:'Monthly',yearly:'Yearly'}[g]}</button>`;
+  return `<div style="background:#fff;border:1px solid var(--border);border-radius:10px;padding:16px;margin-bottom:18px;">
+    <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-bottom:14px;">
+      <div style="font-weight:800;font-size:13px;color:var(--header);">📈 Sales Trend</div>
+      <select class="fi" style="width:auto;max-width:220px;font-size:12px;padding:4px 8px;" onchange="trendCust=this.value;renderDash();">
+        <option value="all" ${trendCust==='all'?'selected':''}>전체 거래처</option>
+        ${custs.map(c=>`<option value="${esc(c)}" ${trendCust===c?'selected':''}>${esc(c)}</option>`).join('')}
+      </select>
+      <div style="margin-left:auto;display:flex;gap:4px;">${granBtn('daily')}${granBtn('weekly')}${granBtn('monthly')}${granBtn('yearly')}</div>
+    </div>
+    <div style="display:flex;align-items:flex-end;gap:2px;overflow-x:auto;padding:4px 2px;min-height:180px;">${bars}</div>
+  </div>`;
+}
 function renderDash(){
   const el = $('dash-body'); if(!el) return;
   const byCust = {}, byItem = {};
@@ -2035,6 +2099,7 @@ function renderDash(){
       ${card(t('d_orders'), orders.toLocaleString(), 'var(--primary)')}
       ${card(t('d_pcs'), totQ.toLocaleString(), '#b45309')}
     </div>
+    ${buildTrendHtml()}
     <div style="display:grid;grid-template-columns:1fr 1fr;gap:18px;" class="dash-grid">
       <div>
         <div style="font-weight:800;font-size:13px;color:var(--header);margin-bottom:8px;">${t('d_bycust')}</div>
