@@ -113,7 +113,7 @@ main{max-width:1100px;margin:0 auto;padding:16px;}
     <button class="btn btn-sm" onclick="doLogout()" style="padding:2px 8px;font-size:10px;" data-i18n="logout">로그아웃</button>
   </span>
   <select id="lang-sel" onchange="setLang(this.value)" style="font-size:11px;padding:3px 6px;border-radius:5px;border:none;background:#1d3f66;color:#fff;"><option value="ko">한국어</option><option value="en">English</option><option value="es">Español</option></select>
-  <span style="font-size:10px;color:#9fb8d4;">v82</span>
+  <span style="font-size:10px;color:#9fb8d4;">v84</span>
 </div>
 <div id="po-viewer" style="display:none;position:fixed;top:0;right:0;width:44%;height:100vh;background:#fff;border-left:2px solid var(--border);z-index:60;box-shadow:-6px 0 20px rgba(0,0,0,.15);">
   <div style="display:flex;align-items:center;gap:8px;padding:7px 12px;background:var(--header);color:#fff;font-size:12px;font-weight:700;">
@@ -180,6 +180,7 @@ main{max-width:1100px;margin:0 auto;padding:16px;}
       <div class="ff" style="grid-column:span 2;"><label>Customer PO #</label><input class="fi" id="m-po" placeholder="53378" oninput="updateNumPreview()"></div>
       <div class="ff"><label data-i18n="l_podate">PO Date (거래처)</label><input class="fi" id="m-podate" type="date"></div>
       <div class="ff"><label data-i18n="l_date">Created (접수일)</label><input class="fi" id="m-date" type="date" onchange="updateNumPreview()"></div>
+      <div class="ff"><label>Via</label><input class="fi" id="m-via" placeholder="UPS Ground / LTL"></div>
     </div>
     <div style="margin-top:12px;font-size:11px;font-weight:800;color:var(--text2);letter-spacing:.5px;">BILL TO</div>
     <div class="grid g6" style="margin-top:5px;">
@@ -349,6 +350,7 @@ const I18N = {
  a_parsefail:{ko:'파싱 실패: ',en:'Parsing failed: ',es:'Error de análisis: '},
  a_parsefail_note:{ko:'\n\n📄 업로드한 PO는 오더에 첨부되어 있어요.\n오른쪽 PO 뷰어를 보면서 라인을 수동으로 입력하고 저장하면, 저장된 오더의 📄 PO 버튼으로 언제든 원본을 볼 수 있습니다.\n\n💡 참고: 여러 PO가 한 파일에 스캔된 경우엔 PO별로 나눠 올려야 자동 인식이 됩니다.',en:'\n\n📄 The uploaded PO is attached to this order.\nEnter lines manually using the PO viewer, then Save — the 📄 PO button will show the original.\n\n💡 Note: if multiple POs are scanned into one file, upload them one PO at a time for auto-parsing.',es:'\n\n📄 El PO subido quedó adjunto. Ingrese las líneas manualmente y guarde.'},
  btn_attach_only:{ko:'📄 PO 첨부만 (파싱 없이)',en:'📄 Attach PO only (no parsing)',es:'📄 Solo adjuntar PO'},
+ sendpl_cb:{ko:'📧 Save 시 Packing List 고객 발송',en:'📧 Email PL to customer on Save',es:'📧 Enviar PL al cliente al guardar'},
  a_attached:{ko:'📄 PO 첨부됨 — 뷰어를 보면서 수동 입력 후 저장하세요',en:'📄 PO attached — enter lines manually and save',es:'📄 PO adjunto'},
  a_popup:{ko:'팝업이 차단되었습니다. 팝업을 허용해주세요.',en:'Popup blocked. Please allow popups.',es:'Ventana emergente bloqueada. Permite las ventanas emergentes.'},
  pdf_made:{ko:'✅ PDF 생성됨: {f} ({k}KB)',en:'✅ PDF created: {f} ({k}KB)',es:'✅ PDF creado: {f} ({k}KB)'},
@@ -898,6 +900,7 @@ function buildDocHtml(wh){
         ${$('m-podate') && $('m-podate').value ? `<div class="inv-meta-row"><span>PO Date</span><span>${new Date($('m-podate').value+'T00:00:00').toLocaleDateString('en-US')}</span></div>` : ''}
         <div class="inv-meta-row"><span>Received Date</span><span>${dateStr}</span></div>
         <div class="inv-meta-row"><span>Warehouse</span><span>${esc(WH_LABEL[wh])}</span></div>
+        ${$('m-via') && $('m-via').value ? `<div class="inv-meta-row"><span>Via</span><span>${esc($('m-via').value)}</span></div>` : ''}
       </div>
     </div>
     <div class="inv-addr-row" style="grid-template-columns:1fr 1.4fr 1.4fr .8fr;">
@@ -1021,50 +1024,52 @@ async function mergePdfWithFiles(blob, files){
   }
   return new Blob([await main.save()], {type:'application/pdf'});
 }
-async function downloadPdfHtml(docHtml, filename, btn, attachFiles){
-  const orig = btn ? btn.textContent : '';
-  if(btn){ btn.textContent = '⏳ PDF 만드는 중...'; btn.disabled = true; }
+async function makePdfBlob(docHtml, attachFiles){
+  await loadPdfLib();
+  const wrap = document.createElement('div');
+  wrap.style.cssText = 'height:0;overflow:hidden;';
+  const holder = document.createElement('div');
+  holder.className = 'pdf-mode';
+  holder.style.cssText = 'width:740px;background:#fff;padding:0;';
+  holder.innerHTML = docHtml;
+  wrap.appendChild(holder);
+  document.body.appendChild(wrap);
+  const _sx = window.scrollX, _sy = window.scrollY;
+  window.scrollTo(0, 0);
+  await new Promise(r=>setTimeout(r, 120));
+  let blob;
   try{
-    await loadPdfLib();
-    const wrap = document.createElement('div');
-    wrap.style.cssText = 'height:0;overflow:hidden;';
-    const holder = document.createElement('div');
-    holder.className = 'pdf-mode';
-    holder.style.cssText = 'width:740px;background:#fff;padding:0;';
-    holder.innerHTML = docHtml;
-    wrap.appendChild(holder);
-    document.body.appendChild(wrap);
-    // 스크롤 위치 때문에 캡처가 밀리는 html2canvas 버그 방지: 잠깐 맨 위로
-    const _sx = window.scrollX, _sy = window.scrollY;
-    window.scrollTo(0, 0);
-    await new Promise(r=>setTimeout(r, 120));
-    await html2pdf().set({
+    blob = await html2pdf().set({
       margin: [10,10,12,10],
-      filename: filename,
       image: { type:'jpeg', quality: 0.98 },
       html2canvas: { scale: 2, useCORS: true, backgroundColor: '#ffffff' },
       jsPDF: { unit:'mm', format:'letter', orientation:'portrait' },
       pagebreak: { mode: ['css','legacy'] }
-    }).from(holder).outputPdf('blob').then(async blob=>{
-      document.body.removeChild(wrap);
-      window.scrollTo(_sx, _sy);
-      if(blob.size < 30000){
-        alert('⚠ PDF 생성이 비정상입니다 (' + Math.round(blob.size/1024) + 'KB). 페이지를 새로고침(Ctrl+Shift+R) 후 다시 시도해주세요.');
-        return;
-      }
-      if(attachFiles && attachFiles.length){
-        try{ blob = await mergePdfWithFiles(blob, attachFiles); }
-        catch(e){ console.warn('첨부 병합 실패, 본문만 다운로드:', e); }
-      }
-      const a = document.createElement('a');
-      a.href = URL.createObjectURL(blob);
-      a.download = filename;
-      document.body.appendChild(a);
-      a.click();
-      document.body.removeChild(a);
-      setTimeout(()=>URL.revokeObjectURL(a.href), 5000);
-      showPdfToast(filename, blob.size);
-    });
+    }).from(holder).outputPdf('blob');
+  }finally{
+    if(wrap.parentNode) document.body.removeChild(wrap);
+    window.scrollTo(_sx, _sy);
+  }
+  if(blob.size < 30000) throw new Error('PDF 생성이 비정상입니다 (' + Math.round(blob.size/1024) + 'KB). 새로고침(Ctrl+Shift+R) 후 다시 시도해주세요.');
+  if(attachFiles && attachFiles.length){
+    try{ blob = await mergePdfWithFiles(blob, attachFiles); }
+    catch(e){ console.warn('첨부 병합 실패:', e); }
+  }
+  return blob;
+}
+async function downloadPdfHtml(docHtml, filename, btn, attachFiles){
+  const orig = btn ? btn.textContent : '';
+  if(btn){ btn.textContent = '⏳ PDF 만드는 중...'; btn.disabled = true; }
+  try{
+    const blob = await makePdfBlob(docHtml, attachFiles);
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(blob);
+    a.download = filename;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    setTimeout(()=>URL.revokeObjectURL(a.href), 5000);
+    showPdfToast(filename, blob.size);
   }catch(e){
     alert('PDF 생성 실패: ' + e.message + '\n\n🖨 인쇄 버튼에서 "PDF로 저장"을 대신 이용할 수 있어요.');
   }finally{
@@ -1098,12 +1103,12 @@ function emailDoc(wh){
 // ═══════════════ 저장 / 불러오기 ═══════════════
 function getMeta(){
   const g = id => $(id).value;
-  return { cust:g('m-cust'), po:g('m-po'), date:g('m-date'), podate:g('m-podate'), billName:g('m-bill-name'),
+  return { cust:g('m-cust'), po:g('m-po'), date:g('m-date'), podate:g('m-podate'), via:g('m-via'), billName:g('m-bill-name'),
            billAddr:g('m-bill-addr'), billCity:g('m-bill-city'), billState:g('m-bill-state'), billZip:g('m-bill-zip'),
            shipName:g('m-ship-name'), shipAddr:g('m-ship-addr'), shipCity:g('m-ship-city'), shipState:g('m-ship-state'), shipZip:g('m-ship-zip') };
 }
 function setMeta(m){
-  $('m-cust').value=m.cust||''; $('m-po').value=m.po||''; $('m-date').value=m.date||todayStr(); $('m-podate').value=m.podate||'';
+  $('m-cust').value=m.cust||''; $('m-po').value=m.po||''; $('m-date').value=m.date||todayStr(); $('m-podate').value=m.podate||''; $('m-via').value=m.via||'';
   // 구버전 저장분 호환 (billto/shipto 한 줄짜리)
   if(m.billto && !m.billAddr){ fillAddr('bill', m.billto); } else {
     $('m-bill-name').value=m.billName||''; $('m-bill-addr').value=m.billAddr||''; $('m-bill-city').value=m.billCity||''; $('m-bill-state').value=m.billState||''; $('m-bill-zip').value=m.billZip||'';
@@ -1512,7 +1517,7 @@ function openPLInner(base){
     const baseLines = (Array.isArray(i.lines) && i.lines.length)
       ? JSON.parse(JSON.stringify(i.lines))
       : (rec.lines||[]).filter(l=>l.wh===w && (l.qty||0)>0).map(l=>({style:l.style||'', desc:l.desc||'', color:l.color||'', size:l.size||'', qty:l.qty||0, price:l.price||0, ppb:l.ppb||72, pbox:l.pbox||''}));
-    plDrafts[w] = { serial:i.serial||nextSerial(w), via:i.via||'', trackings:(i.trackings&&i.trackings.length?i.trackings:(i.tracking?[i.tracking]:[''])), date:i.date||todayStr(), note:i.note||'', lines: baseLines, files: Array.isArray(i.files)?JSON.parse(JSON.stringify(i.files)):[] };
+    plDrafts[w] = { custEmail:i.custEmail||((rec.meta&&rec.meta.custEmail)||'')||custEmailFor(rec.meta&&rec.meta.cust), serial:i.serial||nextSerial(w), via:i.via||((rec.meta&&rec.meta.via)||''), trackings:(i.trackings&&i.trackings.length?i.trackings:(i.tracking?[i.tracking]:[''])), date:i.date||todayStr(), note:i.note||'', lines: baseLines, files: Array.isArray(i.files)?JSON.parse(JSON.stringify(i.files)):[] };
     const iv = (rec.inv && rec.inv[w]) || {};
     invDrafts[w] = {
       invNo: iv.invNo||'',
@@ -1622,10 +1627,62 @@ async function savePL(){
     rec.inv[plWh] = { savedAt: new Date().toISOString(), auto: true, freight: Number(ivd.freight)||0, lines: invLines };
     invDrafts[plWh] = { freight: Number(ivd.freight)||0, _touched: false, lines: JSON.parse(JSON.stringify(invLines)) };
   }
-  const r = await sbFetch('/rest/v1/pr_orders?base=eq.'+encodeURIComponent(plBase), {method:'PATCH', headers:{Prefer:'return=minimal'}, body:JSON.stringify({pl:rec.pl, inv:rec.inv, updated_at:new Date().toISOString()})});
+  const wantSend = $('plf-sendpl') && $('plf-sendpl').checked;
+  const custEm = (plDrafts[plWh].custEmail||'').trim();
+  if(custEm && custEm.includes('@')) rec.meta = {...(rec.meta||{}), custEmail: custEm};
+  const r = await sbFetch('/rest/v1/pr_orders?base=eq.'+encodeURIComponent(plBase), {method:'PATCH', headers:{Prefer:'return=minimal'}, body:JSON.stringify({pl:rec.pl, inv:rec.inv, meta:rec.meta, updated_at:new Date().toISOString()})});
   if(!r.ok){ alert(t('save_fail')); return; }
   renderSaved(); renderPL();
   showToast(t('a_plsaved',{x:plNum(plBase, plWh)}) + (plDrafts[plWh].serial ? ` (${plDrafts[plWh].serial})` : '') + ' + Invoice');
+  if(wantSend){
+    if(!custEm || !custEm.includes('@')){ alert('📧 고객 이메일 주소를 입력해주세요 (Customer Email 칸)'); return; }
+    showToast('📧 Packing List 발송 중...');
+    try{
+      await sendPLEmailFor(rec, plWh, custEm);
+      showToast('✅ Packing List 발송 완료 → ' + custEm);
+    }catch(e){ alert('📧 이멜 발송 실패: ' + e.message); }
+  }
+}
+function custEmailFor(cust){
+  if(!cust) return '';
+  const recs = (savedCache||[]).filter(r=>r.meta && r.meta.cust===cust && r.meta.custEmail)
+    .sort((a,b)=>String(b.savedAt||'').localeCompare(String(a.savedAt||'')));
+  return recs.length ? recs[0].meta.custEmail : '';
+}
+async function sendPLEmailFor(rec, wh, toEmail){
+  const d = (rec.pl && rec.pl[wh]) || {};
+  const num = plNum(rec.base, wh);
+  const meta = rec.meta || {};
+  const blob = await makePdfBlob(buildStageDoc(rec, wh, 'packing', d), d.files||[]);
+  const b64 = await new Promise((res,rej)=>{ const r=new FileReader(); r.onload=()=>res(String(r.result).split(',')[1]); r.onerror=()=>rej(new Error('인코딩 실패')); r.readAsDataURL(blob); });
+  const tot = (d.lines||[]).reduce((a,l)=>a+(l.qty||0),0);
+  const trk = (d.trackings||[]).filter(Boolean).join(', ');
+  const row = (k,v) => `<tr><td style="padding:4px 14px 4px 0;color:#666;">${k}</td><td style="font-weight:700;">${v}</td></tr>`;
+  const bodyHtml = `<div style="font-family:Helvetica,Arial,sans-serif;font-size:14px;color:#111;">
+    <div style="background:#0f2a4a;color:#fff;padding:12px 18px;font-size:17px;font-weight:800;letter-spacing:1px;">PACIFIC SPORTS — PACKING LIST</div>
+    <p style="margin-top:16px;">Hello,</p>
+    <p>Please find attached the packing list for your order.</p>
+    <table style="border-collapse:collapse;font-size:14px;">
+      ${row('PO #', esc(meta.po||''))}
+      ${row('Packing List #', esc(num))}
+      ${row('Ship Date', esc(d.date||''))}
+      ${d.via ? row('Via', esc(d.via)) : ''}
+      ${trk ? row('Tracking #', esc(trk)) : ''}
+      ${row('Total', tot.toLocaleString() + ' pcs')}
+    </table>
+    <p style="margin-top:16px;">Thank you,<br><b>PEACE TEXTILE AMERICA, INC.</b> d.b.a Pacific Sports</p>
+  </div>`;
+  const r = await fetch('https://po-confirm-email.hjbae.workers.dev/send-pl', {
+    method:'POST', headers:{'Content-Type':'application/json'},
+    body: JSON.stringify({
+      to: String(toEmail).split(',').map(e=>e.trim()).filter(e=>e.includes('@')),
+      subject: 'Pacific Sports Packing List — PO ' + (meta.po||'') + ' (' + num + ')',
+      html: bodyHtml,
+      reply_to: (SESS && SESS.email) || undefined,
+      attachments: [{ filename: num + '-PL.pdf', content: b64 }]
+    })
+  });
+  if(!r.ok){ const e = await r.json().catch(()=>({})); throw new Error(e.error || e.message || ('HTTP '+r.status)); }
 }
 function plFieldsToDraft(){
   if(!$('plf-serial')) return;
@@ -1633,7 +1690,7 @@ function plFieldsToDraft(){
   const trackings = [...document.querySelectorAll('[id^="plf-tracking-"]')].map(el=>el.value);
   const keepLines = (plDrafts[plWh]||{}).lines;
   const keepFiles = (plDrafts[plWh]||{}).files;
-  plDrafts[plWh] = { serial:g('plf-serial'), via:g('plf-via'), trackings:(trackings.length?trackings:['']), date:g('plf-date'), note:g('plf-note'), lines: keepLines, files: keepFiles };
+  plDrafts[plWh] = { custEmail:g('plf-email'), serial:g('plf-serial'), via:g('plf-via'), trackings:(trackings.length?trackings:['']), date:g('plf-date'), note:g('plf-note'), lines: keepLines, files: keepFiles };
 }
 async function downloadPLPdf(kind){
   const rec = getSaved().find(s=>s.base===plBase); if(!rec) return;
@@ -1985,6 +2042,7 @@ function renderPL(){
       ${plShowInv ? '' : `
       <div class="grid g6 no-print" style="margin-bottom:12px;">
         <div class="ff"><label>${t('l_serial')}</label><input class="fi" id="plf-serial" value="${esc(d.serial||'')}" placeholder="예: SC1" onchange="plFieldChanged()" style="font-family:Consolas,monospace;font-weight:700;"></div>
+        <div class="ff"><label>📧 Customer Email</label><input class="fi" id="plf-email" type="email" value="${esc(d.custEmail||'')}" placeholder="customer@company.com (쉼표로 여러 명)" onchange="plFieldChanged()"></div>
         <div class="ff"><label>Via</label><input class="fi" id="plf-via" value="${esc(d.via||'')}" placeholder="UPS Ground" onchange="plFieldChanged()"></div>
         <div class="ff" style="grid-column:span 2;"><label>Tracking # <button class="btn btn-sm" style="padding:0 7px;margin-left:6px;" onclick="addTracking()" title="패키지 여러 개면 추가">＋</button></label>
           ${(d.trackings&&d.trackings.length?d.trackings:['']).map((t,i)=>`<div style="display:flex;gap:4px;margin-bottom:4px;">
@@ -1998,7 +2056,7 @@ function renderPL(){
       <div class="no-print" style="display:flex;gap:6px;justify-content:flex-end;margin-bottom:12px;flex-wrap:wrap;">
         ${plShowInv
           ? `<button class="btn btn-sm btn-primary" onclick="saveInvStage()">${t('save_inv')}</button><button class="btn btn-sm" id="invpdf-btn" onclick="downloadPLPdf('invoice')">${t('inv_pdf')}</button><button class="btn btn-sm" onclick="printStageDoc('invoice')">🖨 Invoice</button>`
-          : `<button class="btn btn-sm btn-primary" onclick="savePL()">${t('save_pl')}</button><button class="btn btn-sm" id="plpdf-btn" onclick="downloadPLPdf('packing')">${t('pl_pdf')}</button><button class="btn btn-sm" onclick="printStageDoc('packing')">🖨</button>`}
+          : `<label style="display:flex;align-items:center;gap:5px;font-size:11.5px;font-weight:700;color:#0e7490;margin-right:auto;cursor:pointer;"><input type="checkbox" id="plf-sendpl" style="width:14px;height:14px;accent-color:#0e7490;cursor:pointer;"> ${t('sendpl_cb')}</label><button class="btn btn-sm btn-primary" onclick="savePL()">${t('save_pl')}</button><button class="btn btn-sm" id="plpdf-btn" onclick="downloadPLPdf('packing')">${t('pl_pdf')}</button><button class="btn btn-sm" onclick="printStageDoc('packing')">🖨</button>`}
         <button class="btn btn-sm" onclick="closePL()">${t('close')}</button>
       </div>
       ${plShowInv ? '' : `
@@ -2269,10 +2327,12 @@ function openBatchShip(wh){
   const rows = bases.map((b,i)=>{
     const r = savedCache.find(s=>s.base===b); const m = (r&&r.meta)||{};
     const q = ((r&&r.lines)||[]).filter(l=>l.wh===wh).reduce((a,l)=>a+(l.qty||0),0);
-    return `<div style="display:flex;align-items:center;gap:8px;padding:7px 10px;border-bottom:1px solid #f3f4f6;">
+    const em = (m.custEmail || custEmailFor(m.cust) || '');
+    return `<div style="display:flex;align-items:center;gap:8px;padding:7px 10px;border-bottom:1px solid #f3f4f6;flex-wrap:wrap;">
       <span style="font-size:12px;font-weight:700;min-width:200px;">${esc(m.cust||'')} <span class="muted">PO ${esc(m.po||'')}</span></span>
       <span class="muted" style="font-size:11px;min-width:60px;">${q.toLocaleString()} pcs</span>
-      <input class="fi" id="bship-trk-${i}" placeholder="Tracking / PRO # (공통이면 비워두기)" style="flex:1;font-size:11.5px;font-family:Consolas,monospace;">
+      <input class="fi" id="bship-trk-${i}" placeholder="Tracking / PRO # (공통이면 비워두기)" style="flex:1;min-width:160px;font-size:11.5px;font-family:Consolas,monospace;">
+      <input class="fi" id="bship-em-${i}" type="email" value="${esc(em)}" placeholder="📧 customer email" style="flex:1;min-width:170px;font-size:11.5px;">
     </div>`;
   }).join('');
   const div = document.createElement('div');
@@ -2288,6 +2348,9 @@ function openBatchShip(wh){
     <div style="padding:0 18px 4px;display:flex;align-items:center;gap:8px;flex-wrap:wrap;">
       <span style="font-size:11px;font-weight:700;color:var(--text2);">📎 Signed BOL (선택 — 모든 선택 오더의 Packing List에 첨부됨)</span>
       <input type="file" id="bship-bol" accept="application/pdf,image/*" style="font-size:11px;">
+      <label style="display:flex;align-items:center;gap:5px;font-size:11.5px;font-weight:700;color:#0e7490;margin-left:auto;cursor:pointer;">
+        <input type="checkbox" id="bship-sendpl" style="width:14px;height:14px;accent-color:#0e7490;cursor:pointer;"> ${t('sendpl_cb')}
+      </label>
     </div>
     <div style="padding:0 18px;overflow-y:auto;flex:1;">${rows}</div>
     <div style="padding:14px 18px;display:flex;gap:8px;justify-content:flex-end;border-top:1px solid var(--border);">
@@ -2313,27 +2376,41 @@ async function submitBatchShip(){
       bolFiles = [{name:f.name, type:f.type||'application/pdf', data:data, ts:new Date().toISOString()}];
     }catch(e){}
   }
+  const wantSend = $('bship-sendpl') && $('bship-sendpl').checked;
+  const sendQueue = [];
   let okCnt = 0, fails = [];
   for(let i=0; i<bs.bases.length; i++){
     const base = bs.bases[i];
     const rec = savedCache.find(s=>s.base===base); if(!rec){ fails.push(base); continue; }
     const trk = (document.getElementById('bship-trk-'+i)||{}).value || '';
+    const em = ((document.getElementById('bship-em-'+i)||{}).value || '').trim();
+    if(em && em.includes('@')) rec.meta = {...(rec.meta||{}), custEmail: em};
     const lines = (rec.lines||[]).filter(l=>l.wh===bs.wh && (l.qty||0)>0).map(l=>({style:l.style||'', desc:l.desc||'', color:l.color||'', size:l.size||'', qty:l.qty||0, price:l.price||0, ppb:l.ppb||72, pbox:l.pbox||''}));
     rec.pl = rec.pl || {};
-    rec.pl[bs.wh] = { serial: nextSerial(bs.wh), via: via, trackings: [(trk||trkAll||'')], date: date, note: '', files: JSON.parse(JSON.stringify(bolFiles)), lines: lines, savedAt: new Date().toISOString() };
+    rec.pl[bs.wh] = { custEmail: em, serial: nextSerial(bs.wh), via: via, trackings: [(trk||trkAll||'')], date: date, note: '', files: JSON.parse(JSON.stringify(bolFiles)), lines: lines, savedAt: new Date().toISOString() };
     rec.inv = rec.inv || {};
     const exInv = rec.inv[bs.wh];
     if(!exInv || exInv.auto){
       rec.inv[bs.wh] = { savedAt: new Date().toISOString(), auto: true, freight: 0, lines: JSON.parse(JSON.stringify(lines)) };
     }
     try{
-      const r = await sbFetch('/rest/v1/pr_orders?base=eq.'+encodeURIComponent(base), {method:'PATCH', headers:{Prefer:'return=minimal'}, body:JSON.stringify({pl:rec.pl, inv:rec.inv, updated_at:new Date().toISOString()})});
-      if(r.ok) okCnt++; else fails.push(base);
+      const r = await sbFetch('/rest/v1/pr_orders?base=eq.'+encodeURIComponent(base), {method:'PATCH', headers:{Prefer:'return=minimal'}, body:JSON.stringify({pl:rec.pl, inv:rec.inv, meta:rec.meta, updated_at:new Date().toISOString()})});
+      if(r.ok){ okCnt++; if(em && em.includes('@')) sendQueue.push({rec, em}); }
+      else fails.push(base);
     }catch(e){ fails.push(base); }
   }
   const m = document.getElementById('modal-batch-ship'); if(m) m.remove();
   renderSaved();
   showToast('🚛 ' + okCnt + '건 출고 완료' + (fails.length ? ' · 실패 ' + fails.length + '건' : ''));
+  if(wantSend && sendQueue.length){
+    let emOk = 0, emFail = 0;
+    for(const {rec, em} of sendQueue){
+      showToast('📧 Packing List 발송 중... (' + (emOk+emFail+1) + '/' + sendQueue.length + ')');
+      try{ await sendPLEmailFor(rec, bs.wh, em); emOk++; }
+      catch(e){ emFail++; console.warn('batch PL email fail', rec.base, e); }
+    }
+    showToast('📧 발송 완료 ' + emOk + '건' + (emFail ? ' · 실패 ' + emFail + '건' : ''));
+  }
 }
 function renderSaved(){
   const saved = [...getSaved()].sort((a,b)=>{
