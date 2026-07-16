@@ -60,6 +60,7 @@ main{max-width:1100px;margin:0 auto;padding:16px;}
 .doc-tab.active{background:#fff;color:var(--primary);border-color:var(--primary);}
 .doc-view{background:#fff;border:1px solid var(--border);border-radius:0 8px 8px 8px;padding:24px;}
 .inv-doc{max-width:800px;margin:0 auto;font-size:12px;font-family:'Helvetica Neue',Helvetica,Arial,sans-serif;}
+.inv-doc,.inv-doc *{-webkit-print-color-adjust:exact !important;print-color-adjust:exact !important;}
 .inv-doc-header{display:flex;justify-content:space-between;border-bottom:3px solid var(--header);padding-bottom:14px;margin-bottom:14px;gap:16px;}
 .inv-co{font-size:20px;font-weight:800;letter-spacing:2px;color:var(--header);}
 .inv-co-addr{font-size:11px;color:#555;margin-top:4px;line-height:1.6;white-space:pre-line;}
@@ -104,7 +105,7 @@ main{max-width:1100px;margin:0 auto;padding:16px;}
     <button class="btn btn-sm" onclick="doLogout()" style="padding:2px 8px;font-size:10px;" data-i18n="logout">로그아웃</button>
   </span>
   <select id="lang-sel" onchange="setLang(this.value)" style="font-size:11px;padding:3px 6px;border-radius:5px;border:none;background:#1d3f66;color:#fff;"><option value="ko">한국어</option><option value="en">English</option><option value="es">Español</option></select>
-  <span style="font-size:10px;color:#9fb8d4;">v34</span>
+  <span style="font-size:10px;color:#9fb8d4;">v36</span>
 </div>
 <div id="po-viewer" style="display:none;position:fixed;top:0;right:0;width:44%;height:100vh;background:#fff;border-left:2px solid var(--border);z-index:60;box-shadow:-6px 0 20px rgba(0,0,0,.15);">
   <div style="display:flex;align-items:center;gap:8px;padding:7px 12px;background:var(--header);color:#fff;font-size:12px;font-weight:700;">
@@ -294,6 +295,7 @@ const I18N = {
  logout:{ko:'로그아웃',en:'Log out',es:'Salir'},
  a_needcred:{ko:'이메일과 비밀번호를 입력해주세요.',en:'Please enter email and password.',es:'Ingresa correo y contraseña.'},
  a_staffonly:{ko:'직원 계정이 아닙니다. 접근이 거부되었습니다.',en:'Not a staff account. Access denied.',es:'No es una cuenta de personal. Acceso denegado.'},
+ pl_edit:{ko:'출고 수정 (pick 결과 반영)',en:'Adjust lines (as picked)',es:'Ajustar líneas (según picking)'},
  no_po_pdf:{ko:'이 오더에는 저장된 PO PDF가 없습니다.',en:'No PO PDF stored for this order.',es:'No hay PDF del PO guardado para este pedido.'},
  save_fail:{ko:'❌ 저장 실패 — 인터넷 연결을 확인하세요.',en:'❌ Save failed — check your connection.',es:'❌ Error al guardar — revisa tu conexión.'},
 };
@@ -1112,7 +1114,13 @@ function openPL(base){
   const rec = getSaved().find(s=>s.base===base); if(!rec) return;
   plBase = base; plWh = (rec.whs||[])[0] || 'SC'; plShowInv = false;
   plDrafts = {};
-  (rec.whs||[]).forEach(w=>{ const i = plInfo(rec,w); plDrafts[w] = { serial:i.serial||'', via:i.via||'', trackings:(i.trackings&&i.trackings.length?i.trackings:(i.tracking?[i.tracking]:[''])), date:i.date||todayStr(), note:i.note||'' }; });
+  (rec.whs||[]).forEach(w=>{
+    const i = plInfo(rec,w);
+    const baseLines = (Array.isArray(i.lines) && i.lines.length)
+      ? JSON.parse(JSON.stringify(i.lines))
+      : (rec.lines||[]).filter(l=>l.wh===w && (l.qty||0)>0).map(l=>({style:l.style||'', desc:l.desc||'', color:l.color||'', size:l.size||'', qty:l.qty||0, price:l.price||0, ppb:l.ppb||72, pbox:l.pbox||''}));
+    plDrafts[w] = { serial:i.serial||'', via:i.via||'', trackings:(i.trackings&&i.trackings.length?i.trackings:(i.tracking?[i.tracking]:[''])), date:i.date||todayStr(), note:i.note||'', lines: baseLines };
+  });
   $('pl-card').style.display = 'block';
   renderPL();
   if($('pl-card').scrollIntoView) $('pl-card').scrollIntoView({behavior:'smooth'});
@@ -1166,7 +1174,8 @@ function plFieldsToDraft(){
   if(!$('plf-serial')) return;
   const g = id => ($(id)?$(id).value:'');
   const trackings = [...document.querySelectorAll('[id^="plf-tracking-"]')].map(el=>el.value);
-  plDrafts[plWh] = { serial:g('plf-serial'), via:g('plf-via'), trackings:(trackings.length?trackings:['']), date:g('plf-date'), note:g('plf-note') };
+  const keepLines = (plDrafts[plWh]||{}).lines;
+  plDrafts[plWh] = { serial:g('plf-serial'), via:g('plf-via'), trackings:(trackings.length?trackings:['']), date:g('plf-date'), note:g('plf-note'), lines: keepLines };
 }
 async function downloadPLPdf(kind){
   const rec = getSaved().find(s=>s.base===plBase); if(!rec) return;
@@ -1177,7 +1186,7 @@ async function downloadPLPdf(kind){
 }
 function buildStageDoc(rec, wh, kind, d){
   const meta = rec.meta || {};
-  const lines = (rec.lines||[]).filter(l=>l.wh===wh && (l.qty||0)>0);
+  const lines = (Array.isArray(d.lines) ? d.lines : (rec.lines||[]).filter(l=>l.wh===wh)).filter(l=>(l.qty||0)>0);
   const num = plNum(rec.base, wh);
   const dateStr = (d.date ? new Date(d.date+'T00:00:00') : new Date()).toLocaleDateString('en-US');
   const isInv = kind==='invoice';
@@ -1241,6 +1250,21 @@ function buildStageDoc(rec, wh, kind, d){
     ${note}
   </div>`;
 }
+let plEditOpen = false;
+function plLineUpd(idx, f, v){
+  const L = (plDrafts[plWh]&&plDrafts[plWh].lines||[])[idx]; if(!L) return;
+  if(f==='qty'||f==='ppb') L[f] = Math.max(0, parseInt(v)||0);
+  else L[f] = v;
+  refreshPLPreview();
+}
+function plLineDel(idx){ if(plDrafts[plWh]&&plDrafts[plWh].lines){ plDrafts[plWh].lines.splice(idx,1); renderPL(); } }
+function plLineAdd(){ if(plDrafts[plWh]){ (plDrafts[plWh].lines=plDrafts[plWh].lines||[]).push({style:'',desc:'',color:'',size:'',qty:0,price:0,ppb:72,pbox:''}); plEditOpen=true; renderPL(); } }
+function refreshPLPreview(){
+  const rec = savedCache.find(s=>s.base===plBase); if(!rec) return;
+  const d = plDrafts[plWh]||{};
+  const pv = $('pl-doc-preview');
+  if(pv) pv.innerHTML = buildStageDoc(rec, plWh, 'packing', d) + (plShowInv ? '<hr style="margin:24px 0;border:none;border-top:2px dashed var(--border);">' + buildStageDoc(rec, plWh, 'invoice', d) : '');
+}
 function renderPL(){
   const rec = getSaved().find(s=>s.base===plBase);
   if(!rec){ closePL(); return; }
@@ -1272,8 +1296,28 @@ function renderPL(){
         ${plShowInv?`<button class="btn btn-sm btn-primary" onclick="saveInvStage()">${t('save_inv')}</button><button class="btn btn-sm" id="invpdf-btn" onclick="downloadPLPdf('invoice')">${t('inv_pdf')}</button>`:''}
         <button class="btn btn-sm" onclick="closePL()">${t('close')}</button>
       </div>
+      <details class="no-print" style="margin-bottom:14px;border:1px solid var(--border);border-radius:8px;padding:8px 12px;" ${plEditOpen?'open':''} ontoggle="plEditOpen=this.open">
+        <summary style="cursor:pointer;font-weight:700;font-size:12px;color:var(--primary);">✏️ ${t('pl_edit')}</summary>
+        <div style="overflow-x:auto;margin-top:8px;">
+        <table class="etbl">
+          <thead><tr><th>Style#</th><th class="tl">Color</th><th>Size</th><th>Qty</th><th>PPB</th><th>P.Box#</th><th style="width:30px;"></th></tr></thead>
+          <tbody>${(d.lines||[]).map((L,idx)=>`<tr>
+            <td><input value="${esc(L.style||'')}" onchange="plLineUpd(${idx},'style',this.value)" style="max-width:75px;font-weight:700;"></td>
+            <td class="tl"><input class="tl" value="${esc(L.color||'')}" onchange="plLineUpd(${idx},'color',this.value)" style="min-width:100px;"></td>
+            <td><input value="${esc(L.size||'')}" onchange="plLineUpd(${idx},'size',this.value)" style="max-width:55px;"></td>
+            <td><input class="num" value="${L.qty||''}" onchange="plLineUpd(${idx},'qty',this.value)" style="max-width:70px;"></td>
+            <td><input class="num" value="${L.ppb||''}" onchange="plLineUpd(${idx},'ppb',this.value)" style="max-width:60px;"></td>
+            <td><input class="num" value="${esc(L.pbox||'')}" onchange="plLineUpd(${idx},'pbox',this.value)" style="max-width:55px;"></td>
+            <td><button class="btn btn-sm" style="color:var(--bad);border:none;" onclick="plLineDel(${idx})">✕</button></td>
+          </tr>`).join('')}</tbody>
+        </table>
+        </div>
+        <button class="btn btn-sm" style="margin-top:6px;" onclick="plLineAdd()">＋</button>
+      </details>
+      <div id="pl-doc-preview">
       ${buildStageDoc(rec, plWh, 'packing', d)}
       ${plShowInv ? '<hr style="margin:24px 0;border:none;border-top:2px dashed var(--border);">' + buildStageDoc(rec, plWh, 'invoice', d) : ''}
+      </div>
     </div>`;
 }
 
