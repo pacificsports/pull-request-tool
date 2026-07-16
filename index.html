@@ -113,7 +113,7 @@ main{max-width:1100px;margin:0 auto;padding:16px;}
     <button class="btn btn-sm" onclick="doLogout()" style="padding:2px 8px;font-size:10px;" data-i18n="logout">로그아웃</button>
   </span>
   <select id="lang-sel" onchange="setLang(this.value)" style="font-size:11px;padding:3px 6px;border-radius:5px;border:none;background:#1d3f66;color:#fff;"><option value="ko">한국어</option><option value="en">English</option><option value="es">Español</option></select>
-  <span style="font-size:10px;color:#9fb8d4;">v66</span>
+  <span style="font-size:10px;color:#9fb8d4;">v67</span>
 </div>
 <div id="po-viewer" style="display:none;position:fixed;top:0;right:0;width:44%;height:100vh;background:#fff;border-left:2px solid var(--border);z-index:60;box-shadow:-6px 0 20px rgba(0,0,0,.15);">
   <div style="display:flex;align-items:center;gap:8px;padding:7px 12px;background:var(--header);color:#fff;font-size:12px;font-weight:700;">
@@ -1342,6 +1342,8 @@ function openPL(base){
     const iv = (rec.inv && rec.inv[w]) || {};
     invDrafts[w] = {
       invNo: iv.invNo||'',
+      termType: iv.termType||'',
+      termDays: iv.termDays||0,
       freight: Number(iv.freight)||0,
       _touched: Array.isArray(iv.lines) && iv.lines.length > 0,
       lines: (Array.isArray(iv.lines) && iv.lines.length) ? JSON.parse(JSON.stringify(iv.lines)) : JSON.parse(JSON.stringify(baseLines))
@@ -1424,7 +1426,7 @@ async function saveInvStage(){
   rec.inv = rec.inv || {};
   const iv = invDrafts[plWh] || {};
   if(!iv.invNo) iv.invNo = nextInvNo();
-  rec.inv[plWh] = { savedAt: new Date().toISOString(), invNo: iv.invNo, freight: Number(iv.freight)||0, lines: iv.lines||[] };
+  rec.inv[plWh] = { savedAt: new Date().toISOString(), invNo: iv.invNo, termType: iv.termType||'', termDays: iv.termDays||0, freight: Number(iv.freight)||0, lines: iv.lines||[] };
   const r = await sbFetch('/rest/v1/pr_orders?base=eq.'+encodeURIComponent(plBase), {method:'PATCH', headers:{Prefer:'return=minimal'}, body:JSON.stringify({inv:rec.inv, updated_at:new Date().toISOString()})});
   if(!r.ok){ alert(t('save_fail')); return; }
   renderSaved(); renderPL();
@@ -1479,6 +1481,8 @@ async function markInvPrinted(){
   rec.inv[plWh] = {
     ...ex,
     invNo: invNo,
+    termType: ivd.termType || ex.termType || '',
+    termDays: ivd.termDays || ex.termDays || 0,
     savedAt: ex.savedAt || new Date().toISOString(),
     auto: false,
     printed: true,
@@ -1547,6 +1551,9 @@ function buildStageDoc(rec, wh, kind, d){
         <div class="inv-meta-row"><span>Reference No.</span><span style="font-weight:400;">${esc(num)}</span></div>` : `<div class="inv-meta-row"><span>Ref No.</span><span>${esc(num)}</span></div>`}
         <div class="inv-meta-row"><span>Serial No.</span><span>${esc(d.serial||'—')}</span></div>
         <div class="inv-meta-row"><span>Date</span><span>${dateStr}</span></div>
+        ${isInv ? (()=>{ const ti = termInfo(d); if(!ti) return ''; const base = new Date((d.date||todayStr())+'T00:00:00'); const due = new Date(base); due.setDate(due.getDate()+ti.days);
+          return `<div class="inv-meta-row"><span>Terms</span><span>${ti.label}</span></div>
+        <div class="inv-meta-row"><span>Due Date</span><span>${ti.days===0 ? 'Due on Receipt' : due.toLocaleDateString('en-US')}</span></div>`; })() : ''}
         <div class="inv-meta-row"><span>Via</span><span>${esc(d.via||'—')}</span></div>
         ${(()=>{const ts=(d.trackings||(d.tracking?[d.tracking]:[])).filter(Boolean); return ts.length? ts.map((t,i)=>`<div class="inv-meta-row"><span>Tracking${ts.length>1?' '+(i+1):''} #</span><span>${esc(t)}</span></div>`).join('') : '<div class="inv-meta-row"><span>Tracking #</span><span>—</span></div>';})()}
       </div>
@@ -1729,11 +1736,25 @@ function nextInvNo(){
   const yy = String(new Date().getFullYear()).slice(-2);
   return yy + '-' + (mx + 1);
 }
+function termInfo(d){
+  const ty = (d && d.termType) || '';
+  if(!ty) return null;
+  if(ty === 'cc') return { label: 'Credit Card', days: 0 };
+  const days = ty === 'custom' ? Math.max(0, parseInt(d.termDays,10)||0) : parseInt(ty,10);
+  return { label: 'Net ' + days, days };
+}
+function invTermUpd(type, days){
+  if(!invDrafts[plWh]) return;
+  invDrafts[plWh].termType = type;
+  if(type === 'custom') invDrafts[plWh].termDays = Math.max(0, parseInt(days,10)||0);
+  invDrafts[plWh]._touched = true;
+  renderPL();
+}
 function invNoUpd(v){ if(invDrafts[plWh]){ invDrafts[plWh].invNo = v.trim(); invDrafts[plWh]._touched = true; refreshPLPreview(); } }
 function invDocData(){
   const d = plDrafts[plWh] || {};
   const iv = invDrafts[plWh] || {};
-  return {...d, lines: Array.isArray(iv.lines) ? iv.lines : d.lines, freight: Number(iv.freight)||0, invNo: iv.invNo||''};
+  return {...d, lines: Array.isArray(iv.lines) ? iv.lines : d.lines, freight: Number(iv.freight)||0, invNo: iv.invNo||'', termType: iv.termType||'', termDays: iv.termDays||0};
 }
 function syncInvDraft(){
   // 인보이스를 아직 손대지 않았으면 PL 수정본을 그대로 따라감
@@ -1842,6 +1863,13 @@ function renderPL(){
             <td><button class="btn btn-sm" style="color:var(--bad);border:none;" onclick="invLineDel(${idx})">✕</button></td>
           </tr>`).join('')}</tbody>
         </table>
+        </div>
+        <div style="display:flex;align-items:center;gap:10px;margin-top:10px;flex-wrap:wrap;font-size:11.5px;font-weight:700;color:#065f46;">
+          <span>Terms:</span>
+          ${['30','45','60'].map(v=>`<label style="display:flex;align-items:center;gap:4px;cursor:pointer;font-weight:600;"><input type="radio" name="inv-term" ${(invDrafts[plWh]||{}).termType===v?'checked':''} onchange="invTermUpd('${v}')" style="accent-color:#065f46;"> Net ${v}</label>`).join('')}
+          <label style="display:flex;align-items:center;gap:4px;cursor:pointer;font-weight:600;"><input type="radio" name="inv-term" ${(invDrafts[plWh]||{}).termType==='cc'?'checked':''} onchange="invTermUpd('cc')" style="accent-color:#065f46;"> Credit Card</label>
+          <label style="display:flex;align-items:center;gap:4px;cursor:pointer;font-weight:600;"><input type="radio" name="inv-term" ${(invDrafts[plWh]||{}).termType==='custom'?'checked':''} onchange="invTermUpd('custom', document.getElementById('inv-term-days').value)" style="accent-color:#065f46;"> Custom</label>
+          <input id="inv-term-days" class="fi num" value="${(invDrafts[plWh]||{}).termType==='custom'?((invDrafts[plWh]||{}).termDays||''):''}" onchange="invTermUpd('custom', this.value)" placeholder="days" style="width:60px;text-align:center;">
         </div>
         <div style="display:flex;align-items:center;gap:10px;margin-top:8px;">
           <button class="btn btn-sm" onclick="invLineAdd()">＋</button>
