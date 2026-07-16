@@ -114,7 +114,7 @@ main{max-width:1100px;margin:0 auto;padding:16px;}
     <button class="btn btn-sm" onclick="doLogout()" style="padding:2px 8px;font-size:10px;" data-i18n="logout">로그아웃</button>
   </span>
   <select id="lang-sel" onchange="setLang(this.value)" style="font-size:11px;padding:3px 6px;border-radius:5px;border:none;background:#1d3f66;color:#fff;"><option value="ko">한국어</option><option value="en">English</option><option value="es">Español</option></select>
-  <span style="font-size:10px;color:#9fb8d4;">v107</span>
+  <span style="font-size:10px;color:#9fb8d4;">v109</span>
 </div>
 <div id="po-viewer" style="display:none;position:fixed;top:0;right:0;width:44%;height:100vh;background:#fff;border-left:2px solid var(--border);z-index:60;box-shadow:-6px 0 20px rgba(0,0,0,.15);">
   <div style="display:flex;align-items:center;gap:8px;padding:7px 12px;background:var(--header);color:#fff;font-size:12px;font-weight:700;">
@@ -1643,9 +1643,18 @@ function buildPRDocFromRec(rec, wh){
   poLines = bak.lines;
   return docHtml;
 }
+async function markDocPrinted(base, wh, kind){
+  const rec = savedCache.find(s=>s.base===base); if(!rec) return;
+  const mp = { ...((rec.meta && rec.meta._printed) || {}) };
+  mp[wh] = { ...(mp[wh] || {}), [kind]: true };
+  rec.meta = { ...(rec.meta || {}), _printed: mp };
+  try{ await sbFetch('/rest/v1/pr_orders?base=eq.'+encodeURIComponent(base), {method:'PATCH', headers:{Prefer:'return=minimal'}, body:JSON.stringify({meta:rec.meta, updated_at:new Date().toISOString()})}); }catch(e){}
+  renderSaved();
+}
 function printSavedPRWh(base, wh){
   const rec = savedCache.find(s=>s.base===base); if(!rec) return;
   printDocHtml(buildPRDocFromRec(rec, wh), plNum(rec.base, wh));
+  markDocPrinted(base, wh, 'pr');
 }
 function printSavedPR(base){
   const rec = savedCache.find(s=>s.base===base); if(!rec) return;
@@ -2112,6 +2121,7 @@ function openBoxLabelModalPL(){
 }
 function openBoxLabelForRecWh(base, wh){
   const rec = getSaved().find(s=>s.base===base); if(!rec) return;
+  window._blCtx = { base: base, wh: wh };
   const i = (rec.pl && rec.pl[wh]) || {};
   const src = (Array.isArray(i.lines) && i.lines.length) ? i.lines : (rec.lines||[]).filter(l=>l.wh===wh && (l.qty||0)>0);
   const boxes = calcPartialBoxesFromLines(src, wh);
@@ -2184,14 +2194,15 @@ async function sendToZebraBrowserPrint(zplData, labelCount) {
     const bpResponse = await fetch('http://localhost:9100/available', { method: 'GET', headers: { 'Content-Type': 'application/json' } });
     const devices = await bpResponse.json();
     const printer = (devices && devices.printer && devices.printer[0]) || (devices && devices[0]);
-    if (!printer) { showToast(t('bl_nozebra')); return; }
+    if (!printer) { showToast(t('bl_nozebra')); return false; }
     const writeRes = await fetch('http://localhost:9100/write', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ device: printer, data: zplData }) });
-    if (writeRes.ok) showToast(t('bl_done',{x:labelCount}));
+    if (writeRes.ok){ showToast(t('bl_done',{x:labelCount})); return true; }
     else throw new Error('Write failed: ' + writeRes.status);
   } catch(e) {
     showToast(t('bl_connfail'));
     const go = confirm(t('bl_sslhelp'));
     if (go) window.open('http://localhost:9100/ssl_support', '_blank');
+    return false;
   }
 }
 function openBoxLabelModal(boxes, order){
@@ -2233,7 +2244,9 @@ async function confirmBoxLabelPrint(){
     const whTotal = boxes.filter(b=>b.wh===box.wh).length;
     return buildBoxLabelZpl(box, whTotal, order);
   }).join('\n');
-  await sendToZebraBrowserPrint(zplAll, sel.length);
+  const ok = await sendToZebraBrowserPrint(zplAll, sel.length);
+  if(ok && window._blCtx) markDocPrinted(window._blCtx.base, window._blCtx.wh, 'label');
+  window._blCtx = null;
 }
 
 let plEditOpen = true, invEditOpen = true;
@@ -2810,8 +2823,8 @@ function renderSaved(){
       <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;">
       <span class="n" style="color:var(--text2);font-weight:700;">${fmtD(s.meta.date || s.savedAt)}</span>
       <span class="muted" style="font-size:11px;${stuck?'color:#dc2626;font-weight:800;':''}">⏱ ${ageLabel}</span>
-      <span style="background:#111;color:#fff;font-weight:800;font-size:12.5px;padding:2px 10px;border-radius:5px;">${esc(s.meta.cust||'')}</span>
-      <span style="background:#111;color:#fff;font-family:Consolas,monospace;font-weight:700;font-size:12px;padding:2px 10px;border-radius:5px;">PO ${esc(s.meta.po||'')}</span>
+      <span style="background:#111;color:#fff;font-weight:400;font-size:12.5px;padding:2px 10px;border-radius:5px;">${esc(s.meta.cust||'')}</span>
+      <span style="background:#111;color:#fff;font-family:Consolas,monospace;font-weight:400;font-size:12px;padding:2px 10px;border-radius:5px;">PO ${esc(s.meta.po||'')}</span>
       <span style="font-weight:700;">${tot.toLocaleString()} pcs</span>
       <span style="color:var(--ok);">$${amt.toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2})}</span>
       ${whs.map(w=>`<span class="chip chip-${w}">${w}</span>`).join('')}
@@ -2826,14 +2839,15 @@ function renderSaved(){
       <button class="btn btn-sm" style="color:var(--bad);" onclick="delSaved('${esc(s.base)}')">${t('del')}</button>
       </div>
       ${['SC','CA','BO','NA'].filter(w=>whs.includes(w)).map(w=>{
-        const c = w==='SC'?'#1d4ed8':(w==='CA'?'#c2410c':(w==='BO'?'#dc2626':'#6b7280'));
+        const mp = (s.meta && s.meta._printed && s.meta._printed[w]) || {};
+        const c = mp.pr ? '#16a34a' : (w==='SC'?'#1d4ed8':(w==='CA'?'#c2410c':(w==='BO'?'#dc2626':'#6b7280')));
         const plSaved = s.pl && s.pl[w] && s.pl[w].savedAt;
         const invPr = s.inv && s.inv[w] && s.inv[w].printed;
         return `<div style="display:flex;align-items:center;gap:6px;flex-wrap:wrap;margin-top:6px;padding-top:6px;border-top:1px dashed var(--border);">
         ${w!=='BO' && w!=='NA' ? `<input type="checkbox" class="bship-cb" data-base="${esc(s.base)}" data-wh="${w}" onchange="updateBatchBar()" title="Batch 작업에 포함 (출고 전=Batch Ship / 출고 후=Invoice Print)" style="width:15px;height:15px;accent-color:#1d4ed8;cursor:pointer;">` : ''}
         <span class="chip chip-${w}" style="min-width:34px;text-align:center;">${w}</span>
         <button class="btn btn-sm" style="background:${c};color:#fff;border-color:${c};" onclick="printSavedPRWh('${esc(s.base)}','${w}')">🖨 Pull Request</button>
-        ${w!=='BO' && w!=='NA' ? `<button class="btn btn-sm" style="background:#7c3aed;color:#fff;border-color:#7c3aed;" onclick="openBoxLabelForRecWh('${esc(s.base)}','${w}')">🏷 Box Label</button>
+        ${w!=='BO' && w!=='NA' ? `<button class="btn btn-sm" style="background:${mp.label?'#16a34a':'#7c3aed'};color:#fff;border-color:${mp.label?'#16a34a':'#7c3aed'};" onclick="openBoxLabelForRecWh('${esc(s.base)}','${w}')">🏷 Box Label</button>
         <button class="btn btn-sm" style="${plSaved?'background:#16a34a;border-color:#16a34a;':'background:#f59e0b;border-color:#f59e0b;'}color:#fff;" onclick="openPLWh('${esc(s.base)}','${w}')">📦 Packing List</button>
         ${plSaved ? `<button class="btn btn-sm" style="${invPr?'background:#16a34a;border-color:#16a34a;':'background:#dc2626;border-color:#dc2626;'}color:#fff;" onclick="openInvoiceWh('${esc(s.base)}','${w}')">🧾 Invoice</button>` : ''}` : ''}
         ${plSaved ? `<span class="muted" style="margin-left:auto;font-size:11px;white-space:nowrap;">🚚 ${t('shipped')} ${fmtD((s.pl[w].date) || s.pl[w].savedAt)}</span>` : ''}
