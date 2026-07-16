@@ -110,7 +110,7 @@ main{max-width:1100px;margin:0 auto;padding:16px;}
     <button class="btn btn-sm" onclick="doLogout()" style="padding:2px 8px;font-size:10px;" data-i18n="logout">로그아웃</button>
   </span>
   <select id="lang-sel" onchange="setLang(this.value)" style="font-size:11px;padding:3px 6px;border-radius:5px;border:none;background:#1d3f66;color:#fff;"><option value="ko">한국어</option><option value="en">English</option><option value="es">Español</option></select>
-  <span style="font-size:10px;color:#9fb8d4;">v39</span>
+  <span style="font-size:10px;color:#9fb8d4;">v40</span>
 </div>
 <div id="po-viewer" style="display:none;position:fixed;top:0;right:0;width:44%;height:100vh;background:#fff;border-left:2px solid var(--border);z-index:60;box-shadow:-6px 0 20px rgba(0,0,0,.15);">
   <div style="display:flex;align-items:center;gap:8px;padding:7px 12px;background:var(--header);color:#fff;font-size:12px;font-weight:700;">
@@ -1384,6 +1384,134 @@ function buildStageDoc(rec, wh, kind, d){
     ${note}
   </div>`;
 }
+// ═══════════════ 🏷 Box Label — Zebra ZPL (IMS에서 그대로 이식, ZP450 4x6) ═══════════════
+function showToast(msg){
+  const el = document.createElement('div');
+  el.style.cssText = 'position:fixed;bottom:20px;right:20px;background:#0f2a4a;color:#fff;padding:10px 16px;border-radius:8px;font-size:12px;font-weight:700;z-index:999999;box-shadow:0 4px 12px rgba(0,0,0,.25);';
+  el.textContent = msg;
+  document.body.appendChild(el);
+  setTimeout(()=>el.remove(), 4000);
+}
+function calcPartialBoxList(){
+  const d = plDrafts[plWh] || {};
+  const byBox = {};
+  (d.lines||[]).forEach(l=>{
+    const loose = (l.qty||0) % (l.ppb||72);
+    if(loose > 0 && l.pbox){
+      const bn = String(l.pbox);
+      if(!byBox[bn]) byBox[bn] = { boxNum: bn, items: [] };
+      byBox[bn].items.push({ styleNum: l.style||'', color: l.color||'', size: l.size||'', qty: loose });
+    }
+  });
+  return Object.values(byBox).sort((a,b)=>Number(a.boxNum)-Number(b.boxNum));
+}
+function buildBoxLabelZpl(box, totalBoxes, order) {
+  // ZP450 4x6 inch = 812w x 1218h dots (203 dpi) — IMS 원본 그대로
+  const poNum = (order.customer_po || '').substring(0, 20);
+  const custName = (order.customer_name || '').substring(0, 30);
+  const custFontSize = custName.length > 20 ? 45 : custName.length > 15 ? 52 : 60;
+  const groups = {};
+  box.items.forEach(item => {
+    const sNum = item.styleNum || box.styleNum || '';
+    const col = item.color || box.color || '';
+    const key = sNum + '|' + col;
+    if (!groups[key]) groups[key] = { styleNum: sNum, color: col, sizes: [] };
+    groups[key].sizes.push({ size: item.size, qty: item.qty });
+  });
+  const totalQty = box.items.reduce((s, i) => s + (i.qty || 0), 0);
+  let totalLineCount = 0;
+  Object.values(groups).forEach(g => { totalLineCount += 1 + g.sizes.length; });
+  totalLineCount += 1;
+  const ITEM_START_Y = 475;
+  const ITEM_END_Y = 1140;
+  const availH = ITEM_END_Y - ITEM_START_Y;
+  const lineH = Math.min(80, Math.max(40, Math.floor(availH / totalLineCount)));
+  const itemFontH = Math.min(65, Math.max(32, lineH - 14));
+  const styleFontH = Math.max(28, Math.round(itemFontH * 0.75));
+  let itemLines = '';
+  let yPos = ITEM_START_Y;
+  Object.values(groups).forEach(g => {
+    itemLines += '^FO30,' + yPos + '^A0N,' + styleFontH + ',' + styleFontH + '^FD' + g.styleNum + '  ' + g.color + '^FS\n';
+    yPos += Math.round(lineH * 0.82);
+    g.sizes.forEach(s => {
+      itemLines += '^FO30,' + yPos + '^A0N,' + itemFontH + ',' + itemFontH + '^FD' + s.size + '^FS\n';
+      itemLines += '^FO300,' + yPos + '^A0N,' + itemFontH + ',' + itemFontH + '^FD' + s.qty + ' pcs^FS\n';
+      yPos += lineH;
+    });
+  });
+  const totalDivY = yPos + 4;
+  const totalTextY = totalDivY + 10;
+  return '^XA\n'
+    + '^MMT\n^PW812\n^LL1218\n^LS0\n'
+    + '^FO30,35^A0N,' + custFontSize + ',' + custFontSize + '^FD' + custName + '^FS\n'
+    + '^FO30,120^A0N,40,40^FDPO#^FS\n'
+    + '^FO30,165^A0N,130,130^FD' + poNum + '^FS\n'
+    + '^FO30,340^A0N,95,95^FDBOX ' + box.boxNum + ' of ' + totalBoxes + '^FS\n'
+    + '^FO20,460^GB772,5,5^FS\n'
+    + itemLines
+    + '^FO20,' + totalDivY + '^GB772,3,3^FS\n'
+    + '^FO30,' + totalTextY + '^A0N,' + itemFontH + ',' + itemFontH + '^FDTotal:^FS\n'
+    + '^FO300,' + totalTextY + '^A0N,' + itemFontH + ',' + itemFontH + '^FD' + totalQty + ' pcs^FS\n'
+    + '^FO0,1175^FB812,1,0,C,0^A0N,28,28^FDPacific Sports^FS\n'
+    + '^XZ';
+}
+async function sendToZebraBrowserPrint(zplData, labelCount) {
+  showToast('🏷 Zebra 프린터 연결 중...');
+  try {
+    const bpResponse = await fetch('http://localhost:9100/available', { method: 'GET', headers: { 'Content-Type': 'application/json' } });
+    const devices = await bpResponse.json();
+    const printer = (devices && devices.printer && devices.printer[0]) || (devices && devices[0]);
+    if (!printer) { showToast('❌ Zebra 프린터를 찾을 수 없어요. Browser Print 실행 확인하세요.'); return; }
+    const writeRes = await fetch('http://localhost:9100/write', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ device: printer, data: zplData }) });
+    if (writeRes.ok) showToast('✅ ' + labelCount + '개 라벨 프린트 완료!');
+    else throw new Error('Write failed: ' + writeRes.status);
+  } catch(e) {
+    showToast('⚠️ Browser Print 연결 실패');
+    const go = confirm('Zebra Browser Print 연결에 실패했어요.\n\n한 번만 설정 필요:\nChrome에서 http://localhost:9100/ssl_support 접속 → "고급" → "localhost로 이동" 클릭\n\n지금 해당 페이지를 열까요?');
+    if (go) window.open('http://localhost:9100/ssl_support', '_blank');
+  }
+}
+function openBoxLabelModal(){
+  const boxes = calcPartialBoxList();
+  if(!boxes.length){ showToast('❌ Partial box 없음 — P.Box# 지정을 확인하세요'); return; }
+  window._blBoxes = boxes;
+  const boxListHtml = boxes.map((box, idx)=>{
+    const desc = box.items.map(i=>`${i.styleNum} ${i.color} ${i.size} ${i.qty}pcs`).join(' / ');
+    return '<label style="display:flex;align-items:center;gap:8px;padding:6px 10px;border-bottom:1px solid #f3f4f6;cursor:pointer;">'
+      + '<input type="checkbox" class="box-label-cb" value="' + idx + '" checked style="width:16px;height:16px;accent-color:#7c3aed;cursor:pointer;">'
+      + '<span style="font-size:12px;font-weight:700;color:#7c3aed;min-width:56px;font-family:Consolas,monospace;">BOX ' + esc(box.boxNum) + '</span>'
+      + '<span style="font-size:12px;color:#374151;">' + esc(desc) + '</span></label>';
+  }).join('');
+  const existing = document.getElementById('modal-box-select');
+  if (existing) existing.remove();
+  const modal = document.createElement('div');
+  modal.id = 'modal-box-select';
+  modal.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,0.5);z-index:999999;display:flex;align-items:center;justify-content:center;';
+  modal.innerHTML = '<div style="background:#fff;border-radius:12px;width:440px;max-width:95vw;max-height:85vh;overflow:hidden;display:flex;flex-direction:column;box-shadow:0 20px 60px rgba(0,0,0,0.3);">'
+    + '<div style="background:#7c3aed;padding:14px 20px;display:flex;justify-content:space-between;align-items:center;">'
+    + '<span style="color:#fff;font-weight:700;font-size:14px;">🏷 Box Label 선택</span>'
+    + '<button onclick="document.getElementById(\'modal-box-select\').remove()" style="background:none;border:none;color:#fff;font-size:18px;cursor:pointer;">✕</button>'
+    + '</div>'
+    + '<div style="overflow-y:auto;flex:1;">' + boxListHtml + '</div>'
+    + '<div style="padding:12px 16px;border-top:1px solid #e5e7eb;display:flex;justify-content:flex-end;gap:8px;">'
+    + '<button onclick="document.getElementById(\'modal-box-select\').remove()" style="padding:7px 16px;background:#f3f4f6;border:1px solid #d1d5db;border-radius:6px;cursor:pointer;">취소</button>'
+    + '<button onclick="confirmBoxLabelPrint()" style="padding:7px 16px;background:#7c3aed;color:#fff;border:none;border-radius:6px;font-weight:700;cursor:pointer;">🏷 프린트</button>'
+    + '</div></div>';
+  document.body.appendChild(modal);
+}
+async function confirmBoxLabelPrint(){
+  const boxes = window._blBoxes || [];
+  const checked = [...document.querySelectorAll('.box-label-cb:checked')].map(cb=>Number(cb.value));
+  const sel = boxes.filter((_,i)=>checked.includes(i));
+  document.getElementById('modal-box-select')?.remove();
+  if(!sel.length) return;
+  const rec = savedCache.find(s=>s.base===plBase);
+  const meta = (rec && rec.meta) || {};
+  const order = { customer_po: meta.po || '', customer_name: meta.cust || '' };
+  const zplAll = sel.map(box => buildBoxLabelZpl(box, boxes.length, order)).join('\n');
+  await sendToZebraBrowserPrint(zplAll, sel.length);
+}
+
 let plEditOpen = false, invEditOpen = false;
 function invDocData(){
   const d = plDrafts[plWh] || {};
@@ -1449,6 +1577,7 @@ function renderPL(){
       <div class="no-print" style="display:flex;gap:6px;justify-content:flex-end;margin-bottom:12px;flex-wrap:wrap;">
         <button class="btn btn-sm btn-primary" onclick="savePL()">${t('save_pl')}</button>
         <button class="btn btn-sm" id="plpdf-btn" onclick="downloadPLPdf('packing')">${t('pl_pdf')}</button>
+        <button class="btn btn-sm" style="background:#7c3aed;color:#fff;border-color:#7c3aed;" onclick="openBoxLabelModal()">🏷 Box Label</button>
         <button class="btn btn-sm" style="background:#065f46;color:#fff;border-color:#065f46;" onclick="plFieldsToDraft();plShowInv=!plShowInv;if(plShowInv)syncInvDraft();renderPL();">${plShowInv?t('fold_inv'):t('create_inv')}</button>
         ${plShowInv?`<button class="btn btn-sm btn-primary" onclick="saveInvStage()">${t('save_inv')}</button><button class="btn btn-sm" id="invpdf-btn" onclick="downloadPLPdf('invoice')">${t('inv_pdf')}</button>`:''}
         <button class="btn btn-sm" onclick="closePL()">${t('close')}</button>
@@ -1539,8 +1668,8 @@ function renderDash(){
         totQ += q; totAmt += a;
         if(!byCust[cust]) byCust[cust] = {q:0, a:0, o:{}};
         byCust[cust].q += q; byCust[cust].a += a; byCust[cust].o[rec.base] = 1;
-        const st = l.style || '—';
-        if(!byItem[st]) byItem[st] = {q:0, a:0};
+        const st = (l.style || '—') + '\u0001' + (l.color || '');
+        if(!byItem[st]) byItem[st] = {style: l.style || '—', color: l.color || '', q:0, a:0};
         byItem[st].q += q; byItem[st].a += a;
       });
     });
@@ -1552,9 +1681,9 @@ function renderDash(){
   const custRows = Object.entries(byCust).sort((x,y)=>y[1].a-x[1].a).map(([c,v])=>
     `<tr><td class="tl" style="font-weight:700;">${esc(c)}</td><td>${Object.keys(v.o).length}</td><td>${v.q.toLocaleString()}</td><td style="font-weight:800;color:var(--ok);">${money(v.a)}</td></tr>`).join('')
     || `<tr><td colspan="4" class="muted" style="padding:12px;">—</td></tr>`;
-  const itemRows = Object.entries(byItem).sort((x,y)=>y[1].a-x[1].a).map(([s,v])=>
-    `<tr><td style="font-weight:700;">${esc(s)}</td><td>${v.q.toLocaleString()}</td><td style="font-weight:800;color:var(--ok);">${money(v.a)}</td></tr>`).join('')
-    || `<tr><td colspan="3" class="muted" style="padding:12px;">—</td></tr>`;
+  const itemRows = Object.values(byItem).sort((x,y)=>y.a-x.a).map(v=>
+    `<tr><td style="font-weight:700;">${esc(v.style)}</td><td class="tl">${esc(v.color)}</td><td>${v.q.toLocaleString()}</td><td style="font-weight:800;color:var(--ok);">${money(v.a)}</td></tr>`).join('')
+    || `<tr><td colspan="4" class="muted" style="padding:12px;">—</td></tr>`;
   el.innerHTML = `
     <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:12px;margin-bottom:18px;" class="dash-grid">
       ${card(t('d_sales'), money(totAmt), 'var(--ok)')}
@@ -1568,7 +1697,7 @@ function renderDash(){
       </div>
       <div>
         <div style="font-weight:800;font-size:13px;color:var(--header);margin-bottom:8px;">${t('d_byitem')}</div>
-        <table class="etbl"><thead><tr><th>Style#</th><th>Pcs</th><th>Sales</th></tr></thead><tbody>${itemRows}</tbody></table>
+        <table class="etbl"><thead><tr><th>Style#</th><th class="tl">Color</th><th>Pcs</th><th>Sales</th></tr></thead><tbody>${itemRows}</tbody></table>
       </div>
     </div>`;
 }
