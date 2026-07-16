@@ -109,7 +109,7 @@ main{max-width:1100px;margin:0 auto;padding:16px;}
     <button class="btn btn-sm" onclick="doLogout()" style="padding:2px 8px;font-size:10px;" data-i18n="logout">로그아웃</button>
   </span>
   <select id="lang-sel" onchange="setLang(this.value)" style="font-size:11px;padding:3px 6px;border-radius:5px;border:none;background:#1d3f66;color:#fff;"><option value="ko">한국어</option><option value="en">English</option><option value="es">Español</option></select>
-  <span style="font-size:10px;color:#9fb8d4;">v47</span>
+  <span style="font-size:10px;color:#9fb8d4;">v50</span>
 </div>
 <div id="po-viewer" style="display:none;position:fixed;top:0;right:0;width:44%;height:100vh;background:#fff;border-left:2px solid var(--border);z-index:60;box-shadow:-6px 0 20px rgba(0,0,0,.15);">
   <div style="display:flex;align-items:center;gap:8px;padding:7px 12px;background:var(--header);color:#fff;font-size:12px;font-weight:700;">
@@ -1329,10 +1329,21 @@ async function savePL(){
   plFieldsToDraft();
   rec.pl = rec.pl || {};
   rec.pl[plWh] = { ...plDrafts[plWh], savedAt: new Date().toISOString() };
-  const r = await sbFetch('/rest/v1/pr_orders?base=eq.'+encodeURIComponent(plBase), {method:'PATCH', headers:{Prefer:'return=minimal'}, body:JSON.stringify({pl:rec.pl, updated_at:new Date().toISOString()})});
+  // Invoice 자동 생성 (직원이 Invoice를 직접 저장한 적 없으면 PL 기준으로 초안 생성)
+  rec.inv = rec.inv || {};
+  const exInv = rec.inv[plWh];
+  if(!exInv || exInv.auto){
+    const ivd = invDrafts[plWh] || {};
+    const invLines = (ivd._touched && Array.isArray(ivd.lines) && ivd.lines.length)
+      ? ivd.lines
+      : JSON.parse(JSON.stringify(rec.pl[plWh].lines || []));
+    rec.inv[plWh] = { savedAt: new Date().toISOString(), auto: true, freight: Number(ivd.freight)||0, lines: invLines };
+    invDrafts[plWh] = { freight: Number(ivd.freight)||0, _touched: false, lines: JSON.parse(JSON.stringify(invLines)) };
+  }
+  const r = await sbFetch('/rest/v1/pr_orders?base=eq.'+encodeURIComponent(plBase), {method:'PATCH', headers:{Prefer:'return=minimal'}, body:JSON.stringify({pl:rec.pl, inv:rec.inv, updated_at:new Date().toISOString()})});
   if(!r.ok){ alert(t('save_fail')); return; }
   renderSaved(); renderPL();
-  alert(t('a_plsaved',{x:plNum(plBase, plWh)}) + (plDrafts[plWh].serial ? ` (${plDrafts[plWh].serial})` : ''));
+  alert(t('a_plsaved',{x:plNum(plBase, plWh)}) + (plDrafts[plWh].serial ? ` (${plDrafts[plWh].serial})` : '') + ' + Invoice');
 }
 function plFieldsToDraft(){
   if(!$('plf-serial')) return;
@@ -1348,6 +1359,30 @@ async function downloadPLPdf(kind){
   const btn = document.getElementById(kind==='invoice' ? 'invpdf-btn' : 'plpdf-btn');
   const data = (kind==='invoice') ? invDocData() : (plDrafts[plWh]||{});
   await downloadPdfHtml(buildStageDoc(rec, plWh, kind, data), plNum(plBase,plWh) + suffix + '.pdf', btn);
+  if(kind==='invoice') markInvPrinted();
+}
+async function markInvPrinted(){
+  const rec = savedCache.find(s=>s.base===plBase); if(!rec) return;
+  rec.inv = rec.inv || {};
+  const ivd = invDrafts[plWh] || {};
+  const ex = rec.inv[plWh] || {};
+  rec.inv[plWh] = {
+    ...ex,
+    savedAt: ex.savedAt || new Date().toISOString(),
+    auto: false,
+    printed: true,
+    freight: Number(ivd.freight) || ex.freight || 0,
+    lines: (Array.isArray(ivd.lines) && ivd.lines.length) ? ivd.lines : (ex.lines || [])
+  };
+  try{ await sbFetch('/rest/v1/pr_orders?base=eq.'+encodeURIComponent(plBase), {method:'PATCH', headers:{Prefer:'return=minimal'}, body:JSON.stringify({inv:rec.inv, updated_at:new Date().toISOString()})}); }catch(e){}
+  renderSaved();
+}
+function printStageDoc(kind){
+  const rec = savedCache.find(s=>s.base===plBase); if(!rec) return;
+  plFieldsToDraft();
+  const data = (kind==='invoice') ? invDocData() : (plDrafts[plWh]||{});
+  printDocHtml(buildStageDoc(rec, plWh, kind, data), plNum(plBase, plWh) + (kind==='invoice'?'-INV':'-PL'));
+  if(kind==='invoice') markInvPrinted();
 }
 function buildStageDoc(rec, wh, kind, d){
   const meta = rec.meta || {};
@@ -1630,9 +1665,10 @@ function renderPL(){
       <div class="no-print" style="display:flex;gap:6px;justify-content:flex-end;margin-bottom:12px;flex-wrap:wrap;">
         <button class="btn btn-sm btn-primary" onclick="savePL()">${t('save_pl')}</button>
         <button class="btn btn-sm" id="plpdf-btn" onclick="downloadPLPdf('packing')">${t('pl_pdf')}</button>
+        <button class="btn btn-sm" onclick="printStageDoc('packing')">🖨</button>
         <button class="btn btn-sm" style="background:#7c3aed;color:#fff;border-color:#7c3aed;" onclick="openBoxLabelModalPL()">🏷 Box Label</button>
         <button class="btn btn-sm" style="background:#065f46;color:#fff;border-color:#065f46;" onclick="plFieldsToDraft();plShowInv=!plShowInv;if(plShowInv)syncInvDraft();renderPL();">${plShowInv?t('fold_inv'):t('create_inv')}</button>
-        ${plShowInv?`<button class="btn btn-sm btn-primary" onclick="saveInvStage()">${t('save_inv')}</button><button class="btn btn-sm" id="invpdf-btn" onclick="downloadPLPdf('invoice')">${t('inv_pdf')}</button>`:''}
+        ${plShowInv?`<button class="btn btn-sm btn-primary" onclick="saveInvStage()">${t('save_inv')}</button><button class="btn btn-sm" id="invpdf-btn" onclick="downloadPLPdf('invoice')">${t('inv_pdf')}</button><button class="btn btn-sm" onclick="printStageDoc('invoice')">🖨 Invoice</button>`:''}
         <button class="btn btn-sm" onclick="closePL()">${t('close')}</button>
       </div>
       <details class="no-print" style="margin-bottom:14px;border:1px solid var(--border);border-radius:8px;padding:8px 12px;" ${plEditOpen?'open':''} ontoggle="plEditOpen=this.open">
@@ -1759,7 +1795,7 @@ function recStatus(s){
   const whs = (s.whs||[]).filter(w=>w!=='BO');
   if(!whs.length) return { label: t('st_bo'), color:'#b91c1c', bg:'#fee2e2' };
   const plDone = whs.filter(w=>s.pl && s.pl[w] && s.pl[w].savedAt).length;
-  const invDone = whs.filter(w=>s.inv && s.inv[w] && s.inv[w].savedAt).length;
+  const invDone = whs.filter(w=>s.inv && s.inv[w] && s.inv[w].printed).length;
   if(invDone >= whs.length) return { label: t('st_complete'), color:'#166534', bg:'#dcfce7' };
   if(plDone >= whs.length) return { label: t('st_packed'), color:'#0e7490', bg:'#cffafe' };
   if(plDone > 0) return { label: t('st_inproc'), color:'#92400e', bg:'#fef3c7' };
@@ -1790,7 +1826,7 @@ function renderSaved(){
       ${(s.whs||[]).filter(w=>w!=='BO').map(w=>`<button class="btn btn-sm" style="background:${w==='SC'?'#1d4ed8':'#c2410c'};color:#fff;border-color:${w==='SC'?'#1d4ed8':'#c2410c'};" onclick="printSavedPRWh('${esc(s.base)}','${w}')">🖨 ${w} Pull Request</button>`).join('')}
       <button class="btn btn-sm" style="background:#7c3aed;color:#fff;border-color:#7c3aed;" onclick="openBoxLabelForRec('${esc(s.base)}')">🏷 Box Label</button>
       <button class="btn btn-sm" style="${s.pl&&Object.keys(s.pl).length ? 'background:#16a34a;border-color:#16a34a;' : 'background:#f59e0b;border-color:#f59e0b;'}color:#fff;" onclick="openPL('${esc(s.base)}')">📦 Packing List</button>
-      ${s.pl&&Object.keys(s.pl).length ? `<button class="btn btn-sm" style="${s.inv&&Object.keys(s.inv).length ? 'background:#16a34a;border-color:#16a34a;' : 'background:#f59e0b;border-color:#f59e0b;'}color:#fff;" onclick="openInvoice('${esc(s.base)}')">🧾 Invoice</button>` : ''}
+      ${s.pl&&Object.keys(s.pl).length ? `<button class="btn btn-sm" style="${Object.values(s.inv||{}).some(v=>v&&v.printed) ? 'background:#16a34a;border-color:#16a34a;' : 'background:#f59e0b;border-color:#f59e0b;'}color:#fff;" onclick="openInvoice('${esc(s.base)}')">🧾 Invoice</button>` : ''}
       <button class="btn btn-sm" onclick="viewSavedPO('${esc(s.base)}')">📄 PO</button>
       <button class="btn btn-sm" onclick="loadSaved('${esc(s.base)}')">${t('open_edit')}</button>
       <button class="btn btn-sm" style="color:var(--bad);" onclick="delSaved('${esc(s.base)}')">${t('del')}</button>
