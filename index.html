@@ -109,7 +109,7 @@ main{max-width:1100px;margin:0 auto;padding:16px;}
     <button class="btn btn-sm" onclick="doLogout()" style="padding:2px 8px;font-size:10px;" data-i18n="logout">로그아웃</button>
   </span>
   <select id="lang-sel" onchange="setLang(this.value)" style="font-size:11px;padding:3px 6px;border-radius:5px;border:none;background:#1d3f66;color:#fff;"><option value="ko">한국어</option><option value="en">English</option><option value="es">Español</option></select>
-  <span style="font-size:10px;color:#9fb8d4;">v53</span>
+  <span style="font-size:10px;color:#9fb8d4;">v54</span>
 </div>
 <div id="po-viewer" style="display:none;position:fixed;top:0;right:0;width:44%;height:100vh;background:#fff;border-left:2px solid var(--border);z-index:60;box-shadow:-6px 0 20px rgba(0,0,0,.15);">
   <div style="display:flex;align-items:center;gap:8px;padding:7px 12px;background:var(--header);color:#fff;font-size:12px;font-weight:700;">
@@ -301,6 +301,9 @@ const I18N = {
  save_pl:{ko:'💾 Packing List 저장',en:'💾 Save Packing List',es:'💾 Guardar Packing List'},
  pl_pdf:{ko:'⬇ Packing List PDF',en:'⬇ Packing List PDF',es:'⬇ PDF de Packing List'},
  create_inv:{ko:'🧾 Create Invoice',en:'🧾 Create Invoice',es:'🧾 Crear Factura'},
+ attach:{ko:'📎 첨부 (Signed BOL 등)',en:'📎 Attachments (Signed BOL etc.)',es:'📎 Adjuntos (BOL firmado)'},
+ attach_add:{ko:'＋ 파일 추가',en:'＋ Add file',es:'＋ Agregar archivo'},
+ attach_note:{ko:'첨부 후 💾 저장해야 공유됩니다',en:'Save 💾 to share attachments',es:'Guarde 💾 para compartir'},
  fold_inv:{ko:'🧾 Invoice 접기',en:'🧾 Hide Invoice',es:'🧾 Ocultar Factura'},
  save_inv:{ko:'💾 Invoice 저장',en:'💾 Save Invoice',es:'💾 Guardar Factura'},
  inv_pdf:{ko:'⬇ Invoice PDF',en:'⬇ Invoice PDF',es:'⬇ PDF de Factura'},
@@ -1276,7 +1279,7 @@ function openPL(base){
     const baseLines = (Array.isArray(i.lines) && i.lines.length)
       ? JSON.parse(JSON.stringify(i.lines))
       : (rec.lines||[]).filter(l=>l.wh===w && (l.qty||0)>0).map(l=>({style:l.style||'', desc:l.desc||'', color:l.color||'', size:l.size||'', qty:l.qty||0, price:l.price||0, ppb:l.ppb||72, pbox:l.pbox||''}));
-    plDrafts[w] = { serial:i.serial||'', via:i.via||'', trackings:(i.trackings&&i.trackings.length?i.trackings:(i.tracking?[i.tracking]:[''])), date:i.date||todayStr(), note:i.note||'', lines: baseLines };
+    plDrafts[w] = { serial:i.serial||'', via:i.via||'', trackings:(i.trackings&&i.trackings.length?i.trackings:(i.tracking?[i.tracking]:[''])), date:i.date||todayStr(), note:i.note||'', lines: baseLines, files: Array.isArray(i.files)?JSON.parse(JSON.stringify(i.files)):[] };
     const iv = (rec.inv && rec.inv[w]) || {};
     invDrafts[w] = {
       freight: Number(iv.freight)||0,
@@ -1312,6 +1315,36 @@ function delTracking(i){
   t.splice(i,1);
   if(!t.length) t.push('');
   renderPL();
+}
+function plAttachAdd(input){
+  const f = input.files && input.files[0]; if(!f) return;
+  if(f.size > 8*1024*1024){ alert('파일이 너무 큽니다 (8MB 이하만 가능)'); input.value=''; return; }
+  const rd = new FileReader();
+  rd.onload = () => {
+    plFieldsToDraft();
+    plDrafts[plWh] = plDrafts[plWh] || {};
+    (plDrafts[plWh].files = plDrafts[plWh].files || []).push({name:f.name, type:f.type||'application/pdf', data:rd.result, ts:new Date().toISOString()});
+    renderPL();
+    showToast('📎 ' + f.name + ' — ' + t('attach_note'));
+  };
+  rd.readAsDataURL(f);
+}
+function plAttachDel(i){
+  if(!confirm('첨부 파일을 삭제할까요?')) return;
+  plFieldsToDraft();
+  if(plDrafts[plWh] && plDrafts[plWh].files) plDrafts[plWh].files.splice(i,1);
+  renderPL();
+}
+function plAttachView(i){
+  const f = ((plDrafts[plWh]||{}).files||[])[i]; if(!f || !f.data) return;
+  try{
+    const b64 = f.data.split(',')[1];
+    const bin = atob(b64);
+    const arr = new Uint8Array(bin.length);
+    for(let j=0;j<bin.length;j++) arr[j] = bin.charCodeAt(j);
+    const url = URL.createObjectURL(new Blob([arr], {type: f.type||'application/pdf'}));
+    window.open(url, '_blank');
+  }catch(e){ alert('파일을 열 수 없습니다: ' + e.message); }
 }
 async function saveInvStage(){
   const rec = savedCache.find(s=>s.base===plBase); if(!rec) return;
@@ -1350,7 +1383,8 @@ function plFieldsToDraft(){
   const g = id => ($(id)?$(id).value:'');
   const trackings = [...document.querySelectorAll('[id^="plf-tracking-"]')].map(el=>el.value);
   const keepLines = (plDrafts[plWh]||{}).lines;
-  plDrafts[plWh] = { serial:g('plf-serial'), via:g('plf-via'), trackings:(trackings.length?trackings:['']), date:g('plf-date'), note:g('plf-note'), lines: keepLines };
+  const keepFiles = (plDrafts[plWh]||{}).files;
+  plDrafts[plWh] = { serial:g('plf-serial'), via:g('plf-via'), trackings:(trackings.length?trackings:['']), date:g('plf-date'), note:g('plf-note'), lines: keepLines, files: keepFiles };
 }
 async function downloadPLPdf(kind){
   const rec = getSaved().find(s=>s.base===plBase); if(!rec) return;
@@ -1636,7 +1670,7 @@ function refreshPLPreview(){
   const rec = savedCache.find(s=>s.base===plBase); if(!rec) return;
   const d = plDrafts[plWh]||{};
   const pv = $('pl-doc-preview');
-  if(pv) pv.innerHTML = buildStageDoc(rec, plWh, 'packing', d) + (plShowInv ? '<hr style="margin:24px 0;border:none;border-top:2px dashed var(--border);">' + buildStageDoc(rec, plWh, 'invoice', invDocData()) : '');
+  if(pv) pv.innerHTML = plShowInv ? buildStageDoc(rec, plWh, 'invoice', invDocData()) : buildStageDoc(rec, plWh, 'packing', d);
 }
 function renderPL(){
   const rec = getSaved().find(s=>s.base===plBase);
@@ -1645,11 +1679,12 @@ function renderPL(){
   const d = plDrafts[plWh] || {};
   $('pl-area').innerHTML = `
     <div class="doc-tabs" style="margin-top:0;">${(rec.whs||[]).map(w=>
-      `<div class="doc-tab ${w===plWh?'active':''}" onclick="plFieldsToDraft();plWh='${w}';plShowInv=false;renderPL();">
+      `<div class="doc-tab ${w===plWh?'active':''}" onclick="plFieldsToDraft();plWh='${w}';renderPL();">
         ${w} <span style="font-family:Consolas,monospace;font-size:10px;">${plNum(rec.base,w)}</span>${plInfo(rec,w).savedAt?' ✓':''}
       </div>`).join('')}
     </div>
     <div class="doc-view">
+      ${plShowInv ? '' : `
       <div class="grid g6 no-print" style="margin-bottom:12px;">
         <div class="ff"><label>${t('l_serial')}</label><input class="fi" id="plf-serial" value="${esc(d.serial||'')}" placeholder="예: 4072S" onchange="plFieldChanged()" style="font-family:Consolas,monospace;font-weight:700;"></div>
         <div class="ff"><label>Via</label><input class="fi" id="plf-via" value="${esc(d.via||'')}" placeholder="UPS Ground" onchange="plFieldChanged()"></div>
@@ -1661,16 +1696,14 @@ function renderPL(){
         </div>
         <div class="ff"><label>Ship Date</label><input class="fi" id="plf-date" type="date" value="${esc(d.date||todayStr())}" onchange="plFieldChanged()"></div>
         <div class="ff"><label>Note</label><input class="fi" id="plf-note" value="${esc(d.note||'')}" onchange="plFieldChanged()"></div>
-      </div>
+      </div>`}
       <div class="no-print" style="display:flex;gap:6px;justify-content:flex-end;margin-bottom:12px;flex-wrap:wrap;">
-        <button class="btn btn-sm btn-primary" onclick="savePL()">${t('save_pl')}</button>
-        <button class="btn btn-sm" id="plpdf-btn" onclick="downloadPLPdf('packing')">${t('pl_pdf')}</button>
-        <button class="btn btn-sm" onclick="printStageDoc('packing')">🖨</button>
-        <button class="btn btn-sm" style="background:#7c3aed;color:#fff;border-color:#7c3aed;" onclick="openBoxLabelModalPL()">🏷 Box Label</button>
-        <button class="btn btn-sm" style="background:#065f46;color:#fff;border-color:#065f46;" onclick="plFieldsToDraft();plShowInv=!plShowInv;if(plShowInv)syncInvDraft();renderPL();">${plShowInv?t('fold_inv'):t('create_inv')}</button>
-        ${plShowInv?`<button class="btn btn-sm btn-primary" onclick="saveInvStage()">${t('save_inv')}</button><button class="btn btn-sm" id="invpdf-btn" onclick="downloadPLPdf('invoice')">${t('inv_pdf')}</button><button class="btn btn-sm" onclick="printStageDoc('invoice')">🖨 Invoice</button>`:''}
+        ${plShowInv
+          ? `<button class="btn btn-sm btn-primary" onclick="saveInvStage()">${t('save_inv')}</button><button class="btn btn-sm" id="invpdf-btn" onclick="downloadPLPdf('invoice')">${t('inv_pdf')}</button><button class="btn btn-sm" onclick="printStageDoc('invoice')">🖨 Invoice</button>`
+          : `<button class="btn btn-sm btn-primary" onclick="savePL()">${t('save_pl')}</button><button class="btn btn-sm" id="plpdf-btn" onclick="downloadPLPdf('packing')">${t('pl_pdf')}</button><button class="btn btn-sm" onclick="printStageDoc('packing')">🖨</button>`}
         <button class="btn btn-sm" onclick="closePL()">${t('close')}</button>
       </div>
+      ${plShowInv ? '' : `
       <details class="no-print" style="margin-bottom:14px;border:1px solid var(--border);border-radius:8px;padding:8px 12px;" ${plEditOpen?'open':''} ontoggle="plEditOpen=this.open">
         <summary style="cursor:pointer;font-weight:700;font-size:12px;color:var(--primary);">✏️ ${t('pl_edit')}</summary>
         <div style="overflow-x:auto;margin-top:8px;">
@@ -1689,6 +1722,14 @@ function renderPL(){
         </div>
         <button class="btn btn-sm" style="margin-top:6px;" onclick="plLineAdd()">＋</button>
       </details>
+      <div class="no-print" style="margin-bottom:14px;border:1px dashed var(--border);border-radius:8px;padding:8px 12px;display:flex;align-items:center;gap:8px;flex-wrap:wrap;">
+        <span style="font-weight:700;font-size:12px;color:var(--muted);">${t('attach')}</span>
+        ${(d.files||[]).map((f,i)=>`<span style="background:#eef2ff;border:1px solid #c7d2fe;border-radius:6px;padding:3px 9px;font-size:11px;white-space:nowrap;">
+          <a href="#" onclick="plAttachView(${i});return false;" style="color:#1d4ed8;text-decoration:none;font-weight:600;">${esc(f.name)}</a>
+          <a href="#" onclick="plAttachDel(${i});return false;" style="color:var(--bad);margin-left:5px;text-decoration:none;">✕</a>
+        </span>`).join('')}
+        <label class="btn btn-sm" style="cursor:pointer;">${t('attach_add')}<input type="file" accept="application/pdf,image/*" style="display:none;" onchange="plAttachAdd(this)"></label>
+      </div>`}
       ${plShowInv ? `<details class="no-print" style="margin-bottom:14px;border:1px solid #a7f3d0;border-radius:8px;padding:8px 12px;background:#f0fdf4;" ${invEditOpen?'open':''} ontoggle="invEditOpen=this.open">
         <summary style="cursor:pointer;font-weight:700;font-size:12px;color:#065f46;">🧾 ${t('inv_edit')}</summary>
         <div style="overflow-x:auto;margin-top:8px;">
@@ -1711,8 +1752,7 @@ function renderPL(){
         </div>
       </details>` : ''}
       <div id="pl-doc-preview">
-      ${buildStageDoc(rec, plWh, 'packing', d)}
-      ${plShowInv ? '<hr style="margin:24px 0;border:none;border-top:2px dashed var(--border);">' + buildStageDoc(rec, plWh, 'invoice', invDocData()) : ''}
+      ${plShowInv ? buildStageDoc(rec, plWh, 'invoice', invDocData()) : buildStageDoc(rec, plWh, 'packing', d)}
       </div>
     </div>`;
 }
