@@ -109,7 +109,7 @@ main{max-width:1100px;margin:0 auto;padding:16px;}
     <button class="btn btn-sm" onclick="doLogout()" style="padding:2px 8px;font-size:10px;" data-i18n="logout">로그아웃</button>
   </span>
   <select id="lang-sel" onchange="setLang(this.value)" style="font-size:11px;padding:3px 6px;border-radius:5px;border:none;background:#1d3f66;color:#fff;"><option value="ko">한국어</option><option value="en">English</option><option value="es">Español</option></select>
-  <span style="font-size:10px;color:#9fb8d4;">v41</span>
+  <span style="font-size:10px;color:#9fb8d4;">v43</span>
 </div>
 <div id="po-viewer" style="display:none;position:fixed;top:0;right:0;width:44%;height:100vh;background:#fff;border-left:2px solid var(--border);z-index:60;box-shadow:-6px 0 20px rgba(0,0,0,.15);">
   <div style="display:flex;align-items:center;gap:8px;padding:7px 12px;background:var(--header);color:#fff;font-size:12px;font-weight:700;">
@@ -1140,11 +1140,9 @@ function buildOrderSummaryHtml(rec){
       <td style="padding:6px 10px;text-align:right;font-weight:700;">${l.wh!=='BO'?fmtAmt((l.qty||0)*(l.price||0)):'—'}</td>
     </tr>`).join('');
   return `<div style="font-family:Arial,sans-serif;max-width:720px;margin:0 auto;color:#111;font-size:13px;">
-    <table width="100%" cellpadding="0" cellspacing="0" style="background:#0f2744;border-radius:6px 6px 0 0;">
-      <tr><td style="padding:14px 20px;">
-        <div style="color:#fff;font-size:17px;font-weight:800;">Pacific Sports</div>
-        <div style="color:#93c5fd;font-size:12px;">Order Summary</div>
-      </td><td style="padding:14px 20px;text-align:right;"><img src="${LOGO_B64}" style="height:36px;width:auto;"></td></tr>
+    <table width="100%" cellpadding="0" cellspacing="0" style="background:#0f2a4a;">
+      <tr><td style="padding:12px 20px;"><img src="${LOGO_B64}" style="height:42px;width:auto;"></td>
+      <td style="padding:12px 20px;text-align:right;"><span style="color:#ffffff;font-size:24px;font-weight:800;letter-spacing:3px;font-family:'Helvetica Neue',Helvetica,Arial,sans-serif;">ORDER SUMMARY</span></td></tr>
     </table>
     <div style="padding:20px;background:#fff;border:1px solid #e5e7eb;border-top:none;">
       <p style="margin:0 0 4px;">Dear <strong>${esc(meta.cust||'')}</strong>,</p>
@@ -1395,18 +1393,36 @@ function showToast(msg){
   document.body.appendChild(el);
   setTimeout(()=>el.remove(), 4000);
 }
-function calcPartialBoxList(){
-  const d = plDrafts[plWh] || {};
+function calcPartialBoxesFromLines(lines, whTag){
   const byBox = {};
-  (d.lines||[]).forEach(l=>{
+  (lines||[]).forEach(l=>{
     const loose = (l.qty||0) % (l.ppb||72);
     if(loose > 0 && l.pbox){
       const bn = String(l.pbox);
-      if(!byBox[bn]) byBox[bn] = { boxNum: bn, items: [] };
-      byBox[bn].items.push({ styleNum: l.style||'', color: l.color||'', size: l.size||'', qty: loose });
+      const key = (whTag||'') + '|' + bn;
+      if(!byBox[key]) byBox[key] = { boxNum: bn, wh: whTag||'', items: [] };
+      byBox[key].items.push({ styleNum: l.style||'', color: l.color||'', size: l.size||'', qty: loose });
     }
   });
-  return Object.values(byBox).sort((a,b)=>Number(a.boxNum)-Number(b.boxNum));
+  return Object.values(byBox).sort((a,b)=>(a.wh+'').localeCompare(b.wh+'') || Number(a.boxNum)-Number(b.boxNum));
+}
+function calcPartialBoxList(){
+  return calcPartialBoxesFromLines((plDrafts[plWh]||{}).lines, plWh);
+}
+function openBoxLabelModalPL(){
+  const rec = savedCache.find(s=>s.base===plBase);
+  openBoxLabelModal(calcPartialBoxList(), { customer_po: (rec&&rec.meta&&rec.meta.po)||'', customer_name: (rec&&rec.meta&&rec.meta.cust)||'' });
+}
+function openBoxLabelForRec(base){
+  const rec = savedCache.find(s=>s.base===base); if(!rec) return;
+  let boxes = [];
+  (rec.whs||[]).filter(w=>w!=='BO').forEach(w=>{
+    const src = (rec.pl && rec.pl[w] && Array.isArray(rec.pl[w].lines) && rec.pl[w].lines.length)
+      ? rec.pl[w].lines
+      : (rec.lines||[]).filter(l=>l.wh===w);
+    boxes = boxes.concat(calcPartialBoxesFromLines(src, w));
+  });
+  openBoxLabelModal(boxes, { customer_po: (rec.meta&&rec.meta.po)||'', customer_name: (rec.meta&&rec.meta.cust)||'' });
 }
 function buildBoxLabelZpl(box, totalBoxes, order) {
   // ZP450 4x6 inch = 812w x 1218h dots (203 dpi) — IMS 원본 그대로
@@ -1474,15 +1490,15 @@ async function sendToZebraBrowserPrint(zplData, labelCount) {
     if (go) window.open('http://localhost:9100/ssl_support', '_blank');
   }
 }
-function openBoxLabelModal(){
-  const boxes = calcPartialBoxList();
-  if(!boxes.length){ showToast('❌ Partial box 없음 — P.Box# 지정을 확인하세요'); return; }
+function openBoxLabelModal(boxes, order){
+  if(!boxes || !boxes.length){ showToast('❌ Partial box 없음 — P.Box# 지정을 확인하세요'); return; }
   window._blBoxes = boxes;
+  window._blOrder = order || {};
   const boxListHtml = boxes.map((box, idx)=>{
     const desc = box.items.map(i=>`${i.styleNum} ${i.color} ${i.size} ${i.qty}pcs`).join(' / ');
     return '<label style="display:flex;align-items:center;gap:8px;padding:6px 10px;border-bottom:1px solid #f3f4f6;cursor:pointer;">'
       + '<input type="checkbox" class="box-label-cb" value="' + idx + '" checked style="width:16px;height:16px;accent-color:#7c3aed;cursor:pointer;">'
-      + '<span style="font-size:12px;font-weight:700;color:#7c3aed;min-width:56px;font-family:Consolas,monospace;">BOX ' + esc(box.boxNum) + '</span>'
+      + '<span style="font-size:12px;font-weight:700;color:#7c3aed;min-width:76px;font-family:Consolas,monospace;">' + (box.wh?('['+box.wh+'] '):'') + 'BOX ' + esc(box.boxNum) + '</span>'
       + '<span style="font-size:12px;color:#374151;">' + esc(desc) + '</span></label>';
   }).join('');
   const existing = document.getElementById('modal-box-select');
@@ -1508,10 +1524,11 @@ async function confirmBoxLabelPrint(){
   const sel = boxes.filter((_,i)=>checked.includes(i));
   document.getElementById('modal-box-select')?.remove();
   if(!sel.length) return;
-  const rec = savedCache.find(s=>s.base===plBase);
-  const meta = (rec && rec.meta) || {};
-  const order = { customer_po: meta.po || '', customer_name: meta.cust || '' };
-  const zplAll = sel.map(box => buildBoxLabelZpl(box, boxes.length, order)).join('\n');
+  const order = window._blOrder || {};
+  const zplAll = sel.map(box => {
+    const whTotal = boxes.filter(b=>b.wh===box.wh).length;
+    return buildBoxLabelZpl(box, whTotal, order);
+  }).join('\n');
   await sendToZebraBrowserPrint(zplAll, sel.length);
 }
 
@@ -1580,7 +1597,7 @@ function renderPL(){
       <div class="no-print" style="display:flex;gap:6px;justify-content:flex-end;margin-bottom:12px;flex-wrap:wrap;">
         <button class="btn btn-sm btn-primary" onclick="savePL()">${t('save_pl')}</button>
         <button class="btn btn-sm" id="plpdf-btn" onclick="downloadPLPdf('packing')">${t('pl_pdf')}</button>
-        <button class="btn btn-sm" style="background:#7c3aed;color:#fff;border-color:#7c3aed;" onclick="openBoxLabelModal()">🏷 Box Label</button>
+        <button class="btn btn-sm" style="background:#7c3aed;color:#fff;border-color:#7c3aed;" onclick="openBoxLabelModalPL()">🏷 Box Label</button>
         <button class="btn btn-sm" style="background:#065f46;color:#fff;border-color:#065f46;" onclick="plFieldsToDraft();plShowInv=!plShowInv;if(plShowInv)syncInvDraft();renderPL();">${plShowInv?t('fold_inv'):t('create_inv')}</button>
         ${plShowInv?`<button class="btn btn-sm btn-primary" onclick="saveInvStage()">${t('save_inv')}</button><button class="btn btn-sm" id="invpdf-btn" onclick="downloadPLPdf('invoice')">${t('inv_pdf')}</button>`:''}
         <button class="btn btn-sm" onclick="closePL()">${t('close')}</button>
@@ -1724,6 +1741,7 @@ function renderSaved(){
       <span style="margin-left:auto;"></span>
       <button class="btn btn-sm" style="background:#0e7490;color:#fff;border-color:#0e7490;" onclick="downloadOrderSummary('${esc(s.base)}')">📋 Order Summary</button>
       ${(s.whs||[]).filter(w=>w!=='BO').map(w=>`<button class="btn btn-sm" style="background:${w==='SC'?'#1d4ed8':'#c2410c'};color:#fff;border-color:${w==='SC'?'#1d4ed8':'#c2410c'};" onclick="printSavedPRWh('${esc(s.base)}','${w}')">🖨 ${w} Pull Request</button>`).join('')}
+      <button class="btn btn-sm" style="background:#7c3aed;color:#fff;border-color:#7c3aed;" onclick="openBoxLabelForRec('${esc(s.base)}')">🏷 Box Label</button>
       <button class="btn btn-sm" style="${s.pl&&Object.keys(s.pl).length ? 'background:#16a34a;border-color:#16a34a;' : 'background:#f59e0b;border-color:#f59e0b;'}color:#fff;" onclick="openPL('${esc(s.base)}')">📦 Packing List</button>
       ${s.pl&&Object.keys(s.pl).length ? `<button class="btn btn-sm" style="${s.inv&&Object.keys(s.inv).length ? 'background:#16a34a;border-color:#16a34a;' : 'background:#f59e0b;border-color:#f59e0b;'}color:#fff;" onclick="openInvoice('${esc(s.base)}')">🧾 Invoice</button>` : ''}
       <button class="btn btn-sm" onclick="viewSavedPO('${esc(s.base)}')">📄 PO</button>
