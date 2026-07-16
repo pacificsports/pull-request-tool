@@ -113,7 +113,7 @@ main{max-width:1100px;margin:0 auto;padding:16px;}
     <button class="btn btn-sm" onclick="doLogout()" style="padding:2px 8px;font-size:10px;" data-i18n="logout">로그아웃</button>
   </span>
   <select id="lang-sel" onchange="setLang(this.value)" style="font-size:11px;padding:3px 6px;border-radius:5px;border:none;background:#1d3f66;color:#fff;"><option value="ko">한국어</option><option value="en">English</option><option value="es">Español</option></select>
-  <span style="font-size:10px;color:#9fb8d4;">v87</span>
+  <span style="font-size:10px;color:#9fb8d4;">v89</span>
 </div>
 <div id="po-viewer" style="display:none;position:fixed;top:0;right:0;width:44%;height:100vh;background:#fff;border-left:2px solid var(--border);z-index:60;box-shadow:-6px 0 20px rgba(0,0,0,.15);">
   <div style="display:flex;align-items:center;gap:8px;padding:7px 12px;background:var(--header);color:#fff;font-size:12px;font-weight:700;">
@@ -755,8 +755,21 @@ async function parsePoPdf(input){
       if(iso) $('m-podate').value = iso;
     }
     $('m-date').value = todayStr();
-    fillAddr('bill', parsed.bill_to_address || parsed.bill_to);
-    fillAddr('ship', parsed.ship_to_address || parsed.ship_to);
+    // 주소 초기화 후 채우기 (이전 오더 잔여값 방지) + 우리 회사 주소 필터 + 폴백
+    const _isOurs = s => /peace\s*textile|pacific\s*sports|guignard|merge\s*street|sumter,?\s*sc|eastvale,?\s*ca/i.test(String(s||''));
+    let _billSrc = parsed.bill_to_address || parsed.bill_to || '';
+    let _shipSrc = parsed.ship_to_address || parsed.ship_to || '';
+    if(_isOurs(_billSrc)) _billSrc = '';
+    if(_isOurs(_shipSrc)) _shipSrc = '';
+    if(!_billSrc) _billSrc = (!_isOurs(parsed.customer_address) && parsed.customer_address) || '';
+    if(!_shipSrc) _shipSrc = _billSrc;
+    ['bill','ship'].forEach(p=>{
+      const n = $('m-'+p+'-name'); if(n) n.value = '';
+      $('m-'+p+'-addr').value=''; $('m-'+p+'-city').value=''; $('m-'+p+'-state').value=''; $('m-'+p+'-zip').value='';
+    });
+    const _sab = $('same-as-bill'); if(_sab){ _sab.checked = false; } _sameAsBill = false;
+    fillAddr('bill', _billSrc);
+    fillAddr('ship', _shipSrc);
     renderTable(); updateNumPreview(); saveDraft();
   }catch(err){
     alert(t('a_parsefail') + err.message + t('a_parsefail_note'));
@@ -1320,6 +1333,18 @@ async function saveCurrent(){
   // 자동 내부 알림은 보류 (거래처 이멜에 전직원 CC로 대체) — 켜려면 아래 주석 해제
   // if(!existing) notifyNewPR(rec);
   if(existing && orderChanges.length) notifyModified(rec, orderChanges);
+  clearOrderForm();
+}
+function clearOrderForm(){
+  setMeta({});
+  $('m-podate').value = '';
+  poLines = [];
+  window._poPdfB64 = null;
+  try{ localStorage.removeItem(LS_DRAFT); }catch(e){}
+  const pv = $('po-viewer'); if(pv) pv.style.display = 'none';
+  const pt = $('po-viewer-tab'); if(pt) pt.style.display = 'none';
+  const cb = $('same-as-bill'); if(cb) cb.checked = false; _sameAsBill = false;
+  renderTable(); updateNumPreview(); renderDocs();
 }
 function computeOrderDiff(oldRec, newRec){
   const ch = [];
@@ -1407,6 +1432,8 @@ async function loadSaved(base){
   await refreshRec(base);
   const rec = getSaved().find(s=>s.base===base);
   if(!rec) return;
+  window._poPdfB64 = null; // 다른 오더의 PDF가 이 오더에 붙지 않게 (DB의 기존 PO는 유지됨)
+  const _pv = $('po-viewer'); if(_pv) _pv.style.display = 'none';
   setMeta(rec.meta); poLines = normalizeLines(rec.lines);
   renderTable(); updateNumPreview(); renderDocs();
   window.scrollTo({top:0,behavior:'smooth'});
