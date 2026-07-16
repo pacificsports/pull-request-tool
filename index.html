@@ -110,7 +110,7 @@ main{max-width:1100px;margin:0 auto;padding:16px;}
     <button class="btn btn-sm" onclick="doLogout()" style="padding:2px 8px;font-size:10px;" data-i18n="logout">로그아웃</button>
   </span>
   <select id="lang-sel" onchange="setLang(this.value)" style="font-size:11px;padding:3px 6px;border-radius:5px;border:none;background:#1d3f66;color:#fff;"><option value="ko">한국어</option><option value="en">English</option><option value="es">Español</option></select>
-  <span style="font-size:10px;color:#9fb8d4;">v38</span>
+  <span style="font-size:10px;color:#9fb8d4;">v39</span>
 </div>
 <div id="po-viewer" style="display:none;position:fixed;top:0;right:0;width:44%;height:100vh;background:#fff;border-left:2px solid var(--border);z-index:60;box-shadow:-6px 0 20px rgba(0,0,0,.15);">
   <div style="display:flex;align-items:center;gap:8px;padding:7px 12px;background:var(--header);color:#fff;font-size:12px;font-weight:700;">
@@ -1103,6 +1103,96 @@ function recAddr(meta, p){
   const line2 = [meta[p+'City'], [String(meta[p+'State']||'').toUpperCase(), meta[p+'Zip']].filter(Boolean).join(' ')].filter(Boolean).join(', ');
   return [meta[p+'Addr'], line2].filter(Boolean).join('\n');
 }
+// ═══ Order Summary (거래처 첨부용 — IMS 오더 컨펌 이멜 포맷) ═══
+function buildOrderSummaryHtml(rec){
+  const meta = rec.meta || {};
+  const lines = (rec.lines||[]).filter(l=>(l.qty||0)>0);
+  const sum = a => a.reduce((s,l)=>s+(l.qty||0),0);
+  const scT = sum(lines.filter(l=>l.wh==='SC'));
+  const caT = sum(lines.filter(l=>l.wh==='CA'));
+  const boLines = lines.filter(l=>l.wh==='BO');
+  const boT = sum(boLines);
+  const totT = scT + caT + boT;
+  const totAmt = lines.filter(l=>l.wh!=='BO').reduce((s,l)=>s+(l.qty||0)*(l.price||0),0);
+  const fmtAmt = n => '$' + (n||0).toFixed(2).replace(/\B(?=(\d{3})+(?!\d))/g,',');
+  const dstr = s => s ? new Date(s+'T00:00:00').toLocaleDateString('en-US',{year:'numeric',month:'long',day:'numeric'}) : '—';
+  const backSection = boLines.length ? `
+    <table width="100%" cellpadding="0" cellspacing="0" style="margin-bottom:16px;border:1px solid #fecaca;border-radius:6px;">
+      <tr><td style="background:#fee2e2;padding:8px 14px;border-radius:5px 5px 0 0;">
+        <span style="font-size:13px;font-weight:700;color:#991b1b;">⚠️ Partial Backorder — ${boT.toLocaleString()} pcs</span>
+      </td></tr>
+      <tr><td style="padding:8px 14px;font-size:12px;color:#991b1b;">
+        Some items are currently out of stock and will be shipped as inventory becomes available. Our team will contact you with an estimated ship date for backordered items.
+      </td></tr>
+    </table>` : '';
+  const lineRows = lines.map(l=>`<tr style="border-bottom:1px solid #f3f4f6;">
+      <td style="padding:6px 10px;font-family:monospace;font-weight:600;">${esc(l.style||'')}</td>
+      <td style="padding:6px 10px;">${esc(l.color||'')}</td>
+      <td style="padding:6px 10px;text-align:center;">${esc(l.size||'')}</td>
+      <td style="padding:6px 10px;text-align:center;">${(l.qty||0).toLocaleString()}</td>
+      <td style="padding:6px 10px;text-align:center;font-weight:700;color:#1e40af;">${l.wh==='SC'?(l.qty||0).toLocaleString():'—'}</td>
+      <td style="padding:6px 10px;text-align:center;font-weight:700;color:#ea580c;">${l.wh==='CA'?(l.qty||0).toLocaleString():'—'}</td>
+      <td style="padding:6px 10px;text-align:center;font-weight:700;color:#dc2626;">${l.wh==='BO'?(l.qty||0).toLocaleString():'—'}</td>
+      <td style="padding:6px 10px;text-align:right;">${fmtAmt(l.price)}</td>
+      <td style="padding:6px 10px;text-align:right;font-weight:700;">${l.wh!=='BO'?fmtAmt((l.qty||0)*(l.price||0)):'—'}</td>
+    </tr>`).join('');
+  return `<div style="font-family:Arial,sans-serif;max-width:720px;margin:0 auto;color:#111;font-size:13px;">
+    <table width="100%" cellpadding="0" cellspacing="0" style="background:#0f2744;border-radius:6px 6px 0 0;">
+      <tr><td style="padding:14px 20px;">
+        <div style="color:#fff;font-size:17px;font-weight:800;">Pacific Sports</div>
+        <div style="color:#93c5fd;font-size:12px;">Order Summary</div>
+      </td><td style="padding:14px 20px;text-align:right;"><img src="${LOGO_B64}" style="height:36px;width:auto;"></td></tr>
+    </table>
+    <div style="padding:20px;background:#fff;border:1px solid #e5e7eb;border-top:none;">
+      <p style="margin:0 0 4px;">Dear <strong>${esc(meta.cust||'')}</strong>,</p>
+      <p style="font-size:12px;color:#6b7280;margin:0 0 16px;">Thank you for your order. We're pleased to confirm that your PO has been received and is being processed.</p>
+      <table width="100%" cellpadding="0" cellspacing="0" style="background:#f8fafc;border:1px solid #e5e7eb;border-radius:6px;margin-bottom:16px;">
+        <tr>
+          <td style="padding:10px 16px;font-size:12px;color:#6b7280;">Your PO #<br><strong style="font-size:16px;color:#111;">${esc(meta.po||'')}</strong></td>
+          <td style="padding:10px 16px;font-size:12px;color:#6b7280;">Date Received<br><strong style="font-size:14px;color:#111;">${dstr(meta.date)}</strong></td>
+          <td style="padding:10px 16px;font-size:12px;color:#6b7280;">Order Ref<br><strong style="font-size:14px;color:#111;">${esc(rec.base)}</strong></td>
+        </tr>
+      </table>
+      <div style="background:#eff6ff;border:1px solid #bfdbfe;border-radius:6px;padding:10px 16px;margin-bottom:16px;">
+        <div style="font-size:12px;font-weight:700;color:#1e40af;margin-bottom:6px;">📦 Shipping From</div>
+        <ul style="margin:0;padding-left:16px;font-size:13px;">
+          <li style="margin:2px 0;"><span style="color:#1e40af;font-weight:700;">SC Warehouse (Sumter, SC):</span> <strong>${scT.toLocaleString()} pcs</strong></li>
+          <li style="margin:2px 0;"><span style="color:#ea580c;font-weight:700;">CA Warehouse (Eastvale, CA):</span> <strong>${caT.toLocaleString()} pcs</strong></li>
+        </ul>
+      </div>
+      ${backSection}
+      <table width="100%" cellpadding="0" cellspacing="0" style="border-collapse:collapse;font-size:12px;border:1px solid #e5e7eb;">
+        <thead><tr style="background:#f3f4f6;">
+          <th style="padding:6px 10px;text-align:left;">Style</th>
+          <th style="padding:6px 10px;text-align:left;">Color</th>
+          <th style="padding:6px 10px;text-align:center;">Size</th>
+          <th style="padding:6px 10px;text-align:center;">Ordered</th>
+          <th style="padding:6px 10px;text-align:center;color:#1e40af;">SC</th>
+          <th style="padding:6px 10px;text-align:center;color:#ea580c;">CA</th>
+          <th style="padding:6px 10px;text-align:center;color:#dc2626;">Backorder</th>
+          <th style="padding:6px 10px;text-align:right;">Price</th>
+          <th style="padding:6px 10px;text-align:right;">Total</th>
+        </tr></thead>
+        <tbody>${lineRows}</tbody>
+        <tfoot><tr style="background:#f8fafc;font-weight:700;border-top:2px solid #e5e7eb;">
+          <td colspan="3" style="padding:8px 10px;text-align:right;">Total:</td>
+          <td style="padding:8px 10px;text-align:center;white-space:nowrap;">${totT.toLocaleString()} pcs</td>
+          <td style="padding:8px 10px;text-align:center;color:#1e40af;white-space:nowrap;">${scT.toLocaleString()} pcs</td>
+          <td style="padding:8px 10px;text-align:center;color:#ea580c;white-space:nowrap;">${caT.toLocaleString()} pcs</td>
+          <td style="padding:8px 10px;text-align:center;color:#dc2626;white-space:nowrap;">${boT.toLocaleString()} pcs</td>
+          <td colspan="2" style="padding:8px 10px;text-align:right;">${fmtAmt(totAmt)}</td>
+        </tr></tfoot>
+      </table>
+    </div>
+    <div style="padding:8px 20px;background:#f8fafc;border:1px solid #e5e7eb;border-top:none;border-radius:0 0 6px 6px;font-size:11px;color:#9ca3af;text-align:center;">
+      PEACE TEXTILE AMERICA, INC. d.b.a Pacific Sports · Sumter, SC · Eastvale, CA
+    </div>
+  </div>`;
+}
+async function downloadOrderSummary(base){
+  const rec = savedCache.find(s=>s.base===base); if(!rec) return;
+  await downloadPdfHtml(buildOrderSummaryHtml(rec), rec.base + '-SUMMARY.pdf', null);
+}
 async function viewSavedPO(base){
   try{
     const r = await sbFetch('/rest/v1/pr_orders?base=eq.'+encodeURIComponent(base)+'&select=po_pdf');
@@ -1500,6 +1590,7 @@ function renderSaved(){
       ${whs.map(w=>`<span class="chip chip-${w}">${w}</span>`).join('')}
       ${plDates.length ? `<span class="muted">${t('shipped')} ${fmtD(plDates[plDates.length-1])}</span>` : ''}
       <span style="margin-left:auto;"></span>
+      <button class="btn btn-sm" style="background:#0e7490;color:#fff;border-color:#0e7490;" onclick="downloadOrderSummary('${esc(s.base)}')">📋 Order Summary</button>
       ${(s.whs||[]).filter(w=>w!=='BO').map(w=>`<button class="btn btn-sm" style="background:${w==='SC'?'#1d4ed8':'#c2410c'};color:#fff;border-color:${w==='SC'?'#1d4ed8':'#c2410c'};" onclick="printSavedPRWh('${esc(s.base)}','${w}')">🖨 ${w} Pull Request</button>`).join('')}
       <button class="btn btn-sm" style="${s.pl&&Object.keys(s.pl).length ? 'background:#16a34a;border-color:#16a34a;' : 'background:#f59e0b;border-color:#f59e0b;'}color:#fff;" onclick="openPL('${esc(s.base)}')">📦 Packing List</button>
       ${s.pl&&Object.keys(s.pl).length ? `<button class="btn btn-sm" style="${s.inv&&Object.keys(s.inv).length ? 'background:#16a34a;border-color:#16a34a;' : 'background:#f59e0b;border-color:#f59e0b;'}color:#fff;" onclick="openInvoice('${esc(s.base)}')">🧾 Invoice</button>` : ''}
