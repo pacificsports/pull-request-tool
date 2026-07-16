@@ -85,6 +85,12 @@ main{max-width:1100px;margin:0 auto;padding:16px;}
 .muted{color:var(--text2);font-size:11px;}
 .saved-item{display:flex;align-items:center;gap:10px;padding:8px 10px;border:1px solid var(--border);border-radius:6px;margin-bottom:6px;flex-wrap:wrap;}
 .saved-item .n{font-family:Consolas,monospace;font-weight:800;color:var(--primary);}
+/* PDF 캡처 전용: 레터 용지 인쇄폭(~740px)에 맞춤 */
+.pdf-mode .inv-doc{max-width:740px;font-size:11px;}
+.pdf-mode .inv-tbl th{padding:5px 4px;font-size:9px;letter-spacing:0;}
+.pdf-mode .inv-tbl td{padding:4px 5px;font-size:11px;}
+.pdf-mode .inv-tbl td.c-full,.pdf-mode .inv-tbl td.c-part{font-size:13px;}
+.pdf-mode .inv-tbl td.c-pbox{font-size:11px;}
 @media print{ .top,.card:not(#doc-card),.no-print,.doc-tabs{display:none!important;} .doc-view{border:none;padding:0;} #doc-card{border:none;padding:0;} .card-title{display:none;} }
 </style>
 </head>
@@ -98,7 +104,7 @@ main{max-width:1100px;margin:0 auto;padding:16px;}
     <button class="btn btn-sm" onclick="doLogout()" style="padding:2px 8px;font-size:10px;" data-i18n="logout">로그아웃</button>
   </span>
   <select id="lang-sel" onchange="setLang(this.value)" style="font-size:11px;padding:3px 6px;border-radius:5px;border:none;background:#1d3f66;color:#fff;"><option value="ko">한국어</option><option value="en">English</option><option value="es">Español</option></select>
-  <span style="font-size:10px;color:#9fb8d4;">v32</span>
+  <span style="font-size:10px;color:#9fb8d4;">v34</span>
 </div>
 <div id="po-viewer" style="display:none;position:fixed;top:0;right:0;width:44%;height:100vh;background:#fff;border-left:2px solid var(--border);z-index:60;box-shadow:-6px 0 20px rgba(0,0,0,.15);">
   <div style="display:flex;align-items:center;gap:8px;padding:7px 12px;background:var(--header);color:#fff;font-size:12px;font-weight:700;">
@@ -288,6 +294,7 @@ const I18N = {
  logout:{ko:'로그아웃',en:'Log out',es:'Salir'},
  a_needcred:{ko:'이메일과 비밀번호를 입력해주세요.',en:'Please enter email and password.',es:'Ingresa correo y contraseña.'},
  a_staffonly:{ko:'직원 계정이 아닙니다. 접근이 거부되었습니다.',en:'Not a staff account. Access denied.',es:'No es una cuenta de personal. Acceso denegado.'},
+ no_po_pdf:{ko:'이 오더에는 저장된 PO PDF가 없습니다.',en:'No PO PDF stored for this order.',es:'No hay PDF del PO guardado para este pedido.'},
  save_fail:{ko:'❌ 저장 실패 — 인터넷 연결을 확인하세요.',en:'❌ Save failed — check your connection.',es:'❌ Error al guardar — revisa tu conexión.'},
 };
 function t(k, vars){
@@ -531,6 +538,7 @@ async function parsePoPdf(input){
       r.onerror = ()=>rej(new Error('파일 읽기 실패'));
       r.readAsDataURL(file);
     });
+    window._poPdfB64 = base64; // 저장 시 오더와 함께 보관
     $('parsing-msg').textContent = t('analyzing');
     let response, data;
     for(let attempt=1; attempt<=3; attempt++){
@@ -833,7 +841,8 @@ async function downloadPdfHtml(docHtml, filename, btn){
     const wrap = document.createElement('div');
     wrap.style.cssText = 'height:0;overflow:hidden;';
     const holder = document.createElement('div');
-    holder.style.cssText = 'width:820px;background:#fff;padding:20px;';
+    holder.className = 'pdf-mode';
+    holder.style.cssText = 'width:740px;background:#fff;padding:0;';
     holder.innerHTML = docHtml;
     wrap.appendChild(holder);
     document.body.appendChild(wrap);
@@ -1001,7 +1010,7 @@ function getSaved(){ return savedCache; }
 function rowToRec(r){ return {base:r.base, meta:r.meta||{}, lines:r.lines||[], whs:r.whs||[], pl:r.pl||{}, inv:r.inv||{}, savedAt:r.saved_at}; }
 async function loadSavedList(){
   try{
-    const r = await sbFetch('/rest/v1/pr_orders?select=*&order=saved_at.desc');
+    const r = await sbFetch('/rest/v1/pr_orders?select=base,meta,lines,whs,pl,inv,saved_at&order=saved_at.desc');
     if(r.ok) savedCache = (await r.json()).map(rowToRec);
   }catch(e){ console.warn('loadSavedList', e); }
   renderSaved();
@@ -1009,6 +1018,7 @@ async function loadSavedList(){
 async function upsertRec(rec){
   try{
     const row = {base:rec.base, meta:rec.meta, lines:rec.lines, whs:rec.whs, pl:rec.pl||{}, inv:rec.inv||{}, saved_at:rec.savedAt||new Date().toISOString(), updated_at:new Date().toISOString()};
+    if(rec.poPdf) row.po_pdf = rec.poPdf;
     const r = await sbFetch('/rest/v1/pr_orders?on_conflict=base', {method:'POST', headers:{Prefer:'resolution=merge-duplicates,return=minimal'}, body:JSON.stringify([row])});
     return r.ok;
   }catch(e){ return false; }
@@ -1028,7 +1038,7 @@ async function saveCurrent(){
   poLines.forEach(l=>{ if(l.style && (l.rawDesc||l.desc)) rememberStyle(l.rawDesc||l.desc, l.style); });
   const base = baseNumber();
   const existing = savedCache.find(s=>s.base===base);
-  const rec = { base, meta:getMeta(), lines:poLines, whs:activeWhs(), savedAt:new Date().toISOString() };
+  const rec = { base, meta:getMeta(), lines:poLines, whs:activeWhs(), savedAt:new Date().toISOString(), poPdf: window._poPdfB64 || null };
   if(existing){
     if(!confirm(t('a_overwrite',{b:base}))) return;
     rec.pl = existing.pl || {}; rec.inv = existing.inv || {};
@@ -1057,6 +1067,19 @@ function plInfo(rec, wh){ return (rec.pl && rec.pl[wh]) || {}; }
 function recAddr(meta, p){
   const line2 = [meta[p+'City'], [String(meta[p+'State']||'').toUpperCase(), meta[p+'Zip']].filter(Boolean).join(' ')].filter(Boolean).join(', ');
   return [meta[p+'Addr'], line2].filter(Boolean).join('\n');
+}
+async function viewSavedPO(base){
+  try{
+    const r = await sbFetch('/rest/v1/pr_orders?base=eq.'+encodeURIComponent(base)+'&select=po_pdf');
+    const rows = await r.json();
+    const b64 = rows && rows[0] && rows[0].po_pdf;
+    if(!b64){ alert(t('no_po_pdf')); return; }
+    const bin = atob(b64);
+    const arr = new Uint8Array(bin.length);
+    for(let i=0;i<bin.length;i++) arr[i] = bin.charCodeAt(i);
+    showPoViewer(new Blob([arr], {type:'application/pdf'}));
+    $('po-viewer-name').textContent = base + ' — PO';
+  }catch(e){ alert(t('save_fail')); }
 }
 function buildPRDocFromRec(rec, wh){
   const bak = { lines: poLines, meta: getMeta() };
@@ -1274,6 +1297,7 @@ function renderSaved(){
       ${(s.whs||[]).filter(w=>w!=='BO').map(w=>`<button class="btn btn-sm" style="background:${w==='SC'?'#1d4ed8':'#c2410c'};color:#fff;border-color:${w==='SC'?'#1d4ed8':'#c2410c'};" onclick="printSavedPRWh('${esc(s.base)}','${w}')">🖨 ${w} Pull Request</button>`).join('')}
       <button class="btn btn-sm" style="${s.pl&&Object.keys(s.pl).length ? 'background:#16a34a;border-color:#16a34a;' : 'background:#f59e0b;border-color:#f59e0b;'}color:#fff;" onclick="openPL('${esc(s.base)}')">📦 Packing List</button>
       ${s.pl&&Object.keys(s.pl).length ? `<button class="btn btn-sm" style="${s.inv&&Object.keys(s.inv).length ? 'background:#16a34a;border-color:#16a34a;' : 'background:#f59e0b;border-color:#f59e0b;'}color:#fff;" onclick="openInvoice('${esc(s.base)}')">🧾 Invoice</button>` : ''}
+      <button class="btn btn-sm" onclick="viewSavedPO('${esc(s.base)}')">📄 PO</button>
       <button class="btn btn-sm" onclick="loadSaved('${esc(s.base)}')">${t('open_edit')}</button>
       <button class="btn btn-sm" style="color:var(--bad);" onclick="delSaved('${esc(s.base)}')">${t('del')}</button>
     </div>`;
