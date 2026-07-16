@@ -88,10 +88,24 @@ main{max-width:1100px;margin:0 auto;padding:16px;}
   <span class="logo">PACIFIC SPORTS</span>
   <span class="sub" data-i18n="sub">PO → Pull Request (Packing List) 생성기</span>
   <span class="tag" data-i18n="tag">임시 독립 시스템 · 재고 미연동</span>
+  <span id="user-info" style="display:none;align-items:center;gap:8px;font-size:11px;color:#9fb8d4;">
+    <span id="user-email"></span>
+    <button class="btn btn-sm" onclick="doLogout()" style="padding:2px 8px;font-size:10px;" data-i18n="logout">로그아웃</button>
+  </span>
   <select id="lang-sel" onchange="setLang(this.value)" style="font-size:11px;padding:3px 6px;border-radius:5px;border:none;background:#1d3f66;color:#fff;"><option value="ko">한국어</option><option value="en">English</option><option value="es">Español</option></select>
-  <span style="font-size:10px;color:#9fb8d4;">v19</span>
+  <span style="font-size:10px;color:#9fb8d4;">v20</span>
 </div>
-<main>
+<div id="login-page" style="display:none;position:fixed;inset:0;background:linear-gradient(160deg,#0f2a4a,#0d3c6e);z-index:100;align-items:center;justify-content:center;">
+  <div style="background:#fff;border-radius:14px;padding:34px 30px;width:340px;box-shadow:0 20px 60px rgba(0,0,0,.4);">
+    <div style="font-weight:800;letter-spacing:3px;color:var(--header);font-size:19px;text-align:center;">PACIFIC SPORTS</div>
+    <div style="text-align:center;color:var(--text2);font-size:10px;letter-spacing:2px;margin:4px 0 22px;">PULL REQUEST · STAFF ONLY</div>
+    <div class="ff" style="margin-bottom:10px;"><label>Email</label><input class="fi" id="auth-email" type="email" placeholder="you@company.com" autocomplete="username"></div>
+    <div class="ff"><label>Password</label><input class="fi" id="auth-pw" type="password" placeholder="••••••••" autocomplete="current-password" onkeydown="if(event.key==='Enter')doLogin()"></div>
+    <div id="auth-err" style="color:var(--bad);font-size:12px;min-height:18px;margin:10px 0 6px;"></div>
+    <button class="btn btn-primary" id="auth-btn" style="width:100%;justify-content:center;font-size:13px;padding:10px;" onclick="doLogin()">Log in →</button>
+  </div>
+</div>
+<main id="app-main" style="display:none;">
 
   <!-- 1. PO 업로드 -->
   <div class="card">
@@ -261,6 +275,10 @@ const I18N = {
  a_parsefail:{ko:'파싱 실패: ',en:'Parsing failed: ',es:'Error de análisis: '},
  a_popup:{ko:'팝업이 차단되었습니다. 팝업을 허용해주세요.',en:'Popup blocked. Please allow popups.',es:'Ventana emergente bloqueada. Permite las ventanas emergentes.'},
  pdf_made:{ko:'✅ PDF 생성됨: {f} ({k}KB)',en:'✅ PDF created: {f} ({k}KB)',es:'✅ PDF creado: {f} ({k}KB)'},
+ logout:{ko:'로그아웃',en:'Log out',es:'Salir'},
+ a_needcred:{ko:'이메일과 비밀번호를 입력해주세요.',en:'Please enter email and password.',es:'Ingresa correo y contraseña.'},
+ a_staffonly:{ko:'직원 계정이 아닙니다. 접근이 거부되었습니다.',en:'Not a staff account. Access denied.',es:'No es una cuenta de personal. Acceso denegado.'},
+ save_fail:{ko:'❌ 저장 실패 — 인터넷 연결을 확인하세요.',en:'❌ Save failed — check your connection.',es:'❌ Error al guardar — revisa tu conexión.'},
 };
 function t(k, vars){
   const e = I18N[k];
@@ -813,19 +831,117 @@ function normalizeLines(lines){
     return out;
   });
 }
-function getSaved(){ try{ return JSON.parse(localStorage.getItem(LS_SAVED)||'[]'); }catch(e){ return []; } }
-function saveCurrent(){
+// ═══════════════ 로그인 (웹사이트와 동일: Supabase 이메일+암호) ═══════════════
+const SB_URL = 'https://ypjnhhtfwyrwcjakjcgc.supabase.co';
+const SB_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Inlwam5oaHRmd3lyd2NqYWtqY2djIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzIyMDMxOTAsImV4cCI6MjA4Nzc3OTE5MH0.ADl8rXCeu9Z0fLAYR0d1wxOOkvT30eo47ahpss9yJq8';
+let SESS = null;
+function loadSess(){ try{ SESS = JSON.parse(localStorage.getItem('psi_user')||'null'); }catch(e){ SESS = null; } }
+function saveSess(){ if(SESS) localStorage.setItem('psi_user', JSON.stringify(SESS)); else localStorage.removeItem('psi_user'); }
+async function refreshToken(){
+  if(!SESS || !SESS.refresh) return false;
+  try{
+    const r = await fetch(SB_URL+'/auth/v1/token?grant_type=refresh_token', {method:'POST', headers:{apikey:SB_KEY,'Content-Type':'application/json'}, body:JSON.stringify({refresh_token:SESS.refresh})});
+    if(!r.ok) return false;
+    const d = await r.json();
+    SESS = {token:d.access_token, refresh:d.refresh_token||SESS.refresh, expires_at:Date.now()+((d.expires_in||3600)*1000), userId:(d.user&&d.user.id)||SESS.userId, email:(d.user&&d.user.email)||SESS.email};
+    saveSess(); return true;
+  }catch(e){ return false; }
+}
+async function ensureToken(){
+  if(!SESS) throw new Error('not logged in');
+  if(Date.now() > (SESS.expires_at||0) - 60000){
+    const ok = await refreshToken();
+    if(!ok){ doLogout(); throw new Error('session expired'); }
+  }
+}
+async function sbFetch(path, opts={}){
+  await ensureToken();
+  return fetch(SB_URL+path, {...opts, headers:{apikey:SB_KEY, Authorization:'Bearer '+SESS.token, 'Content-Type':'application/json', ...(opts.headers||{})}});
+}
+async function checkStaff(){
+  try{
+    const r = await sbFetch('/rest/v1/user_roles?select=role&user_id=eq.'+SESS.userId);
+    if(!r.ok) return false;
+    const rows = await r.json();
+    return Array.isArray(rows) && rows[0] && ['owner','accounting','sales','warehouse'].indexOf(rows[0].role) >= 0;
+  }catch(e){ return false; }
+}
+async function doLogin(){
+  const email = $('auth-email').value.trim(), pw = $('auth-pw').value;
+  const errEl = $('auth-err'); errEl.textContent = '';
+  if(!email || !pw){ errEl.textContent = t('a_needcred'); return; }
+  const btn = $('auth-btn'); btn.disabled = true; btn.textContent = '...';
+  try{
+    const r = await fetch(SB_URL+'/auth/v1/token?grant_type=password', {method:'POST', headers:{apikey:SB_KEY,'Content-Type':'application/json'}, body:JSON.stringify({email, password:pw})});
+    const d = await r.json();
+    if(!r.ok) throw new Error(d.error_description || d.msg || 'Login failed');
+    SESS = {token:d.access_token, refresh:d.refresh_token||null, expires_at:Date.now()+((d.expires_in||3600)*1000), userId:d.user&&d.user.id, email:d.user&&d.user.email};
+    saveSess();
+    if(!(await checkStaff())){ SESS = null; saveSess(); throw new Error(t('a_staffonly')); }
+    enterApp();
+  }catch(e){ errEl.textContent = e.message; }
+  finally{ btn.disabled = false; btn.textContent = 'Log in →'; }
+}
+function doLogout(){ SESS = null; saveSess(); location.reload(); }
+async function enterApp(){
+  $('login-page').style.display = 'none';
+  $('app-main').style.display = 'block';
+  $('user-info').style.display = 'inline-flex';
+  $('user-email').textContent = SESS.email || '';
+  await migrateLocal();
+  await loadSavedList();
+}
+async function initAuth(){
+  loadSess();
+  if(SESS){
+    try{ await ensureToken(); if(await checkStaff()){ enterApp(); return; } }catch(e){}
+    SESS = null; saveSess();
+  }
+  $('login-page').style.display = 'flex';
+  setTimeout(()=>{ const f=$('auth-email'); if(f) f.focus(); }, 150);
+}
+
+// ═══════════════ 공유 저장소 (Supabase pr_orders — 직원 전용) ═══════════════
+let savedCache = [];
+function getSaved(){ return savedCache; }
+function rowToRec(r){ return {base:r.base, meta:r.meta||{}, lines:r.lines||[], whs:r.whs||[], pl:r.pl||{}, inv:r.inv||{}, savedAt:r.saved_at}; }
+async function loadSavedList(){
+  try{
+    const r = await sbFetch('/rest/v1/pr_orders?select=*&order=saved_at.desc');
+    if(r.ok) savedCache = (await r.json()).map(rowToRec);
+  }catch(e){ console.warn('loadSavedList', e); }
+  renderSaved();
+}
+async function upsertRec(rec){
+  try{
+    const row = {base:rec.base, meta:rec.meta, lines:rec.lines, whs:rec.whs, pl:rec.pl||{}, inv:rec.inv||{}, saved_at:rec.savedAt||new Date().toISOString(), updated_at:new Date().toISOString()};
+    const r = await sbFetch('/rest/v1/pr_orders?on_conflict=base', {method:'POST', headers:{Prefer:'resolution=merge-duplicates,return=minimal'}, body:JSON.stringify([row])});
+    return r.ok;
+  }catch(e){ return false; }
+}
+async function migrateLocal(){
+  try{
+    const old = JSON.parse(localStorage.getItem(LS_SAVED)||'[]');
+    if(old.length){
+      for(const rec of old){ await upsertRec(rec); }
+      localStorage.removeItem(LS_SAVED);
+    }
+  }catch(e){}
+}
+async function saveCurrent(){
   if(!poLines.length){ alert(t('a_nolines')); return; }
   if(!$('m-cust').value || !$('m-po').value){ alert(t('a_needinfo')); return; }
   poLines.forEach(l=>{ if(l.style && (l.rawDesc||l.desc)) rememberStyle(l.rawDesc||l.desc, l.style); });
-  const saved = getSaved();
   const base = baseNumber();
-  const idx = saved.findIndex(s=>s.base===base);
+  const existing = savedCache.find(s=>s.base===base);
   const rec = { base, meta:getMeta(), lines:poLines, whs:activeWhs(), savedAt:new Date().toISOString() };
-  if(idx>=0){ if(!confirm(t('a_overwrite',{b:base}))) return; rec.pl = saved[idx].pl || {}; saved[idx]=rec; }
-  else saved.unshift(rec);
-  localStorage.setItem(LS_SAVED, JSON.stringify(saved));
-  renderSaved();
+  if(existing){
+    if(!confirm(t('a_overwrite',{b:base}))) return;
+    rec.pl = existing.pl || {}; rec.inv = existing.inv || {};
+  }
+  const ok = await upsertRec(rec);
+  if(!ok){ alert(t('save_fail')); return; }
+  await loadSavedList();
   alert(t('a_saved',{x:activeWhs().map(w=>docNumber(w)).join(' · ')}));
 }
 function loadSaved(base){
@@ -835,10 +951,10 @@ function loadSaved(base){
   renderTable(); updateNumPreview(); renderDocs();
   window.scrollTo({top:0,behavior:'smooth'});
 }
-function delSaved(base){
+async function delSaved(base){
   if(!confirm(t('a_delete',{b:base}))) return;
-  localStorage.setItem(LS_SAVED, JSON.stringify(getSaved().filter(s=>s.base!==base)));
-  renderSaved();
+  try{ await sbFetch('/rest/v1/pr_orders?base=eq.'+encodeURIComponent(base), {method:'DELETE', headers:{Prefer:'return=minimal'}}); }catch(e){}
+  await loadSavedList();
 }
 // ═══════════════ Packing List / Invoice (2단계) ═══════════════
 let plBase = null, plWh = null, plShowInv = false, plDrafts = {};
@@ -882,23 +998,23 @@ function delTracking(i){
   if(!t.length) t.push('');
   renderPL();
 }
-function saveInvStage(){
-  const saved = getSaved();
-  const rec = saved.find(s=>s.base===plBase); if(!rec) return;
+async function saveInvStage(){
+  const rec = savedCache.find(s=>s.base===plBase); if(!rec) return;
   plFieldsToDraft();
   rec.inv = rec.inv || {};
   rec.inv[plWh] = { savedAt: new Date().toISOString() };
-  localStorage.setItem(LS_SAVED, JSON.stringify(saved));
+  const r = await sbFetch('/rest/v1/pr_orders?base=eq.'+encodeURIComponent(plBase), {method:'PATCH', headers:{Prefer:'return=minimal'}, body:JSON.stringify({inv:rec.inv, updated_at:new Date().toISOString()})});
+  if(!r.ok){ alert(t('save_fail')); return; }
   renderSaved(); renderPL();
   alert(t('a_invsaved',{x:plNum(plBase, plWh)}));
 }
-function savePL(){
-  const saved = getSaved();
-  const rec = saved.find(s=>s.base===plBase); if(!rec) return;
+async function savePL(){
+  const rec = savedCache.find(s=>s.base===plBase); if(!rec) return;
   plFieldsToDraft();
   rec.pl = rec.pl || {};
   rec.pl[plWh] = { ...plDrafts[plWh], savedAt: new Date().toISOString() };
-  localStorage.setItem(LS_SAVED, JSON.stringify(saved));
+  const r = await sbFetch('/rest/v1/pr_orders?base=eq.'+encodeURIComponent(plBase), {method:'PATCH', headers:{Prefer:'return=minimal'}, body:JSON.stringify({pl:rec.pl, updated_at:new Date().toISOString()})});
+  if(!r.ok){ alert(t('save_fail')); return; }
   renderSaved(); renderPL();
   alert(t('a_plsaved',{x:plNum(plBase, plWh)}) + (plDrafts[plWh].serial ? ` (${plDrafts[plWh].serial})` : ''));
 }
@@ -1060,6 +1176,7 @@ $('m-date').value = todayStr();
 loadDraft();
 applyStaticLang();
 renderTable(); updateNumPreview(); renderDocs(); renderSaved();
+initAuth();
 </script>
 </body>
 </html>
