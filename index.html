@@ -91,6 +91,19 @@ main{max-width:1100px;margin:0 auto;padding:16px;}
 .inv-tbl tfoot td.c-full,.inv-tbl tfoot td.c-part{font-size:16px;}
 .muted{color:var(--text2);font-size:11px;}
 .saved-item{display:flex;align-items:center;gap:10px;padding:8px 10px;border:1px solid var(--border);border-radius:6px;margin-bottom:6px;flex-wrap:wrap;}
+@media (max-width: 760px){
+  .card{padding:12px 10px;}
+  .grid.g6{grid-template-columns:repeat(2,1fr);}
+  .dash-grid{grid-template-columns:repeat(2,1fr) !important;}
+  .doc-view{padding:8px 4px;}
+  .saved-item{padding:8px 6px;}
+  .btn.btn-sm{padding:5px 8px;font-size:11px;}
+  #saved-search{width:100% !important;}
+  .card-title{font-size:13px;}
+  body{font-size:13px;}
+  .inv-doc{font-size:10.5px;}
+  table.etbl{display:block;overflow-x:auto;white-space:nowrap;}
+}
 @keyframes overdue-blink{0%,100%{background:#dc2626;}50%{background:#7f1d1d;}}
 @keyframes overdue-pulse{0%,100%{opacity:1;}50%{opacity:0.55;}}
 .date-hdr{display:flex;align-items:center;gap:8px;margin:14px 0 6px;font-size:12px;font-weight:800;color:var(--text2);}
@@ -115,7 +128,7 @@ main{max-width:1100px;margin:0 auto;padding:16px;}
     <button class="btn btn-sm" onclick="doLogout()" style="padding:2px 8px;font-size:10px;" data-i18n="logout">로그아웃</button>
   </span>
   <select id="lang-sel" onchange="setLang(this.value)" style="font-size:11px;padding:3px 6px;border-radius:5px;border:none;background:#1d3f66;color:#fff;"><option value="ko">한국어</option><option value="en">English</option><option value="es">Español</option></select>
-  <span style="font-size:10px;color:#9fb8d4;">v123</span>
+  <span style="font-size:10px;color:#9fb8d4;">v124</span>
 </div>
 <div id="po-viewer" style="display:none;position:fixed;top:0;right:0;width:44%;height:100vh;background:#fff;border-left:2px solid var(--border);z-index:60;box-shadow:-6px 0 20px rgba(0,0,0,.15);">
   <div style="display:flex;align-items:center;gap:8px;padding:7px 12px;background:var(--header);color:#fff;font-size:12px;font-weight:700;">
@@ -270,6 +283,8 @@ main{max-width:1100px;margin:0 auto;padding:16px;}
         <button class="btn btn-sm" onclick="setAllDateGroups(false)" data-i18n="expand_all" style="font-weight:600;">▾ 전체 열기</button>
         <button class="btn btn-sm" onclick="setAllBshipChecks(true)" data-i18n="check_all" style="font-weight:600;">☑ 전체 체크</button>
         <button class="btn btn-sm" onclick="setAllBshipChecks(false)" data-i18n="uncheck_all" style="font-weight:600;">☐ 체크 해제</button>
+        <button class="btn btn-sm" id="bo-filter-btn" onclick="boOnly=!boOnly;renderSaved();" title="Back Order 있는 오더만 보기">⛔ BO</button>
+        <button class="btn btn-sm" onclick="openTrash()" title="삭제된 오더 (30일 보관)">🗑</button>
         <input class="fi" id="saved-search" placeholder="🔍 거래처 / PO# / Ref# 검색 (예: TTY)" oninput="savedQuery=this.value;renderSaved();" style="width:280px;font-size:12px;padding:6px 10px;font-weight:400;">
         <button class="btn btn-sm" id="saved-search-clear" style="display:none;" onclick="savedQuery='';document.getElementById('saved-search').value='';renderSaved();">✕</button>
       </span>
@@ -292,7 +307,8 @@ main{max-width:1100px;margin:0 auto;padding:16px;}
   <div id="dash-view" style="display:none;">
     <div class="card">
       <div class="card-title"><span>📊 Sales Dashboard</span>
-        <button class="btn btn-sm" onclick="runAiAnalysis()" style="margin-left:auto;background:#4c1d95;color:#fff;border-color:#4c1d95;font-weight:700;">🤖 AI 분석</button>
+        <button class="btn btn-sm" onclick="exportExcel()" style="margin-left:auto;background:#166534;color:#fff;border-color:#166534;font-weight:700;">📥 Excel</button>
+        <button class="btn btn-sm" onclick="runAiAnalysis()" style="background:#4c1d95;color:#fff;border-color:#4c1d95;font-weight:700;">🤖 AI 분석</button>
         <select id="dash-period" onchange="dashPeriod=this.value;const cr=document.getElementById('dash-custom-range');if(cr)cr.style.display=this.value==='custom'?'inline-flex':'none';renderDash();" style="padding:5px 8px;border:1px solid var(--border);border-radius:6px;font-size:12px;">
           <option value="all" data-i18n="d_all">전체</option>
           <option value="week" data-i18n="d_week">이번 주</option>
@@ -545,8 +561,30 @@ function rememberStyle(desc, style){
   // 분류명 자체(Adult S/S 등)는 학습하지 않음 — 스타일이 여러 개라 위험
   if(descKey(simplifyDesc(desc)) === k) return;
   const m = getStyleMap();
+  if(m[k] === s) return;
   m[k] = s;
   saveStyleMap(m);
+  // 클라우드에도 공유 (전 직원 컴퓨터 공통 적용)
+  try{
+    if(typeof SESS !== 'undefined' && SESS){
+      sbFetch('/rest/v1/pr_style_map?on_conflict=k', {method:'POST', headers:{Prefer:'resolution=merge-duplicates,return=minimal'}, body: JSON.stringify([{k:k, style:s, updated_at:new Date().toISOString()}])}).catch(()=>{});
+    }
+  }catch(e){}
+}
+async function loadStyleCloud(){
+  try{
+    const r = await sbFetch('/rest/v1/pr_style_map?select=k,style');
+    if(!r.ok) return;
+    const rows = await r.json();
+    const m = getStyleMap();
+    let changed = false;
+    rows.forEach(row=>{ if(row.k && row.style && m[row.k] !== row.style){ m[row.k] = row.style; changed = true; } });
+    if(changed) saveStyleMap(m);
+    // 로컬에만 있는 학습은 클라우드로 업로드
+    const cloudKeys = new Set(rows.map(r2=>r2.k));
+    const up = Object.entries(m).filter(([k])=>!cloudKeys.has(k)).map(([k,style])=>({k, style, updated_at:new Date().toISOString()}));
+    if(up.length) sbFetch('/rest/v1/pr_style_map?on_conflict=k', {method:'POST', headers:{Prefer:'resolution=merge-duplicates,return=minimal'}, body: JSON.stringify(up)}).catch(()=>{});
+  }catch(e){}
 }
 // 예전에 잘못 저장된 분류 키(adult s/s 등) 청소
 (function cleanStyleMap(){
@@ -1333,6 +1371,7 @@ async function doResetPw(){
   finally{ btn.disabled = false; btn.textContent = '암호 변경 →'; }
 }
 async function enterApp(){
+  loadStyleCloud();
   $('login-page').style.display = 'none';
   $('app-main').style.display = 'block';
   $('user-info').style.display = 'inline-flex';
@@ -1354,10 +1393,12 @@ async function initAuth(){
 // ═══════════════ 공유 저장소 (Supabase pr_orders — 직원 전용) ═══════════════
 let savedCache = [];
 function getSaved(){ return savedCache; }
-function rowToRec(r){ return {base:r.base, meta:r.meta||{}, lines:r.lines||[], whs:r.whs||[], pl:r.pl||{}, inv:r.inv||{}, savedAt:r.saved_at}; }
+function rowToRec(r){ return {base:r.base, meta:r.meta||{}, lines:r.lines||[], whs:r.whs||[], pl:r.pl||{}, inv:r.inv||{}, savedAt:r.saved_at, history:r.history||[]}; }
 async function loadSavedList(){
   try{
-    const r = await sbFetch('/rest/v1/pr_orders?select=base,meta,lines,whs,pl,inv,saved_at&order=saved_at.desc');
+    const r = await sbFetch('/rest/v1/pr_orders?select=base,meta,lines,whs,pl,inv,saved_at,history&deleted_at=is.null&order=saved_at.desc');
+    // 30일 지난 휴지통 자동 비우기
+    sbFetch('/rest/v1/pr_orders?deleted_at=lt.'+encodeURIComponent(new Date(Date.now()-30*86400000).toISOString()), {method:'DELETE', headers:{Prefer:'return=minimal'}}).catch(()=>{});
     if(r.ok) savedCache = (await r.json()).map(rowToRec);
   }catch(e){ console.warn('loadSavedList', e); }
   renderSaved();
@@ -1403,6 +1444,7 @@ async function saveCurrent(){
   // 자동 내부 알림은 보류 (거래처 이멜에 전직원 CC로 대체) — 켜려면 아래 주석 해제
   // if(!existing) notifyNewPR(rec);
   if(existing && orderChanges.length) notifyModified(rec, orderChanges);
+  logHist(base, existing ? ('Order modified (' + orderChanges.length + ' changes)') : 'Order created');
   clearOrderForm();
 }
 function clearOrderForm(){
@@ -1509,9 +1551,45 @@ async function loadSaved(base){
   window.scrollTo({top:0,behavior:'smooth'});
 }
 async function delSaved(base){
-  if(!confirm(t('a_delete',{b:base}))) return;
-  try{ await sbFetch('/rest/v1/pr_orders?base=eq.'+encodeURIComponent(base), {method:'DELETE', headers:{Prefer:'return=minimal'}}); }catch(e){}
+  if(!confirm(t('a_delete',{b:base}) + '\n\n(휴지통으로 이동 — 30일 안에 복구 가능)')) return;
+  try{ await sbFetch('/rest/v1/pr_orders?base=eq.'+encodeURIComponent(base), {method:'PATCH', headers:{Prefer:'return=minimal'}, body:JSON.stringify({deleted_at:new Date().toISOString()})}); }catch(e){}
+  showToast('🗑 휴지통으로 이동됨 (30일 보관)');
   await loadSavedList();
+}
+async function openTrash(){
+  const ex = document.getElementById('modal-trash'); if(ex) ex.remove();
+  let rows = [];
+  try{
+    const r = await sbFetch('/rest/v1/pr_orders?select=base,meta,deleted_at&deleted_at=not.is.null&order=deleted_at.desc');
+    if(r.ok) rows = await r.json();
+  }catch(e){}
+  const list = rows.map(r=>`<div style="display:flex;align-items:center;gap:10px;padding:7px 12px;border-bottom:1px solid #f3f4f6;">
+    <span style="font-family:Consolas,monospace;font-size:12px;">${esc(r.base)}</span>
+    <span style="font-size:12px;flex:1;">${esc((r.meta&&r.meta.cust)||'')} · PO ${esc((r.meta&&r.meta.po)||'')}</span>
+    <span class="muted" style="font-size:11px;">${new Date(r.deleted_at).toLocaleDateString('en-US')}</span>
+    <button class="btn btn-sm" onclick="restoreTrash('${esc(r.base)}')">↩ 복구</button>
+    <button class="btn btn-sm" style="color:var(--bad);" onclick="purgeTrash('${esc(r.base)}')">✕ 완전 삭제</button>
+  </div>`).join('') || '<div class="muted" style="padding:20px;">휴지통이 비어 있습니다</div>';
+  const div = document.createElement('div');
+  div.id = 'modal-trash';
+  div.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,.55);z-index:125;display:flex;align-items:center;justify-content:center;';
+  div.innerHTML = `<div style="background:#fff;border-radius:12px;width:640px;max-width:94vw;max-height:80vh;display:flex;flex-direction:column;box-shadow:0 20px 60px rgba(0,0,0,.35);">
+    <div style="background:#374151;color:#fff;border-radius:12px 12px 0 0;padding:12px 18px;font-weight:800;display:flex;justify-content:space-between;">🗑 휴지통 <span style="font-weight:400;font-size:11px;">30일 후 자동 삭제</span>
+      <button onclick="document.getElementById('modal-trash').remove()" style="background:none;border:none;color:#fff;font-size:17px;cursor:pointer;">✕</button></div>
+    <div style="overflow-y:auto;flex:1;">${list}</div>
+  </div>`;
+  document.body.appendChild(div);
+}
+async function restoreTrash(base){
+  try{ await sbFetch('/rest/v1/pr_orders?base=eq.'+encodeURIComponent(base), {method:'PATCH', headers:{Prefer:'return=minimal'}, body:JSON.stringify({deleted_at:null})}); }catch(e){}
+  document.getElementById('modal-trash')?.remove();
+  showToast('↩ 복구됨: ' + base);
+  await loadSavedList();
+}
+async function purgeTrash(base){
+  if(!confirm('⚠ ' + base + ' 를 완전히 삭제할까요? 복구할 수 없습니다.')) return;
+  try{ await sbFetch('/rest/v1/pr_orders?base=eq.'+encodeURIComponent(base), {method:'DELETE', headers:{Prefer:'return=minimal'}}); }catch(e){}
+  openTrash();
 }
 // ═══════════════ Packing List / Invoice (2단계) ═══════════════
 let plBase = null, plWh = null, plShowInv = false, plDrafts = {}, invDrafts = {};
@@ -1670,6 +1748,34 @@ function buildPRDocFromRec(rec, wh){
   poLines = bak.lines;
   return docHtml;
 }
+async function logHist(base, ev){
+  try{
+    const rec = savedCache.find(s=>s.base===base); if(!rec) return;
+    rec.history = Array.isArray(rec.history) ? rec.history : [];
+    rec.history.push({ t: new Date().toISOString(), by: (SESS && SESS.email) || '', e: ev });
+    if(rec.history.length > 200) rec.history = rec.history.slice(-200);
+    await sbFetch('/rest/v1/pr_orders?base=eq.'+encodeURIComponent(base), {method:'PATCH', headers:{Prefer:'return=minimal'}, body:JSON.stringify({history:rec.history})});
+  }catch(e){}
+}
+function openHistory(base){
+  const rec = savedCache.find(s=>s.base===base); if(!rec) return;
+  const ex = document.getElementById('modal-hist'); if(ex) ex.remove();
+  const evs = (rec.history||[]).slice().reverse();
+  const list = evs.map(h=>`<div style="display:flex;gap:10px;padding:6px 12px;border-bottom:1px solid #f3f4f6;font-size:12px;">
+    <span class="muted" style="min-width:135px;font-family:Consolas,monospace;font-size:11px;">${new Date(h.t).toLocaleString('en-US',{month:'numeric',day:'numeric',hour:'numeric',minute:'2-digit'})}</span>
+    <span style="flex:1;">${esc(h.e)}</span>
+    <span class="muted" style="font-size:11px;">${esc(String(h.by||'').split('@')[0])}</span>
+  </div>`).join('') || '<div class="muted" style="padding:20px;">기록 없음</div>';
+  const div = document.createElement('div');
+  div.id = 'modal-hist';
+  div.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,.55);z-index:125;display:flex;align-items:center;justify-content:center;';
+  div.innerHTML = `<div style="background:#fff;border-radius:12px;width:560px;max-width:94vw;max-height:80vh;display:flex;flex-direction:column;box-shadow:0 20px 60px rgba(0,0,0,.35);">
+    <div style="background:#0f2a4a;color:#fff;border-radius:12px 12px 0 0;padding:12px 18px;font-weight:800;display:flex;justify-content:space-between;">🕘 History — ${esc((rec.meta&&rec.meta.cust)||'')} PO ${esc((rec.meta&&rec.meta.po)||'')}
+      <button onclick="document.getElementById('modal-hist').remove()" style="background:none;border:none;color:#fff;font-size:17px;cursor:pointer;">✕</button></div>
+    <div style="overflow-y:auto;flex:1;">${list}</div>
+  </div>`;
+  document.body.appendChild(div);
+}
 async function markDocPrinted(base, wh, kind){
   const rec = savedCache.find(s=>s.base===base); if(!rec) return;
   const mp = { ...((rec.meta && rec.meta._printed) || {}) };
@@ -1701,7 +1807,7 @@ function nextSerial(wh){
 }
 async function refreshRec(base){
   try{
-    const r = await sbFetch('/rest/v1/pr_orders?base=eq.'+encodeURIComponent(base)+'&select=base,meta,lines,whs,pl,inv,saved_at');
+    const r = await sbFetch('/rest/v1/pr_orders?base=eq.'+encodeURIComponent(base)+'&select=base,meta,lines,whs,pl,inv,saved_at,history');
     if(r.ok){
       const rows = await r.json();
       if(rows.length){
@@ -1828,6 +1934,7 @@ async function saveInvStage(){
   const r = await sbFetch('/rest/v1/pr_orders?base=eq.'+encodeURIComponent(plBase), {method:'PATCH', headers:{Prefer:'return=minimal'}, body:JSON.stringify({inv:rec.inv, updated_at:new Date().toISOString()})});
   if(!r.ok){ alert(t('save_fail')); return; }
   renderSaved(); renderPL();
+  logHist(plBase, 'Invoice saved — ' + plWh + (iv.invNo ? ' (' + iv.invNo + ')' : ''));
   showToast(t('a_invsaved',{x:plNum(plBase, plWh)}));
 }
 async function savePL(){
@@ -1852,6 +1959,7 @@ async function savePL(){
   const r = await sbFetch('/rest/v1/pr_orders?base=eq.'+encodeURIComponent(plBase), {method:'PATCH', headers:{Prefer:'return=minimal'}, body:JSON.stringify({pl:rec.pl, inv:rec.inv, meta:rec.meta, updated_at:new Date().toISOString()})});
   if(!r.ok){ alert(t('save_fail')); return; }
   renderSaved(); renderPL();
+  logHist(plBase, 'Packing List saved — ' + plWh + (plDrafts[plWh].serial ? ' (' + plDrafts[plWh].serial + ')' : ''));
   showToast(t('a_plsaved',{x:plNum(plBase, plWh)}) + (plDrafts[plWh].serial ? ` (${plDrafts[plWh].serial})` : '') + ' + Invoice');
   if(wantSend){
     if(!custEm || !custEm.includes('@')){ alert('📧 고객 이메일 주소를 입력해주세요 (Customer Email 칸)'); return; }
@@ -1947,6 +2055,7 @@ async function unshipPL(){
   openPLInner(keepBase);
   const rec2 = savedCache.find(s=>s.base===keepBase);
   if(rec2 && (rec2.whs||[]).includes(keepWh)){ plWh = keepWh; renderPL(); }
+  logHist(keepBase, 'Unshipped — ' + keepWh);
   showToast('↩ 출고 취소됨: ' + num);
 }
 async function resendPL(){
@@ -2007,6 +2116,7 @@ async function sendPLEmailFor(rec, wh, toEmail){
     })
   });
   if(!r.ok){ const e = await r.json().catch(()=>({})); throw new Error(e.error || e.message || ('HTTP '+r.status)); }
+  logHist(rec.base, 'Packing List emailed — ' + wh + ' → ' + toEmail);
 }
 function plFieldsToDraft(){
   if(!$('plf-serial')) return;
@@ -2051,6 +2161,7 @@ async function markInvPrinted(){
     lines: (Array.isArray(ivd.lines) && ivd.lines.length) ? ivd.lines : (ex.lines || [])
   };
   try{ await sbFetch('/rest/v1/pr_orders?base=eq.'+encodeURIComponent(plBase), {method:'PATCH', headers:{Prefer:'return=minimal'}, body:JSON.stringify({inv:rec.inv, updated_at:new Date().toISOString()})}); }catch(e){}
+  logHist(plBase, 'Invoice printed — ' + plWh + ' (' + invNo + ')');
   renderSaved();
 }
 function printStageDoc(kind){
@@ -2931,7 +3042,7 @@ async function submitBatchShip(){
     }
     try{
       const r = await sbFetch('/rest/v1/pr_orders?base=eq.'+encodeURIComponent(base), {method:'PATCH', headers:{Prefer:'return=minimal'}, body:JSON.stringify({pl:rec.pl, inv:rec.inv, meta:rec.meta, updated_at:new Date().toISOString()})});
-      if(r.ok){ okCnt++; if(em && em.includes('@')) sendQueue.push({rec, em}); }
+      if(r.ok){ okCnt++; logHist(rec.base, 'Batch shipped — ' + bs.wh + ' (' + rec.pl[bs.wh].serial + ')'); if(em && em.includes('@')) sendQueue.push({rec, em}); }
       else fails.push(base);
     }catch(e){ fails.push(base); }
   }
@@ -2959,6 +3070,21 @@ async function submitBatchShip(){
   }
 }
 let savedQuery = '';
+let boOnly = false;
+async function moveBO(base, target){
+  const rec = savedCache.find(s=>s.base===base); if(!rec) return;
+  const boQty = (rec.lines||[]).filter(l=>l.wh==='BO').reduce((a,l)=>a+(l.qty||0),0);
+  if(!confirm('⛔→' + target + ' : BO 라인(' + boQty.toLocaleString() + ' pcs)을 ' + target + ' 창고로 옮길까요?\n(재고가 들어와서 출고 가능해진 경우)')) return;
+  (rec.lines||[]).forEach(l=>{ if(l.wh==='BO') l.wh = target; });
+  rec.whs = WH_LIST.filter(w=>(rec.lines||[]).some(l=>l.wh===w && (l.qty||0)>0));
+  try{
+    const r = await sbFetch('/rest/v1/pr_orders?base=eq.'+encodeURIComponent(base), {method:'PATCH', headers:{Prefer:'return=minimal'}, body:JSON.stringify({lines:rec.lines, whs:rec.whs, updated_at:new Date().toISOString()})});
+    if(!r.ok){ alert(t('save_fail')); return; }
+  }catch(e){ alert(t('save_fail')); return; }
+  logHist(base, 'Back Order → ' + target + ' (' + boQty + ' pcs)');
+  renderSaved();
+  showToast('⛔→' + target + ' 전환 완료 — ' + target + ' Packing List로 출고 진행하세요');
+}
 function custCodeFor(name){
   const k = custKey(name);
   if(!k) return '';
@@ -2976,10 +3102,12 @@ function savedMatches(s, q){
   return cust.includes(q) || po.includes(q) || base.includes(q) || code.includes(q);
 }
 function renderSaved(){
+  const bb = document.getElementById('bo-filter-btn');
+  if(bb) bb.style.cssText = boOnly ? 'background:#b91c1c;color:#fff;border-color:#b91c1c;' : '';
   const cl = document.getElementById('saved-search-clear');
   const q = savedQuery.trim().toUpperCase();
   if(cl) cl.style.display = q ? 'inline-flex' : 'none';
-  const saved = [...getSaved()].filter(s=>savedMatches(s, q)).sort((a,b)=>{
+  const saved = [...getSaved()].filter(s=>savedMatches(s, q)).filter(s=>!boOnly || (s.whs||[]).includes('BO')).sort((a,b)=>{
     const ka = String((a.meta&&a.meta.date)||a.savedAt||''), kb = String((b.meta&&b.meta.date)||b.savedAt||'');
     return kb.localeCompare(ka) || String(b.savedAt||'').localeCompare(String(a.savedAt||''));
   });
@@ -3017,6 +3145,7 @@ function renderSaved(){
       <button class="btn btn-sm" onclick="downloadOrderSummary('${esc(s.base)}')">📋 Order Summary</button>
       <button class="btn btn-sm" onclick="copyOrderSummary('${esc(s.base)}')">📧 Copy Email</button>
       <button class="btn btn-sm" onclick="viewSavedPO('${esc(s.base)}')">📄 PO</button>
+      <button class="btn btn-sm" onclick="openHistory('${esc(s.base)}')" title="변경 기록">🕘</button>
       <button class="btn btn-sm" onclick="loadSaved('${esc(s.base)}')">${t('open_edit')}</button>
       <button class="btn btn-sm" style="color:var(--bad);" onclick="delSaved('${esc(s.base)}')">${t('del')}</button>
       </div>
@@ -3029,6 +3158,7 @@ function renderSaved(){
         ${w!=='BO' && w!=='NA' ? `<input type="checkbox" class="bship-cb" data-base="${esc(s.base)}" data-wh="${w}" onchange="updateBatchBar()" title="Batch 작업에 포함 (출고 전=Batch Ship / 출고 후=Invoice Print)" style="width:15px;height:15px;accent-color:#1d4ed8;cursor:pointer;">` : ''}
         <span class="chip chip-${w}" style="min-width:34px;text-align:center;">${w}</span>
         <button class="btn btn-sm" style="background:${c};color:#fff;border-color:${c};" onclick="printSavedPRWh('${esc(s.base)}','${w}')">🖨 Pull Request</button>
+        ${w==='BO' ? `<button class="btn btn-sm" onclick="moveBO('${esc(s.base)}','SC')" title="재고 입고 → SC로 전환">⛔→SC</button><button class="btn btn-sm" onclick="moveBO('${esc(s.base)}','CA')" title="재고 입고 → CA로 전환">⛔→CA</button>` : ''}
         ${w!=='BO' && w!=='NA' ? `<button class="btn btn-sm" style="background:${mp.label?'#16a34a':'#7c3aed'};color:#fff;border-color:${mp.label?'#16a34a':'#7c3aed'};" onclick="openBoxLabelForRecWh('${esc(s.base)}','${w}')">🏷 Box Label</button>
         <button class="btn btn-sm" style="${plSaved?'background:#16a34a;border-color:#16a34a;':'background:#f59e0b;border-color:#f59e0b;'}color:#fff;" onclick="openPLWh('${esc(s.base)}','${w}')">📦 Packing List</button>
         ${plSaved ? `<button class="btn btn-sm" style="${invPr?'background:#16a34a;border-color:#16a34a;':'background:#dc2626;border-color:#dc2626;'}color:#fff;" onclick="openInvoiceWh('${esc(s.base)}','${w}')">🧾 Invoice</button>` : ''}` : ''}
@@ -3061,6 +3191,54 @@ function renderSaved(){
   }).join('') : `<div class="muted">${q ? '🔍 "' + esc(savedQuery.trim()) + '" 검색 결과 없음' : t('saved_empty')}</div>`;
 }
 const dateCollapse = {};
+function loadXlsxLib(){
+  if(window.XLSX) return Promise.resolve();
+  return new Promise((res, rej)=>{
+    const s = document.createElement('script');
+    s.src = 'https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js';
+    s.onload = res; s.onerror = ()=>rej(new Error('xlsx load fail'));
+    document.head.appendChild(s);
+  });
+}
+async function exportExcel(){
+  showToast('📥 엑셀 만드는 중...');
+  try{
+    await loadXlsxLib();
+    const recs = (savedCache||[]).filter(inDashPeriod);
+    const orders = recs.map(rec=>{
+      const m = rec.meta||{};
+      const tot = (rec.lines||[]).filter(l=>l.wh!=='NA').reduce((a,l)=>a+(l.qty||0),0);
+      const amt = (rec.lines||[]).filter(l=>l.wh!=='NA').reduce((a,l)=>a+(l.qty||0)*(l.price||0),0);
+      let shipAmt = 0;
+      Object.values(rec.pl||{}).forEach(p=>{ if(p&&p.savedAt) (p.lines||[]).forEach(l=>{ shipAmt += (Number(l.qty)||0)*(Number(l.price)||0); }); });
+      return { Date: m.date||'', Customer: custCanon(m.cust), 'PO #': m.po||'', 'Ref #': rec.base, Pcs: tot, 'Order Amount': Math.round(amt*100)/100, 'Shipped Amount': Math.round(shipAmt*100)/100, Status: recStatus(rec).label.replace(/[^\x20-\x7E가-힣·\/]/g,'').trim() };
+    });
+    const lines = [];
+    recs.forEach(rec=>{
+      const m = rec.meta||{};
+      (rec.lines||[]).filter(l=>(l.qty||0)>0).forEach(l=>{
+        lines.push({ Date: m.date||'', Customer: custCanon(m.cust), 'PO #': m.po||'', 'Style #': l.style||'', Item: l.desc||'', Color: normalizePoColor(l.color||''), Size: l.size||'', Qty: l.qty||0, 'Unit Price': l.price||0, Amount: Math.round((l.qty||0)*(l.price||0)*100)/100, WH: l.wh||'' });
+      });
+    });
+    const byC = {}, byI = {};
+    lines.forEach(l=>{
+      if(l.WH==='NA') return;
+      byC[l.Customer] = byC[l.Customer]||{Customer:l.Customer, Pcs:0, Amount:0};
+      byC[l.Customer].Pcs += l.Qty; byC[l.Customer].Amount = Math.round((byC[l.Customer].Amount + l.Amount)*100)/100;
+      const k = l['Style #']+' '+l.Color;
+      byI[k] = byI[k]||{'Style #':l['Style #'], Color:l.Color, Pcs:0, Amount:0};
+      byI[k].Pcs += l.Qty; byI[k].Amount = Math.round((byI[k].Amount + l.Amount)*100)/100;
+    });
+    const wb = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(orders), 'Orders');
+    XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(lines), 'Lines');
+    XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(Object.values(byC).sort((a,b)=>b.Amount-a.Amount)), 'By Customer');
+    XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(Object.values(byI).sort((a,b)=>b.Amount-a.Amount)), 'By Item');
+    const rangeLbl = dashPeriod==='custom' ? ((dashFrom||'start')+'~'+(dashTo||'now')) : dashPeriod;
+    XLSX.writeFile(wb, 'PacificSports-Sales-' + rangeLbl + '-' + todayStr() + '.xlsx');
+    showToast('📥 엑셀 다운로드 완료 (' + orders.length + '건)');
+  }catch(e){ alert('엑셀 생성 실패: ' + e.message); }
+}
 async function runAiAnalysis(){
   const ex = document.getElementById('modal-ai'); if(ex) ex.remove();
   const div = document.createElement('div');
