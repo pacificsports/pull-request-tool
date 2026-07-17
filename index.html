@@ -114,7 +114,7 @@ main{max-width:1100px;margin:0 auto;padding:16px;}
     <button class="btn btn-sm" onclick="doLogout()" style="padding:2px 8px;font-size:10px;" data-i18n="logout">로그아웃</button>
   </span>
   <select id="lang-sel" onchange="setLang(this.value)" style="font-size:11px;padding:3px 6px;border-radius:5px;border:none;background:#1d3f66;color:#fff;"><option value="ko">한국어</option><option value="en">English</option><option value="es">Español</option></select>
-  <span style="font-size:10px;color:#9fb8d4;">v115</span>
+  <span style="font-size:10px;color:#9fb8d4;">v116</span>
 </div>
 <div id="po-viewer" style="display:none;position:fixed;top:0;right:0;width:44%;height:100vh;background:#fff;border-left:2px solid var(--border);z-index:60;box-shadow:-6px 0 20px rgba(0,0,0,.15);">
   <div style="display:flex;align-items:center;gap:8px;padding:7px 12px;background:var(--header);color:#fff;font-size:12px;font-weight:700;">
@@ -2507,6 +2507,7 @@ function rankBadge(cust, idx, prevIdxMap){
   return '<span style="font-size:10px;color:#9ca3af;">—</span>';
 }
 let trendGran = 'daily', trendCust = 'all', trendYoY = false;
+let custSort = 'rank', custSearch = '';
 function recLineAmt(rec){
   let a = 0, q = 0;
   (rec.whs||[]).forEach(wh=>salesLines(rec, wh).forEach(l=>{ const n = Number(l.qty)||0; q += n; a += n*(Number(l.price)||0); }));
@@ -2652,14 +2653,19 @@ function renderDash(){
   const prevIdxMap = {}; prevRankArr.forEach((c,i)=>prevIdxMap[c]=i);
   // 거래처별 월 매출 (기간 필터 무시 — 추이용, 최근 12개월)
   const custMonthly = {};
+  const lyYear = String(new Date().getFullYear() - 1);
+  const lyTotals = {};
   (savedCache||[]).forEach(rec=>{
     const c = (rec.meta&&rec.meta.cust)||'—';
     const dstr = String((rec.meta&&rec.meta.date)||rec.savedAt||'').slice(0,7);
     if(!dstr) return;
     if(!custMonthly[c]) custMonthly[c] = {};
     custMonthly[c][dstr] = (custMonthly[c][dstr]||0) + recLineAmt(rec).a;
+    if(dstr.slice(0,4) === lyYear) lyTotals[c] = (lyTotals[c]||0) + recLineAmt(rec).a;
   });
-  const custRows = Object.entries(byCust).sort((x,y)=>y[1].a-x[1].a).map(([c,v],i)=>{
+  window._dashCust = { byCust, prevIdxMap, custMonthly, lyTotals };
+  const custRows = buildCustRows();
+  const _oldCustRows = Object.entries(byCust).sort((x,y)=>y[1].a-x[1].a).map(([c,v],i)=>{
     const months = Object.keys(custMonthly[c]||{}).sort().slice(-12);
     const detail = months.map((ym,r)=>{
       const val = custMonthly[c][ym];
@@ -2677,8 +2683,8 @@ function renderDash(){
     <tr id="cudet-${i}" style="display:none;background:#f8fafc;"><td colspan="5" class="tl" style="padding:8px 14px;">
       <div style="font-size:10.5px;font-weight:800;color:var(--text2);margin-bottom:4px;">MONTHLY — ${esc(c)} (최근 ${months.length}개월, 전월 대비)</div>${detail || '<span class="muted">—</span>'}
     </td></tr>`;
-  }).join('')
-    || `<tr><td colspan="5" class="muted" style="padding:12px;">—</td></tr>`;
+  }).join('');
+  void _oldCustRows;
   const itemRows = Object.values(byItem).sort((x,y)=>y.a-x.a).map((v,i)=>{
     const top5 = Object.entries(v.cust||{}).sort((x,y)=>y[1].a-x[1].a).slice(0,5);
     const detail = top5.map(([c,cv],r)=>`<div style="display:flex;gap:10px;padding:2px 0;font-size:11.5px;">
@@ -2705,8 +2711,13 @@ function renderDash(){
     ${buildTrendHtml()}
     <div style="display:grid;grid-template-columns:1fr 1fr;gap:18px;" class="dash-grid">
       <div>
-        <div style="font-weight:800;font-size:13px;color:var(--header);margin-bottom:8px;">${t('d_bycust')}</div>
-        <table class="etbl"><thead><tr><th>Rank</th><th class="tl">Customer</th><th>${t('d_orders')}</th><th>Pcs</th><th>Sales</th></tr></thead><tbody>${custRows}</tbody></table>
+        <div style="display:flex;align-items:center;gap:6px;margin-bottom:8px;flex-wrap:wrap;">
+          <span style="font-weight:800;font-size:13px;color:var(--header);">${t('d_bycust')}</span>
+          <input class="fi" id="cust-search" value="${esc(custSearch)}" placeholder="🔍 거래처 검색" oninput="custSearch=this.value;updateCustRows();" style="width:150px;font-size:11.5px;padding:4px 8px;margin-left:auto;">
+          <button class="btn btn-sm" id="cust-sort-rank" style="${custSort==='rank'?'background:var(--header);color:#fff;border-color:var(--header);':''}" onclick="custSort='rank';updateCustRows();">🏆 Rank</button>
+          <button class="btn btn-sm" id="cust-sort-alpha" style="${custSort==='alpha'?'background:var(--header);color:#fff;border-color:var(--header);':''}" onclick="custSort='alpha';updateCustRows();">A-Z</button>
+        </div>
+        <table class="etbl"><thead><tr><th>Rank</th><th class="tl">Customer</th><th>${t('d_orders')}</th><th>Pcs</th><th>Last Year</th><th>Sales</th></tr></thead><tbody id="cust-tbody">${custRows}</tbody></table>
       </div>
       <div>
         <div style="font-weight:800;font-size:13px;color:var(--header);margin-bottom:8px;">${t('d_byitem')}</div>
@@ -3055,6 +3066,47 @@ async function runAiAnalysis(){
     const body = document.getElementById('ai-body');
     if(body) body.textContent = '❌ 분석 실패: ' + e.message;
   }
+}
+function buildCustRows(){
+  const D = window._dashCust || {};
+  const byCust = D.byCust || {}, prevIdxMap = D.prevIdxMap || {}, custMonthly = D.custMonthly || {}, lyTotals = D.lyTotals || {};
+  const money = n => '$' + (n||0).toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2});
+  const ranked = Object.entries(byCust).sort((x,y)=>y[1].a-x[1].a);
+  const rankOf = {}; ranked.forEach(([c],i)=>rankOf[c]=i);
+  let entries = ranked.slice();
+  const q = (custSearch||'').trim().toUpperCase();
+  if(q) entries = entries.filter(([c])=>c.toUpperCase().includes(q) || custCodeFor(c).includes(q));
+  if(custSort === 'alpha') entries.sort((x,y)=>x[0].localeCompare(y[0]));
+  return entries.map(([c,v])=>{
+    const i = rankOf[c];
+    const months = Object.keys(custMonthly[c]||{}).sort().slice(-12);
+    const detail = months.map((ym,r)=>{
+      const val = custMonthly[c][ym];
+      const prev = r>0 ? custMonthly[c][months[r-1]] : null;
+      const delta = (prev!==null && prev>0) ? ((val-prev)/prev*100) : null;
+      const arrow = delta===null ? '' : (delta>3 ? `<span style="color:#166534;font-weight:800;">▲${delta.toFixed(0)}%</span>` : (delta<-3 ? `<span style="color:#b91c1c;font-weight:800;">▼${Math.abs(delta).toFixed(0)}%</span>` : '<span style="color:#9ca3af;">—</span>'));
+      return `<div style="display:flex;gap:10px;padding:2px 0;font-size:11.5px;">
+        <span style="min-width:60px;font-family:Consolas,monospace;">${(+ym.slice(5))}/${ym.slice(2,4)}</span>
+        <span style="font-weight:700;color:var(--ok);min-width:100px;text-align:right;">${money(val)}</span>
+        <span style="min-width:60px;">${arrow}</span>
+      </div>`;
+    }).join('');
+    const ly = lyTotals[c] || 0;
+    return `<tr style="cursor:pointer;" onclick="toggleCustDetail(${i})" title="클릭하면 월별 매출 추이">
+      <td style="font-weight:800;color:var(--header);white-space:nowrap;">#${i+1} ${rankBadge(c,i,prevIdxMap)}</td><td class="tl" style="font-weight:700;">${esc(c)}</td><td>${Object.keys(v.o).length}</td><td>${v.q.toLocaleString()}</td>
+      <td style="color:#6b7280;">${ly ? money(ly) : '—'}</td>
+      <td style="font-weight:800;color:var(--ok);">${money(v.a)}</td></tr>
+    <tr id="cudet-${i}" style="display:none;background:#f8fafc;"><td colspan="6" class="tl" style="padding:8px 14px;">
+      <div style="font-size:10.5px;font-weight:800;color:var(--text2);margin-bottom:4px;">MONTHLY — ${esc(c)} (최근 ${months.length}개월, 전월 대비)</div>${detail || '<span class="muted">—</span>'}
+    </td></tr>`;
+  }).join('') || `<tr><td colspan="6" class="muted" style="padding:12px;">${q ? '검색 결과 없음' : '—'}</td></tr>`;
+}
+function updateCustRows(){
+  const tb = document.getElementById('cust-tbody');
+  if(tb) tb.innerHTML = buildCustRows();
+  const rb = document.getElementById('cust-sort-rank'), ab = document.getElementById('cust-sort-alpha');
+  if(rb) rb.style.cssText = custSort==='rank' ? 'background:var(--header);color:#fff;border-color:var(--header);' : '';
+  if(ab) ab.style.cssText = custSort==='alpha' ? 'background:var(--header);color:#fff;border-color:var(--header);' : '';
 }
 function toggleCustDetail(i){
   const el = document.getElementById('cudet-'+i);
