@@ -128,7 +128,7 @@ main{max-width:1100px;margin:0 auto;padding:16px;}
     <button class="btn btn-sm" onclick="doLogout()" style="padding:2px 8px;font-size:10px;" data-i18n="logout">로그아웃</button>
   </span>
   <select id="lang-sel" onchange="setLang(this.value)" style="font-size:11px;padding:3px 6px;border-radius:5px;border:none;background:#1d3f66;color:#fff;"><option value="ko">한국어</option><option value="en">English</option><option value="es">Español</option></select>
-  <span style="font-size:10px;color:#9fb8d4;">v134</span>
+  <span style="font-size:10px;color:#9fb8d4;">v135</span>
 </div>
 <div id="po-viewer" style="display:none;position:fixed;top:0;right:0;width:44%;height:100vh;background:#fff;border-left:2px solid var(--border);z-index:60;box-shadow:-6px 0 20px rgba(0,0,0,.15);">
   <div style="display:flex;align-items:center;gap:8px;padding:7px 12px;background:var(--header);color:#fff;font-size:12px;font-weight:700;">
@@ -2213,6 +2213,78 @@ async function markInvPrinted(){
   logHist(plBase, 'Invoice printed — ' + plWh + ' (' + invNo + ')');
   renderSaved();
 }
+function buildBOLDoc(rec, wh, d){
+  const meta = rec.meta || {};
+  const num = plNum(rec.base, wh);
+  const lines = (d.lines||[]).filter(l=>(l.qty||0)>0);
+  const tot = lines.reduce((a,l)=>a+(Number(l.qty)||0),0);
+  let full = 0; const pset = new Set(); let looseNoBox = 0;
+  lines.forEach(l=>{ const b = boxCalc(l); full += b.full||0; if((b.loose||0)>0){ if(l.pbox) pset.add(String(l.pbox).trim()); else looseNoBox++; } });
+  const boxes = full + pset.size + looseNoBox;
+  const a1 = [meta.shipName, meta.shipAddr, [meta.shipCity, [String(meta.shipState||'').toUpperCase(), meta.shipZip].filter(Boolean).join(' ')].filter(Boolean).join(', ')].filter(Boolean).join('\n') || String(meta.shipto||'') || String(meta.cust||'');
+  const dateStr = (d.date ? new Date(d.date+'T00:00:00') : new Date()).toLocaleDateString('en-US');
+  const trk = (d.trackings||[]).filter(Boolean).join(', ');
+  const carrier = (d.via==='LTL' ? (d.freightCo||'') : [d.via, d.method].filter(Boolean).join(' '));
+  const box = (label, inner, extra) => `<div style="border:1.5px solid #111;${extra||''}"><div style="background:#111;color:#fff;font-size:10px;font-weight:800;letter-spacing:1px;padding:3px 8px;">${label}</div><div style="padding:8px 10px;font-size:12px;white-space:pre-line;min-height:58px;">${inner}</div></div>`;
+  const chk = l => `<span style="display:inline-block;margin-right:14px;"><span style="display:inline-block;width:11px;height:11px;border:1.5px solid #111;vertical-align:-1px;margin-right:5px;"></span>${l}</span>`;
+  return `<div class="inv-doc">
+    <div style="background:#0f2a4a;padding:12px 20px;display:flex;justify-content:space-between;align-items:center;">
+      <img src="${LOGO_B64}" style="height:42px;width:auto;">
+      <div style="color:#fff;font-size:22px;font-weight:800;letter-spacing:3px;">BILL OF LADING</div>
+    </div>
+    <div style="display:flex;justify-content:space-between;gap:16px;background:#f5f7fa;border:1px solid var(--border);border-top:none;padding:10px 20px;margin-bottom:12px;">
+      <div style="font-size:11px;color:#555;align-self:center;">Non-negotiable · Subject to carrier terms and conditions</div>
+      <div style="min-width:230px;">
+        <div class="inv-meta-row"><span>BOL No.</span><span>${esc(num)}-BOL</span></div>
+        <div class="inv-meta-row"><span>Date</span><span>${dateStr}</span></div>
+        <div class="inv-meta-row"><span>PO #</span><span>${esc(meta.po||'')}</span></div>
+        ${trk ? `<div class="inv-meta-row"><span>PRO / Tracking #</span><span>${esc(trk)}</span></div>` : `<div class="inv-meta-row"><span>PRO #</span><span>____________________</span></div>`}
+      </div>
+    </div>
+    <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:10px;margin-bottom:12px;">
+      ${box('SHIP FROM', esc('PEACE TEXTILE AMERICA, INC.\nd.b.a Pacific Sports\n' + (WH_ADDR[wh]||'')))}
+      ${box('SHIP TO (CONSIGNEE)', esc(a1))}
+      ${box('FREIGHT CHARGES BILL TO', '&nbsp;')}
+    </div>
+    <div style="display:grid;grid-template-columns:1.4fr 1fr 1fr;gap:10px;margin-bottom:12px;">
+      ${box('CARRIER', esc(carrier||'') + '\nTrailer #: ____________\nSeal #: ____________')}
+      ${box('FREIGHT CHARGE TERMS', chk('Prepaid') + '<br>' + chk('Collect') + '<br>' + chk('3rd Party'))}
+      ${box('SHIPMENT INFO', 'Total Boxes: <b>' + boxes + '</b>\nPallets: ____________\nTotal Weight: ____________ lbs')}
+    </div>
+    <table class="inv-tbl">
+      <thead><tr><th>Handling Units</th><th>Package Type</th><th class="tl">Description of Commodity</th><th>NMFC / Class</th><th>Total Pcs</th><th>Weight (lbs)</th></tr></thead>
+      <tbody><tr>
+        <td style="font-weight:700;">${boxes}</td><td>Carton${boxes===1?'':'s'}</td>
+        <td class="tl">Apparel / Sportswear — PO ${esc(meta.po||'')} (${esc(meta.cust||'')})</td>
+        <td>49880 / _____</td><td style="font-weight:700;">${tot.toLocaleString()}</td><td>__________</td>
+      </tr></tbody>
+      <tfoot><tr><td colspan="4" class="tl">TOTAL</td><td>${tot.toLocaleString()}</td><td>__________</td></tr></tfoot>
+    </table>
+    ${box('SPECIAL INSTRUCTIONS', '&nbsp;', 'margin-top:12px;')}
+    <div style="margin-top:26px;display:grid;grid-template-columns:1fr 1fr;gap:30px;page-break-inside:avoid;">
+      <div>
+        <div style="border-bottom:1.5px solid #111;height:38px;"></div>
+        <div style="display:flex;justify-content:space-between;margin-top:5px;"><span style="font-size:11px;font-weight:700;">Shipper Signature</span><span style="font-size:10px;color:#666;">Date: ____________</span></div>
+        <div style="font-size:9px;color:#777;margin-top:3px;">This is to certify that the above named materials are properly classified, packaged, marked and labeled, and are in proper condition for transportation.</div>
+      </div>
+      <div>
+        <div style="border-bottom:1.5px solid #111;height:38px;"></div>
+        <div style="display:flex;justify-content:space-between;margin-top:5px;"><span style="font-size:11px;font-weight:700;">Carrier / Driver Signature</span><span style="font-size:10px;color:#666;">Pickup Date: ____________</span></div>
+        <div style="font-size:9px;color:#777;margin-top:3px;">Carrier acknowledges receipt of packages and required placards. Property described above is received in good order, except as noted.</div>
+      </div>
+    </div>
+  </div>`;
+}
+function printBOL(){
+  const rec = savedCache.find(s=>s.base===plBase); if(!rec) return;
+  plFieldsToDraft();
+  printDocHtml(buildBOLDoc(rec, plWh, plDrafts[plWh]||{}), plNum(plBase, plWh) + '-BOL');
+}
+async function downloadBOLPdf(){
+  const rec = savedCache.find(s=>s.base===plBase); if(!rec) return;
+  plFieldsToDraft();
+  await downloadPdfHtml(buildBOLDoc(rec, plWh, plDrafts[plWh]||{}), plNum(plBase, plWh) + '-BOL.pdf', document.getElementById('bolpdf-btn'));
+}
 function printStageDoc(kind){
   const rec = savedCache.find(s=>s.base===plBase); if(!rec) return;
   plFieldsToDraft();
@@ -2584,7 +2656,7 @@ function renderPL(){
       <div class="no-print" style="display:flex;gap:6px;justify-content:flex-end;margin-bottom:12px;flex-wrap:wrap;">
         ${plShowInv
           ? `<button class="btn btn-sm" style="background:#fff;color:#7c3aed;border-color:#c4b5fd;margin-right:auto;" onclick="viewSavedPO(plBase)" title="거래처에서 받은 원본 PO를 옆에 띄워 인보이스와 비교">📄 Customer PO</button><button class="btn btn-sm btn-primary" onclick="saveInvStage()">${t('save_inv')}</button><button class="btn btn-sm" id="invpdf-btn" onclick="downloadPLPdf('invoice')">${t('inv_pdf')}</button><button class="btn btn-sm" onclick="printStageDoc('invoice')">🖨 Invoice</button>`
-          : `<label style="display:flex;align-items:center;gap:5px;font-size:11.5px;font-weight:700;color:#0e7490;margin-right:auto;cursor:pointer;"><input type="checkbox" id="plf-sendpl" style="width:14px;height:14px;accent-color:#0e7490;cursor:pointer;"> ${t('sendpl_cb')}</label>${plInfo(rec,plWh).savedAt ? `<button class="btn btn-sm" style="background:#0e7490;color:#fff;border-color:#0e7490;" onclick="resendPL()" title="Customer Email 칸의 주소로 Packing List를 다시 발송">📧 Resend PL</button><button class="btn btn-sm" style="background:#fff;color:#b91c1c;border-color:#fca5a5;" onclick="unshipPL()" title="이 창고의 Packing List/Invoice 기록을 삭제하고 출고 전 상태로 되돌립니다">↩ 출고 취소</button>` : ''}<button class="btn btn-sm btn-primary" onclick="savePL()">${t('save_pl')}</button><button class="btn btn-sm" id="plpdf-btn" onclick="downloadPLPdf('packing')">${t('pl_pdf')}</button><button class="btn btn-sm" onclick="printStageDoc('packing')">🖨</button>`}
+          : `<label style="display:flex;align-items:center;gap:5px;font-size:11.5px;font-weight:700;color:#0e7490;margin-right:auto;cursor:pointer;"><input type="checkbox" id="plf-sendpl" style="width:14px;height:14px;accent-color:#0e7490;cursor:pointer;"> ${t('sendpl_cb')}</label>${plInfo(rec,plWh).savedAt ? `<button class="btn btn-sm" style="background:#0e7490;color:#fff;border-color:#0e7490;" onclick="resendPL()" title="Customer Email 칸의 주소로 Packing List를 다시 발송">📧 Resend PL</button><button class="btn btn-sm" style="background:#fff;color:#b91c1c;border-color:#fca5a5;" onclick="unshipPL()" title="이 창고의 Packing List/Invoice 기록을 삭제하고 출고 전 상태로 되돌립니다">↩ 출고 취소</button>` : ''}<button class="btn btn-sm" style="background:#374151;color:#fff;border-color:#374151;" onclick="printBOL()" title="Bill of Lading 인쇄 (LTL 출고용)">🚛 BOL</button><button class="btn btn-sm" id="bolpdf-btn" onclick="downloadBOLPdf()" title="Bill of Lading PDF">⬇ BOL</button><button class="btn btn-sm btn-primary" onclick="savePL()">${t('save_pl')}</button><button class="btn btn-sm" id="plpdf-btn" onclick="downloadPLPdf('packing')">${t('pl_pdf')}</button><button class="btn btn-sm" onclick="printStageDoc('packing')">🖨</button>`}
         <button class="btn btn-sm" onclick="closePL()">${t('close')}</button>
       </div>
       ${plShowInv ? '' : `
@@ -3255,7 +3327,8 @@ function renderSaved(){
     const stuck = whsNB.length > 0 && plDoneN < whsNB.length && hoursElapsed > 24;
     const _md = s.meta && s.meta._modified;
     const _isMod = !!(_md && _md.at && (Date.now() - new Date(_md.at).getTime() <= 72*3600000));
-    const _html = `<div class="saved-item" ${_isMod?`title="✏️ Modified ${esc(_md.by||'')} · ${new Date(_md.at).toLocaleString()}"`:''} style="display:block;${stuck?'border:2px solid #dc2626;':(_isMod?'border-left:4px solid #dc2626;':'')}">
+    const _html = `<div class="saved-item" ${_isMod?`title="✏️ Modified ${esc(_md.by||'')} · ${new Date(_md.at).toLocaleString()}"`:''} style="display:block;${stuck?'border:2px solid #dc2626;':''}${_isMod?'position:relative;padding-left:26px;':''}">
+      ${_isMod?`<div style="position:absolute;left:0;top:0;bottom:0;width:16px;background:#dc2626;border-radius:7px 0 0 7px;display:flex;align-items:center;justify-content:center;overflow:hidden;"><span style="writing-mode:vertical-rl;transform:rotate(180deg);color:#fff;font-size:8.5px;font-weight:900;letter-spacing:2.5px;white-space:nowrap;">MODIFIED</span></div>`:''}
       ${stuck ? `<div style="margin:-8px -10px 8px -10px;padding:5px 12px;border-radius:5px 5px 0 0;animation:overdue-blink 1s ease-in-out infinite;display:flex;align-items:center;gap:6px;">
         <span style="font-size:13px;">🚨</span>
         <span style="font-size:11px;font-weight:900;color:#fff;letter-spacing:0.5px;animation:overdue-pulse 1s ease-in-out infinite;">${ageLabel} — ${t('overdue_msg')}</span>
