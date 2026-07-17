@@ -130,7 +130,7 @@ main{max-width:1100px;margin:0 auto;padding:16px;}
     <button class="btn btn-sm" onclick="doLogout()" style="padding:2px 8px;font-size:10px;" data-i18n="logout">로그아웃</button>
   </span>
   <select id="lang-sel" onchange="setLang(this.value)" style="font-size:11px;padding:3px 6px;border-radius:5px;border:none;background:#1d3f66;color:#fff;"><option value="ko">한국어</option><option value="en">English</option><option value="es">Español</option></select>
-  <span style="font-size:10px;color:#9fb8d4;">v146</span>
+  <span style="font-size:10px;color:#9fb8d4;">v147</span>
 </div>
 <script type="text/javascript" src="https://js.authorize.net/v1/Accept.js" charset="utf-8"></script>
 <div id="po-viewer" style="display:none;position:fixed;top:0;right:0;width:44%;height:100vh;background:#fff;border-left:2px solid var(--border);z-index:60;box-shadow:-6px 0 20px rgba(0,0,0,.15);">
@@ -1844,6 +1844,39 @@ async function markDocPrinted(base, wh, kind){
   try{ await sbFetch('/rest/v1/pr_orders?base=eq.'+encodeURIComponent(base), {method:'PATCH', headers:{Prefer:'return=minimal'}, body:JSON.stringify({meta:rec.meta, updated_at:new Date().toISOString()})}); }catch(e){}
   renderSaved();
 }
+const _clk3 = {};
+function docBtnClick(base, wh, kind){
+  const rec = savedCache.find(s=>s.base===base); if(!rec) return;
+  const mp = (rec.meta && rec.meta._printed && rec.meta._printed[wh]) || {};
+  const printed = kind==='inv' ? !!(rec.inv && rec.inv[wh] && rec.inv[wh].printed) : !!mp[kind];
+  const act = () => { if(kind==='pr') printSavedPRWh(base, wh); else if(kind==='label') openBoxLabelForRecWh(base, wh); else openInvoiceWh(base, wh); };
+  if(!printed){ act(); return; } // 초록 아니면 평소대로 즉시
+  const key = base + '|' + wh + '|' + kind;
+  const t = _clk3[key] = _clk3[key] || { n: 0, timer: null };
+  t.n++;
+  clearTimeout(t.timer);
+  if(t.n >= 3){ t.n = 0; undoPrinted(base, wh, kind); return; }
+  t.timer = setTimeout(()=>{ const n = t.n; t.n = 0; if(n >= 1) act(); }, 420);
+}
+async function undoPrinted(base, wh, kind){
+  const label = kind==='pr' ? 'Pull Request' : (kind==='label' ? 'Box Label' : 'Invoice');
+  if(!confirm('↩ ' + wh + ' ' + label + ' 완료(초록) 표시를 해제할까요?')) return;
+  const rec = savedCache.find(s=>s.base===base); if(!rec) return;
+  try{
+    if(kind === 'inv'){
+      if(rec.inv && rec.inv[wh]) rec.inv[wh].printed = false;
+      await sbFetch('/rest/v1/pr_orders?base=eq.'+encodeURIComponent(base), {method:'PATCH', headers:{Prefer:'return=minimal'}, body:JSON.stringify({inv:rec.inv, updated_at:new Date().toISOString()})});
+    } else {
+      const mp = { ...((rec.meta && rec.meta._printed) || {}) };
+      if(mp[wh]){ const c = { ...mp[wh] }; delete c[kind]; mp[wh] = c; }
+      rec.meta = { ...rec.meta, _printed: mp };
+      await sbFetch('/rest/v1/pr_orders?base=eq.'+encodeURIComponent(base), {method:'PATCH', headers:{Prefer:'return=minimal'}, body:JSON.stringify({meta:rec.meta, updated_at:new Date().toISOString()})});
+    }
+  }catch(e){}
+  logHist(base, label + ' print mark cleared — ' + wh);
+  renderSaved();
+  showToast('↩ ' + label + ' 완료 표시 해제됨');
+}
 function printSavedPRWh(base, wh){
   const rec = savedCache.find(s=>s.base===base); if(!rec) return;
   printDocHtml(buildPRDocFromRec(rec, wh), plNum(rec.base, wh));
@@ -3536,11 +3569,11 @@ function renderSaved(){
         return `<div style="display:flex;align-items:center;gap:6px;flex-wrap:wrap;margin-top:6px;padding-top:6px;border-top:1px dashed var(--border);">
         ${w!=='BO' && w!=='NA' ? `<input type="checkbox" class="bship-cb" data-base="${esc(s.base)}" data-wh="${w}" onchange="updateBatchBar()" title="Batch 작업에 포함 (출고 전=Batch Ship / 출고 후=Invoice Print)" style="width:15px;height:15px;accent-color:#1d4ed8;cursor:pointer;">` : ''}
         <span class="chip chip-${w}" style="min-width:34px;text-align:center;">${w}</span>
-        <button class="btn btn-sm" style="background:${c};color:#fff;border-color:${c};" onclick="printSavedPRWh('${esc(s.base)}','${w}')">🖨 Pull Request</button>
+        <button class="btn btn-sm" style="background:${c};color:#fff;border-color:${c};" onclick="docBtnClick('${esc(s.base)}','${w}','pr')" ${mp.pr?'title="빠르게 3번 클릭하면 완료(초록) 표시 해제"':''}>🖨 Pull Request</button>
         ${(w==='BO'||w==='NA') ? `<button class="btn btn-sm" style="background:#f5f3ff;color:#6d28d9;border-color:#c4b5fd;font-weight:700;" onclick="processFromWh('${esc(s.base)}','${w}','SC')" title="재고 입고 — 별도 건(-${w==='BO'?'B':'N'})으로 분리해 SC에서 출고 진행">⚙ Process from SC</button><button class="btn btn-sm" style="background:#fff7ed;color:#c2410c;border-color:#fed7aa;font-weight:700;" onclick="processFromWh('${esc(s.base)}','${w}','CA')" title="재고 입고 — 별도 건(-${w==='BO'?'B':'N'})으로 분리해 CA에서 출고 진행">⚙ Process from CA</button>` : ''}
-        ${w!=='BO' && w!=='NA' ? `<button class="btn btn-sm" style="background:${mp.label?'#16a34a':'#7c3aed'};color:#fff;border-color:${mp.label?'#16a34a':'#7c3aed'};" onclick="openBoxLabelForRecWh('${esc(s.base)}','${w}')">🏷 Box Label</button>
+        ${w!=='BO' && w!=='NA' ? `<button class="btn btn-sm" style="background:${mp.label?'#16a34a':'#7c3aed'};color:#fff;border-color:${mp.label?'#16a34a':'#7c3aed'};" onclick="docBtnClick('${esc(s.base)}','${w}','label')" ${mp.label?'title="빠르게 3번 클릭하면 완료(초록) 표시 해제"':''}>🏷 Box Label</button>
         <button class="btn btn-sm" style="${plSaved?'background:#16a34a;border-color:#16a34a;':'background:#f59e0b;border-color:#f59e0b;'}color:#fff;" onclick="openPLWh('${esc(s.base)}','${w}')">📦 Packing List</button>
-        ${plSaved ? `<button class="btn btn-sm" style="${invPr?'background:#16a34a;border-color:#16a34a;':'background:#dc2626;border-color:#dc2626;'}color:#fff;" onclick="openInvoiceWh('${esc(s.base)}','${w}')">🧾 Invoice</button>` : ''}
+        ${plSaved ? `<button class="btn btn-sm" style="${invPr?'background:#16a34a;border-color:#16a34a;':'background:#dc2626;border-color:#dc2626;'}color:#fff;" onclick="docBtnClick('${esc(s.base)}','${w}','inv')" ${invPr?'title="빠르게 3번 클릭하면 완료(초록) 표시 해제"':''}>🧾 Invoice</button>` : ''}
         ${(()=>{ const pd = s.inv && s.inv[w] && s.inv[w].paid; if(!pd) return '';
           const rt = refundTotals(pd);
           if(rt.remain <= 0.005){
