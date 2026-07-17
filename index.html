@@ -128,8 +128,17 @@ main{max-width:1100px;margin:0 auto;padding:16px;}
     <button class="btn btn-sm" onclick="doLogout()" style="padding:2px 8px;font-size:10px;" data-i18n="logout">로그아웃</button>
   </span>
   <select id="lang-sel" onchange="setLang(this.value)" style="font-size:11px;padding:3px 6px;border-radius:5px;border:none;background:#1d3f66;color:#fff;"><option value="ko">한국어</option><option value="en">English</option><option value="es">Español</option></select>
-  <span style="font-size:10px;color:#9fb8d4;">v135</span>
+  <span style="font-size:10px;color:#9fb8d4;">v136</span>
 </div>
+<script type="text/javascript" src="https://js.authorize.net/v3/AcceptUI.js" charset="utf-8"></script>
+<button type="button" id="anet-accept-btn" class="AcceptUI" style="display:none;"
+  data-billingAddressOptions='{"show":false,"required":false}'
+  data-apiLoginID="538BhgBf"
+  data-clientKey="9S9dzP4nBNaYQ82fVdvL8uV4F34xx6nzJK584a6vfg4srBCQQxkA5ZYcds737GjC"
+  data-acceptUIFormBtnTxt="Continue"
+  data-acceptUIFormHeaderTxt="Card Information"
+  data-paymentOptions='{"showCreditCard":true,"showBankAccount":false}'
+  data-responseHandler="anetResponseHandler">.</button>
 <div id="po-viewer" style="display:none;position:fixed;top:0;right:0;width:44%;height:100vh;background:#fff;border-left:2px solid var(--border);z-index:60;box-shadow:-6px 0 20px rgba(0,0,0,.15);">
   <div style="display:flex;align-items:center;gap:8px;padding:7px 12px;background:var(--header);color:#fff;font-size:12px;font-weight:700;">
     <span style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">📄 <span id="po-viewer-name"></span></span>
@@ -2275,6 +2284,46 @@ function buildBOLDoc(rec, wh, d){
     </div>
   </div>`;
 }
+let _ccPending = null;
+function startCharge(){
+  const amt = parseFloat(($('cc-amt') && $('cc-amt').value) || '0');
+  if(!(amt > 0)){ alert('Charge amount를 확인하세요.'); return; }
+  _ccPending = { base: plBase, wh: plWh, amt: amt };
+  const b = document.getElementById('anet-accept-btn');
+  if(!b || typeof AcceptUI === 'undefined' && !window.AcceptUI){ /* AcceptUI가 클릭 바인딩 */ }
+  if(!b){ alert('결제 모듈이 로드되지 않았습니다. 새로고침 후 다시 시도하세요.'); return; }
+  b.click();
+}
+async function anetResponseHandler(response){
+  try{
+    if(response && response.messages && response.messages.resultCode === 'Error'){
+      alert('카드 입력 오류: ' + (response.messages.message||[]).map(x=>x.text).join(', ')); return;
+    }
+    if(!response || !response.opaqueData){ return; }
+    const p = _ccPending; if(!p){ return; }
+    const st = $('cc-status'); if(st) st.textContent = '⏳ Processing...';
+    const rec = savedCache.find(s=>s.base===p.base); if(!rec){ return; }
+    const iv = invDrafts[p.wh] || {};
+    const r = await fetch('https://po-confirm-email.hjbae.workers.dev/charge', {
+      method:'POST', headers:{'Content-Type':'application/json', Authorization:'Bearer '+((SESS&&SESS.token)||'')},
+      body: JSON.stringify({ opaqueData: response.opaqueData, amount: p.amt,
+        invoiceNumber: String(iv.invNo||'').slice(0,20),
+        description: ('PO ' + ((rec.meta&&rec.meta.po)||'') + ' — ' + ((rec.meta&&rec.meta.cust)||'')).slice(0,255),
+        by: (SESS&&SESS.email)||'' })
+    });
+    const j = await r.json().catch(()=>({}));
+    if(!r.ok || !j.ok){ if(st) st.textContent=''; alert('❌ 결제 실패: ' + (j.error || ('HTTP ' + r.status))); return; }
+    rec.inv = rec.inv || {}; const cur = rec.inv[p.wh] || {};
+    rec.inv[p.wh] = { ...cur, termType:'cc', paid: { amt: p.amt, transId: j.transId||'', authCode: j.authCode||'', acct: j.acct||'', at: new Date().toISOString(), by: (SESS&&SESS.email)||'' } };
+    if(invDrafts[p.wh]) invDrafts[p.wh].termType = 'cc';
+    try{ await sbFetch('/rest/v1/pr_orders?base=eq.'+encodeURIComponent(p.base), {method:'PATCH', headers:{Prefer:'return=minimal'}, body:JSON.stringify({inv:rec.inv, updated_at:new Date().toISOString()})}); }catch(e){}
+    logHist(p.base, 'Credit card charged $' + p.amt.toFixed(2) + ' — ' + p.wh + ' (Auth ' + (j.authCode||'') + ', ' + (j.acct||'') + ')');
+    showToast('✅ 결제 승인 — $' + p.amt.toFixed(2) + ' (' + (j.acct||'') + ')');
+    _ccPending = null;
+    renderPL();
+  }catch(e){ alert('결제 처리 오류: ' + e.message); }
+}
+window.anetResponseHandler = anetResponseHandler;
 function printBOL(){
   const rec = savedCache.find(s=>s.base===plBase); if(!rec) return;
   plFieldsToDraft();
@@ -2708,6 +2757,18 @@ function renderPL(){
           <label style="display:flex;align-items:center;gap:4px;cursor:pointer;font-weight:600;"><input type="radio" name="inv-term" ${(invDrafts[plWh]||{}).termType==='custom'?'checked':''} onchange="invTermUpd('custom', document.getElementById('inv-term-days').value)" style="accent-color:#065f46;"> Custom</label>
           <input id="inv-term-days" class="fi num" value="${(invDrafts[plWh]||{}).termType==='custom'?((invDrafts[plWh]||{}).termDays||''):''}" onchange="invTermUpd('custom', this.value)" placeholder="days" style="width:60px;text-align:center;">
         </div>
+        ${(invDrafts[plWh]||{}).termType==='cc' ? (()=>{
+          const ivRec = (rec.inv && rec.inv[plWh]) || {};
+          if(ivRec.paid) return `<div style="margin-top:8px;padding:8px 12px;background:#f0fdf4;border:1.5px solid #86efac;border-radius:8px;font-size:12px;font-weight:700;color:#166534;">✅ PAID $${Number(ivRec.paid.amt).toFixed(2)} — Card ${esc(ivRec.paid.acct||'')} · Auth ${esc(ivRec.paid.authCode||'')} · Trans ${esc(ivRec.paid.transId||'')} · ${new Date(ivRec.paid.at).toLocaleString()} · ${esc(ivRec.paid.by||'')}</div>`;
+          const dd = invDocData();
+          const totNow = (dd.lines||[]).reduce((a,l)=>a+(Number(l.qty)||0)*(Number(l.price)||0),0) + (Number(dd.freight)||0);
+          return `<div style="margin-top:8px;padding:8px 12px;background:#fffbeb;border:1.5px solid #fcd34d;border-radius:8px;display:flex;align-items:center;gap:8px;flex-wrap:wrap;">
+            <span style="font-size:12px;font-weight:800;color:#92400e;">💳 Charge Amount $</span>
+            <input class="fi num" id="cc-amt" value="${totNow.toFixed(2)}" style="width:110px;text-align:center;font-family:Consolas,monospace;font-weight:700;">
+            <button class="btn btn-sm" style="background:#065f46;color:#fff;border-color:#065f46;font-weight:800;" onclick="startCharge()">💳 Enter Card & Charge</button>
+            <span id="cc-status" style="font-size:11.5px;font-weight:700;color:#92400e;"></span>
+          </div>`;
+        })() : ''}
         <div style="display:flex;align-items:center;gap:10px;margin-top:8px;">
           <button class="btn btn-sm" onclick="invLineAdd()">＋</button>
           <label style="margin-left:auto;font-size:11px;font-weight:700;color:#065f46;">Invoice #</label>
