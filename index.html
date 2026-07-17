@@ -128,7 +128,7 @@ main{max-width:1100px;margin:0 auto;padding:16px;}
     <button class="btn btn-sm" onclick="doLogout()" style="padding:2px 8px;font-size:10px;" data-i18n="logout">로그아웃</button>
   </span>
   <select id="lang-sel" onchange="setLang(this.value)" style="font-size:11px;padding:3px 6px;border-radius:5px;border:none;background:#1d3f66;color:#fff;"><option value="ko">한국어</option><option value="en">English</option><option value="es">Español</option></select>
-  <span style="font-size:10px;color:#9fb8d4;">v131</span>
+  <span style="font-size:10px;color:#9fb8d4;">v132</span>
 </div>
 <div id="po-viewer" style="display:none;position:fixed;top:0;right:0;width:44%;height:100vh;background:#fff;border-left:2px solid var(--border);z-index:60;box-shadow:-6px 0 20px rgba(0,0,0,.15);">
   <div style="display:flex;align-items:center;gap:8px;padding:7px 12px;background:var(--header);color:#fff;font-size:12px;font-weight:700;">
@@ -646,6 +646,7 @@ function simplifyDesc(raw){
 
 // ═══════════════ Pull Request 번호 ═══════════════
 function baseNumber(){
+  if(window._forceBase) return window._forceBase; // 자식 오더(-B/-N) 편집·인쇄시 고정
   const d = $('m-date').value ? new Date($('m-date').value+'T00:00:00') : new Date();
   const mmdd = String(d.getMonth()+1).padStart(2,'0') + String(d.getDate()).padStart(2,'0');
   const po = String($('m-po').value||'').trim().replace(/\s+/g,'');
@@ -1453,6 +1454,7 @@ function clearOrderForm(){
   $('m-podate').value = '';
   poLines = [];
   window._poPdfB64 = null;
+  window._forceBase = null;
   try{ localStorage.removeItem(LS_DRAFT); }catch(e){}
   const pv = $('po-viewer'); if(pv) pv.style.display = 'none';
   const pt = $('po-viewer-tab'); if(pt) pt.style.display = 'none';
@@ -1556,6 +1558,7 @@ async function loadSaved(base){
   if(!rec) return;
   window._poPdfB64 = null; // 다른 오더의 PDF가 이 오더에 붙지 않게 (DB의 기존 PO는 유지됨)
   const _pv = $('po-viewer'); if(_pv) _pv.style.display = 'none';
+  window._forceBase = (rec.meta && rec.meta._from) ? rec.base : null;
   setMeta(rec.meta); poLines = normalizeLines(rec.lines);
   renderTable(); updateNumPreview(); renderDocs();
   window.scrollTo({top:0,behavior:'smooth'});
@@ -1774,12 +1777,14 @@ async function viewSavedPO(base){
   }catch(e){ alert(t('save_fail')); }
 }
 function buildPRDocFromRec(rec, wh){
-  const bak = { lines: poLines, meta: getMeta() };
+  const bak = { lines: poLines, meta: getMeta(), fb: window._forceBase };
+  window._forceBase = rec.base;
   setMeta(rec.meta || {});
   poLines = rec.lines || [];
   const docHtml = buildDocHtml(wh);
   setMeta(bak.meta);
   poLines = bak.lines;
+  window._forceBase = bak.fb;
   return docHtml;
 }
 async function logHist(base, ev){
@@ -3170,6 +3175,35 @@ async function moveBO(base, target){
   renderSaved();
   showToast('⛔→' + target + ' 전환 완료 — ' + target + ' Packing List로 출고 진행하세요');
 }
+async function processFromWh(base, srcWh, target){
+  const rec = savedCache.find(s=>s.base===base); if(!rec) return;
+  const mv = (rec.lines||[]).filter(l=>l.wh===srcWh && (l.qty||0)>0);
+  if(!mv.length){ showToast('이동할 라인 없음'); return; }
+  const q = mv.reduce((a,l)=>a+(l.qty||0),0);
+  const sfx = srcWh==='BO' ? '-B' : '-N';
+  let childBase = base + sfx, n = 2;
+  while(savedCache.find(s=>s.base===childBase)) childBase = base + sfx + (n++);
+  if(!confirm((srcWh==='BO'?'⛔ Back Order':'✖ N/A') + ' ' + q.toLocaleString() + ' pcs → 별도 진행 건 ' + childBase + ' 생성 (' + target + ' 출고)\n\n원본 오더는 그대로 두고, 새 건은 평소처럼 Pull Request → Packing List → Invoice로 진행됩니다. 계속할까요?')) return;
+  const childLines = JSON.parse(JSON.stringify(mv)).map(l=>({ ...l, wh: target }));
+  const cMeta = { ...(rec.meta||{}) };
+  delete cMeta._modified; delete cMeta._printed; delete cMeta._processed;
+  cMeta._from = { base: base, src: srcWh, at: new Date().toISOString() };
+  const child = { base: childBase, meta: cMeta, lines: childLines, whs: [target], pl: {}, inv: {}, savedAt: new Date().toISOString(), history: [] };
+  rec.lines = (rec.lines||[]).filter(l=>!(l.wh===srcWh && (l.qty||0)>0));
+  rec.whs = (rec.whs||[]).filter(w=>w!==srcWh);
+  rec.meta = { ...(rec.meta||{}), _processed: { ...(((rec.meta||{})._processed)||{}), [srcWh]: { to: childBase, target: target, q: q, at: new Date().toISOString() } } };
+  const ok1 = await upsertRec(child);
+  if(!ok1){ alert(t('save_fail')); return; }
+  try{
+    const r = await sbFetch('/rest/v1/pr_orders?base=eq.'+encodeURIComponent(base), {method:'PATCH', headers:{Prefer:'return=minimal'}, body:JSON.stringify({lines:rec.lines, whs:rec.whs, meta:rec.meta, updated_at:new Date().toISOString()})});
+    if(!r.ok){ alert(t('save_fail')); return; }
+  }catch(e){ alert(t('save_fail')); return; }
+  savedCache.push(child);
+  logHist(base, srcWh + ' → processed as ' + childBase + ' (' + target + ', ' + q + ' pcs)');
+  logHist(childBase, 'Created from ' + base + ' (' + srcWh + ' ' + q + ' pcs → ' + target + ')');
+  await loadSavedList();
+  showToast('⚙ ' + childBase + ' 생성됨 — ' + target + '에서 평소처럼 진행하세요');
+}
 function custCodeFor(name){
   const k = custKey(name);
   if(!k) return '';
@@ -3220,6 +3254,7 @@ function renderSaved(){
       <span class="muted" style="font-size:11px;${stuck?'color:#dc2626;font-weight:800;':''}">⏱ ${ageLabel}</span>
       <span style="background:#111;color:#fff;font-weight:400;font-size:12.5px;padding:2px 10px;border-radius:5px;">${esc(s.meta.cust||'')}</span>
       <span style="background:#111;color:#fff;font-family:Consolas,monospace;font-weight:400;font-size:12px;padding:2px 10px;border-radius:5px;">PO ${esc(s.meta.po||'')}</span>
+      ${s.meta && s.meta._from ? `<span title="Created from ${esc(s.meta._from.base)} (${esc(s.meta._from.src||'')})" style="background:#f5f3ff;color:#6d28d9;border:1px solid #ddd6fe;font-size:10.5px;font-weight:800;padding:2px 8px;border-radius:20px;white-space:nowrap;cursor:pointer;" onclick="openOrderSummary('${esc(s.meta._from.base)}')">↩ ${esc(s.meta._from.src||'')} of ${esc(s.meta._from.base)}</span>` : ''}
       <span style="font-weight:700;">${tot.toLocaleString()} pcs</span>
       <span style="color:var(--ok);">$${amt.toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2})}</span>
       ${whs.map(w=>`<span class="chip chip-${w}">${w}</span>`).join('')}
@@ -3243,7 +3278,7 @@ function renderSaved(){
         ${w!=='BO' && w!=='NA' ? `<input type="checkbox" class="bship-cb" data-base="${esc(s.base)}" data-wh="${w}" onchange="updateBatchBar()" title="Batch 작업에 포함 (출고 전=Batch Ship / 출고 후=Invoice Print)" style="width:15px;height:15px;accent-color:#1d4ed8;cursor:pointer;">` : ''}
         <span class="chip chip-${w}" style="min-width:34px;text-align:center;">${w}</span>
         <button class="btn btn-sm" style="background:${c};color:#fff;border-color:${c};" onclick="printSavedPRWh('${esc(s.base)}','${w}')">🖨 Pull Request</button>
-        ${w==='BO' ? `<button class="btn btn-sm" onclick="moveBO('${esc(s.base)}','SC')" title="재고 입고 → SC로 전환">⛔→SC</button><button class="btn btn-sm" onclick="moveBO('${esc(s.base)}','CA')" title="재고 입고 → CA로 전환">⛔→CA</button>` : ''}
+        ${(w==='BO'||w==='NA') ? `<button class="btn btn-sm" style="background:#f5f3ff;color:#6d28d9;border-color:#c4b5fd;font-weight:700;" onclick="processFromWh('${esc(s.base)}','${w}','SC')" title="재고 입고 — 별도 건(-${w==='BO'?'B':'N'})으로 분리해 SC에서 출고 진행">⚙ Process from SC</button><button class="btn btn-sm" style="background:#fff7ed;color:#c2410c;border-color:#fed7aa;font-weight:700;" onclick="processFromWh('${esc(s.base)}','${w}','CA')" title="재고 입고 — 별도 건(-${w==='BO'?'B':'N'})으로 분리해 CA에서 출고 진행">⚙ Process from CA</button>` : ''}
         ${w!=='BO' && w!=='NA' ? `<button class="btn btn-sm" style="background:${mp.label?'#16a34a':'#7c3aed'};color:#fff;border-color:${mp.label?'#16a34a':'#7c3aed'};" onclick="openBoxLabelForRecWh('${esc(s.base)}','${w}')">🏷 Box Label</button>
         <button class="btn btn-sm" style="${plSaved?'background:#16a34a;border-color:#16a34a;':'background:#f59e0b;border-color:#f59e0b;'}color:#fff;" onclick="openPLWh('${esc(s.base)}','${w}')">📦 Packing List</button>
         ${plSaved ? `<button class="btn btn-sm" style="${invPr?'background:#16a34a;border-color:#16a34a;':'background:#dc2626;border-color:#dc2626;'}color:#fff;" onclick="openInvoiceWh('${esc(s.base)}','${w}')">🧾 Invoice</button>` : ''}` : ''}
@@ -3251,6 +3286,11 @@ function renderSaved(){
         ${(()=>{ const ws = whStatus(s, w); return `<span style="${plSaved?'':'margin-left:auto;'}padding:2px 10px;border-radius:20px;font-size:10.5px;font-weight:800;background:${ws.bg};color:${ws.color};white-space:nowrap;">${ws.label}</span>`; })()}
         </div>`;
       }).join('')}
+      ${['BO','NA'].filter(w=>!whs.includes(w) && s.meta && s.meta._processed && s.meta._processed[w]).map(w=>{ const p = s.meta._processed[w]; return `<div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-top:6px;padding-top:6px;border-top:1px dashed var(--border);opacity:.75;">
+        <span class="chip chip-${w}" style="min-width:34px;text-align:center;">${w}</span>
+        <span class="muted" style="font-size:11.5px;">⚙ → <b style="font-family:Consolas,monospace;">${esc(p.to)}</b> (${esc(p.target||'')}, ${(p.q||0).toLocaleString()} pcs) ${fmtD(p.at)} 분리 진행됨</span>
+        <button class="btn btn-sm" style="font-size:10.5px;padding:2px 8px;" onclick="openOrderSummary('${esc(p.to)}')">↗ Open</button>
+      </div>`; }).join('')}
     </div>`;
     return { dKey: dKey, html: _html };
   });
