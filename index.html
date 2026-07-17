@@ -114,7 +114,7 @@ main{max-width:1100px;margin:0 auto;padding:16px;}
     <button class="btn btn-sm" onclick="doLogout()" style="padding:2px 8px;font-size:10px;" data-i18n="logout">로그아웃</button>
   </span>
   <select id="lang-sel" onchange="setLang(this.value)" style="font-size:11px;padding:3px 6px;border-radius:5px;border:none;background:#1d3f66;color:#fff;"><option value="ko">한국어</option><option value="en">English</option><option value="es">Español</option></select>
-  <span style="font-size:10px;color:#9fb8d4;">v112</span>
+  <span style="font-size:10px;color:#9fb8d4;">v114</span>
 </div>
 <div id="po-viewer" style="display:none;position:fixed;top:0;right:0;width:44%;height:100vh;background:#fff;border-left:2px solid var(--border);z-index:60;box-shadow:-6px 0 20px rgba(0,0,0,.15);">
   <div style="display:flex;align-items:center;gap:8px;padding:7px 12px;background:var(--header);color:#fff;font-size:12px;font-weight:700;">
@@ -291,7 +291,8 @@ main{max-width:1100px;margin:0 auto;padding:16px;}
   <div id="dash-view" style="display:none;">
     <div class="card">
       <div class="card-title"><span>📊 Sales Dashboard</span>
-        <select id="dash-period" onchange="dashPeriod=this.value;renderDash();" style="margin-left:auto;padding:5px 8px;border:1px solid var(--border);border-radius:6px;font-size:12px;">
+        <button class="btn btn-sm" onclick="runAiAnalysis()" style="margin-left:auto;background:#4c1d95;color:#fff;border-color:#4c1d95;font-weight:700;">🤖 AI 분석</button>
+        <select id="dash-period" onchange="dashPeriod=this.value;renderDash();" style="padding:5px 8px;border:1px solid var(--border);border-radius:6px;font-size:12px;">
           <option value="all" data-i18n="d_all">전체</option>
           <option value="month" data-i18n="d_month">이번 달</option>
           <option value="30d" data-i18n="d_30d">최근 30일</option>
@@ -2462,14 +2463,16 @@ function salesLines(rec, wh){
   if(pl && Array.isArray(pl.lines) && pl.lines.length) return pl.lines;
   return (rec.lines||[]).filter(l=>l.wh===wh);
 }
-function inDashPeriod(rec){
+function inDashPeriodDate(dstr){
   if(dashPeriod==='all') return true;
-  const ds = rec.meta && rec.meta.date;
-  const d = ds ? new Date(ds+'T00:00:00') : new Date(rec.savedAt);
+  const d = dstr ? new Date(String(dstr).slice(0,10)+'T00:00:00') : new Date();
   const now = new Date();
   if(dashPeriod==='month') return d.getFullYear()===now.getFullYear() && d.getMonth()===now.getMonth();
   if(dashPeriod==='30d') return (now - d) < 30*86400000;
   return true;
+}
+function inDashPeriod(rec){
+  return inDashPeriodDate((rec.meta && rec.meta.date) || rec.savedAt);
 }
 function recDate(rec){
   const ds = rec.meta && rec.meta.date;
@@ -2503,7 +2506,45 @@ function rankBadge(cust, idx, prevIdxMap){
   if(diff < 0) return '<span style="font-size:10px;font-weight:800;color:#b91c1c;">▼' + (-diff) + '</span>';
   return '<span style="font-size:10px;color:#9ca3af;">—</span>';
 }
-let trendGran = 'daily', trendCust = 'all';
+let trendGran = 'daily', trendCust = 'all', trendYoY = false;
+function recLineAmt(rec){
+  let a = 0, q = 0;
+  (rec.whs||[]).forEach(wh=>salesLines(rec, wh).forEach(l=>{ const n = Number(l.qty)||0; q += n; a += n*(Number(l.price)||0); }));
+  return { a, q };
+}
+function buildYoYHtml(){
+  const years = {};
+  (savedCache||[]).forEach(rec=>{
+    const cust = (rec.meta&&rec.meta.cust)||'—';
+    if(trendCust!=='all' && cust!==trendCust) return;
+    const dstr = String((rec.meta&&rec.meta.date)||rec.savedAt||'').slice(0,10);
+    if(!dstr) return;
+    const d = new Date(dstr+'T00:00:00'); if(isNaN(d)) return;
+    const y = d.getFullYear(), m = d.getMonth();
+    if(!years[y]) years[y] = Array(12).fill(0);
+    years[y][m] += recLineAmt(rec).a;
+  });
+  const ys = Object.keys(years).map(Number).sort().slice(-3);
+  if(!ys.length) return `<div class="muted" style="padding:24px;">데이터 없음</div>`;
+  const colors = { 0:'#cbd5e1', 1:'#60a5fa', 2:'#2f5233' }; // 오래된→회색, 중간→파랑, 최신→달러초록
+  const colorOf = i => colors[i + (3 - ys.length)];
+  const mx = Math.max(1, ...ys.flatMap(y=>years[y]));
+  const money = n => '$' + n.toLocaleString(undefined,{minimumFractionDigits:0,maximumFractionDigits:0});
+  const groups = Array.from({length:12}, (_,m)=>{
+    const bars = ys.map((y,i)=>{
+      const v = years[y][m]||0;
+      const h = Math.max(v>0?3:1, Math.round(v/mx*140));
+      return `<div title="${y}년 ${m+1}월 — ${money(v)}" style="width:12px;height:${h}px;background:${colorOf(i)};border-radius:3px 3px 0 0;${v>0?'':'opacity:.25;'}"></div>`;
+    }).join('');
+    return `<div style="display:flex;flex-direction:column;align-items:center;gap:4px;flex:1;min-width:44px;">
+      <div style="display:flex;align-items:flex-end;gap:2px;height:145px;">${bars}</div>
+      <div style="font-size:9px;color:var(--text2);">${m+1}월</div>
+    </div>`;
+  }).join('');
+  const legend = ys.map((y,i)=>`<span style="display:inline-flex;align-items:center;gap:4px;font-size:10.5px;font-weight:700;"><span style="width:10px;height:10px;border-radius:2px;background:${colorOf(i)};display:inline-block;"></span>${y}</span>`).join(' ');
+  return `<div style="display:flex;gap:14px;justify-content:flex-end;margin-bottom:6px;">${legend}</div>
+    <div style="display:flex;align-items:flex-end;gap:4px;overflow-x:auto;padding:4px 2px;min-height:180px;">${groups}</div>`;
+}
 function trendLabel(k){
   if(trendGran==='yearly') return k;
   if(trendGran==='monthly'){ return (+k.slice(5,7)) + '/' + k.slice(2,4); }
@@ -2555,15 +2596,18 @@ function buildTrendHtml(){
         <option value="all" ${trendCust==='all'?'selected':''}>전체 거래처</option>
         ${custs.map(c=>`<option value="${esc(c)}" ${trendCust===c?'selected':''}>${esc(c)}</option>`).join('')}
       </select>
-      <div style="margin-left:auto;display:flex;gap:4px;">${granBtn('daily')}${granBtn('weekly')}${granBtn('monthly')}${granBtn('yearly')}</div>
+      <div style="margin-left:auto;display:flex;gap:4px;">${granBtn('daily')}${granBtn('weekly')}${granBtn('monthly')}${granBtn('yearly')}
+        <button class="btn btn-sm" style="${trendYoY?'background:#2f5233;color:#fff;border-color:#2f5233;':''}" onclick="trendYoY=!trendYoY;renderDash();" title="연도별(최대 3년) 월 매출 비교">📅 YoY</button>
+      </div>
     </div>
-    <div style="display:flex;align-items:flex-end;gap:2px;overflow-x:auto;padding:4px 2px;min-height:180px;">${bars}</div>
+    ${trendYoY ? buildYoYHtml() : `<div style="display:flex;align-items:flex-end;gap:2px;overflow-x:auto;padding:4px 2px;min-height:180px;">${bars}</div>`}
   </div>`;
 }
 function renderDash(){
   const el = $('dash-body'); if(!el) return;
   const byCust = {}, byItem = {};
   let totQ = 0, totAmt = 0, orders = 0;
+  let shipQ = 0, shipAmt = 0;
   savedCache.filter(inDashPeriod).forEach(rec=>{
     orders++;
     const cust = (rec.meta && rec.meta.cust) || '—';
@@ -2574,8 +2618,22 @@ function renderDash(){
         if(!byCust[cust]) byCust[cust] = {q:0, a:0, o:{}};
         byCust[cust].q += q; byCust[cust].a += a; byCust[cust].o[rec.base] = 1;
         const st = (l.style || '—') + '\u0001' + (l.color || '');
-        if(!byItem[st]) byItem[st] = {style: l.style || '—', color: l.color || '', q:0, a:0};
+        if(!byItem[st]) byItem[st] = {style: l.style || '—', color: l.color || '', q:0, a:0, cust:{}};
         byItem[st].q += q; byItem[st].a += a;
+        if(!byItem[st].cust[cust]) byItem[st].cust[cust] = {q:0, a:0};
+        byItem[st].cust[cust].q += q; byItem[st].cust[cust].a += a;
+      });
+    });
+  });
+  // 출고(Packing List 저장) 기준 매출 — 출고일 기준으로 기간 필터
+  (savedCache||[]).forEach(rec=>{
+    Object.keys(rec.pl||{}).forEach(w=>{
+      const p = rec.pl[w];
+      if(!p || !p.savedAt) return;
+      if(!inDashPeriodDate(p.date || p.savedAt)) return;
+      (p.lines||[]).forEach(l=>{
+        const q = Number(l.qty)||0;
+        shipQ += q; shipAmt += q*(Number(l.price)||0);
       });
     });
   });
@@ -2585,17 +2643,57 @@ function renderDash(){
     <div style="font-size:24px;font-weight:800;color:${color};margin-top:4px;">${val}</div></div>`;
   const prevRankArr = custRanking(prevPeriodFilter());
   const prevIdxMap = {}; prevRankArr.forEach((c,i)=>prevIdxMap[c]=i);
-  const custRows = Object.entries(byCust).sort((x,y)=>y[1].a-x[1].a).map(([c,v],i)=>
-    `<tr><td style="font-weight:800;color:var(--header);white-space:nowrap;">#${i+1} ${rankBadge(c,i,prevIdxMap)}</td><td class="tl" style="font-weight:700;">${esc(c)}</td><td>${Object.keys(v.o).length}</td><td>${v.q.toLocaleString()}</td><td style="font-weight:800;color:var(--ok);">${money(v.a)}</td></tr>`).join('')
+  // 거래처별 월 매출 (기간 필터 무시 — 추이용, 최근 12개월)
+  const custMonthly = {};
+  (savedCache||[]).forEach(rec=>{
+    const c = (rec.meta&&rec.meta.cust)||'—';
+    const dstr = String((rec.meta&&rec.meta.date)||rec.savedAt||'').slice(0,7);
+    if(!dstr) return;
+    if(!custMonthly[c]) custMonthly[c] = {};
+    custMonthly[c][dstr] = (custMonthly[c][dstr]||0) + recLineAmt(rec).a;
+  });
+  const custRows = Object.entries(byCust).sort((x,y)=>y[1].a-x[1].a).map(([c,v],i)=>{
+    const months = Object.keys(custMonthly[c]||{}).sort().slice(-12);
+    const detail = months.map((ym,r)=>{
+      const val = custMonthly[c][ym];
+      const prev = r>0 ? custMonthly[c][months[r-1]] : null;
+      const delta = (prev!==null && prev>0) ? ((val-prev)/prev*100) : null;
+      const arrow = delta===null ? '' : (delta>3 ? `<span style="color:#166534;font-weight:800;">▲${delta.toFixed(0)}%</span>` : (delta<-3 ? `<span style="color:#b91c1c;font-weight:800;">▼${Math.abs(delta).toFixed(0)}%</span>` : '<span style="color:#9ca3af;">—</span>'));
+      return `<div style="display:flex;gap:10px;padding:2px 0;font-size:11.5px;">
+        <span style="min-width:60px;font-family:Consolas,monospace;">${(+ym.slice(5))}/${ym.slice(2,4)}</span>
+        <span style="font-weight:700;color:var(--ok);min-width:100px;text-align:right;">${money(val)}</span>
+        <span style="min-width:60px;">${arrow}</span>
+      </div>`;
+    }).join('');
+    return `<tr style="cursor:pointer;" onclick="toggleCustDetail(${i})" title="클릭하면 월별 매출 추이">
+      <td style="font-weight:800;color:var(--header);white-space:nowrap;">#${i+1} ${rankBadge(c,i,prevIdxMap)}</td><td class="tl" style="font-weight:700;">${esc(c)}</td><td>${Object.keys(v.o).length}</td><td>${v.q.toLocaleString()}</td><td style="font-weight:800;color:var(--ok);">${money(v.a)}</td></tr>
+    <tr id="cudet-${i}" style="display:none;background:#f8fafc;"><td colspan="5" class="tl" style="padding:8px 14px;">
+      <div style="font-size:10.5px;font-weight:800;color:var(--text2);margin-bottom:4px;">MONTHLY — ${esc(c)} (최근 ${months.length}개월, 전월 대비)</div>${detail || '<span class="muted">—</span>'}
+    </td></tr>`;
+  }).join('')
     || `<tr><td colspan="5" class="muted" style="padding:12px;">—</td></tr>`;
-  const itemRows = Object.values(byItem).sort((x,y)=>y.a-x.a).map(v=>
-    `<tr><td style="font-weight:700;">${esc(v.style)}</td><td class="tl">${esc(v.color)}</td><td>${v.q.toLocaleString()}</td><td style="font-weight:800;color:var(--ok);">${money(v.a)}</td></tr>`).join('')
+  const itemRows = Object.values(byItem).sort((x,y)=>y.a-x.a).map((v,i)=>{
+    const top5 = Object.entries(v.cust||{}).sort((x,y)=>y[1].a-x[1].a).slice(0,5);
+    const detail = top5.map(([c,cv],r)=>`<div style="display:flex;gap:10px;padding:2px 0;font-size:11.5px;">
+      <span style="font-weight:800;color:var(--header);min-width:26px;">#${r+1}</span>
+      <span style="flex:1;">${esc(c)}</span>
+      <span>${cv.q.toLocaleString()} pcs</span>
+      <span style="font-weight:700;color:var(--ok);min-width:90px;text-align:right;">${money(cv.a)}</span>
+    </div>`).join('');
+    return `<tr style="cursor:pointer;" onclick="toggleItemDetail(${i})" title="클릭하면 이 아이템의 Top 5 거래처">
+      <td style="font-weight:700;">${esc(v.style)}</td><td class="tl">${esc(v.color)}</td><td>${v.q.toLocaleString()}</td><td style="font-weight:800;color:var(--ok);">${money(v.a)}</td></tr>
+    <tr id="itdet-${i}" style="display:none;background:#f8fafc;"><td colspan="4" class="tl" style="padding:8px 14px;">
+      <div style="font-size:10.5px;font-weight:800;color:var(--text2);margin-bottom:4px;">TOP ${top5.length} CUSTOMERS — ${esc(v.style)} ${esc(v.color)}</div>${detail}
+    </td></tr>`;
+  }).join('')
     || `<tr><td colspan="4" class="muted" style="padding:12px;">—</td></tr>`;
   el.innerHTML = `
-    <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:12px;margin-bottom:18px;" class="dash-grid">
+    <div style="display:grid;grid-template-columns:repeat(5,1fr);gap:12px;margin-bottom:18px;" class="dash-grid">
       ${card(t('d_sales'), money(totAmt), 'var(--ok)')}
+      ${card('🚚 Shipped Sales', money(shipAmt), '#0e7490')}
       ${card(t('d_orders'), orders.toLocaleString(), 'var(--primary)')}
       ${card(t('d_pcs'), totQ.toLocaleString(), '#b45309')}
+      ${card('🚚 Shipped Pcs', shipQ.toLocaleString(), '#0e7490')}
     </div>
     ${buildTrendHtml()}
     <div style="display:grid;grid-template-columns:1fr 1fr;gap:18px;" class="dash-grid">
@@ -2909,6 +3007,56 @@ function renderSaved(){
   }).join('') : `<div class="muted">${q ? '🔍 "' + esc(savedQuery.trim()) + '" 검색 결과 없음' : t('saved_empty')}</div>`;
 }
 const dateCollapse = {};
+async function runAiAnalysis(){
+  const ex = document.getElementById('modal-ai'); if(ex) ex.remove();
+  const div = document.createElement('div');
+  div.id = 'modal-ai';
+  div.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,.55);z-index:130;display:flex;align-items:center;justify-content:center;';
+  div.innerHTML = `<div style="background:#fff;border-radius:12px;width:680px;max-width:94vw;max-height:86vh;display:flex;flex-direction:column;box-shadow:0 20px 60px rgba(0,0,0,.35);">
+    <div style="background:#4c1d95;color:#fff;border-radius:12px 12px 0 0;padding:12px 18px;font-weight:800;display:flex;justify-content:space-between;">🤖 AI 매출 분석
+      <button onclick="document.getElementById('modal-ai').remove()" style="background:none;border:none;color:#fff;font-size:17px;cursor:pointer;">✕</button></div>
+    <div id="ai-body" style="padding:18px;overflow-y:auto;flex:1;font-size:13px;line-height:1.7;white-space:pre-wrap;">⏳ 분석 중... (10~20초)</div>
+  </div>`;
+  document.body.appendChild(div);
+  try{
+    // 데이터 요약 구성
+    const custMap = {}, itemMap = {}, monthly = {};
+    let shipAmt = 0, ordAmt = 0;
+    (savedCache||[]).forEach(rec=>{
+      const c = (rec.meta&&rec.meta.cust)||'—';
+      const ym = String((rec.meta&&rec.meta.date)||rec.savedAt||'').slice(0,7);
+      const {a, q} = recLineAmt(rec);
+      ordAmt += a;
+      if(!custMap[c]) custMap[c] = {};
+      custMap[c][ym] = Math.round((custMap[c][ym]||0) + a);
+      monthly[ym] = Math.round((monthly[ym]||0) + a);
+      (rec.whs||[]).forEach(wh=>salesLines(rec,wh).forEach(l=>{
+        const k = (l.style||'?') + ' ' + (l.color||'');
+        itemMap[k] = Math.round((itemMap[k]||0) + (Number(l.qty)||0)*(Number(l.price)||0));
+      }));
+      Object.values(rec.pl||{}).forEach(p=>{ if(p&&p.savedAt) (p.lines||[]).forEach(l=>{ shipAmt += (Number(l.qty)||0)*(Number(l.price)||0); }); });
+    });
+    const topItems = Object.entries(itemMap).sort((x,y)=>y[1]-x[1]).slice(0,15);
+    const data = { monthly_total_sales: monthly, sales_by_customer_monthly: custMap, top_items: topItems, ordered_total: Math.round(ordAmt), shipped_total: Math.round(shipAmt), as_of: todayStr() };
+    const r = await fetch('https://po-confirm-email.hjbae.workers.dev/analyze', {
+      method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({ data })
+    });
+    const j = await r.json();
+    const body = document.getElementById('ai-body');
+    if(body) body.textContent = j.text || j.error || '분석 실패';
+  }catch(e){
+    const body = document.getElementById('ai-body');
+    if(body) body.textContent = '❌ 분석 실패: ' + e.message;
+  }
+}
+function toggleCustDetail(i){
+  const el = document.getElementById('cudet-'+i);
+  if(el) el.style.display = el.style.display === 'none' ? '' : 'none';
+}
+function toggleItemDetail(i){
+  const el = document.getElementById('itdet-'+i);
+  if(el) el.style.display = el.style.display === 'none' ? '' : 'none';
+}
 function toggleDateGroup(key){
   dateCollapse[key] = !(window._dateCollapsedNow && window._dateCollapsedNow[key]);
   renderSaved();
