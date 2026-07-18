@@ -130,7 +130,7 @@ main{max-width:1100px;margin:0 auto;padding:16px;}
     <button class="btn btn-sm" onclick="doLogout()" style="padding:2px 8px;font-size:10px;" data-i18n="logout">로그아웃</button>
   </span>
   <select id="lang-sel" onchange="setLang(this.value)" style="font-size:11px;padding:3px 6px;border-radius:5px;border:none;background:#1d3f66;color:#fff;"><option value="ko">한국어</option><option value="en">English</option><option value="es">Español</option></select>
-  <span style="font-size:10px;color:#9fb8d4;">v156</span>
+  <span style="font-size:10px;color:#9fb8d4;">v157</span>
 </div>
 <script type="text/javascript" src="https://js.authorize.net/v1/Accept.js" charset="utf-8"></script>
 <div id="po-viewer" style="display:none;position:fixed;top:0;right:0;width:44%;height:100vh;background:#fff;border-left:2px solid var(--border);z-index:60;box-shadow:-6px 0 20px rgba(0,0,0,.15);">
@@ -2146,23 +2146,38 @@ async function savePL(){
     rec.inv[plWh] = { savedAt: new Date().toISOString(), auto: true, freight: Number(ivd.freight)||0, lines: invLines };
     invDrafts[plWh] = { freight: Number(ivd.freight)||0, _touched: false, lines: JSON.parse(JSON.stringify(invLines)) };
   }
-  const wantSend = $('plf-sendpl') && $('plf-sendpl').checked;
   const custEm = (plDrafts[plWh].custEmail||'').trim();
   if(custEm && custEm.includes('@')) rec.meta = {...(rec.meta||{}), custEmail: custEm};
+  if(rec.pl[plWh]._completed) rec.pl[plWh]._completed = rec.pl[plWh]._completed; // 유지
+  const prev = savedCache.find(s=>s.base===plBase);
   const r = await sbFetch('/rest/v1/pr_orders?base=eq.'+encodeURIComponent(plBase), {method:'PATCH', headers:{Prefer:'return=minimal'}, body:JSON.stringify({pl:rec.pl, inv:rec.inv, meta:rec.meta, updated_at:new Date().toISOString()})});
   if(!r.ok){ alert(t('save_fail')); return; }
   renderSaved(); renderPL();
   logHist(plBase, 'Packing List saved — ' + plWh + (plDrafts[plWh].serial ? ' (' + plDrafts[plWh].serial + ')' : ''));
-  showToast(t('a_plsaved',{x:plNum(plBase, plWh)}) + (plDrafts[plWh].serial ? ` (${plDrafts[plWh].serial})` : '') + ' + Invoice');
+  showToast(t('a_plsaved',{x:plNum(plBase, plWh)}) + (plDrafts[plWh].serial ? ` (${plDrafts[plWh].serial})` : '') + ' — 이멜은 ✅ Complete 눌러야 발송됩니다');
+}
+async function completePL(){
+  const rec = savedCache.find(s=>s.base===plBase); if(!rec) return;
+  plFieldsToDraft();
+  const wantSend = !!((plDrafts[plWh]||{}).sendPl);
+  const custEm = ((plDrafts[plWh]||{}).custEmail||'').trim();
+  await savePL(); // 최신 수정사항 저장부터
+  const d = rec.pl && rec.pl[plWh]; if(!d || !d.savedAt) return;
+  if(wantSend && (!custEm || !custEm.includes('@'))){ alert('📧 고객 이메일 주소를 입력해주세요 (Customer Email 칸)'); return; }
+  if(!confirm('✅ ' + plWh + ' Packing List를 Complete 처리할까요?' + (wantSend ? '\n📧 거래처로 발송: ' + custEm : '\n(이멜 발송 안 함 — 체크박스 해제됨)'))) return;
+  d._completed = new Date().toISOString();
+  try{ await sbFetch('/rest/v1/pr_orders?base=eq.'+encodeURIComponent(plBase), {method:'PATCH', headers:{Prefer:'return=minimal'}, body:JSON.stringify({pl:rec.pl, updated_at:new Date().toISOString()})}); }catch(e){}
+  logHist(plBase, 'Packing List COMPLETED — ' + plWh + (wantSend ? ' (emailed ' + custEm + ')' : ''));
   if(wantSend){
-    if(!custEm || !custEm.includes('@')){ alert('📧 고객 이메일 주소를 입력해주세요 (Customer Email 칸)'); return; }
-    if(!confirm('📧 고객에게 Packing List가 발송됩니다.\n→ ' + custEm + '\n\n계속할까요? (취소하면 저장만 되고 발송 안 됨)')) return;
     showToast('📧 Packing List 발송 중...');
     try{
       await sendPLEmailFor(rec, plWh, custEm);
-      showToast('✅ Packing List 발송 완료 → ' + custEm);
-    }catch(e){ alert('📧 이멜 발송 실패: ' + e.message); }
+      showToast('✅ Complete — Packing List 발송 완료 → ' + custEm);
+    }catch(e){ alert('📧 이멜 발송 실패: ' + e.message + '\n(Complete 상태는 유지 — Resend PL로 다시 보내세요)'); }
+  } else {
+    showToast('✅ Packing List Complete 처리됨');
   }
+  renderSaved(); renderPL();
 }
 const STAFF_EMAILS = [
   'erika@peacepacificsports.com',
@@ -2317,13 +2332,14 @@ function plFieldsToDraft(){
   const trackings = [...document.querySelectorAll('[id^="plf-tracking-"]')].map(el=>el.value);
   const keepLines = (plDrafts[plWh]||{}).lines;
   const keepFiles = (plDrafts[plWh]||{}).files;
+  const keepSend = $('plf-sendpl') ? $('plf-sendpl').checked : ((plDrafts[plWh]||{}).sendPl||false);
   const _viaCb = document.querySelector('.plv-cb:checked');
   const _mCb = document.querySelector('.plm-cb:checked');
   plDrafts[plWh] = { custEmail:g('plf-email'), serial:g('plf-serial'),
     via: _viaCb ? _viaCb.value : '',
     method: _mCb ? _mCb.value : '',
     freightCo: g('plf-freightco'),
-    trackings:(trackings.length?trackings:['']), date:g('plf-date'), note:g('plf-note'), lines: keepLines, files: keepFiles };
+    trackings:(trackings.length?trackings:['']), date:g('plf-date'), note:g('plf-note'), lines: keepLines, files: keepFiles, sendPl: keepSend };
 }
 async function downloadPLPdf(kind){
   const rec = getSaved().find(s=>s.base===plBase); if(!rec) return;
@@ -2939,7 +2955,7 @@ function renderPL(){
       <div class="no-print" style="display:flex;gap:6px;justify-content:flex-end;margin-bottom:12px;flex-wrap:wrap;">
         ${plShowInv
           ? `<button class="btn btn-sm" style="background:#fff;color:#7c3aed;border-color:#c4b5fd;margin-right:auto;" onclick="viewSavedPO(plBase)" title="거래처에서 받은 원본 PO를 옆에 띄워 인보이스와 비교">📄 Customer PO</button><button class="btn btn-sm btn-primary" onclick="saveInvStage()">${t('save_inv')}</button><button class="btn btn-sm" id="invpdf-btn" onclick="downloadPLPdf('invoice')">${t('inv_pdf')}</button><button class="btn btn-sm" onclick="printStageDoc('invoice')">🖨 Invoice</button>`
-          : `<label style="display:flex;align-items:center;gap:5px;font-size:11.5px;font-weight:700;color:#0e7490;margin-right:auto;cursor:pointer;"><input type="checkbox" id="plf-sendpl" style="width:14px;height:14px;accent-color:#0e7490;cursor:pointer;"> ${t('sendpl_cb')}</label>${plInfo(rec,plWh).savedAt ? `<button class="btn btn-sm" style="background:#0e7490;color:#fff;border-color:#0e7490;" onclick="resendPL()" title="Customer Email 칸의 주소로 Packing List를 다시 발송">📧 Resend PL</button><button class="btn btn-sm" style="background:#fff;color:#b91c1c;border-color:#fca5a5;" onclick="unshipPL()" title="이 창고의 Packing List/Invoice 기록을 삭제하고 출고 전 상태로 되돌립니다">↩ 출고 취소</button>` : ''}<button class="btn btn-sm" style="background:#374151;color:#fff;border-color:#374151;" onclick="printBOL()" title="Bill of Lading 인쇄 (LTL 출고용)">🚛 BOL</button><button class="btn btn-sm" id="bolpdf-btn" onclick="downloadBOLPdf()" title="Bill of Lading PDF">⬇ BOL</button><button class="btn btn-sm btn-primary" onclick="savePL()">${t('save_pl')}</button><button class="btn btn-sm" id="plpdf-btn" onclick="downloadPLPdf('packing')">${t('pl_pdf')}</button><button class="btn btn-sm" onclick="printStageDoc('packing')">🖨</button>`}
+          : `<label style="display:flex;align-items:center;gap:5px;font-size:11.5px;font-weight:700;color:#0e7490;margin-right:auto;cursor:pointer;"><input type="checkbox" id="plf-sendpl" ${(plDrafts[plWh]&&plDrafts[plWh].sendPl)?'checked':''} onchange="if(plDrafts[plWh])plDrafts[plWh].sendPl=this.checked" style="width:14px;height:14px;accent-color:#0e7490;cursor:pointer;"> ${t('sendpl_cb')}</label>${plInfo(rec,plWh).savedAt ? `<button class="btn btn-sm" style="background:#0e7490;color:#fff;border-color:#0e7490;" onclick="resendPL()" title="Customer Email 칸의 주소로 Packing List를 다시 발송">📧 Resend PL</button><button class="btn btn-sm" style="background:#fff;color:#b91c1c;border-color:#fca5a5;" onclick="unshipPL()" title="이 창고의 Packing List/Invoice 기록을 삭제하고 출고 전 상태로 되돌립니다">↩ 출고 취소</button>` : ''}<button class="btn btn-sm" style="background:#374151;color:#fff;border-color:#374151;" onclick="printBOL()" title="Bill of Lading 인쇄 (LTL 출고용)">🚛 BOL</button><button class="btn btn-sm" id="bolpdf-btn" onclick="downloadBOLPdf()" title="Bill of Lading PDF">⬇ BOL</button><button class="btn btn-sm btn-primary" onclick="savePL()">${t('save_pl')}</button>${(()=>{ const dd = plInfo(rec,plWh); return dd.savedAt && !dd._completed ? `<button class="btn btn-sm" style="background:#16a34a;color:#fff;border-color:#16a34a;font-weight:800;" onclick="completePL()" title="수정 끝났을 때 누르세요 — 초록 처리 + 거래처 이멜 발송">✅ Complete</button>` : (dd._completed ? `<span style="align-self:center;padding:3px 10px;border-radius:20px;font-size:10.5px;font-weight:800;background:#dcfce7;color:#166534;white-space:nowrap;">✅ Completed ${new Date(dd._completed).toLocaleDateString()}</span>` : ''); })()}<button class="btn btn-sm" id="plpdf-btn" onclick="downloadPLPdf('packing')">${t('pl_pdf')}</button><button class="btn btn-sm" onclick="printStageDoc('packing')">🖨</button>`}
         <button class="btn btn-sm" onclick="closePL()">${t('close')}</button>
       </div>
       ${plShowInv ? '' : `
@@ -3511,7 +3527,7 @@ async function submitBatchShip(){
     if(em && em.includes('@')) rec.meta = {...(rec.meta||{}), custEmail: em};
     const lines = (rec.lines||[]).filter(l=>l.wh===bs.wh && (l.qty||0)>0).map(l=>({style:l.style||'', desc:l.desc||'', color:l.color||'', size:l.size||'', qty:l.qty||0, price:l.price||0, ppb:l.ppb||72, pbox:l.pbox||''}));
     rec.pl = rec.pl || {};
-    rec.pl[bs.wh] = { custEmail: em, serial: nextSerial(bs.wh), via: via, method: method, freightCo: freightCo, trackings: [(trk||trkAll||'')], date: date, note: '', files: JSON.parse(JSON.stringify(bolFiles)), lines: lines, savedAt: new Date().toISOString() };
+    rec.pl[bs.wh] = { custEmail: em, serial: nextSerial(bs.wh), via: via, method: method, freightCo: freightCo, trackings: [(trk||trkAll||'')], date: date, note: '', files: JSON.parse(JSON.stringify(bolFiles)), lines: lines, savedAt: new Date().toISOString(), _completed: new Date().toISOString() };
     rec.inv = rec.inv || {};
     const exInv = rec.inv[bs.wh];
     if(!exInv || exInv.auto){
@@ -3673,7 +3689,7 @@ function renderSaved(){
         <button class="btn btn-sm" style="background:${c};color:#fff;border-color:${c};" onclick="docBtnClick('${esc(s.base)}','${w}','pr')" ${mp.pr?'title="빠르게 3번 클릭하면 완료(초록) 표시 해제"':''}>🖨 Pull Request</button>
         ${(w==='BO'||w==='NA') ? `<button class="btn btn-sm" style="background:#f5f3ff;color:#6d28d9;border-color:#c4b5fd;font-weight:700;" onclick="processFromWh('${esc(s.base)}','${w}','SC')" title="재고 입고 — 별도 건(-${w==='BO'?'B':'N'})으로 분리해 SC에서 출고 진행">⚙ Process from SC</button><button class="btn btn-sm" style="background:#fff7ed;color:#c2410c;border-color:#fed7aa;font-weight:700;" onclick="processFromWh('${esc(s.base)}','${w}','CA')" title="재고 입고 — 별도 건(-${w==='BO'?'B':'N'})으로 분리해 CA에서 출고 진행">⚙ Process from CA</button>` : ''}
         ${w!=='BO' && w!=='NA' ? `<button class="btn btn-sm" style="background:${mp.label?'#16a34a':'#7c3aed'};color:#fff;border-color:${mp.label?'#16a34a':'#7c3aed'};" onclick="docBtnClick('${esc(s.base)}','${w}','label')" ${mp.label?'title="빠르게 3번 클릭하면 완료(초록) 표시 해제"':''}>🏷 Box Label</button>
-        <button class="btn btn-sm" style="${plSaved?'background:#16a34a;border-color:#16a34a;':'background:#f59e0b;border-color:#f59e0b;'}color:#fff;" onclick="openPLWh('${esc(s.base)}','${w}')">📦 Packing List</button>
+        <button class="btn btn-sm" style="${(s.pl && s.pl[w] && s.pl[w]._completed)?'background:#16a34a;border-color:#16a34a;':(plSaved?'background:#0e7490;border-color:#0e7490;':'background:#f59e0b;border-color:#f59e0b;')}color:#fff;" onclick="openPLWh('${esc(s.base)}','${w}')" ${plSaved && !(s.pl[w]&&s.pl[w]._completed)?'title="저장됨 — Complete 전 (이멜 미발송)"':''}>📦 Packing List</button>
         ${plSaved ? `<button class="btn btn-sm" style="${invPr?'background:#16a34a;border-color:#16a34a;':'background:#dc2626;border-color:#dc2626;'}color:#fff;" onclick="docBtnClick('${esc(s.base)}','${w}','inv')" ${invPr?'title="빠르게 3번 클릭하면 완료(초록) 표시 해제"':''}>🧾 Invoice</button>` : ''}
         ${(()=>{ const pd = s.inv && s.inv[w] && s.inv[w].paid; if(!pd) return '';
           const rt = refundTotals(pd);
