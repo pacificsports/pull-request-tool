@@ -132,7 +132,7 @@ main{max-width:1100px;margin:0 auto;padding:16px;}
     <button class="btn btn-sm" onclick="doLogout()" style="padding:2px 8px;font-size:10px;" data-i18n="logout">로그아웃</button>
   </span>
   <select id="lang-sel" onchange="setLang(this.value)" style="font-size:11px;padding:3px 6px;border-radius:5px;border:none;background:#1d3f66;color:#fff;"><option value="ko">한국어</option><option value="en">English</option><option value="es">Español</option></select>
-  <span style="font-size:10px;color:#9fb8d4;">v176</span>
+  <span style="font-size:10px;color:#9fb8d4;">v177</span>
 </div>
 <script type="text/javascript" src="https://js.authorize.net/v1/Accept.js" charset="utf-8"></script>
 <div id="po-viewer" style="display:none;position:fixed;top:0;right:0;width:44%;height:100vh;background:#fff;border-left:2px solid var(--border);z-index:60;box-shadow:-6px 0 20px rgba(0,0,0,.15);">
@@ -292,6 +292,7 @@ main{max-width:1100px;margin:0 auto;padding:16px;}
         <button class="btn btn-sm" onclick="setAllBshipChecks(false)" data-i18n="uncheck_all" style="font-weight:600;">☐ 체크 해제</button>
         <button class="btn btn-sm" id="bo-filter-btn" onclick="boOnly=!boOnly;readyOnly=false;renderSaved();" title="Back Order 있는 오더만 보기">⛔ BO</button>
         <button class="btn btn-sm" id="ready-filter-btn" onclick="readyOnly=!readyOnly;boOnly=false;renderSaved();" title="준비 완료 — 픽업 대기중인 오더만 보기">📅 Ready</button>
+        <button class="btn btn-sm" style="background:#065f46;color:#fff;border-color:#065f46;font-weight:700;" onclick="openBulkPay()" title="팩토링 입금내역 PDF를 올리면 인보이스별로 자동 매칭해서 일괄 입금 처리">💰 Bulk Payment</button>
         <button class="btn btn-sm" onclick="openTrash()" title="삭제된 오더 (30일 보관)">🗑</button>
         <input class="fi" id="saved-search" placeholder="🔍 거래처 / PO# / Ref# 검색 (예: TTY)" oninput="savedQuery=this.value;renderSaved();" style="width:280px;font-size:12px;padding:6px 10px;font-weight:400;">
         <button class="btn btn-sm" id="saved-search-clear" style="display:none;" onclick="savedQuery='';document.getElementById('saved-search').value='';renderSaved();">✕</button>
@@ -2854,6 +2855,109 @@ async function submitRefund(base, wh){
     if(go) go.disabled = false;
   }
 }
+function openBulkPay(){
+  const ex = document.getElementById('modal-bulkpay'); if(ex) ex.remove();
+  const div = document.createElement('div');
+  div.id = 'modal-bulkpay';
+  div.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,.55);z-index:130;display:flex;align-items:center;justify-content:center;';
+  div.innerHTML = `<div style="background:#fff;border-radius:12px;width:680px;max-width:95vw;max-height:88vh;display:flex;flex-direction:column;overflow:hidden;box-shadow:0 20px 60px rgba(0,0,0,.35);">
+    <div style="background:#065f46;color:#fff;padding:11px 16px;font-weight:800;">💰 Bulk Payment — 팩토링 입금내역 자동 적용</div>
+    <div style="padding:12px 16px;display:flex;align-items:center;gap:10px;flex-wrap:wrap;">
+      <input type="file" id="bp-file" accept="application/pdf" style="font-size:12px;">
+      <button class="btn btn-sm btn-primary" onclick="parseBulkPay()">🤖 PDF 읽기</button>
+      <span id="bp-status" style="font-size:11.5px;font-weight:700;color:#92400e;"></span>
+    </div>
+    <div id="bp-body" style="padding:0 16px 8px;overflow-y:auto;flex:1;"></div>
+    <div style="padding:10px 16px 14px;display:flex;gap:8px;justify-content:flex-end;align-items:center;">
+      <span id="bp-sum" style="margin-right:auto;font-size:12px;font-weight:800;color:#065f46;"></span>
+      <button class="btn btn-sm" onclick="document.getElementById('modal-bulkpay').remove()">취소</button>
+      <button class="btn btn-sm" id="bp-apply" style="background:#065f46;color:#fff;border-color:#065f46;font-weight:800;display:none;" onclick="applyBulkPay()">💰 Apply</button>
+    </div>
+  </div>`;
+  document.body.appendChild(div);
+  initModalDrag(div);
+}
+let _bpRows = [], _bpPayer = '';
+async function parseBulkPay(){
+  const f = $('bp-file') && $('bp-file').files && $('bp-file').files[0];
+  if(!f){ showToast('⚠ PDF를 선택하세요'); return; }
+  const st = $('bp-status'); if(st){ st.innerHTML = '<span class="ccspin"></span>읽는 중... (잠시 걸려요)'; st.style.color = '#92400e'; }
+  try{
+    const b64 = await blobToB64(f);
+    await ensureToken();
+    const r = await fetch('https://po-confirm-email.hjbae.workers.dev/parse-remit', {
+      method:'POST', headers:{'Content-Type':'application/json', Authorization:'Bearer '+((SESS&&SESS.token)||'')},
+      body: JSON.stringify({ pdf_base64: b64 })
+    });
+    const j = await r.json().catch(()=>({}));
+    if(!r.ok || !j.items){ if(st){ st.textContent = '❌ ' + (j.error||('HTTP '+r.status)); st.style.color = '#b91c1c'; } return; }
+    _bpPayer = j.payer || '';
+    const dig = s => String(s||'').replace(/[^0-9]/g, '');
+    const idx = {};
+    (savedCache||[]).forEach(rec=>Object.keys(rec.inv||{}).forEach(w=>{
+      const iv = rec.inv[w];
+      if(iv && iv.savedAt && iv.invNo) idx[dig(iv.invNo)] = { base: rec.base, wh: w, cust: (rec.meta&&rec.meta.cust)||'', invNo: iv.invNo };
+    }));
+    _bpRows = (j.items||[]).map(it=>{
+      const hit = idx[dig(it.invoice_no)];
+      const bal = hit ? invBalance(savedCache.find(s=>s.base===hit.base), hit.wh) : 0;
+      return { invoice_no: it.invoice_no, amount: Number(it.amount)||0, hit: hit||null, bal: bal };
+    });
+    const money2 = n => '$' + Number(n).toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2});
+    const rows = _bpRows.map((r2,i)=>r2.hit
+      ? `<tr><td style="text-align:center;"><input type="checkbox" class="bp-cb" data-i="${i}" checked onchange="bpSum()" style="width:15px;height:15px;accent-color:#065f46;"></td>
+          <td style="font-family:Consolas,monospace;font-weight:700;">${esc(r2.hit.invNo)}</td>
+          <td class="tl">${esc(r2.hit.cust)}</td>
+          <td style="text-align:right;color:${r2.bal>0?'#b91c1c':'#166534'};">${money2(r2.bal)}</td>
+          <td><input class="fi num bp-amt" data-i="${i}" value="${r2.amount.toFixed(2)}" onchange="bpSum()" style="width:100px;text-align:right;font-family:Consolas,monospace;font-weight:800;"></td>
+          <td style="font-size:10.5px;color:${Math.abs(r2.amount-r2.bal)<=0.01?'#166534':'#b45309'};font-weight:700;">${Math.abs(r2.amount-r2.bal)<=0.01?'✓ 잔액 일치':'⚠ 잔액과 다름'}</td></tr>`
+      : `<tr style="background:#fef2f2;"><td></td><td style="font-family:Consolas,monospace;">${esc(r2.invoice_no)}</td><td class="tl" colspan="3" style="color:#b91c1c;font-weight:700;">매칭되는 인보이스 없음 — 수동 확인 필요 (${money2(r2.amount)})</td><td></td></tr>`).join('');
+    $('bp-body').innerHTML = `<div style="font-size:12px;font-weight:700;margin-bottom:6px;">${esc(_bpPayer)} · ${esc(j.date||'')} · 총 ${money2(Number(j.total)||_bpRows.reduce((a,x)=>a+x.amount,0))}</div>
+      <table class="etbl"><thead><tr><th style="width:34px;"></th><th>Invoice#</th><th class="tl">Customer</th><th>잔액</th><th>적용 금액</th><th></th></tr></thead><tbody>${rows}</tbody></table>`;
+    if(st) st.textContent = '✓ ' + _bpRows.filter(x=>x.hit).length + '건 매칭 / ' + _bpRows.length + '건';
+    const ap = $('bp-apply'); if(ap) ap.style.display = '';
+    bpSum();
+  }catch(e){ if(st){ st.textContent = '❌ ' + e.message; st.style.color = '#b91c1c'; } }
+}
+function bpSum(){
+  let n = 0, tot = 0;
+  document.querySelectorAll('.bp-cb:checked').forEach(cb=>{
+    const i = parseInt(cb.dataset.i);
+    const inp = document.querySelector('.bp-amt[data-i="' + i + '"]');
+    const v = parseFloat(inp ? inp.value : '0') || 0;
+    if(v > 0){ n++; tot += v; }
+  });
+  const el = $('bp-sum');
+  if(el) el.textContent = n ? (n + '건 적용 예정 — $' + tot.toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2})) : '';
+}
+async function applyBulkPay(){
+  const picks = [];
+  document.querySelectorAll('.bp-cb:checked').forEach(cb=>{
+    const i = parseInt(cb.dataset.i);
+    const inp = document.querySelector('.bp-amt[data-i="' + i + '"]');
+    const v = parseFloat(inp ? inp.value : '0') || 0;
+    const r2 = _bpRows[i];
+    if(r2 && r2.hit && v > 0) picks.push({ ...r2.hit, amt: v });
+  });
+  if(!picks.length){ showToast('⚠ 적용할 항목이 없어요'); return; }
+  const byBase = {};
+  picks.forEach(p=>{ (byBase[p.base] = byBase[p.base] || []).push(p); });
+  let ok = 0;
+  for(const base in byBase){
+    const rec = savedCache.find(s=>s.base===base); if(!rec) continue;
+    byBase[base].forEach(p=>{
+      const iv = rec.inv[p.wh]; if(!iv) return;
+      iv.payments = Array.isArray(iv.payments) ? iv.payments : [];
+      iv.payments.push({ amt: p.amt, at: new Date().toISOString(), by: (SESS&&SESS.email)||'', note: 'Factoring' + (_bpPayer ? ' — ' + _bpPayer : '') });
+      logHist(base, 'Payment (bulk/factoring) $' + p.amt.toFixed(2) + ' — ' + p.wh + ' (' + (iv.invNo||'') + ')');
+      ok++;
+    });
+    try{ await sbFetch('/rest/v1/pr_orders?base=eq.'+encodeURIComponent(base), {method:'PATCH', headers:{Prefer:'return=minimal'}, body:JSON.stringify({inv:rec.inv, updated_at:new Date().toISOString()})}); }catch(e){}
+  }
+  const m = document.getElementById('modal-bulkpay'); if(m) m.remove();
+  showToast('💰 ' + ok + '건 입금 적용 완료');
+  renderSaved();
+}
 function payFromRow(base, wh){ plBase = base; plWh = wh; openPayModal(); }
 function memoFromRow(base, wh){ plBase = base; plWh = wh; openMemoModal(); }
 function openPayModal(){
@@ -4183,7 +4287,7 @@ function renderSaved(){
         ${(w==='BO'||w==='NA') ? `<button class="btn btn-sm" style="background:#f5f3ff;color:#6d28d9;border-color:#c4b5fd;font-weight:700;" onclick="processFromWh('${esc(s.base)}','${w}','SC')" title="재고 입고 — 별도 건(-${w==='BO'?'B':'N'})으로 분리해 SC에서 출고 진행">⚙ Process from SC</button><button class="btn btn-sm" style="background:#fff7ed;color:#c2410c;border-color:#fed7aa;font-weight:700;" onclick="processFromWh('${esc(s.base)}','${w}','CA')" title="재고 입고 — 별도 건(-${w==='BO'?'B':'N'})으로 분리해 CA에서 출고 진행">⚙ Process from CA</button>` : ''}
         ${w!=='BO' && w!=='NA' ? `<button class="btn btn-sm" style="background:${mp.label?'#16a34a':'#7c3aed'};color:#fff;border-color:${mp.label?'#16a34a':'#7c3aed'};" onclick="docBtnClick('${esc(s.base)}','${w}','label')" oncontextmenu="return docBtnMenu(event,'${esc(s.base)}','${w}','label')" title="우클릭: 완료(초록) 표시 ${mp.label?'해제':'전환'}">🏷 Box Label</button>
         <button class="btn btn-sm" style="${(s.pl && s.pl[w] && s.pl[w]._completed)?'background:#16a34a;border-color:#16a34a;':(plSaved?'background:#0e7490;border-color:#0e7490;':'background:#f59e0b;border-color:#f59e0b;')}color:#fff;" onclick="openPLWh('${esc(s.base)}','${w}')" oncontextmenu="return plBtnMenu(event,'${esc(s.base)}','${w}')" title="${plSaved && !(s.pl[w]&&s.pl[w]._completed)?'저장됨 — Complete 전 (이멜 미발송) · ':''}우클릭: Complete 표시/해제 (이멜 없이)">📦 Packing List</button>
-        ${plSaved ? `<button class="btn btn-sm" style="${invPr?'background:#16a34a;border-color:#16a34a;':'background:#dc2626;border-color:#dc2626;'}color:#fff;" onclick="docBtnClick('${esc(s.base)}','${w}','inv')" oncontextmenu="return docBtnMenu(event,'${esc(s.base)}','${w}','inv')" title="우클릭: 완료(초록) 표시 ${invPr?'해제':'전환'}">🧾 Invoice</button>${invPr ? `<button class="btn btn-sm" style="background:#065f46;color:#fff;border-color:#065f46;" onclick="payFromRow('${esc(s.base)}','${w}')" title="입금 기록 (전액/부분)">💰 Payment</button><button class="btn btn-sm" style="background:#7c2d12;color:#fff;border-color:#7c2d12;" onclick="memoFromRow('${esc(s.base)}','${w}')" title="Credit Memo (리턴) — MAS200 파일 첨부 가능">📝 Memo</button>` : ''}` : ''}
+        ${plSaved ? `<button class="btn btn-sm" style="${invPr?'background:#16a34a;border-color:#16a34a;':'background:#dc2626;border-color:#dc2626;'}color:#fff;" onclick="docBtnClick('${esc(s.base)}','${w}','inv')" oncontextmenu="return docBtnMenu(event,'${esc(s.base)}','${w}','inv')" title="우클릭: 완료(초록) 표시 ${invPr?'해제':'전환'}">🧾 Invoice</button>${invPr ? `<button class="btn btn-sm" style="background:#065f46;color:#fff;border-color:#065f46;" onclick="payFromRow('${esc(s.base)}','${w}')" title="입금 기록 (전액/부분)">💰 Payment</button><button class="btn btn-sm" style="background:#7c2d12;color:#fff;border-color:#7c2d12;" onclick="memoFromRow('${esc(s.base)}','${w}')" title="Credit Memo (리턴) — MAS200 파일 첨부 가능">📝 Credit Memo</button>` : ''}` : ''}
         ${(()=>{ const pd = s.inv && s.inv[w] && s.inv[w].paid; if(!pd) return '';
           const rt = refundTotals(pd);
           if(rt.remain <= 0.005){
