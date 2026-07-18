@@ -130,7 +130,7 @@ main{max-width:1100px;margin:0 auto;padding:16px;}
     <button class="btn btn-sm" onclick="doLogout()" style="padding:2px 8px;font-size:10px;" data-i18n="logout">로그아웃</button>
   </span>
   <select id="lang-sel" onchange="setLang(this.value)" style="font-size:11px;padding:3px 6px;border-radius:5px;border:none;background:#1d3f66;color:#fff;"><option value="ko">한국어</option><option value="en">English</option><option value="es">Español</option></select>
-  <span style="font-size:10px;color:#9fb8d4;">v159</span>
+  <span style="font-size:10px;color:#9fb8d4;">v160</span>
 </div>
 <script type="text/javascript" src="https://js.authorize.net/v1/Accept.js" charset="utf-8"></script>
 <div id="po-viewer" style="display:none;position:fixed;top:0;right:0;width:44%;height:100vh;background:#fff;border-left:2px solid var(--border);z-index:60;box-shadow:-6px 0 20px rgba(0,0,0,.15);">
@@ -259,6 +259,7 @@ main{max-width:1100px;margin:0 auto;padding:16px;}
     </div>
     <div style="margin-top:10px;display:flex;gap:8px;flex-wrap:wrap;">
       <button class="btn" onclick="addLine()" data-i18n="add_line">＋ 라인 추가</button>
+      <button class="btn" style="background:#f5f3ff;color:#6d28d9;border-color:#c4b5fd;font-weight:700;" onclick="openQuickAdd()" title="스타일+사이즈 레인지로 여러 줄 한번에 생성">⚡ Quick Add</button>
       <button class="btn" onclick="if(confirm(t('confirm_clear'))){poLines=[];renderTable();renderDocs();saveDraft();}" data-i18n="clear_all">🗑 전체 지우기</button>
       <span id="wh-summary" style="margin-left:auto;display:inline-flex;gap:6px;align-items:center;"></span>
     </div>
@@ -906,6 +907,68 @@ async function parsePoPdf(input){
 }
 
 // ═══════════════ 라인 테이블 ═══════════════
+function expandSizeRange(str){
+  const norm = t => { const u = String(t).trim().toUpperCase(); return SZ_ALIAS[u] || u; };
+  const s = String(str||'').trim().toUpperCase();
+  if(!s) return [];
+  if(s.includes('-') && !s.includes(',')){
+    const [a, b] = s.split('-').map(norm);
+    const i1 = SZ_ORD.indexOf(a), i2 = SZ_ORD.indexOf(b);
+    if(i1 >= 0 && i2 >= i1) return SZ_ORD.slice(i1, i2 + 1);
+  }
+  return s.split(/[,\s]+/).map(norm).filter(x=>x);
+}
+function openQuickAdd(){
+  const ex = document.getElementById('modal-qadd'); if(ex) ex.remove();
+  const div = document.createElement('div');
+  div.id = 'modal-qadd';
+  div.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,.55);z-index:130;display:flex;align-items:center;justify-content:center;';
+  div.innerHTML = `<div style="background:#fff;border-radius:12px;width:480px;max-width:94vw;overflow:hidden;box-shadow:0 20px 60px rgba(0,0,0,.35);">
+    <div style="background:#0f2a4a;color:#fff;padding:11px 16px;font-weight:800;">⚡ Quick Add — 여러 줄 한번에 만들기</div>
+    <div style="padding:14px 16px;display:grid;grid-template-columns:1fr 1fr;gap:10px;">
+      <div class="ff"><label>Style#</label><input class="fi" id="qa-style" placeholder="8368" style="font-weight:700;"></div>
+      <div class="ff"><label>Size Range</label><input class="fi" id="qa-sizes" placeholder="S-2XL 또는 S,M,L" style="font-family:Consolas,monospace;font-weight:700;"></div>
+      <div class="ff" style="grid-column:span 2;"><label>Colors (쉼표로 — 알면 미리, 모르면 비워두고 Set 수만)</label><input class="fi" id="qa-colors" placeholder="Black, White, Navy, Red..."></div>
+      <div class="ff"><label>Set 수 (Colors 비었을 때)</label><input class="fi num" id="qa-sets" placeholder="6" style="text-align:center;font-weight:700;"></div>
+      <div class="ff"><label>단가 $ (전체 적용)</label><input class="fi num" id="qa-price" placeholder="0.00" style="text-align:center;font-family:Consolas,monospace;font-weight:700;"></div>
+    </div>
+    <div id="qa-preview" style="padding:0 16px 6px;font-size:11.5px;font-weight:700;color:var(--text2);"></div>
+    <div style="padding:8px 16px 14px;display:flex;gap:8px;justify-content:flex-end;">
+      <button class="btn btn-sm" onclick="document.getElementById('modal-qadd').remove()">취소</button>
+      <button class="btn btn-sm btn-primary" onclick="applyQuickAdd()">⚡ 생성</button>
+    </div>
+  </div>`;
+  document.body.appendChild(div);
+  initModalDrag(div);
+  const upd = () => {
+    const sz = expandSizeRange($('qa-sizes').value);
+    const cols = String($('qa-colors').value||'').split(',').map(x=>x.trim()).filter(Boolean);
+    const sets = cols.length || parseInt($('qa-sets').value) || 0;
+    const el = $('qa-preview');
+    if(el) el.textContent = sz.length && sets ? ('→ ' + sets + ' 컬러 × ' + sz.length + ' 사이즈 = ' + (sets*sz.length) + '줄 생성 (' + sz.join(', ') + ')') : '';
+  };
+  ['qa-sizes','qa-colors','qa-sets'].forEach(id=>{ const el = $(id); if(el) el.oninput = upd; });
+  setTimeout(()=>{ const el = $('qa-style'); if(el) el.focus(); }, 50);
+}
+function applyQuickAdd(){
+  const style = String($('qa-style').value||'').trim();
+  const sizes = expandSizeRange($('qa-sizes').value);
+  const cols = String($('qa-colors').value||'').split(',').map(x=>x.trim()).filter(Boolean);
+  const sets = cols.length ? cols.length : Math.max(1, parseInt($('qa-sets').value)||1);
+  const price = parseFloat($('qa-price').value)||0;
+  if(!sizes.length){ showToast('⚠ Size Range를 입력하세요 (예: S-2XL)'); return; }
+  for(let i = 0; i < sets; i++){
+    const color = cols[i] ? normalizePoColor(cols[i]) : '';
+    sizes.forEach(sz=>{
+      const l = { style: style, desc:'', color: color, size: sz, qty: 0, price: price, ppb: DEFAULT_PPB, wh:'SC' };
+      applyMaster(l);
+      poLines.push(l);
+    });
+  }
+  const m = document.getElementById('modal-qadd'); if(m) m.remove();
+  renderTable(); renderDocs(); saveDraft();
+  showToast('⚡ ' + (sets*sizes.length) + '줄 생성됨 — 컬러/수량만 채우면 끝');
+}
 function addLine(){
   poLines.push({style:'',desc:'',color:'',size:'',qty:0,price:0,ppb:DEFAULT_PPB,wh:'SC'});
   renderTable();
