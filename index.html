@@ -130,7 +130,7 @@ main{max-width:1100px;margin:0 auto;padding:16px;}
     <button class="btn btn-sm" onclick="doLogout()" style="padding:2px 8px;font-size:10px;" data-i18n="logout">로그아웃</button>
   </span>
   <select id="lang-sel" onchange="setLang(this.value)" style="font-size:11px;padding:3px 6px;border-radius:5px;border:none;background:#1d3f66;color:#fff;"><option value="ko">한국어</option><option value="en">English</option><option value="es">Español</option></select>
-  <span style="font-size:10px;color:#9fb8d4;">v147</span>
+  <span style="font-size:10px;color:#9fb8d4;">v148</span>
 </div>
 <script type="text/javascript" src="https://js.authorize.net/v1/Accept.js" charset="utf-8"></script>
 <div id="po-viewer" style="display:none;position:fixed;top:0;right:0;width:44%;height:100vh;background:#fff;border-left:2px solid var(--border);z-index:60;box-shadow:-6px 0 20px rgba(0,0,0,.15);">
@@ -972,6 +972,47 @@ function boxCalc(l){
   const ppb = l.ppb || DEFAULT_PPB;
   return { full: Math.floor((l.qty||0)/ppb), loose: (l.qty||0)%ppb };
 }
+function openSplitLine(i){
+  const l = poLines[i]; if(!l) return;
+  const ex = document.getElementById('modal-split'); if(ex) ex.remove();
+  const tot = Number(l.qty)||0;
+  const div = document.createElement('div');
+  div.id = 'modal-split';
+  div.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,.55);z-index:130;display:flex;align-items:center;justify-content:center;';
+  const whColor = {SC:'#1d4ed8',CA:'#c2410c',BO:'#dc2626',NA:'#6b7280'};
+  div.innerHTML = `<div style="background:#fff;border-radius:12px;width:430px;max-width:92vw;overflow:hidden;box-shadow:0 20px 60px rgba(0,0,0,.35);">
+    <div style="background:#0f2a4a;color:#fff;padding:11px 16px;font-weight:800;">✂ 수량 나누기 — ${esc(l.style||'?')} ${esc(l.color||'')} ${esc(l.size||'')} (총 ${tot.toLocaleString()} pcs)</div>
+    <div style="padding:14px 16px;display:grid;grid-template-columns:1fr 1fr;gap:10px;">
+      ${['SC','CA','BO','NA'].map(w=>`<label style="display:flex;align-items:center;gap:8px;font-size:13px;font-weight:800;color:${whColor[w]};">${w}
+        <input class="fi num" id="sp-${w}" value="${l.wh===w?tot:''}" placeholder="0" oninput="splitSum()" style="width:100%;text-align:center;font-family:Consolas,monospace;font-weight:700;"></label>`).join('')}
+    </div>
+    <div id="sp-sum" style="padding:0 16px 4px;font-size:12px;font-weight:700;color:var(--text2);"></div>
+    <div style="padding:10px 16px 14px;display:flex;gap:8px;justify-content:flex-end;">
+      <button class="btn btn-sm" onclick="document.getElementById('modal-split').remove()">취소</button>
+      <button class="btn btn-sm btn-primary" onclick="applySplitLine(${i})">✂ 나누기</button>
+    </div>
+  </div>`;
+  document.body.appendChild(div);
+  initModalDrag(div);
+  window.splitSum = () => {
+    const s = ['SC','CA','BO','NA'].reduce((a,w)=>a+(parseInt(($('sp-'+w)||{}).value)||0),0);
+    const el = $('sp-sum');
+    if(el) el.innerHTML = s === tot ? `<span style="color:#166534;">✓ 합계 ${s.toLocaleString()} / ${tot.toLocaleString()}</span>` : `<span style="color:#b91c1c;">⚠ 합계 ${s.toLocaleString()} / ${tot.toLocaleString()} — 총 수량과 같아야 합니다</span>`;
+  };
+  splitSum();
+}
+function applySplitLine(i){
+  const l = poLines[i]; if(!l) return;
+  const tot = Number(l.qty)||0;
+  const parts = ['SC','CA','BO','NA'].map(w=>({ wh: w, q: parseInt(($('sp-'+w)||{}).value)||0 })).filter(p=>p.q>0);
+  const sum = parts.reduce((a,p)=>a+p.q,0);
+  if(sum !== tot){ showToast('⚠ 합계가 총 수량(' + tot.toLocaleString() + ')과 달라요'); return; }
+  const newLines = parts.map(p=>({ ...JSON.parse(JSON.stringify(l)), qty: p.q, wh: p.wh }));
+  poLines.splice(i, 1, ...newLines);
+  const m = document.getElementById('modal-split'); if(m) m.remove();
+  renderTable(); updateNumPreview(); renderDocs();
+  showToast('✂ ' + parts.map(p=>p.wh + ' ' + p.q.toLocaleString()).join(' / ') + ' 로 나눴어요 — Save 하면 적용됩니다');
+}
 function renderTable(){
   const tb = $('lines-body');
   tb.innerHTML = poLines.map((l,i)=>{
@@ -992,7 +1033,7 @@ function renderTable(){
       <td style="text-align:center;"><input type="checkbox" id="whca-${i}" ${l.wh==='CA'?'checked':''} onchange="whLineToggle(${i},'CA',this.checked)" style="accent-color:#c2410c;width:16px;height:16px;cursor:pointer;"></td>
       <td style="text-align:center;"><input type="checkbox" id="whbo-${i}" ${l.wh==='BO'?'checked':''} onchange="whLineToggle(${i},'BO',this.checked)" style="accent-color:#dc2626;width:16px;height:16px;cursor:pointer;"></td>
       <td style="text-align:center;"><input type="checkbox" id="whna-${i}" ${l.wh==='NA'?'checked':''} onchange="whLineToggle(${i},'NA',this.checked)" style="accent-color:#6b7280;width:16px;height:16px;cursor:pointer;"></td>
-      <td><button class="btn btn-sm" style="color:var(--bad);border:none;" onclick="delLine(${i})">✕</button></td>
+      <td style="white-space:nowrap;"><button class="btn btn-sm" style="color:#7c3aed;border:none;padding:2px 4px;" onclick="openSplitLine(${i})" title="이 줄 수량을 SC/CA/BO/NA로 나누기">✂</button><button class="btn btn-sm" style="color:var(--bad);border:none;padding:2px 4px;" onclick="delLine(${i})">✕</button></td>
     </tr>`;
   }).join('') || `<tr><td colspan="16" class="muted" style="padding:14px;text-align:center;">${t('empty_lines')}</td></tr>`;
 
