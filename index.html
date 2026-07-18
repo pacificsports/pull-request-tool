@@ -132,7 +132,7 @@ main{max-width:1100px;margin:0 auto;padding:16px;}
     <button class="btn btn-sm" onclick="doLogout()" style="padding:2px 8px;font-size:10px;" data-i18n="logout">로그아웃</button>
   </span>
   <select id="lang-sel" onchange="setLang(this.value)" style="font-size:11px;padding:3px 6px;border-radius:5px;border:none;background:#1d3f66;color:#fff;"><option value="ko">한국어</option><option value="en">English</option><option value="es">Español</option></select>
-  <span style="font-size:10px;color:#9fb8d4;">v172</span>
+  <span style="font-size:10px;color:#9fb8d4;">v174</span>
 </div>
 <script type="text/javascript" src="https://js.authorize.net/v1/Accept.js" charset="utf-8"></script>
 <div id="po-viewer" style="display:none;position:fixed;top:0;right:0;width:44%;height:100vh;background:#fff;border-left:2px solid var(--border);z-index:60;box-shadow:-6px 0 20px rgba(0,0,0,.15);">
@@ -196,7 +196,7 @@ main{max-width:1100px;margin:0 auto;padding:16px;}
   <div class="card">
     <div class="card-title" data-i18n="t_order">② 오더 정보</div>
     <div class="grid g6">
-      <div class="ff" style="grid-column:span 2;"><label data-i18n="l_cust">거래처</label><input class="fi" id="m-cust" placeholder="예: T-Shirt Tycoon" oninput="updateNumPreview()">
+      <div class="ff" style="grid-column:span 2;"><label data-i18n="l_cust">거래처</label><div style="display:flex;gap:5px;"><input class="fi" id="m-cust" placeholder="예: T-Shirt Tycoon" oninput="updateNumPreview()" onchange="applyCustProfile()" style="flex:1;"><button class="btn btn-sm" onclick="openCustSettings()" title="거래처 설정 — Credit Limit / 미수금" style="flex-shrink:0;">👤</button></div>
         <div style="display:flex;gap:14px;margin-top:4px;flex-wrap:wrap;">
         <label style="display:flex;align-items:center;gap:5px;font-size:11.5px;font-weight:700;color:#0e7490;cursor:pointer;"><input type="checkbox" id="m-webcust" style="width:13px;height:13px;accent-color:#0e7490;cursor:pointer;"> 🌐 Website Customer</label>
         <label style="display:flex;align-items:center;gap:5px;font-size:11.5px;font-weight:800;color:#dc2626;cursor:pointer;"><input type="checkbox" id="m-urgent" style="width:13px;height:13px;accent-color:#dc2626;cursor:pointer;"> 🔥 Rush</label>
@@ -290,7 +290,8 @@ main{max-width:1100px;margin:0 auto;padding:16px;}
         <button class="btn btn-sm" onclick="setAllDateGroups(false)" data-i18n="expand_all" style="font-weight:600;">▾ 전체 열기</button>
         <button class="btn btn-sm" onclick="setAllBshipChecks(true)" data-i18n="check_all" style="font-weight:600;">☑ 전체 체크</button>
         <button class="btn btn-sm" onclick="setAllBshipChecks(false)" data-i18n="uncheck_all" style="font-weight:600;">☐ 체크 해제</button>
-        <button class="btn btn-sm" id="bo-filter-btn" onclick="boOnly=!boOnly;renderSaved();" title="Back Order 있는 오더만 보기">⛔ BO</button>
+        <button class="btn btn-sm" id="bo-filter-btn" onclick="boOnly=!boOnly;readyOnly=false;renderSaved();" title="Back Order 있는 오더만 보기">⛔ BO</button>
+        <button class="btn btn-sm" id="ready-filter-btn" onclick="readyOnly=!readyOnly;boOnly=false;renderSaved();" title="준비 완료 — 픽업 대기중인 오더만 보기">📅 Ready</button>
         <button class="btn btn-sm" onclick="openTrash()" title="삭제된 오더 (30일 보관)">🗑</button>
         <input class="fi" id="saved-search" placeholder="🔍 거래처 / PO# / Ref# 검색 (예: TTY)" oninput="savedQuery=this.value;renderSaved();" style="width:280px;font-size:12px;padding:6px 10px;font-weight:400;">
         <button class="btn btn-sm" id="saved-search-clear" style="display:none;" onclick="savedQuery='';document.getElementById('saved-search').value='';renderSaved();">✕</button>
@@ -1558,6 +1559,7 @@ async function doResetPw(){
 }
 async function enterApp(){
   loadStyleCloud();
+  loadCustomers();
   $('login-page').style.display = 'none';
   $('app-main').style.display = 'block';
   $('user-info').style.display = 'inline-flex';
@@ -1614,7 +1616,22 @@ async function saveCurrent(){
   poLines.forEach(l=>{ if(l.style && (l.rawDesc||l.desc)) rememberStyle(l.rawDesc||l.desc, l.style); });
   const base = baseNumber();
   const existing = savedCache.find(s=>s.base===base);
+  if(!existing){
+    const dupe = savedCache.find(s=>s.base!==base && s.meta && custCanon(s.meta.cust)===custCanon($('m-cust').value) && String(s.meta.po||'').trim()===String($('m-po').value||'').trim());
+    if(dupe && !confirm('⚠ 중복 가능성!\n' + (dupe.meta.cust||'') + ' PO ' + (dupe.meta.po||'') + ' 는 이미 ' + fmtDate(dupe.meta.date||dupe.savedAt) + ' 에 접수됐습니다 (' + dupe.base + ').\n\n그래도 새 오더로 저장할까요?')) return;
+  }
+  (function(){
+    const custV = $('m-cust').value.trim();
+    const lim = Number((custStore[custKey(custV)]||{}).creditLimit) || 0;
+    window.__holdFlag = null;
+    if(lim <= 0) return;
+    const orderAmt = poLines.filter(l=>l.wh!=='NA').reduce((a,l)=>a+(Number(l.qty)||0)*(Number(l.price)||0),0);
+    const out = custOutstanding(custV);
+    if(out + orderAmt > lim) window.__holdFlag = { at: new Date().toISOString(), outstanding: Math.round(out*100)/100, orderAmt: Math.round(orderAmt*100)/100, limit: lim };
+  })();
   const rec = { base, meta:getMeta(), lines:poLines, whs:activeWhs(), savedAt:new Date().toISOString(), poPdf: window._poPdfB64 || null };
+  if(window.__holdFlag){ rec.meta._hold = window.__holdFlag; if(existing && existing.meta && existing.meta._holdOk) rec.meta._holdOk = existing.meta._holdOk; }
+  window.__holdFlag = null;
   let orderChanges = [];
   if(existing){
     if(!confirm(t('a_overwrite',{b:base}))) return;
@@ -2022,6 +2039,7 @@ async function markDocPrinted(base, wh, kind){
 const _clk3 = {};
 function docBtnClick(base, wh, kind){
   const rec = savedCache.find(s=>s.base===base); if(!rec) return;
+  if(holdBlocked(rec)){ showToast('🔒 Credit Hold — Approve 후 진행할 수 있습니다'); return; }
   const mp = (rec.meta && rec.meta._printed && rec.meta._printed[wh]) || {};
   const printed = kind==='inv' ? !!(rec.inv && rec.inv[wh] && rec.inv[wh].printed) : !!mp[kind];
   if(kind==='pr') printSavedPRWh(base, wh); else if(kind==='label') openBoxLabelForRecWh(base, wh); else openInvoiceWh(base, wh);
@@ -2153,6 +2171,8 @@ function openPLInner(base){
 }
 function closePL(){ plBase = null; $('pl-card').style.display = 'none'; }
 async function openPLWh(base, wh){
+  const _r0 = savedCache.find(s=>s.base===base);
+  if(_r0 && holdBlocked(_r0)){ showToast('🔒 Credit Hold — Approve 후 진행할 수 있습니다'); return; }
   await openPL(base);
   const rec = getSaved().find(s=>s.base===base);
   if(rec && (rec.whs||[]).includes(wh)){ plWh = wh; renderPL(); }
@@ -2392,6 +2412,122 @@ async function resendPL(){
     showToast('✅ Packing List 재발송 완료 → ' + em);
   }catch(e){ alert('📧 발송 실패: ' + e.message); }
 }
+function fmtDate(d){ try{ return new Date(String(d).includes('T')?d:d+'T00:00:00').toLocaleDateString('en-US'); }catch(e){ return String(d||''); } }
+let custStore = {};
+async function loadCustomers(){
+  try{
+    const r = await sbFetch('/rest/v1/pr_customers?select=k,data');
+    if(r.ok){ custStore = {}; (await r.json()).forEach(row=>{ custStore[row.k] = row.data || {}; }); }
+  }catch(e){}
+}
+async function saveCustomer(k, data){
+  custStore[k] = data;
+  try{ await sbFetch('/rest/v1/pr_customers?on_conflict=k', {method:'POST', headers:{Prefer:'resolution=merge-duplicates,return=minimal'}, body:JSON.stringify([{k:k, data:data, updated_at:new Date().toISOString()}])}); }catch(e){}
+}
+function invTotalOf(iv, rec, wh){
+  const ls = (Array.isArray(iv.lines) && iv.lines.length) ? iv.lines : ((rec.pl && rec.pl[wh] && rec.pl[wh].lines) || []);
+  return ls.reduce((a,l)=>a+(Number(l.qty)||0)*(Number(l.price)||0),0) + (Number(iv.freight)||0);
+}
+function invPaidSum(iv){
+  let p = (iv.payments||[]).reduce((a,x)=>a+(Number(x.amt)||0),0);
+  if(iv.paid){
+    p += Number(iv.paid.amt)||0;
+    p -= (iv.paid.refunds||[]).reduce((a,r)=>a+(Number(r.amt)||0),0) + (iv.paid.refunded ? (Number(iv.paid.amt)||0) : 0);
+  }
+  return p;
+}
+function invMemoSum(iv){ return (iv.memos||[]).reduce((a,m)=>a+(Number(m.amt)||0),0); }
+function invBalance(rec, wh){
+  const iv = rec.inv && rec.inv[wh];
+  if(!iv || !iv.savedAt) return 0;
+  return Math.max(0, invTotalOf(iv, rec, wh) - invPaidSum(iv) - invMemoSum(iv));
+}
+function custOutstanding(cust){
+  const key = custCanon(cust); let s = 0;
+  (savedCache||[]).forEach(r=>{ if(r.meta && custCanon(r.meta.cust)===key) Object.keys(r.inv||{}).forEach(w=>{ s += invBalance(r, w); }); });
+  return s;
+}
+function holdBlocked(rec){ return !!(rec && rec.meta && rec.meta._hold && !rec.meta._holdOk); }
+async function approveHold(base){
+  const rec = savedCache.find(s=>s.base===base); if(!rec) return;
+  rec.meta = { ...rec.meta, _holdOk: { at: new Date().toISOString(), by: (SESS&&SESS.email)||'' } };
+  try{ await sbFetch('/rest/v1/pr_orders?base=eq.'+encodeURIComponent(base), {method:'PATCH', headers:{Prefer:'return=minimal'}, body:JSON.stringify({meta:rec.meta, updated_at:new Date().toISOString()})}); }catch(e){}
+  logHist(base, 'Credit hold APPROVED by ' + ((SESS&&SESS.email)||''));
+  showToast('✅ Credit Hold 승인 — 진행 가능');
+  renderSaved();
+}
+function openCustSettings(){
+  const cust = $('m-cust').value.trim();
+  if(!cust){ showToast('⚠ 거래처 이름을 먼저 입력하세요'); return; }
+  const k = custKey(cust);
+  const cur = custStore[k] || {};
+  const out = custOutstanding(cust);
+  const ex = document.getElementById('modal-custset'); if(ex) ex.remove();
+  const div = document.createElement('div');
+  div.id = 'modal-custset';
+  div.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,.55);z-index:130;display:flex;align-items:center;justify-content:center;';
+  div.innerHTML = `<div style="background:#fff;border-radius:12px;width:380px;max-width:92vw;overflow:hidden;box-shadow:0 20px 60px rgba(0,0,0,.35);">
+    <div style="background:#0f2a4a;color:#fff;padding:11px 16px;font-weight:800;">👤 ${esc(cust)}</div>
+    <div style="padding:14px 16px;">
+      <div style="font-size:12px;color:var(--text2);margin-bottom:10px;">현재 미수금 (미결제 인보이스 잔액): <b style="color:${out>0?'#b91c1c':'#166534'};">$${out.toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2})}</b></div>
+      <div class="ff"><label>Credit Limit $ (0 또는 비움 = 무제한)</label><input class="fi num" id="cs-limit" value="${cur.creditLimit||''}" placeholder="예: 10000" style="text-align:center;font-family:Consolas,monospace;font-weight:700;"></div>
+    </div>
+    <div style="padding:0 16px 14px;display:flex;gap:8px;justify-content:flex-end;">
+      <button class="btn btn-sm" onclick="document.getElementById('modal-custset').remove()">취소</button>
+      <button class="btn btn-sm btn-primary" onclick="saveCustSettings('${esc(k)}')">💾 Save</button>
+    </div>
+  </div>`;
+  document.body.appendChild(div);
+  initModalDrag(div);
+}
+async function saveCustSettings(k){
+  const lim = parseFloat(($('cs-limit')||{}).value) || 0;
+  await saveCustomer(k, { ...(custStore[k]||{}), creditLimit: lim });
+  const m = document.getElementById('modal-custset'); if(m) m.remove();
+  showToast('💾 저장됨 — Credit Limit ' + (lim>0 ? '$'+lim.toLocaleString() : '무제한'));
+}
+function custProfileFor(cust){
+  const key = custCanon(cust);
+  if(!key) return null;
+  const recs = (savedCache||[]).filter(r=>r.meta && custCanon(r.meta.cust)===key && (r.meta.billAddr || r.meta.shipAddr))
+    .sort((a,b)=>String(b.savedAt||'').localeCompare(String(a.savedAt||'')));
+  return recs.length ? recs[0].meta : null;
+}
+function applyCustProfile(){
+  const cust = $('m-cust').value.trim();
+  if(!cust) return;
+  const p = custProfileFor(cust);
+  if(!p) return;
+  const empty = id => !($(id) && $(id).value.trim());
+  let filled = false;
+  if(empty('m-bill-addr')){
+    ['billName','billAddr','billCity','billState','billZip'].forEach(k=>{
+      const el = $('m-bill-' + k.replace('bill','').toLowerCase().replace('name','name').replace('addr','addr').replace('city','city').replace('state','state').replace('zip','zip'));
+    });
+    if($('m-bill-name')) $('m-bill-name').value = p.billName||'';
+    $('m-bill-addr').value = p.billAddr||''; $('m-bill-city').value = p.billCity||''; $('m-bill-state').value = p.billState||''; $('m-bill-zip').value = p.billZip||'';
+    filled = filled || !!p.billAddr;
+  }
+  if(empty('m-ship-addr')){
+    if($('m-ship-name')) $('m-ship-name').value = p.shipName||'';
+    $('m-ship-addr').value = p.shipAddr||''; $('m-ship-city').value = p.shipCity||''; $('m-ship-state').value = p.shipState||''; $('m-ship-zip').value = p.shipZip||'';
+    filled = filled || !!p.shipAddr;
+  }
+  if(!$('m-via').value && p.via){ $('m-via').value = normVia(p.via); syncViaBoxes(); filled = true; }
+  if(filled) showToast('👤 ' + cust + ' 프로필 자동 채움 (지난 오더 기준)');
+}
+function custLastTermType(cust){
+  const key = custCanon(cust);
+  if(!key) return { termType:'', termDays:0 };
+  const recs = (savedCache||[]).filter(r=>r.meta && custCanon(r.meta.cust)===key)
+    .sort((a,b)=>String(b.savedAt||'').localeCompare(String(a.savedAt||'')));
+  for(const r of recs){
+    for(const v of Object.values(r.inv||{})){
+      if(v && v.termType) return { termType: v.termType, termDays: v.termDays||0 };
+    }
+  }
+  return { termType:'', termDays:0 };
+}
 function custEmailFor(cust){
   if(!cust) return '';
   const recs = (savedCache||[]).filter(r=>r.meta && r.meta.cust===cust && r.meta.custEmail)
@@ -2472,7 +2608,7 @@ async function markInvPrinted(){
   rec.inv[plWh] = {
     ...ex,
     invNo: invNo,
-    termType: ivd.termType || ex.termType || '',
+    termType: ivd.termType || ex.termType || custLastTermType(rec.meta && rec.meta.cust).termType || '',
     termDays: ivd.termDays || ex.termDays || 0,
     savedAt: ex.savedAt || new Date().toISOString(),
     auto: false,
@@ -2680,6 +2816,122 @@ async function submitRefund(base, wh){
     if(st){ st.textContent = '❌ ' + e.message; st.style.color = '#b91c1c'; }
     if(go) go.disabled = false;
   }
+}
+function openPayModal(){
+  const rec = savedCache.find(s=>s.base===plBase); if(!rec) return;
+  const iv = rec.inv && rec.inv[plWh]; if(!iv || !iv.savedAt){ showToast('⚠ 인보이스를 먼저 저장하세요'); return; }
+  const bal = invBalance(rec, plWh);
+  const ex = document.getElementById('modal-pay'); if(ex) ex.remove();
+  const div = document.createElement('div');
+  div.id = 'modal-pay';
+  div.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,.55);z-index:130;display:flex;align-items:center;justify-content:center;';
+  div.innerHTML = `<div style="background:#fff;border-radius:12px;width:380px;max-width:92vw;overflow:hidden;box-shadow:0 20px 60px rgba(0,0,0,.35);">
+    <div style="background:#065f46;color:#fff;padding:11px 16px;font-weight:800;">💰 Payment — Invoice ${esc(iv.invNo||'')}</div>
+    <div style="padding:14px 16px;">
+      <div style="font-size:12px;color:var(--text2);margin-bottom:10px;">남은 잔액: <b>$${bal.toFixed(2)}</b></div>
+      <label style="display:flex;align-items:center;gap:6px;font-size:13px;font-weight:700;margin-bottom:8px;cursor:pointer;"><input type="radio" name="pay-type" value="full" checked onchange="$('pay-amt').value='${bal.toFixed(2)}';$('pay-amt').disabled=true;" style="accent-color:#065f46;"> Paid in Full ($${bal.toFixed(2)})</label>
+      <label style="display:flex;align-items:center;gap:6px;font-size:13px;font-weight:700;margin-bottom:8px;cursor:pointer;"><input type="radio" name="pay-type" value="partial" onchange="$('pay-amt').disabled=false;$('pay-amt').focus();" style="accent-color:#065f46;"> Partial Payment</label>
+      <div style="display:flex;align-items:center;gap:6px;"><span style="font-weight:800;">$</span><input class="fi num" id="pay-amt" value="${bal.toFixed(2)}" disabled style="width:130px;text-align:center;font-family:Consolas,monospace;font-weight:800;"></div>
+    </div>
+    <div style="padding:0 16px 14px;display:flex;gap:8px;justify-content:flex-end;">
+      <button class="btn btn-sm" onclick="document.getElementById('modal-pay').remove()">취소</button>
+      <button class="btn btn-sm" style="background:#065f46;color:#fff;border-color:#065f46;font-weight:800;" onclick="submitPayment()">💰 기록</button>
+    </div>
+  </div>`;
+  document.body.appendChild(div);
+  initModalDrag(div);
+}
+async function submitPayment(){
+  const rec = savedCache.find(s=>s.base===plBase); if(!rec) return;
+  const iv = rec.inv[plWh];
+  const amt = parseFloat(($('pay-amt')||{}).value) || 0;
+  if(!(amt > 0)){ showToast('⚠ 금액을 확인하세요'); return; }
+  iv.payments = Array.isArray(iv.payments) ? iv.payments : [];
+  iv.payments.push({ amt: amt, at: new Date().toISOString(), by: (SESS&&SESS.email)||'' });
+  try{ await sbFetch('/rest/v1/pr_orders?base=eq.'+encodeURIComponent(plBase), {method:'PATCH', headers:{Prefer:'return=minimal'}, body:JSON.stringify({inv:rec.inv, updated_at:new Date().toISOString()})}); }catch(e){}
+  logHist(plBase, 'Payment recorded $' + amt.toFixed(2) + ' — ' + plWh + ' (' + (iv.invNo||'') + ')');
+  const m = document.getElementById('modal-pay'); if(m) m.remove();
+  showToast('💰 결제 기록됨 — 잔액 $' + invBalance(rec, plWh).toFixed(2));
+  renderPL(); renderSaved();
+}
+function openMemoModal(){
+  const rec = savedCache.find(s=>s.base===plBase); if(!rec) return;
+  const iv = rec.inv && rec.inv[plWh]; if(!iv || !iv.savedAt){ showToast('⚠ 인보이스를 먼저 저장하세요'); return; }
+  const ex = document.getElementById('modal-memo'); if(ex) ex.remove();
+  window._memoFile = null; window._memoLines = null;
+  const div = document.createElement('div');
+  div.id = 'modal-memo';
+  div.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,.55);z-index:130;display:flex;align-items:center;justify-content:center;';
+  div.innerHTML = `<div style="background:#fff;border-radius:12px;width:440px;max-width:94vw;overflow:hidden;box-shadow:0 20px 60px rgba(0,0,0,.35);">
+    <div style="background:#7c2d12;color:#fff;padding:11px 16px;font-weight:800;">📝 Credit Memo — Invoice ${esc(iv.invNo||'')} (리턴/조정)</div>
+    <div style="padding:14px 16px;">
+      <div style="display:flex;align-items:center;gap:8px;margin-bottom:10px;">
+        <span style="font-weight:800;">Credit $</span>
+        <input class="fi num" id="memo-amt" placeholder="0.00" style="width:130px;text-align:center;font-family:Consolas,monospace;font-weight:800;">
+        <span id="memo-status" style="font-size:11px;font-weight:700;color:#92400e;"></span>
+      </div>
+      <div class="ff" style="margin-bottom:10px;"><label>Note (사유)</label><input class="fi" id="memo-note" placeholder="예: 리턴 24pcs — 불량"></div>
+      <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;">
+        <span style="font-size:11.5px;font-weight:700;color:var(--text2);">📎 MAS 200 Credit Memo 파일</span>
+        <input type="file" id="memo-file" accept="application/pdf,image/*" onchange="memoFilePicked(this)" style="font-size:11px;">
+      </div>
+      <div id="memo-lines-info" style="font-size:11px;color:#166534;font-weight:700;margin-top:6px;"></div>
+    </div>
+    <div style="padding:0 16px 14px;display:flex;gap:8px;justify-content:flex-end;">
+      <button class="btn btn-sm" onclick="document.getElementById('modal-memo').remove()">취소</button>
+      <button class="btn btn-sm" style="background:#7c2d12;color:#fff;border-color:#7c2d12;font-weight:800;" onclick="submitMemo()">📝 기록</button>
+    </div>
+  </div>`;
+  document.body.appendChild(div);
+  initModalDrag(div);
+}
+function memoFilePicked(inp){
+  const f = inp.files && inp.files[0]; if(!f) return;
+  const rd = new FileReader();
+  rd.onload = async () => {
+    const b64 = String(rd.result).split(',')[1];
+    window._memoFile = { name: f.name, type: f.type, data: b64 };
+    const st = $('memo-status'); 
+    if(f.type === 'application/pdf'){
+      if(st) st.innerHTML = '<span class="ccspin"></span>파일에서 품목 읽는 중...';
+      try{
+        const r = await fetch('https://parse-po.hjbae.workers.dev', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({ pdf_base64: b64 })});
+        const j = await r.json();
+        const ls = (j.lines || j.line_items || []).map(l=>({ style: l.style||'', color: normalizePoColor(l.color||''), size: normalizePoSize(l.size||''), qty: Number(l.qty)||0, price: Number(l.unit_price||l.price)||0 })).filter(l=>l.qty>0);
+        if(ls.length){
+          window._memoLines = ls;
+          const tot = ls.reduce((a,l)=>a+l.qty*l.price,0);
+          if($('memo-amt') && !$('memo-amt').value) $('memo-amt').value = tot.toFixed(2);
+          const inf = $('memo-lines-info'); if(inf) inf.textContent = '🤖 품목 ' + ls.length + '줄 인식 (' + ls.reduce((a,l)=>a+l.qty,0).toLocaleString() + ' pcs, $' + tot.toFixed(2) + ') — 리턴 내역으로 저장됩니다';
+          if(st) st.textContent = '';
+        } else { if(st) st.textContent = '품목 인식 못함 — 금액 직접 입력'; }
+      }catch(e){ if(st) st.textContent = '품목 읽기 실패 — 금액 직접 입력'; }
+    } else { if(st) st.textContent = ''; }
+  };
+  rd.readAsDataURL(f);
+}
+async function submitMemo(){
+  const rec = savedCache.find(s=>s.base===plBase); if(!rec) return;
+  const iv = rec.inv[plWh];
+  const amt = parseFloat(($('memo-amt')||{}).value) || 0;
+  if(!(amt > 0)){ showToast('⚠ Credit 금액을 입력하세요'); return; }
+  iv.memos = Array.isArray(iv.memos) ? iv.memos : [];
+  iv.memos.push({ amt: amt, note: ($('memo-note')||{}).value || '', at: new Date().toISOString(), by: (SESS&&SESS.email)||'', file: window._memoFile || null, lines: window._memoLines || null });
+  try{ await sbFetch('/rest/v1/pr_orders?base=eq.'+encodeURIComponent(plBase), {method:'PATCH', headers:{Prefer:'return=minimal'}, body:JSON.stringify({inv:rec.inv, updated_at:new Date().toISOString()})}); }catch(e){}
+  logHist(plBase, 'Credit memo $' + amt.toFixed(2) + ' — ' + plWh + ' (' + (iv.invNo||'') + ')' + (window._memoLines ? ' [' + window._memoLines.length + ' items]' : ''));
+  const m = document.getElementById('modal-memo'); if(m) m.remove();
+  showToast('📝 Credit Memo 기록됨 — 매출에서 차감됩니다');
+  renderPL(); renderSaved();
+}
+function dlMemoFile(base, wh, i){
+  const rec = savedCache.find(s=>s.base===base); if(!rec) return;
+  const mm = rec.inv && rec.inv[wh] && rec.inv[wh].memos && rec.inv[wh].memos[i];
+  if(!mm || !mm.file) return;
+  const bin = atob(mm.file.data); const arr = new Uint8Array(bin.length);
+  for(let j=0;j<bin.length;j++) arr[j] = bin.charCodeAt(j);
+  const url = URL.createObjectURL(new Blob([arr], {type: mm.file.type||'application/pdf'}));
+  const a = document.createElement('a'); a.href = url; a.download = mm.file.name || 'credit-memo.pdf'; a.click();
+  setTimeout(()=>URL.revokeObjectURL(url), 5000);
 }
 function openBOL(){
   const rec = savedCache.find(s=>s.base===plBase); if(!rec) return;
@@ -3005,12 +3257,12 @@ async function confirmBoxLabelPrint(){
 
 let plEditOpen = true, invEditOpen = true;
 function nextInvNo(){
-  let mx = 5000;
-  (savedCache||[]).forEach(r=>Object.values(r.inv||{}).forEach(v=>{
-    const m = /^\d{2}-(\d+)$/.exec(((v&&v.invNo)||'').trim());
-    if(m) mx = Math.max(mx, parseInt(m[1],10));
-  }));
   const yy = String(new Date().getFullYear()).slice(-2);
+  let mx = 5000; // 매년 5001부터 새로 시작
+  (savedCache||[]).forEach(r=>Object.values(r.inv||{}).forEach(v=>{
+    const m = /^(\d{2})-(\d+)$/.exec(((v&&v.invNo)||'').trim());
+    if(m && m[1] === yy) mx = Math.max(mx, parseInt(m[2],10));
+  }));
   return yy + '-' + (mx + 1);
 }
 function termInfo(d){
@@ -3168,6 +3420,18 @@ function renderPL(){
           <label style="display:flex;align-items:center;gap:4px;cursor:pointer;font-weight:600;"><input type="radio" name="inv-term" ${(invDrafts[plWh]||{}).termType==='custom'?'checked':''} onchange="invTermUpd('custom', document.getElementById('inv-term-days').value)" style="accent-color:#065f46;"> Custom</label>
           <input id="inv-term-days" class="fi num" value="${(invDrafts[plWh]||{}).termType==='custom'?((invDrafts[plWh]||{}).termDays||''):''}" onchange="invTermUpd('custom', this.value)" placeholder="days" style="width:60px;text-align:center;">
         </div>
+        ${(()=>{
+          const ivR = rec.inv && rec.inv[plWh];
+          if(!ivR || !ivR.savedAt) return '';
+          const tot = invTotalOf(ivR, rec, plWh), paid = invPaidSum(ivR), memo = invMemoSum(ivR), bal = Math.max(0, tot - paid - memo);
+          const money2 = n => '$' + Number(n).toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2});
+          return `<div style="margin-top:8px;padding:8px 12px;background:#f8fafc;border:1px solid var(--border);border-radius:8px;display:flex;align-items:center;gap:8px;flex-wrap:wrap;font-size:12px;">
+            <span style="font-weight:700;color:var(--text2);">Invoice ${money2(tot)}${paid>0?` · Paid <b style=\"color:#166534;\">${money2(paid)}</b>`:''}${memo>0?` · Memo <b style=\"color:#7c2d12;\">−${money2(memo)}</b>`:''} · Balance <b style="color:${bal>0?'#b91c1c':'#166534'};">${money2(bal)}</b>${bal<=0.005?' ✅':''}</span>
+            <button class="btn btn-sm" style="background:#065f46;color:#fff;border-color:#065f46;" onclick="openPayModal()">💰 Payment</button>
+            <button class="btn btn-sm" style="background:#7c2d12;color:#fff;border-color:#7c2d12;" onclick="openMemoModal()">📝 Credit Memo</button>
+            ${(ivR.memos||[]).map((mm,i)=>`<span style="padding:2px 8px;border-radius:20px;font-size:10.5px;font-weight:700;background:#fef2f2;color:#7c2d12;border:1px solid #fecaca;white-space:nowrap;${mm.file?'cursor:pointer;':''}" ${mm.file?`onclick="dlMemoFile('${esc(plBase)}','${plWh}',${i})" title="클릭하면 첨부파일 다운로드"`:''}>📝 −${money2(mm.amt)}${mm.file?' 📎':''}${mm.lines?' ('+mm.lines.length+' items)':''}</span>`).join('')}
+          </div>`;
+        })()}
         ${(invDrafts[plWh]||{}).termType==='cc' ? (()=>{
           const ivRec = (rec.inv && rec.inv[plWh]) || {};
           if(ivRec.paid){
@@ -3422,6 +3686,13 @@ function renderDash(){
       });
     });
   });
+  // 크레딧메모(리턴) — 기간 내 발행분 매출 차감
+  let memoTot = 0;
+  (savedCache||[]).forEach(rec=>{
+    Object.values(rec.inv||{}).forEach(iv=>{
+      (iv && iv.memos || []).forEach(m=>{ if(inDashPeriodDate(m.at)) memoTot += Number(m.amt)||0; });
+    });
+  });
   // 인보이스 발행(프린트 완료) 기준 매출 — 출고됐는데 인보이스 안 된 금액을 잡아내기 위함
   let invAmt = 0, freightAmt = 0;
   (savedCache||[]).forEach(rec=>{
@@ -3491,8 +3762,12 @@ function renderDash(){
     || `<tr><td colspan="4" class="muted" style="padding:12px;">—</td></tr>`;
   el.innerHTML = `
     <div style="display:grid;grid-template-columns:repeat(7,1fr);gap:12px;margin-bottom:18px;" class="dash-grid">
-      ${card(t('d_sales'), money(totAmt), 'var(--ok)')}
-      ${card('🚚 Shipped Sales', money(shipAmt), '#0e7490')}
+      ${(()=>{ const net = totAmt - memoTot; return `<div style="background:#f5f7fa;border:1px solid var(--border);border-radius:10px;padding:16px;text-align:center;">
+        <div style="font-size:10px;font-weight:700;color:var(--text2);text-transform:uppercase;letter-spacing:1px;">${t('d_sales')}</div>
+        <div style="font-size:24px;font-weight:800;color:var(--ok);margin-top:4px;">${money(net)}</div>
+        ${memoTot>0?`<div style="font-size:10.5px;font-weight:800;color:#7c2d12;margin-top:3px;">↩ returns −${money(memoTot)}</div>`:''}
+      </div>`; })()}
+      ${card('🚚 Shipped Sales', money(shipAmt - memoTot), '#0e7490')}
       ${(()=>{ const gap = shipAmt - invAmt; return `<div style="background:#f5f7fa;border:1px solid var(--border);border-radius:10px;padding:16px;text-align:center;">
         <div style="font-size:10px;font-weight:700;color:var(--text2);text-transform:uppercase;letter-spacing:1px;">🧾 Invoiced</div>
         <div style="font-size:24px;font-weight:800;color:#7c3aed;margin-top:4px;">${money(invAmt)}</div>
@@ -3733,6 +4008,10 @@ async function submitBatchShip(){
 }
 let savedQuery = '';
 let boOnly = false;
+let readyOnly = false;
+function isReadyToShip(s){
+  return (s.whs||[]).some(w=>s.pl && s.pl[w] && s.pl[w]._completed && plFutureDate(s, w));
+}
 async function moveBO(base, target){
   const rec = savedCache.find(s=>s.base===base); if(!rec) return;
   const boQty = (rec.lines||[]).filter(l=>l.wh==='BO').reduce((a,l)=>a+(l.qty||0),0);
@@ -3795,10 +4074,12 @@ function savedMatches(s, q){
 function renderSaved(){
   const bb = document.getElementById('bo-filter-btn');
   if(bb) bb.style.cssText = boOnly ? 'background:#b91c1c;color:#fff;border-color:#b91c1c;' : '';
+  const rb = $('ready-filter-btn');
+  if(rb) rb.style.cssText = readyOnly ? 'background:#b45309;color:#fff;border-color:#b45309;' : '';
   const cl = document.getElementById('saved-search-clear');
   const q = savedQuery.trim().toUpperCase();
   if(cl) cl.style.display = q ? 'inline-flex' : 'none';
-  const saved = [...getSaved()].filter(s=>savedMatches(s, q)).filter(s=>!boOnly || (s.whs||[]).includes('BO')).sort((a,b)=>{
+  const saved = [...getSaved()].filter(s=>savedMatches(s, q)).filter(s=>!boOnly || (s.whs||[]).includes('BO')).filter(s=>!readyOnly || isReadyToShip(s)).sort((a,b)=>{
     const ka = String((a.meta&&a.meta.date)||a.savedAt||''), kb = String((b.meta&&b.meta.date)||b.savedAt||'');
     return kb.localeCompare(ka) || String(b.savedAt||'').localeCompare(String(a.savedAt||''));
   });
@@ -3819,10 +4100,12 @@ function renderSaved(){
     const _md = s.meta && s.meta._modified;
     const _isMod = !!(_md && _md.at && (Date.now() - new Date(_md.at).getTime() <= 72*3600000));
     const _isUrg = !!(s.meta && s.meta.urgent);
-    const _strips = (_isUrg?1:0) + (_isMod?1:0);
+    const _isHold = holdBlocked(s);
+    const _strips = (_isHold?1:0) + (_isUrg?1:0) + (_isMod?1:0);
     const _html = `<div class="saved-item" ${_isMod?`title="✏️ Modified ${esc(_md.by||'')} · ${new Date(_md.at).toLocaleString()}"`:''} style="display:block;${stuck?'border:2px solid #dc2626;':''}${_strips?`position:relative;padding-left:${10+16*_strips}px;overflow:hidden;`:''}">
-      ${_isUrg?`<div class="rushblink" style="position:absolute;left:0;top:0;bottom:0;width:16px;display:flex;align-items:center;justify-content:center;"><span style="writing-mode:vertical-rl;transform:rotate(180deg);color:inherit;font-size:8.5px;font-weight:900;letter-spacing:2.5px;white-space:nowrap;">🔥 RUSH</span></div>`:''}
-      ${_isMod?`<div style="position:absolute;left:${_isUrg?16:0}px;top:0;bottom:0;width:16px;background:#f59e0b;display:flex;align-items:center;justify-content:center;"><span style="writing-mode:vertical-rl;transform:rotate(180deg);color:#fff;font-size:8.5px;font-weight:900;letter-spacing:2.5px;white-space:nowrap;">MODIFIED</span></div>`:''}
+      ${_isHold?`<div style="position:absolute;left:0;top:0;bottom:0;width:16px;background:#450a0a;display:flex;align-items:center;justify-content:center;"><span style="writing-mode:vertical-rl;transform:rotate(180deg);color:#fca5a5;font-size:8px;font-weight:900;letter-spacing:2px;white-space:nowrap;">🔒 CREDIT HOLD</span></div>`:''}
+      ${_isUrg?`<div class="rushblink" style="position:absolute;left:${_isHold?16:0}px;top:0;bottom:0;width:16px;display:flex;align-items:center;justify-content:center;"><span style="writing-mode:vertical-rl;transform:rotate(180deg);color:inherit;font-size:8.5px;font-weight:900;letter-spacing:2.5px;white-space:nowrap;">🔥 RUSH</span></div>`:''}
+      ${_isMod?`<div style="position:absolute;left:${(_isHold?16:0)+(_isUrg?16:0)}px;top:0;bottom:0;width:16px;background:#f59e0b;display:flex;align-items:center;justify-content:center;"><span style="writing-mode:vertical-rl;transform:rotate(180deg);color:#fff;font-size:8.5px;font-weight:900;letter-spacing:2.5px;white-space:nowrap;">MODIFIED</span></div>`:''}
       ${stuck ? `<div style="margin:-8px -10px 8px -10px;padding:5px 12px;border-radius:5px 5px 0 0;animation:overdue-blink 1s ease-in-out infinite;display:flex;align-items:center;gap:6px;">
         <span style="font-size:13px;">🚨</span>
         <span style="font-size:11px;font-weight:900;color:#fff;letter-spacing:0.5px;animation:overdue-pulse 1s ease-in-out infinite;">${ageLabel} — ${t('overdue_msg')}</span>
@@ -3837,7 +4120,8 @@ function renderSaved(){
       <span style="font-weight:700;">${tot.toLocaleString()} pcs</span>
       <span style="color:var(--ok);">$${amt.toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2})}</span>
       ${whs.map(w=>`<span class="chip chip-${w}">${w}</span>`).join('')}
-      ${(()=>{ const st = recStatus(s); return `<span style="margin-left:auto;padding:3px 12px;border-radius:20px;font-size:11px;font-weight:800;background:${st.bg};color:${st.color};white-space:nowrap;">${st.label}</span>`; })()}
+      ${_isHold?`<span style="margin-left:auto;padding:3px 10px;border-radius:20px;font-size:10.5px;font-weight:900;background:#450a0a;color:#fca5a5;white-space:nowrap;" title="미수금 $${((s.meta._hold||{}).outstanding||0).toLocaleString()} + 오더 $${((s.meta._hold||{}).orderAmt||0).toLocaleString()} > 한도 $${((s.meta._hold||{}).limit||0).toLocaleString()}">🔒 CREDIT HOLD</span><button class="btn btn-sm" style="background:#166534;color:#fff;border-color:#166534;font-weight:800;" onclick="approveHold('${esc(s.base)}')" title="Accounting 승인 — 진행 잠금 해제">✅ Approve</button>`:''}
+      ${(()=>{ const st = recStatus(s); return `<span style="${_isHold?'':'margin-left:auto;'}padding:3px 12px;border-radius:20px;font-size:11px;font-weight:800;background:${st.bg};color:${st.color};white-space:nowrap;">${st.label}</span>`; })()}
       </div>
       <div style="display:flex;align-items:center;gap:6px;flex-wrap:wrap;margin-top:8px;">
       <button class="btn btn-sm" onclick="openOrderSummary('${esc(s.base)}')">📋 Order Summary</button>
@@ -3856,6 +4140,7 @@ function renderSaved(){
         ${w!=='BO' && w!=='NA' ? `<input type="checkbox" class="bship-cb" data-base="${esc(s.base)}" data-wh="${w}" onchange="updateBatchBar()" title="Batch 작업에 포함 (출고 전=Batch Ship / 출고 후=Invoice Print)" style="width:15px;height:15px;accent-color:#1d4ed8;cursor:pointer;">` : ''}
         <span class="chip chip-${w}" style="min-width:34px;text-align:center;">${w}</span>
         <button class="btn btn-sm" style="background:${c};color:#fff;border-color:${c};" onclick="docBtnClick('${esc(s.base)}','${w}','pr')" oncontextmenu="return docBtnMenu(event,'${esc(s.base)}','${w}','pr')" title="우클릭: 완료(초록) 표시 ${mp.pr?'해제':'전환'}">🖨 Pull Request</button>
+        ${w==='BO' ? (()=>{ const days = Math.floor((Date.now() - new Date(s.savedAt||s.meta.date||Date.now()).getTime())/86400000); const c2 = days>=14?'#dc2626':(days>=7?'#ea580c':'#6b7280'); return `<span style="padding:2px 8px;border-radius:20px;font-size:10px;font-weight:800;background:#fff;color:${c2};border:1.5px solid ${c2};white-space:nowrap;${days>=14?'animation:overdue-pulse 1s ease-in-out infinite;':''}">⏳ ${days}일째</span>`; })() : ''}
         ${(w==='BO'||w==='NA') ? `<button class="btn btn-sm" style="background:#f5f3ff;color:#6d28d9;border-color:#c4b5fd;font-weight:700;" onclick="processFromWh('${esc(s.base)}','${w}','SC')" title="재고 입고 — 별도 건(-${w==='BO'?'B':'N'})으로 분리해 SC에서 출고 진행">⚙ Process from SC</button><button class="btn btn-sm" style="background:#fff7ed;color:#c2410c;border-color:#fed7aa;font-weight:700;" onclick="processFromWh('${esc(s.base)}','${w}','CA')" title="재고 입고 — 별도 건(-${w==='BO'?'B':'N'})으로 분리해 CA에서 출고 진행">⚙ Process from CA</button>` : ''}
         ${w!=='BO' && w!=='NA' ? `<button class="btn btn-sm" style="background:${mp.label?'#16a34a':'#7c3aed'};color:#fff;border-color:${mp.label?'#16a34a':'#7c3aed'};" onclick="docBtnClick('${esc(s.base)}','${w}','label')" oncontextmenu="return docBtnMenu(event,'${esc(s.base)}','${w}','label')" title="우클릭: 완료(초록) 표시 ${mp.label?'해제':'전환'}">🏷 Box Label</button>
         <button class="btn btn-sm" style="${(s.pl && s.pl[w] && s.pl[w]._completed)?'background:#16a34a;border-color:#16a34a;':(plSaved?'background:#0e7490;border-color:#0e7490;':'background:#f59e0b;border-color:#f59e0b;')}color:#fff;" onclick="openPLWh('${esc(s.base)}','${w}')" oncontextmenu="return plBtnMenu(event,'${esc(s.base)}','${w}')" title="${plSaved && !(s.pl[w]&&s.pl[w]._completed)?'저장됨 — Complete 전 (이멜 미발송) · ':''}우클릭: Complete 표시/해제 (이멜 없이)">📦 Packing List</button>
@@ -3865,7 +4150,9 @@ function renderSaved(){
           if(rt.remain <= 0.005){
             return `<span style="padding:3px 9px;border-radius:20px;font-size:10px;font-weight:800;background:#f5f5f4;color:#57534e;border:1px solid #d6d3d1;white-space:nowrap;">↩ Refunded $${rt.refTot.toFixed(2)}</span>`;
           }
-          return `<span style="padding:3px 9px;border-radius:20px;font-size:10px;font-weight:800;background:#f0fdf4;color:#166534;border:1px solid #86efac;white-space:nowrap;">💳 Paid $${Number(pd.amt).toFixed(2)}${rt.refTot>0?` <span style=\"color:#b91c1c;\">−$${rt.refTot.toFixed(2)}</span>`:''}</span><button class="btn btn-sm" style="background:#fff;color:#b91c1c;border-color:#fca5a5;" onclick="refundCharge('${esc(s.base)}','${w}')" title="카드 결제 취소/환불">↩ Refund</button>`; })()}` : ''}
+          return `<span style="padding:3px 9px;border-radius:20px;font-size:10px;font-weight:800;background:#f0fdf4;color:#166534;border:1px solid #86efac;white-space:nowrap;">💳 Paid $${Number(pd.amt).toFixed(2)}${rt.refTot>0?` <span style=\"color:#b91c1c;\">−$${rt.refTot.toFixed(2)}</span>`:''}</span><button class="btn btn-sm" style="background:#fff;color:#b91c1c;border-color:#fca5a5;" onclick="refundCharge('${esc(s.base)}','${w}')" title="카드 결제 취소/환불">↩ Refund</button>`; })()}
+        ${(()=>{ const iv2 = s.inv && s.inv[w]; if(!iv2 || !iv2.savedAt) return ''; const hasPm = (iv2.payments&&iv2.payments.length)||(iv2.memos&&iv2.memos.length); if(!hasPm) return ''; const bal2 = invBalance(s, w);
+          return bal2 <= 0.005 ? `<span style="padding:3px 9px;border-radius:20px;font-size:10px;font-weight:800;background:#f0fdf4;color:#166534;border:1px solid #86efac;white-space:nowrap;">💰 PAID</span>` : `<span style="padding:3px 9px;border-radius:20px;font-size:10px;font-weight:800;background:#fffbeb;color:#92400e;border:1px solid #fcd34d;white-space:nowrap;">💰 Bal $${bal2.toFixed(2)}</span>`; })()}` : ''}
         ${plSaved ? (s.pl[w]._completed
           ? (plFutureDate(s, w)
             ? `<span style="margin-left:auto;font-size:11px;white-space:nowrap;font-weight:800;color:#b45309;">📅 Ready to ship — ${fmtD(s.pl[w].date)}</span>`
