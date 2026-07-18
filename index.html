@@ -130,7 +130,7 @@ main{max-width:1100px;margin:0 auto;padding:16px;}
     <button class="btn btn-sm" onclick="doLogout()" style="padding:2px 8px;font-size:10px;" data-i18n="logout">로그아웃</button>
   </span>
   <select id="lang-sel" onchange="setLang(this.value)" style="font-size:11px;padding:3px 6px;border-radius:5px;border:none;background:#1d3f66;color:#fff;"><option value="ko">한국어</option><option value="en">English</option><option value="es">Español</option></select>
-  <span style="font-size:10px;color:#9fb8d4;">v155</span>
+  <span style="font-size:10px;color:#9fb8d4;">v156</span>
 </div>
 <script type="text/javascript" src="https://js.authorize.net/v1/Accept.js" charset="utf-8"></script>
 <div id="po-viewer" style="display:none;position:fixed;top:0;right:0;width:44%;height:100vh;background:#fff;border-left:2px solid var(--border);z-index:60;box-shadow:-6px 0 20px rgba(0,0,0,.15);">
@@ -1932,13 +1932,31 @@ function docBtnClick(base, wh, kind){
   const mp = (rec.meta && rec.meta._printed && rec.meta._printed[wh]) || {};
   const printed = kind==='inv' ? !!(rec.inv && rec.inv[wh] && rec.inv[wh].printed) : !!mp[kind];
   const act = () => { if(kind==='pr') printSavedPRWh(base, wh); else if(kind==='label') openBoxLabelForRecWh(base, wh); else openInvoiceWh(base, wh); };
-  if(!printed){ act(); return; } // 초록 아니면 평소대로 즉시
   const key = base + '|' + wh + '|' + kind;
   const t = _clk3[key] = _clk3[key] || { n: 0, timer: null };
   t.n++;
   clearTimeout(t.timer);
-  if(t.n >= 3){ t.n = 0; undoPrinted(base, wh, kind); return; }
+  if(t.n >= 3){ t.n = 0; if(printed) undoPrinted(base, wh, kind); else markPrintedManually(base, wh, kind); return; }
   t.timer = setTimeout(()=>{ const n = t.n; t.n = 0; if(n >= 1) act(); }, 420);
+}
+async function markPrintedManually(base, wh, kind){
+  const label = kind==='pr' ? 'Pull Request' : (kind==='label' ? 'Box Label' : 'Invoice');
+  if(!confirm('✅ ' + wh + ' ' + label + ' 를 완료(초록)로 표시할까요? (이미 프린트한 경우)')) return;
+  const rec = savedCache.find(s=>s.base===base); if(!rec) return;
+  try{
+    if(kind === 'inv'){
+      rec.inv = rec.inv || {}; rec.inv[wh] = { ...(rec.inv[wh]||{}), printed: true };
+      await sbFetch('/rest/v1/pr_orders?base=eq.'+encodeURIComponent(base), {method:'PATCH', headers:{Prefer:'return=minimal'}, body:JSON.stringify({inv:rec.inv, updated_at:new Date().toISOString()})});
+    } else {
+      const mp = { ...((rec.meta && rec.meta._printed) || {}) };
+      mp[wh] = { ...(mp[wh]||{}), [kind]: true };
+      rec.meta = { ...rec.meta, _printed: mp };
+      await sbFetch('/rest/v1/pr_orders?base=eq.'+encodeURIComponent(base), {method:'PATCH', headers:{Prefer:'return=minimal'}, body:JSON.stringify({meta:rec.meta, updated_at:new Date().toISOString()})});
+    }
+  }catch(e){}
+  logHist(base, label + ' marked printed manually — ' + wh);
+  renderSaved();
+  showToast('✅ ' + label + ' 완료 표시됨');
 }
 async function undoPrinted(base, wh, kind){
   const label = kind==='pr' ? 'Pull Request' : (kind==='label' ? 'Box Label' : 'Invoice');
