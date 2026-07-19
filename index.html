@@ -132,7 +132,7 @@ main{max-width:1100px;margin:0 auto;padding:16px;}
     <button class="btn btn-sm" onclick="doLogout()" style="padding:2px 8px;font-size:10px;" data-i18n="logout">로그아웃</button>
   </span>
   <select id="lang-sel" onchange="setLang(this.value)" style="font-size:11px;padding:3px 6px;border-radius:5px;border:none;background:#1d3f66;color:#fff;"><option value="ko">한국어</option><option value="en">English</option><option value="es">Español</option></select>
-  <span style="font-size:10px;color:#9fb8d4;">v196</span>
+  <span style="font-size:10px;color:#9fb8d4;">v197</span>
 </div>
 <script type="text/javascript" src="https://js.authorize.net/v1/Accept.js" charset="utf-8"></script>
 <div id="po-viewer" style="display:none;position:fixed;top:0;right:0;width:44%;height:100vh;background:#fff;border-left:2px solid var(--border);z-index:60;box-shadow:-6px 0 20px rgba(0,0,0,.15);">
@@ -322,6 +322,7 @@ main{max-width:1100px;margin:0 auto;padding:16px;}
       <input class="fi" id="cm-search" placeholder="🔍 Search customer" oninput="renderCustomers()" style="margin-left:auto;width:200px;font-size:12px;padding:5px 10px;">
       <button class="btn btn-sm" id="cm-sort-az" onclick="cmSort='az';renderCustomers();">A-Z</button>
       <button class="btn btn-sm" id="cm-sort-sales" onclick="cmSort='sales';renderCustomers();">💰 Total Sales</button>
+      <button class="btn btn-sm btn-primary" onclick="openAddCustomer()">＋ Add Customer</button>
     </div>
     <div id="cust-body"><div class="muted">로딩...</div></div>
   </div>
@@ -3971,6 +3972,12 @@ function renderCustomers(){
     const d = String((rec.meta&&rec.meta.date) || rec.savedAt || '');
     if(d > m.last) m.last = d;
   });
+  Object.keys(custStore||{}).forEach(k=>{
+    const cs = custStore[k]; const nm = cs && cs.name;
+    if(!nm) return;
+    const c = custCanon(nm);
+    if(!map[c]) map[c] = { name: c, orders: 0, sales: 0, last: '', manual: true };
+  });
   const money2 = n => '$' + Number(n).toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2});
   const list = Object.values(map).filter(m=>!q || m.name.toLowerCase().includes(q)).sort((a,b)=> cmSort==='sales' ? (b.sales - a.sales) : a.name.toLowerCase().localeCompare(b.name.toLowerCase()));
   const _az = $('cm-sort-az'), _ss = $('cm-sort-sales');
@@ -4023,6 +4030,44 @@ function renderCustomers(){
       <button class="btn btn-sm" style="margin-left:auto;background:transparent;color:#cbd5e1;border-color:#475569;" onclick="cmToggleAR('${esc(cmOpenAR)}')">✕ Close</button>
     </div>${custARDetailHtml(cmOpenAR)}</div>` : `<div class="muted" style="font-size:11px;padding:4px 2px;">👆 Click a customer name to see their A/R detail &amp; statement here</div>`}</div>
   <div style="font-size:10.5px;color:var(--text2);margin-top:8px;">Outstanding = saved invoices − payments − credit memos. Open Orders = received orders not yet invoiced. Available = Credit Limit − Outstanding − Open Orders; a new order that would go below $0 is locked as 🔒 CREDIT HOLD until approved. Terms set here become the default for that customer's new invoices.</div>`;
+}
+function openAddCustomer(){
+  const ex = document.getElementById('modal-addcust'); if(ex) ex.remove();
+  const div = document.createElement('div');
+  div.id = 'modal-addcust';
+  div.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,.55);z-index:130;display:flex;align-items:center;justify-content:center;';
+  div.innerHTML = `<div style="background:#fff;border-radius:12px;width:420px;max-width:92vw;overflow:hidden;box-shadow:0 20px 60px rgba(0,0,0,.35);">
+    <div style="background:#0f2a4a;color:#fff;padding:11px 16px;font-weight:800;">＋ Add Customer</div>
+    <div style="padding:14px 16px;display:flex;flex-direction:column;gap:10px;">
+      <div class="ff"><label>Customer Name *</label><input class="fi" id="ac-name" placeholder="e.g. ABC Apparel, Inc"></div>
+      <div class="ff"><label>Email</label><input class="fi" id="ac-email" placeholder="orders@abc.com"></div>
+      <div style="display:flex;gap:10px;">
+        <div class="ff" style="flex:1;"><label>Terms</label><select class="fi" id="ac-terms">
+          <option value="">—</option><option value="30">Net 30</option><option value="45">Net 45</option><option value="60">Net 60</option><option value="cc">Credit Card</option></select></div>
+        <div class="ff" style="flex:1;"><label>Credit Limit $</label><input class="fi num" id="ac-limit" placeholder="100,000" oninput="this.value=this.value.replace(/[^0-9]/g,'').replace(/\B(?=(\d{3})+(?!\d))/g,',')" style="text-align:right;font-family:Consolas,monospace;"></div>
+      </div>
+    </div>
+    <div style="padding:0 16px 14px;display:flex;gap:8px;justify-content:flex-end;">
+      <button class="btn btn-sm" onclick="document.getElementById('modal-addcust').remove()">Cancel</button>
+      <button class="btn btn-sm btn-primary" onclick="saveAddCustomer()">💾 Add</button>
+    </div>
+  </div>`;
+  document.body.appendChild(div);
+  setTimeout(()=>{ const el=$('ac-name'); if(el) el.focus(); }, 50);
+}
+async function saveAddCustomer(){
+  const name = ($('ac-name').value||'').trim();
+  if(!name){ showToast('⚠ 거래처 이름을 입력하세요'); return; }
+  const k = custKey(name);
+  const cur = custStore[k] || {};
+  cur.name = name;
+  const em = ($('ac-email').value||'').trim(); if(em) cur.email = em;
+  const tt = $('ac-terms').value; if(tt) cur.termType = tt;
+  const lim = parseFloat(($('ac-limit').value||'').replace(/,/g,'')); if(lim) cur.creditLimit = lim;
+  await saveCustomer(k, cur);
+  document.getElementById('modal-addcust').remove();
+  showToast('✅ ' + name + ' 추가됨 — Address/Ship To는 ✎ 로 입력하세요');
+  renderCustomers();
 }
 async function cmSet(k, field, val){
   const cur = custStore[k] || {};
