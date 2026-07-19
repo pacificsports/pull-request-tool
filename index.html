@@ -132,7 +132,7 @@ main{max-width:1100px;margin:0 auto;padding:16px;}
     <button class="btn btn-sm" onclick="doLogout()" style="padding:2px 8px;font-size:10px;" data-i18n="logout">로그아웃</button>
   </span>
   <select id="lang-sel" onchange="setLang(this.value)" style="font-size:11px;padding:3px 6px;border-radius:5px;border:none;background:#1d3f66;color:#fff;"><option value="ko">한국어</option><option value="en">English</option><option value="es">Español</option></select>
-  <span style="font-size:10px;color:#9fb8d4;">v191</span>
+  <span style="font-size:10px;color:#9fb8d4;">v192</span>
 </div>
 <script type="text/javascript" src="https://js.authorize.net/v1/Accept.js" charset="utf-8"></script>
 <div id="po-viewer" style="display:none;position:fixed;top:0;right:0;width:44%;height:100vh;background:#fff;border-left:2px solid var(--border);z-index:60;box-shadow:-6px 0 20px rgba(0,0,0,.15);">
@@ -2113,6 +2113,89 @@ function docBtnClick(base, wh, kind){
   const printed = kind==='inv' ? !!(rec.inv && rec.inv[wh] && rec.inv[wh].printed) : !!mp[kind];
   if(kind==='pr') printSavedPRWh(base, wh); else if(kind==='label') openBoxLabelForRecWh(base, wh); else openInvoiceWh(base, wh);
 }
+function plScansHtml(rec, wh){
+  const list = (rec && rec.pl && rec.pl[wh] && rec.pl[wh].scans) || [];
+  if(!list.length) return '';
+  return `<div class="no-print" style="display:flex;gap:6px;align-items:center;flex-wrap:wrap;margin:-4px 0 12px;padding:8px 12px;background:#faf5ff;border:1px solid #ddd6fe;border-radius:8px;">
+    <span style="font-size:11px;font-weight:800;color:#6d28d9;">📷 Scans (${list.length})</span>
+    ${list.map((s2,i)=>`<span style="display:inline-flex;align-items:center;gap:4px;background:#fff;border:1px solid #c4b5fd;border-radius:20px;padding:2px 4px 2px 10px;font-size:11px;font-weight:700;color:#5b21b6;">
+      <a href="#" onclick="plScanOpen(${i});return false;" style="color:inherit;text-decoration:none;">📄 ${esc(s2.name||('Scan '+(i+1)))}</a>
+      <span style="color:#94a3b8;font-weight:400;">${String(s2.at||'').slice(0,10)}</span>
+      <button class="btn btn-sm" style="border:none;padding:0 5px;color:#b91c1c;" onclick="plScanDel(${i})" title="삭제">✕</button></span>`).join('')}
+  </div>`;
+}
+async function imgFileToJpegBytes(file, maxDim){
+  const url = URL.createObjectURL(file);
+  try{
+    const img = await new Promise((res,rej)=>{ const im=new Image(); im.onload=()=>res(im); im.onerror=rej; im.src=url; });
+    const sc = Math.min(1, maxDim / Math.max(img.width, img.height));
+    const cv = document.createElement('canvas');
+    cv.width = Math.round(img.width*sc); cv.height = Math.round(img.height*sc);
+    cv.getContext('2d').drawImage(img, 0, 0, cv.width, cv.height);
+    const dataUrl = cv.toDataURL('image/jpeg', 0.72);
+    const bin = atob(dataUrl.split(',')[1]);
+    const bytes = new Uint8Array(bin.length);
+    for(let i=0;i<bin.length;i++) bytes[i]=bin.charCodeAt(i);
+    return bytes;
+  } finally { URL.revokeObjectURL(url); }
+}
+async function plScanUpload(inp){
+  const files = Array.from(inp.files||[]); inp.value='';
+  if(!files.length) return;
+  const rec = savedCache.find(s=>s.base===plBase);
+  if(!rec){ showToast('⚠ 오더를 먼저 저장하세요'); return; }
+  showToast('📷 변환 중... (' + files.length + '장)');
+  try{
+    await loadPdfMergeLib();
+    const doc = await PDFLib.PDFDocument.create();
+    let pdfAttached = 0;
+    for(const f of files){
+      if((f.type||'').includes('pdf')){
+        const src = await PDFLib.PDFDocument.load(new Uint8Array(await f.arrayBuffer()), {ignoreEncryption:true});
+        const pages = await doc.copyPages(src, src.getPageIndices());
+        pages.forEach(p=>doc.addPage(p)); pdfAttached++;
+      } else {
+        const bytes = await imgFileToJpegBytes(f, 1800);
+        const img = await doc.embedJpg(bytes);
+        const pw = 612, ph = 792, m = 24;
+        const sc = Math.min((pw-m*2)/img.width, (ph-m*2)/img.height);
+        const w2 = img.width*sc, h2 = img.height*sc;
+        const page = doc.addPage([pw, ph]);
+        page.drawImage(img, {x:(pw-w2)/2, y:(ph-h2)/2, width:w2, height:h2});
+      }
+    }
+    const b64 = await doc.saveAsBase64({dataUri:true});
+    if(b64.length > 3500000){ showToast('⚠ 파일이 너무 큽니다 — 사진 수를 줄여주세요'); return; }
+    rec.pl = rec.pl || {}; rec.pl[plWh] = rec.pl[plWh] || {};
+    rec.pl[plWh].scans = rec.pl[plWh].scans || [];
+    const label = 'BOL-PL ' + new Date().toISOString().slice(0,10) + (files.length>1 ? ' (' + files.length + 'p)' : '');
+    rec.pl[plWh].scans.push({ name: label, at: new Date().toISOString(), by: (SESS&&SESS.email)||'', b64: b64 });
+    const r = await sbFetch('/rest/v1/pr_orders?base=eq.'+encodeURIComponent(plBase), {method:'PATCH', headers:{Prefer:'return=minimal'}, body:JSON.stringify({pl:rec.pl, updated_at:new Date().toISOString()})});
+    if(!r.ok) throw new Error('save ' + r.status);
+    logHist(plBase, 'Scan attached (' + plWh + ') — ' + label + (pdfAttached ? ' [' + pdfAttached + ' pdf]' : ''));
+    showToast('✅ 스캔 PDF 첨부됨 — ' + label);
+    refreshPLPreview();
+  }catch(e){ console.warn(e); showToast('⚠ 변환 실패: ' + (e.message||e)); }
+}
+function plScanOpen(i){
+  const rec = savedCache.find(s=>s.base===plBase);
+  const s2 = rec && rec.pl && rec.pl[plWh] && rec.pl[plWh].scans && rec.pl[plWh].scans[i];
+  if(!s2) return;
+  const bin = atob((s2.b64||'').split(',')[1]||'');
+  const bytes = new Uint8Array(bin.length);
+  for(let j=0;j<bin.length;j++) bytes[j]=bin.charCodeAt(j);
+  const url = URL.createObjectURL(new Blob([bytes], {type:'application/pdf'}));
+  window.open(url, '_blank');
+}
+async function plScanDel(i){
+  const rec = savedCache.find(s=>s.base===plBase);
+  if(!(rec && rec.pl && rec.pl[plWh] && rec.pl[plWh].scans)) return;
+  const rm = rec.pl[plWh].scans.splice(i,1)[0];
+  const r = await sbFetch('/rest/v1/pr_orders?base=eq.'+encodeURIComponent(plBase), {method:'PATCH', headers:{Prefer:'return=minimal'}, body:JSON.stringify({pl:rec.pl, updated_at:new Date().toISOString()})});
+  logHist(plBase, 'Scan removed (' + plWh + ') — ' + ((rm&&rm.name)||''));
+  showToast('🗑 스캔 삭제됨');
+  refreshPLPreview();
+}
 async function plBtnMenu(ev, base, wh){
   ev.preventDefault();
   const rec = savedCache.find(s=>s.base===base); if(!rec) return false;
@@ -3568,9 +3651,10 @@ function renderPL(){
       <div class="no-print" style="display:flex;gap:6px;justify-content:flex-end;margin-bottom:12px;flex-wrap:wrap;">
         ${plShowInv
           ? `<button class="btn btn-sm" style="background:#fff;color:#7c3aed;border-color:#c4b5fd;margin-right:auto;" onclick="viewSavedPO(plBase)" title="거래처에서 받은 원본 PO를 옆에 띄워 인보이스와 비교">📄 Customer PO</button><button class="btn btn-sm btn-primary" onclick="saveInvStage()">${t('save_inv')}</button><button class="btn btn-sm" id="invpdf-btn" onclick="downloadPLPdf('invoice')">${t('inv_pdf')}</button><button class="btn btn-sm" onclick="printStageDoc('invoice')">🖨 Invoice</button>`
-          : `<label style="display:flex;align-items:center;gap:5px;font-size:11.5px;font-weight:700;color:#0e7490;margin-right:auto;cursor:pointer;"><input type="checkbox" id="plf-sendpl" ${(plDrafts[plWh]&&plDrafts[plWh].sendPl)?'checked':''} onchange="if(plDrafts[plWh])plDrafts[plWh].sendPl=this.checked" style="width:14px;height:14px;accent-color:#0e7490;cursor:pointer;"> ${t('sendpl_cb')}</label>${plInfo(rec,plWh).savedAt ? `<button class="btn btn-sm" style="background:#0e7490;color:#fff;border-color:#0e7490;" onclick="resendPL()" title="Customer Email 칸의 주소로 Packing List를 다시 발송">📧 Resend PL</button><button class="btn btn-sm" style="background:#fff;color:#b91c1c;border-color:#fca5a5;" onclick="unshipPL()" title="이 창고의 Packing List/Invoice 기록을 삭제하고 출고 전 상태로 되돌립니다">↩ 출고 취소</button>` : ''}<button class="btn btn-sm" style="background:#374151;color:#fff;border-color:#374151;" onclick="openBOL()" title="Bill of Lading — 창에서 수정·저장 후 인쇄">🚛 BOL</button><button class="btn btn-sm btn-primary" onclick="savePL()">${t('save_pl')}</button>${(()=>{ const dd = plInfo(rec,plWh); return dd.savedAt && !dd._completed ? `<button class="btn btn-sm" style="background:#16a34a;color:#fff;border-color:#16a34a;font-weight:800;" onclick="completePL()" title="수정 끝났을 때 누르세요 — 초록 처리 + 거래처 이멜 발송">✅ Complete</button>` : (dd._completed ? `<span style="align-self:center;padding:3px 10px;border-radius:20px;font-size:10.5px;font-weight:800;background:#dcfce7;color:#166534;white-space:nowrap;">✅ Completed ${new Date(dd._completed).toLocaleDateString()}</span>` : ''); })()}<button class="btn btn-sm" id="plpdf-btn" onclick="downloadPLPdf('packing')">${t('pl_pdf')}</button><button class="btn btn-sm" onclick="printStageDoc('packing')">🖨</button>`}
+          : `<label style="display:flex;align-items:center;gap:5px;font-size:11.5px;font-weight:700;color:#0e7490;margin-right:auto;cursor:pointer;"><input type="checkbox" id="plf-sendpl" ${(plDrafts[plWh]&&plDrafts[plWh].sendPl)?'checked':''} onchange="if(plDrafts[plWh])plDrafts[plWh].sendPl=this.checked" style="width:14px;height:14px;accent-color:#0e7490;cursor:pointer;"> ${t('sendpl_cb')}</label>${plInfo(rec,plWh).savedAt ? `<button class="btn btn-sm" style="background:#0e7490;color:#fff;border-color:#0e7490;" onclick="resendPL()" title="Customer Email 칸의 주소로 Packing List를 다시 발송">📧 Resend PL</button><button class="btn btn-sm" style="background:#fff;color:#b91c1c;border-color:#fca5a5;" onclick="unshipPL()" title="이 창고의 Packing List/Invoice 기록을 삭제하고 출고 전 상태로 되돌립니다">↩ 출고 취소</button>` : ''}<button class="btn btn-sm" style="background:#7c3aed;color:#fff;border-color:#7c3aed;" onclick="document.getElementById('pl-scan-file').click()" title="핸드폰으로 서명된 BOL/Packing List 사진을 찍으면 자동으로 PDF로 변환해 이 오더에 첨부됩니다">📷 Scan</button><input type="file" id="pl-scan-file" accept="image/*,application/pdf" capture="environment" multiple style="display:none;" onchange="plScanUpload(this)"><button class="btn btn-sm" style="background:#374151;color:#fff;border-color:#374151;" onclick="openBOL()" title="Bill of Lading — 창에서 수정·저장 후 인쇄">🚛 BOL</button><button class="btn btn-sm btn-primary" onclick="savePL()">${t('save_pl')}</button>${(()=>{ const dd = plInfo(rec,plWh); return dd.savedAt && !dd._completed ? `<button class="btn btn-sm" style="background:#16a34a;color:#fff;border-color:#16a34a;font-weight:800;" onclick="completePL()" title="수정 끝났을 때 누르세요 — 초록 처리 + 거래처 이멜 발송">✅ Complete</button>` : (dd._completed ? `<span style="align-self:center;padding:3px 10px;border-radius:20px;font-size:10.5px;font-weight:800;background:#dcfce7;color:#166534;white-space:nowrap;">✅ Completed ${new Date(dd._completed).toLocaleDateString()}</span>` : ''); })()}<button class="btn btn-sm" id="plpdf-btn" onclick="downloadPLPdf('packing')">${t('pl_pdf')}</button><button class="btn btn-sm" onclick="printStageDoc('packing')">🖨</button>`}
         <button class="btn btn-sm" onclick="closePL()">${t('close')}</button>
       </div>
+      ${plShowInv ? '' : plScansHtml(rec, plWh)}
       ${plShowInv ? '' : `
       <details class="no-print" style="margin-bottom:14px;border:1px solid var(--border);border-radius:8px;padding:8px 12px;" ${plEditOpen?'open':''} ontoggle="plEditOpen=this.open">
         <summary style="cursor:pointer;font-weight:700;font-size:12px;color:var(--primary);">✏️ ${t('pl_edit')}</summary>
