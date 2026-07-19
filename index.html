@@ -132,7 +132,7 @@ main{max-width:1100px;margin:0 auto;padding:16px;}
     <button class="btn btn-sm" onclick="doLogout()" style="padding:2px 8px;font-size:10px;" data-i18n="logout">로그아웃</button>
   </span>
   <select id="lang-sel" onchange="setLang(this.value)" style="font-size:11px;padding:3px 6px;border-radius:5px;border:none;background:#1d3f66;color:#fff;"><option value="ko">한국어</option><option value="en">English</option><option value="es">Español</option></select>
-  <span style="font-size:10px;color:#9fb8d4;">v187</span>
+  <span style="font-size:10px;color:#9fb8d4;">v189</span>
 </div>
 <script type="text/javascript" src="https://js.authorize.net/v1/Accept.js" charset="utf-8"></script>
 <div id="po-viewer" style="display:none;position:fixed;top:0;right:0;width:44%;height:100vh;background:#fff;border-left:2px solid var(--border);z-index:60;box-shadow:-6px 0 20px rgba(0,0,0,.15);">
@@ -3682,33 +3682,80 @@ function showView(v){
 }
 let cmSort = 'az';
 let cmOpenAR = '';
-function cmToggleAR(name){ cmOpenAR = (cmOpenAR === name) ? '' : name; renderCustomers(); }
-function custARDetailHtml(cust){
+function cmToggleAR(name){
+  cmOpenAR = (cmOpenAR === name) ? '' : name;
+  renderCustomers();
+  if(cmOpenAR){ const p = $('cust-ar-panel'); if(p) setTimeout(()=>p.scrollIntoView({behavior:'smooth', block:'nearest'}), 60); }
+}
+function custARRows(cust){
   const key = custCanon(cust);
-  const money2 = n => '$' + Number(n).toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2});
   const rows = [];
   (savedCache||[]).forEach(r=>{
     if(!r.meta || custCanon(r.meta.cust) !== key) return;
     Object.keys(r.inv||{}).forEach(w=>{
       const iv = r.inv[w]; if(!iv || !iv.savedAt) return;
       const tot = invTotalOf(iv, r, w), paid = invPaidSum(iv), memo = invMemoSum(iv), bal = Math.max(0, tot - paid - memo);
-      rows.push({ invNo: iv.invNo||'', dt: String(iv.savedAt).slice(0,10), po: (r.meta.po||''), wh: w, tot, paid, memo, bal,
+      let td = Number(iv.termDays) || 0;
+      if(!td && iv.termType && /^\d+$/.test(String(iv.termType))) td = parseInt(iv.termType);
+      const dt = String(iv.savedAt).slice(0,10);
+      const due = new Date(new Date(dt+'T12:00:00').getTime() + td*864e5);
+      const dueS = due.toISOString().slice(0,10);
+      const past = Math.floor((Date.now() - due.getTime())/864e5);
+      rows.push({ invNo: iv.invNo||'', dt, dueS, past, terms: td ? 'Net '+td : (iv.termType==='cc'?'CC':'Due now'), po: (r.meta.po||''), wh: w, tot, paid, memo, bal,
         pays: (iv.payments||[]).concat(iv.paid ? [{amt:iv.paid.amt, at:iv.paid.at, note:'Card'}] : []) });
     });
   });
   rows.sort((a,b)=> (b.dt||'').localeCompare(a.dt||''));
+  return rows;
+}
+function agingBuckets(rows){
+  const b = { cur:0, d30:0, d60:0, d90:0, d120:0, over:0 };
+  rows.forEach(r=>{
+    if(r.bal <= 0.005) return;
+    if(r.past <= 0) b.cur += r.bal;
+    else if(r.past <= 30) b.d30 += r.bal;
+    else if(r.past <= 60) b.d60 += r.bal;
+    else if(r.past <= 90) b.d90 += r.bal;
+    else if(r.past <= 120) b.d120 += r.bal;
+    else b.over += r.bal;
+  });
+  return b;
+}
+function custARDetailHtml(cust){
+  const money2 = n => '$' + Number(n).toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2});
+  const rows = custARRows(cust);
   if(!rows.length) return '<div class="muted" style="padding:12px 18px;font-size:12px;">No invoices yet for this customer</div>';
   const T = rows.reduce((a,r)=>({tot:a.tot+r.tot, paid:a.paid+r.paid, memo:a.memo+r.memo, bal:a.bal+r.bal}), {tot:0,paid:0,memo:0,bal:0});
   const stTag = r => r.bal <= 0.005 ? '<span style="color:#166534;font-weight:800;">✓ Paid</span>' : ((r.paid+r.memo) > 0.005 ? '<span style="color:#b45309;font-weight:800;">◐ Partial</span>' : '<span style="color:#b91c1c;font-weight:800;">Open</span>');
-  const aging = d => { const days = Math.floor((Date.now() - new Date(d+'T12:00:00').getTime())/864e5); return days > 60 ? `<span style="color:#b91c1c;font-weight:700;">${days}d</span>` : days > 30 ? `<span style="color:#b45309;font-weight:700;">${days}d</span>` : `${days}d`; };
+  const ageCell = r => {
+    if(r.bal <= 0.005) return '—';
+    if(r.past <= 0) return `<span style="color:#166534;">due in ${-r.past}d</span>`;
+    const c = r.past > 60 ? '#b91c1c' : (r.past > 30 ? '#b45309' : '#92400e');
+    return `<span style="color:${c};font-weight:800;">${r.past}d past</span>`;
+  };
+  const b = agingBuckets(rows);
+  const bk = (label, v, hot) => `<div style="flex:1;min-width:88px;text-align:center;padding:7px 4px;border-radius:8px;background:${v>0.005?(hot?'#fef2f2':'#fffbeb'):'#f8fafc'};border:1px solid ${v>0.005?(hot?'#fca5a5':'#fcd34d'):'#e2e8f0'};">
+    <div style="font-size:10px;font-weight:800;color:${v>0.005?(hot?'#b91c1c':'#92400e'):'#94a3b8'};">${label}</div>
+    <div style="font-family:Consolas,monospace;font-weight:800;font-size:12px;color:${v>0.005?(hot?'#b91c1c':'#78350f'):'#94a3b8'};">${money2(v)}</div></div>`;
   return `<div style="padding:10px 18px 14px;">
-    <div style="font-weight:800;font-size:12px;color:#0f2a4a;margin-bottom:6px;">📒 A/R Detail — ${esc(cust)}</div>
+    <div style="display:flex;align-items:center;gap:10px;margin-bottom:6px;">
+      <div style="font-weight:800;font-size:12px;color:#0f2a4a;">A/R Detail — invoices, due dates &amp; aging</div>
+      <button class="btn btn-sm btn-primary" style="margin-left:auto;" onclick="printStatement('${esc(cust)}')">🖨 Print Statement</button>
+    </div>
+    <div style="display:flex;gap:6px;margin-bottom:8px;flex-wrap:wrap;">
+      ${bk('CURRENT', b.cur, false)}${bk('1-30 DAYS', b.d30, false)}${bk('31-60 DAYS', b.d60, false)}${bk('61-90 DAYS', b.d90, true)}${bk('91-120 DAYS', b.d120, true)}${bk('120+ DAYS', b.over, true)}
+      <div style="flex:1;min-width:100px;text-align:center;padding:7px 4px;border-radius:8px;background:#0f2a4a;color:#fff;">
+        <div style="font-size:10px;font-weight:800;">TOTAL DUE</div>
+        <div style="font-family:Consolas,monospace;font-weight:800;font-size:12px;">${money2(T.bal)}</div></div>
+    </div>
     <table class="etbl" style="font-size:11.5px;">
-      <thead><tr><th class="tl">Invoice #</th><th>Date</th><th>Age</th><th class="tl">PO</th><th>WH</th><th>Invoice Total</th><th>Paid</th><th>Credit Memo</th><th>Balance</th><th>Status</th><th class="tl">Payment History</th></tr></thead>
-      <tbody>${rows.map(r=>`<tr ${r.bal>0.005?'style="background:#fffbeb;"':''}>
+      <thead><tr><th class="tl">Invoice #</th><th>Date</th><th>Terms</th><th>Due Date</th><th>Age</th><th class="tl">PO</th><th>WH</th><th>Invoice Total</th><th>Paid</th><th>Credit Memo</th><th>Balance</th><th>Status</th><th class="tl">Payment History</th></tr></thead>
+      <tbody>${rows.map(r=>`<tr ${r.bal>0.005?(r.past>0?'style="background:#fef2f2;"':'style="background:#fffbeb;"'):''}>
         <td class="tl" style="font-family:Consolas,monospace;font-weight:700;">${esc(r.invNo)||'—'}</td>
         <td>${esc(r.dt)}</td>
-        <td>${r.bal>0.005 ? aging(r.dt) : '—'}</td>
+        <td style="font-size:10.5px;">${esc(r.terms)}</td>
+        <td style="font-weight:700;">${esc(r.dueS)}</td>
+        <td>${ageCell(r)}</td>
         <td class="tl">${esc(r.po)}</td>
         <td>${esc(r.wh)}</td>
         <td style="font-family:Consolas,monospace;">${money2(r.tot)}</td>
@@ -3719,7 +3766,7 @@ function custARDetailHtml(cust){
         <td class="tl" style="font-size:10.5px;color:var(--text2);">${r.pays.map(p=>`${String(p.at||'').slice(0,10)} ${money2(Number(p.amt)||0)}${p.note?' ('+esc(String(p.note).slice(0,30))+')':''}`).join('<br>')||'—'}</td>
       </tr>`).join('')}</tbody>
       <tfoot><tr style="background:#eef2f7;font-weight:800;">
-        <td class="tl" colspan="5">TOTAL — ${rows.length} invoice${rows.length>1?'s':''}</td>
+        <td class="tl" colspan="7">TOTAL — ${rows.length} invoice${rows.length>1?'s':''}</td>
         <td style="font-family:Consolas,monospace;">${money2(T.tot)}</td>
         <td style="font-family:Consolas,monospace;color:#166534;">${money2(T.paid)}</td>
         <td style="font-family:Consolas,monospace;color:#7c2d12;">${money2(T.memo)}</td>
@@ -3728,6 +3775,55 @@ function custARDetailHtml(cust){
       </tr></tfoot>
     </table>
   </div>`;
+}
+function printStatement(cust){
+  const money2 = n => '$' + Number(n).toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2});
+  const rows = custARRows(cust).filter(r=>r.bal > 0.005);
+  const all = custARRows(cust);
+  const b = agingBuckets(all);
+  const totalDue = all.reduce((a,r)=>a+r.bal,0);
+  const k = custKey(cust);
+  const cs = custStore[k] || {};
+  const prof = custProfileFor(cust) || {};
+  const bo = cs.bill || {};
+  const addr = [bo.addr||prof.billAddr, [bo.city||prof.billCity, String(bo.state||prof.billState||'').toUpperCase(), bo.zip||prof.billZip].filter(Boolean).join(', ')].filter(Boolean);
+  const today = new Date().toLocaleDateString('en-US',{year:'numeric',month:'long',day:'numeric'});
+  const w2 = window.open('', '_blank');
+  if(!w2){ showToast('⚠ 팝업이 차단됐습니다'); return; }
+  w2.document.write(`<!DOCTYPE html><html><head><title>Statement — ${esc(cust)}</title><style>
+    body{font-family:Segoe UI,Arial,sans-serif;color:#1a202c;margin:34px 40px;font-size:12.5px;}
+    h1{font-size:21px;margin:0;color:#0f2a4a;} .hd{display:flex;justify-content:space-between;align-items:flex-start;border-bottom:3px solid #0f2a4a;padding-bottom:12px;margin-bottom:16px;}
+    table{border-collapse:collapse;width:100%;margin-top:10px;} th,td{border:1px solid #cbd5e1;padding:6px 8px;font-size:11.5px;} th{background:#0f2a4a;color:#fff;text-align:center;}
+    td.n{text-align:right;font-family:Consolas,monospace;} .tot{background:#eef2f7;font-weight:800;}
+    .bks{display:flex;gap:6px;margin-top:14px;} .bk{flex:1;text-align:center;border:1px solid #cbd5e1;border-radius:6px;padding:6px 2px;}
+    .bk .l{font-size:9.5px;font-weight:800;color:#475569;} .bk .v{font-family:Consolas,monospace;font-weight:800;font-size:12px;}
+    .due{background:#0f2a4a;color:#fff;border-color:#0f2a4a;}
+    @media print{ body{margin:12mm;} }
+  </style></head><body>
+    <div class="hd">
+      <div><h1>STATEMENT</h1><div style="margin-top:6px;font-weight:700;">Peace Textile America, Inc.</div><div style="font-size:11px;color:#475569;">dba Pacific Sports</div></div>
+      <div style="text-align:right;"><div style="font-weight:800;">Statement Date</div><div>${today}</div></div>
+    </div>
+    <div style="display:flex;justify-content:space-between;">
+      <div><div style="font-size:10.5px;font-weight:800;color:#64748b;">TO</div><div style="font-weight:800;font-size:14px;">${esc(cust)}</div>${addr.map(a=>`<div style="font-size:11.5px;">${esc(a)}</div>`).join('')}</div>
+      <div style="text-align:right;align-self:flex-end;"><div style="font-size:10.5px;font-weight:800;color:#64748b;">TOTAL AMOUNT DUE</div><div style="font-size:20px;font-weight:900;color:#b91c1c;font-family:Consolas,monospace;">${money2(totalDue)}</div></div>
+    </div>
+    <table><thead><tr><th>Invoice #</th><th>Date</th><th>Terms</th><th>Due Date</th><th>PO</th><th>Invoice Total</th><th>Paid / Credits</th><th>Balance</th></tr></thead>
+    <tbody>${rows.map(r=>`<tr><td style="font-family:Consolas,monospace;font-weight:700;">${esc(r.invNo)||'—'}</td><td style="text-align:center;">${esc(r.dt)}</td><td style="text-align:center;">${esc(r.terms)}</td><td style="text-align:center;${r.past>0?'color:#b91c1c;font-weight:800;':''}">${esc(r.dueS)}</td><td>${esc(r.po)}</td><td class="n">${money2(r.tot)}</td><td class="n">${money2(r.paid + r.memo)}</td><td class="n" style="font-weight:800;">${money2(r.bal)}</td></tr>`).join('') || '<tr><td colspan="8" style="text-align:center;color:#64748b;">No open invoices — account is current</td></tr>'}</tbody>
+    <tfoot><tr class="tot"><td colspan="7" style="text-align:right;">TOTAL DUE</td><td class="n" style="color:#b91c1c;">${money2(totalDue)}</td></tr></tfoot></table>
+    <div class="bks">
+      <div class="bk"><div class="l">CURRENT</div><div class="v">${money2(b.cur)}</div></div>
+      <div class="bk"><div class="l">1-30 DAYS</div><div class="v">${money2(b.d30)}</div></div>
+      <div class="bk"><div class="l">31-60 DAYS</div><div class="v">${money2(b.d60)}</div></div>
+      <div class="bk"><div class="l">61-90 DAYS</div><div class="v">${money2(b.d90)}</div></div>
+      <div class="bk"><div class="l">91-120 DAYS</div><div class="v">${money2(b.d120)}</div></div>
+      <div class="bk"><div class="l">120+ DAYS</div><div class="v">${money2(b.over)}</div></div>
+      <div class="bk due"><div class="l" style="color:#dbeafe;">TOTAL DUE</div><div class="v">${money2(totalDue)}</div></div>
+    </div>
+    <div style="margin-top:18px;font-size:10.5px;color:#64748b;">Please remit payment for past-due invoices. Questions about this statement? Contact accounting@peacepacificsports.com</div>
+    <script>window.onload=()=>setTimeout(()=>window.print(),300);<\/script>
+  </body></html>`);
+  w2.document.close();
 }
 function renderCustomers(){
   const el = $('cust-body'); if(!el) return;
@@ -3782,9 +3878,14 @@ function renderCustomers(){
         </select></td>
         <td><input class="fi" value="${esc(em)}" placeholder="email" onchange="cmSet('${esc(k)}','email',this.value)" style="width:180px;font-size:11px;"></td>
         <td style="white-space:nowrap;"><button class="btn btn-sm" onclick="openCustPrices('${esc(m.name)}')" title="Last selling prices by item for this customer">💲 Prices</button></td>
-      </tr>${cmOpenAR===m.name ? `<tr><td colspan="12" style="padding:0;background:#f8fafc;border-top:none;">${custARDetailHtml(m.name)}</td></tr>` : ''}`;
+      </tr>`;
     }).join('') || '<tr><td colspan="12" class="muted" style="padding:14px;">No customers yet</td></tr>'}</tbody>
   </table></div>
+  <div id="cust-ar-panel" style="margin-top:12px;">${cmOpenAR ? `<div style="border:1.5px solid #cbd5e1;border-radius:10px;background:#f8fafc;box-shadow:0 2px 8px rgba(15,42,74,.08);">
+    <div style="display:flex;align-items:center;padding:8px 14px;background:#0f2a4a;border-radius:9px 9px 0 0;">
+      <span style="color:#fff;font-weight:800;font-size:12.5px;">📒 ${esc(cmOpenAR)}</span>
+      <button class="btn btn-sm" style="margin-left:auto;background:transparent;color:#cbd5e1;border-color:#475569;" onclick="cmToggleAR('${esc(cmOpenAR)}')">✕ Close</button>
+    </div>${custARDetailHtml(cmOpenAR)}</div>` : `<div class="muted" style="font-size:11px;padding:4px 2px;">👆 Click a customer name to see their A/R detail &amp; statement here</div>`}</div>
   <div style="font-size:10.5px;color:var(--text2);margin-top:8px;">Outstanding = saved invoices − payments − credit memos. Open Orders = received orders not yet invoiced. Available = Credit Limit − Outstanding − Open Orders; a new order that would go below $0 is locked as 🔒 CREDIT HOLD until approved. Terms set here become the default for that customer's new invoices.</div>`;
 }
 async function cmSet(k, field, val){
@@ -4613,7 +4714,7 @@ function renderSaved(){
       <span class="n" style="color:var(--text2);font-weight:700;">${fmtD(s.meta.date || s.savedAt)}</span>
       <span class="muted" style="font-size:11px;${stuck?'color:#dc2626;font-weight:800;':''}">⏱ ${ageLabel}</span>
       <span style="background:#111;color:#fff;font-weight:400;font-size:12.5px;padding:2px 10px;border-radius:5px;">${esc(s.meta.cust||'')}</span>
-      ${s.meta.webCust ? `<span style="background:#ecfeff;color:#0e7490;border:1px solid #a5f3fc;font-size:10px;font-weight:900;padding:2px 7px;border-radius:20px;white-space:nowrap;">🌐 WEB</span>` : ''}
+      ${s.meta.webCust ? `<span style="background:#0e7490;color:#fff;font-size:10.5px;font-weight:900;padding:3px 10px;border-radius:20px;white-space:nowrap;letter-spacing:0.5px;box-shadow:0 1px 3px rgba(14,116,144,.4);">🌐 WEBSITE</span>` : ''}
       <span style="background:#111;color:#fff;font-family:Consolas,monospace;font-weight:400;font-size:12px;padding:2px 10px;border-radius:5px;">PO ${esc(s.meta.po||'')}</span>
       ${s.meta && s.meta._from ? `<span title="Created from ${esc(s.meta._from.base)} (${esc(s.meta._from.src||'')})" style="background:#f5f3ff;color:#6d28d9;border:1px solid #ddd6fe;font-size:10.5px;font-weight:800;padding:2px 8px;border-radius:20px;white-space:nowrap;cursor:pointer;" onclick="openOrderSummary('${esc(s.meta._from.base)}')">↩ ${esc(s.meta._from.src||'')} of ${esc(s.meta._from.base)}</span>` : ''}
       <span style="font-weight:700;">${tot.toLocaleString()} pcs</span>
