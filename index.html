@@ -132,7 +132,7 @@ main{max-width:1100px;margin:0 auto;padding:16px;}
     <button class="btn btn-sm" onclick="doLogout()" style="padding:2px 8px;font-size:10px;" data-i18n="logout">로그아웃</button>
   </span>
   <select id="lang-sel" onchange="setLang(this.value)" style="font-size:11px;padding:3px 6px;border-radius:5px;border:none;background:#1d3f66;color:#fff;"><option value="ko">한국어</option><option value="en">English</option><option value="es">Español</option></select>
-  <span style="font-size:10px;color:#9fb8d4;">v200</span>
+  <span style="font-size:10px;color:#9fb8d4;">v201</span>
 </div>
 <script type="text/javascript" src="https://js.authorize.net/v1/Accept.js" charset="utf-8"></script>
 <div id="po-viewer" style="display:none;position:fixed;top:0;right:0;width:44%;height:100vh;background:#fff;border-left:2px solid var(--border);z-index:60;box-shadow:-6px 0 20px rgba(0,0,0,.15);">
@@ -169,6 +169,7 @@ main{max-width:1100px;margin:0 auto;padding:16px;}
   <button id="nav-orders" class="nav-btn nav-active" onclick="showView('orders')" data-i18n="nav_orders">📝 오더</button>
   <button id="nav-dash" class="nav-btn" onclick="showView('dash')">📊 Dashboard</button>
   <button id="nav-cust" class="nav-btn" onclick="showView('cust')">👥 Customers</button>
+  <button id="nav-pc" class="nav-btn" onclick="showView('pc')">🧺 PC Room</button>
 </div>
 <div id="orders-view">
 
@@ -325,6 +326,16 @@ main{max-width:1100px;margin:0 auto;padding:16px;}
       <button class="btn btn-sm btn-primary" onclick="openAddCustomer()">＋ Add Customer</button>
     </div>
     <div id="cust-body"><div class="muted">로딩...</div></div>
+  </div>
+</div>
+<div id="pc-view" style="display:none;">
+  <div class="card">
+    <div class="card-title"><span>🧺 PC Room — SC Partial Pcs Inventory</span>
+      <input class="fi" id="pc-search" placeholder="🔍 Style / Color" oninput="renderPcRoom()" style="margin-left:auto;width:190px;font-size:12px;padding:5px 10px;">
+      <button class="btn btn-sm btn-primary" onclick="pcAddStyle()">＋ Add Style</button>
+      <button class="btn btn-sm" onclick="pcExport()">⬇ Excel</button>
+    </div>
+    <div id="pc-body"><div class="muted">로딩...</div></div>
   </div>
 </div>
 <div id="dash-view" style="display:none;">
@@ -3847,16 +3858,140 @@ function renderPL(){
 // ═══════════════ 📊 Dashboard ═══════════════
 let dashPeriod = 'all', dashFrom = '', dashTo = '';
 function showView(v){
-  const ov = $('orders-view'), dv = $('dash-view'), cv = $('cust-view');
+  const ov = $('orders-view'), dv = $('dash-view'), cv = $('cust-view'), pv = $('pc-view');
   if(!ov || !dv) return;
   ov.style.display = v==='orders' ? 'block' : 'none';
   dv.style.display = v==='dash' ? 'block' : 'none';
   if(cv) cv.style.display = v==='cust' ? 'block' : 'none';
+  if(pv) pv.style.display = v==='pc' ? 'block' : 'none';
   $('nav-orders').classList.toggle('nav-active', v==='orders');
   $('nav-dash').classList.toggle('nav-active', v==='dash');
   const nc = $('nav-cust'); if(nc) nc.classList.toggle('nav-active', v==='cust');
+  const np = $('nav-pc'); if(np) np.classList.toggle('nav-active', v==='pc');
   if(v==='dash') renderDash();
   if(v==='cust') renderCustomers();
+  if(v==='pc') loadPcRoom();
+}
+// ═══ PC Room (SC partial pcs inventory) ═══
+const PC_ADULT = ['XS','S','M','L','XL','2XL','3XL','4XL','5XL'];
+const PC_KIDS  = ['2T','3T','4T','5T','XS','S','M','L','XL'];
+let pcStore = [];
+let pcLoaded = false;
+async function loadPcRoom(){
+  try{
+    const r = await sbFetch('/rest/v1/pr_pcroom?select=k,style,color,qty,sizes,updated_at,updated_by&order=style.asc,color.asc');
+    if(r.ok){ pcStore = await r.json(); pcLoaded = true; }
+  }catch(e){ console.warn('loadPcRoom', e); }
+  renderPcRoom();
+}
+function pcKey(style, color){ return (String(style).trim()+'|'+String(color).trim()).toUpperCase(); }
+async function pcSaveRow(row){
+  row.updated_at = new Date().toISOString();
+  row.updated_by = (SESS&&SESS.email)||'';
+  try{
+    await sbFetch('/rest/v1/pr_pcroom?on_conflict=k', {method:'POST', headers:{Prefer:'resolution=merge-duplicates,return=minimal'}, body:JSON.stringify([row])});
+  }catch(e){ showToast('⚠ 저장 실패 — 인터넷 확인'); }
+}
+function pcCellChange(k, size, val){
+  const row = pcStore.find(r=>r.k===k); if(!row) return;
+  const n = parseInt(String(val).replace(/[^0-9-]/g,'')) || 0;
+  row.qty = row.qty || {};
+  if(n === 0) delete row.qty[size]; else row.qty[size] = n;
+  pcSaveRow(row);
+  const rt = $('pcrt-'+cssId(k)); if(rt) rt.textContent = pcRowTotal(row) || '';
+  const st = $('pcst-'+cssId(String(row.style))); if(st) st.textContent = pcStyleTotal(row.style).toLocaleString();
+  const gt = $('pc-grand'); if(gt) gt.textContent = pcGrandTotal().toLocaleString();
+  showToast('💾 ' + row.style + ' ' + row.color + ' ' + size + ' = ' + n);
+}
+function cssId(s){ return String(s).replace(/[^a-zA-Z0-9]/g,'_'); }
+function pcRowTotal(row){ return Object.values(row.qty||{}).reduce((a,v)=>a+(Number(v)||0),0); }
+function pcStyleTotal(style){ return pcStore.filter(r=>String(r.style)===String(style)).reduce((a,r)=>a+pcRowTotal(r),0); }
+function pcGrandTotal(){ return pcStore.reduce((a,r)=>a+pcRowTotal(r),0); }
+function pcSizesFor(style){
+  const rows = pcStore.filter(r=>String(r.style)===String(style));
+  const s2 = rows.find(r=>Array.isArray(r.sizes) && r.sizes.length);
+  return (s2 && s2.sizes) || PC_ADULT;
+}
+function renderPcRoom(){
+  const el = $('pc-body'); if(!el) return;
+  const q = (($('pc-search')||{}).value||'').trim().toLowerCase();
+  const byStyle = {};
+  pcStore.forEach(r=>{
+    if(q && !(String(r.style).toLowerCase().includes(q) || String(r.color).toLowerCase().includes(q))) return;
+    (byStyle[r.style] = byStyle[r.style] || []).push(r);
+  });
+  const styles = Object.keys(byStyle).sort();
+  if(!styles.length){ el.innerHTML = '<div class="muted" style="padding:14px;">' + (pcLoaded ? 'No inventory — ＋ Add Style로 시작하세요' : '로딩...') + '</div>'; return; }
+  const lastUp = pcStore.reduce((a,r)=> (r.updated_at||'') > a ? r.updated_at : a, '');
+  el.innerHTML = `<div style="display:flex;gap:14px;align-items:center;margin-bottom:10px;flex-wrap:wrap;">
+      <span style="font-weight:800;color:#0f2a4a;">Total: <span id="pc-grand">${pcGrandTotal().toLocaleString()}</span> pcs</span>
+      <span class="muted" style="font-size:11px;">마지막 수정: ${lastUp ? new Date(lastUp).toLocaleString() : '—'}</span>
+      <span class="muted" style="font-size:11px;">칸을 고쳐서 엔터/이동하면 즉시 저장·전직원 공유됩니다</span>
+    </div>` + styles.map(sty=>{
+    const rows = byStyle[sty].sort((a,b)=>String(a.color).localeCompare(String(b.color)));
+    const sizes = pcSizesFor(sty);
+    return `<details open style="margin-bottom:10px;border:1px solid var(--border);border-radius:8px;">
+      <summary style="cursor:pointer;padding:8px 12px;font-weight:800;color:#0f2a4a;background:#f1f5f9;border-radius:8px;">
+        ${esc(String(sty))} <span class="muted" style="font-weight:400;">(${rows.length} colors)</span>
+        <span style="float:right;font-family:Consolas,monospace;" id="pcst-${cssId(String(sty))}">${pcStyleTotal(sty).toLocaleString()}</span></summary>
+      <div style="overflow-x:auto;padding:6px 10px 10px;">
+      <table class="etbl" style="font-size:11.5px;">
+        <thead><tr><th class="tl" style="min-width:120px;">Color</th>${sizes.map(s2=>`<th>${s2}</th>`).join('')}<th>Total</th><th></th></tr></thead>
+        <tbody>${rows.map(r=>`<tr>
+          <td class="tl" style="font-weight:700;">${esc(String(r.color))}</td>
+          ${sizes.map(s2=>{ const v = (r.qty||{})[s2]; return `<td style="padding:2px;"><input class="num" value="${v!=null?v:''}" onchange="pcCellChange('${esc(r.k)}','${s2}',this.value)" style="width:52px;text-align:center;${v<0?'color:#dc2626;font-weight:800;':''}"></td>`; }).join('')}
+          <td style="font-family:Consolas,monospace;font-weight:800;" id="pcrt-${cssId(r.k)}">${pcRowTotal(r)||''}</td>
+          <td><button class="btn btn-sm" style="border:none;color:#b91c1c;padding:0 6px;" oncontextmenu="return false;" onclick="pcDelRow('${esc(r.k)}')" title="이 칼라 행 삭제">✕</button></td>
+        </tr>`).join('')}</tbody>
+      </table>
+      <button class="btn btn-sm" style="margin-top:5px;" onclick="pcAddColor('${esc(String(sty))}')">＋ Color</button>
+      </div></details>`;
+  }).join('');
+}
+async function pcAddColor(style){
+  const color = (window.prompt('칼라 이름 (' + style + ')')||'').trim().toUpperCase();
+  if(!color) return;
+  const k = pcKey(style, color);
+  if(pcStore.find(r=>r.k===k)){ showToast('⚠ 이미 있는 칼라'); return; }
+  const row = { k, style: String(style), color, qty:{}, sizes: pcSizesFor(style) };
+  pcStore.push(row);
+  await pcSaveRow(row);
+  renderPcRoom();
+}
+async function pcAddStyle(){
+  const style = (window.prompt('스타일 번호 (예: 1368)')||'').trim();
+  if(!style) return;
+  const kids = window.confirm('Kids/Toddler 사이즈(2T-5T·XS-XL)인가요?\n확인=Kids · 취소=성인(XS-5XL)');
+  const color = (window.prompt('첫 칼라 이름')||'').trim().toUpperCase();
+  if(!color) return;
+  const row = { k: pcKey(style,color), style, color, qty:{}, sizes: kids ? PC_KIDS.slice() : PC_ADULT.slice() };
+  pcStore.push(row);
+  await pcSaveRow(row);
+  renderPcRoom();
+}
+async function pcDelRow(k){
+  const row = pcStore.find(r=>r.k===k); if(!row) return;
+  if(!confirm(row.style + ' ' + row.color + ' 행을 삭제할까요?')) return;
+  pcStore = pcStore.filter(r=>r.k!==k);
+  try{ await sbFetch('/rest/v1/pr_pcroom?k=eq.'+encodeURIComponent(k), {method:'DELETE', headers:{Prefer:'return=minimal'}}); }catch(e){}
+  renderPcRoom();
+}
+async function pcExport(){
+  await loadXlsxLib();
+  const wb = XLSX.utils.book_new();
+  const styles = [...new Set(pcStore.map(r=>String(r.style)))].sort();
+  const data = [['STYLE','COLOR','SIZE SET','','','','','','','','','','TOTAL']];
+  styles.forEach(sty=>{
+    const sizes = pcSizesFor(sty);
+    data.push(['','', ...sizes, 'TOTAL'].slice(0,13));
+    pcStore.filter(r=>String(r.style)===sty).sort((a,b)=>String(a.color).localeCompare(String(b.color))).forEach(r=>{
+      data.push([sty, r.color, ...sizes.map(s2=>(r.qty||{})[s2]||0), pcRowTotal(r)]);
+    });
+    data.push([]);
+  });
+  const ws = XLSX.utils.aoa_to_sheet(data);
+  XLSX.utils.book_append_sheet(wb, ws, 'PC ROOM');
+  XLSX.writeFile(wb, 'PC-ROOM-' + new Date().toISOString().slice(0,10) + '.xlsx');
 }
 let cmSort = 'az';
 let cmOpenAR = '';
