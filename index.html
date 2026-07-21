@@ -132,7 +132,7 @@ main{max-width:1100px;margin:0 auto;padding:16px;}
     <button class="btn btn-sm" onclick="doLogout()" style="padding:2px 8px;font-size:10px;" data-i18n="logout">로그아웃</button>
   </span>
   <select id="lang-sel" onchange="setLang(this.value)" style="font-size:11px;padding:3px 6px;border-radius:5px;border:none;background:#1d3f66;color:#fff;"><option value="ko">한국어</option><option value="en">English</option><option value="es">Español</option></select>
-  <span style="font-size:10px;color:#9fb8d4;">v202</span>
+  <span style="font-size:10px;color:#9fb8d4;">v204</span>
 </div>
 <script type="text/javascript" src="https://js.authorize.net/v1/Accept.js" charset="utf-8"></script>
 <div id="po-viewer" style="display:none;position:fixed;top:0;right:0;width:44%;height:100vh;background:#fff;border-left:2px solid var(--border);z-index:60;box-shadow:-6px 0 20px rgba(0,0,0,.15);">
@@ -2577,23 +2577,31 @@ const STAFF_EMAILS = [
 ];
 async function sendBatchPLEmail(recs, wh, toEmail){
   const atts = [];
-  const blobs = [];
+  const pureBlobs = [];   // PL 본문만 (첨부 제외)
+  const uniqFiles = [];   // 중복 제거한 첨부 (같은 BOL이 오더마다 복사돼 있어도 한 번만)
+  const seenF = {};
   for(const rec of recs){
     const d = (rec.pl && rec.pl[wh]) || {};
-    const blob = await makePdfBlob(buildStageDoc(rec, wh, 'packing', d), d.files||[]);
-    blobs.push(blob);
-    atts.push({ filename: plNum(rec.base, wh) + '-PL.pdf', content: await blobToB64(blob) });
+    const pure = await makePdfBlob(buildStageDoc(rec, wh, 'packing', d), []);
+    pureBlobs.push(pure);
+    (d.files||[]).forEach(f=>{
+      const key = (f.name||'') + '|' + ((f.data||'').length) + '|' + (f.data||'').slice(-80);
+      if(!seenF[key]){ seenF[key] = 1; uniqFiles.push(f); }
+    });
+    const withFiles = (d.files&&d.files.length) ? await mergePdfWithFiles(pure, d.files) : pure;
+    atts.push({ filename: plNum(rec.base, wh) + '-PL.pdf', content: await blobToB64(withFiles) });
   }
-  // 묶음 PDF (모든 packing list 합본 — 한 번에 프린트용)
+  // 묶음 PDF: Packing List 전부 먼저 → BOL 등 첨부는 맨 뒤에 한 번만
   try{
     await loadPdfMergeLib();
     const combo = await PDFLib.PDFDocument.create();
-    for(const b of blobs){
+    for(const b of pureBlobs){
       const src = await PDFLib.PDFDocument.load(new Uint8Array(await b.arrayBuffer()));
       const pages = await combo.copyPages(src, src.getPageIndices());
       pages.forEach(p=>combo.addPage(p));
     }
-    const comboBlob = new Blob([await combo.save()], {type:'application/pdf'});
+    let comboBlob = new Blob([await combo.save()], {type:'application/pdf'});
+    if(uniqFiles.length) comboBlob = await mergePdfWithFiles(comboBlob, uniqFiles);
     atts.unshift({ filename: 'ALL-PACKING-LISTS.pdf', content: await blobToB64(comboBlob) });
   }catch(e){ console.warn('combo pdf fail', e); }
   if(atts.length > 50) console.warn('첨부 50개 초과 — 일부 개별 PL이 잘릴 수 있음 (합본은 포함됨)');
@@ -3893,7 +3901,15 @@ async function pcSaveRow(row){
     await sbFetch('/rest/v1/pr_pcroom?on_conflict=k', {method:'POST', headers:{Prefer:'resolution=merge-duplicates,return=minimal'}, body:JSON.stringify([row])});
   }catch(e){ showToast('⚠ 저장 실패 — 인터넷 확인'); }
 }
-function pcCellChange(k, size, val, inputEl){
+function pcLogMove(row, size, delta, bal, note){
+  if(!delta) return;
+  try{
+    sbFetch('/rest/v1/pr_pcmoves', {method:'POST', headers:{Prefer:'return=minimal'}, body:JSON.stringify([{
+      by_email: (SESS&&SESS.email)||'', style: String(row.style), color: String(row.color), size: size,
+      delta: delta, bal: bal, note: note||'' }])}).catch(()=>{});
+  }catch(e){}
+}
+function pcCellChange(k, size, val, inputEl, note){
   const row = pcStore.find(r=>r.k===k); if(!row) return;
   row.qty = row.qty || {};
   const old = Number(row.qty[size]) || 0;
@@ -3910,6 +3926,7 @@ function pcCellChange(k, size, val, inputEl){
   const st = $('pcst-'+cssId(String(row.style))); if(st) st.textContent = pcStyleTotal(row.style).toLocaleString();
   const gt = $('pc-grand'); if(gt) gt.textContent = pcGrandTotal().toLocaleString();
   const diff = n - old;
+  pcLogMove(row, size, diff, n, note);
   showToast('💾 ' + row.style + ' ' + row.color + ' ' + size + ': ' + old + ' → ' + n + (diff ? ' (' + (diff>0?'+':'') + diff + ')' : ''));
 }
 function pcFillOrderPick(){
@@ -3926,7 +3943,7 @@ function pcApplyLine(base, li){
   if(!row){ showToast('⚠ PC Room에 ' + L.style + ' ' + String(L.color).toUpperCase() + ' 없음 — ＋ Color로 먼저 추가하세요'); return; }
   const size = String(L.size||'').toUpperCase();
   const old = Number((row.qty||{})[size]) || 0;
-  pcCellChange(k, size, '=' + (old - (Number(L.qty)||0)));
+  pcCellChange(k, size, '=' + (old - (Number(L.qty)||0)), null, 'PO ' + ((rec.meta&&rec.meta.po)||'') + ' 출고');
   const inp = document.querySelector(`[data-pc="${cssId(k)}-${cssId(size)}"]`);
   if(inp){ inp.value = (row.qty||{})[size] || ''; inp.style.background = '#fef9c3'; setTimeout(()=>inp.style.background='', 1500); }
   const btn = $('pcapply-'+li); if(btn){ btn.textContent = '✓ 차감됨'; btn.disabled = true; btn.style.opacity = .55; }
@@ -3973,7 +3990,7 @@ function renderPcRoom(){
           <td class="tl" style="font-weight:700;">${esc(String(r.color))}</td>
           ${sizes.map(s2=>{ const v = (r.qty||{})[s2]; return `<td style="padding:2px;"><input class="num" data-pc="${cssId(r.k)}-${cssId(s2)}" value="${v!=null?v:''}" onchange="pcCellChange('${esc(r.k)}','${s2}',this.value,this)" style="width:52px;text-align:center;${v<0?'color:#dc2626;font-weight:800;':''}"></td>`; }).join('')}
           <td style="font-family:Consolas,monospace;font-weight:800;" id="pcrt-${cssId(r.k)}">${pcRowTotal(r)||''}</td>
-          <td><button class="btn btn-sm" style="border:none;color:#b91c1c;padding:0 6px;" oncontextmenu="return false;" onclick="pcDelRow('${esc(r.k)}')" title="이 칼라 행 삭제">✕</button></td>
+          <td style="white-space:nowrap;"><button class="btn btn-sm" style="border:none;padding:0 5px;" onclick="pcHistory('${esc(String(r.style))}','${esc(String(r.color))}')" title="이 칼라의 변동 내역 (원장)">📜</button><button class="btn btn-sm" style="border:none;color:#b91c1c;padding:0 6px;" oncontextmenu="return false;" onclick="pcDelRow('${esc(r.k)}')" title="이 칼라 행 삭제">✕</button></td>
         </tr>`).join('')}</tbody>
       </table>
       <button class="btn btn-sm" style="margin-top:5px;" onclick="pcAddColor('${esc(String(sty))}')">＋ Color</button>
@@ -3998,6 +4015,35 @@ function renderPcRoom(){
       </div>
     </div>` : ''}
     </div>`;
+}
+async function pcHistory(style, color){
+  const ex = document.getElementById('modal-pchist'); if(ex) ex.remove();
+  let rows = [];
+  try{
+    const r = await sbFetch('/rest/v1/pr_pcmoves?style=eq.'+encodeURIComponent(style)+'&color=eq.'+encodeURIComponent(color)+'&order=at.desc&limit=200');
+    if(r.ok) rows = await r.json();
+  }catch(e){}
+  const money0 = n => (n>0?'+':'') + n;
+  const div = document.createElement('div');
+  div.id = 'modal-pchist';
+  div.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,.55);z-index:130;display:flex;align-items:center;justify-content:center;';
+  div.innerHTML = `<div style="background:#fff;border-radius:12px;width:640px;max-width:94vw;max-height:85vh;display:flex;flex-direction:column;overflow:hidden;box-shadow:0 20px 60px rgba(0,0,0,.35);">
+    <div style="background:#0f2a4a;color:#fff;padding:11px 16px;font-weight:800;display:flex;align-items:center;">📜 ${esc(style)} ${esc(color)} — 변동 내역
+      <button class="btn btn-sm" style="margin-left:auto;background:transparent;color:#cbd5e1;border-color:#475569;" onclick="document.getElementById('modal-pchist').remove()">✕</button></div>
+    <div style="overflow-y:auto;padding:12px 16px;">
+      ${rows.length ? `<table class="etbl" style="font-size:11.5px;">
+        <thead><tr><th>날짜</th><th>Size</th><th>변동</th><th>잔량</th><th class="tl">메모</th><th class="tl">직원</th></tr></thead>
+        <tbody>${rows.map(m=>`<tr>
+          <td style="white-space:nowrap;">${new Date(m.at).toLocaleString(undefined,{month:'numeric',day:'numeric',hour:'2-digit',minute:'2-digit'})}</td>
+          <td style="font-weight:700;">${esc(m.size||'')}</td>
+          <td style="font-family:Consolas,monospace;font-weight:800;color:${m.delta>0?'#166534':'#b91c1c'};">${money0(m.delta)}</td>
+          <td style="font-family:Consolas,monospace;${m.bal<0?'color:#dc2626;font-weight:800;':''}">${m.bal}</td>
+          <td class="tl" style="font-size:10.5px;">${esc(m.note||'')}</td>
+          <td class="tl" style="font-size:10px;color:var(--text2);">${esc(String(m.by_email||'').split('@')[0])}</td>
+        </tr>`).join('')}</tbody></table>`
+      : '<div class="muted" style="padding:14px;">아직 기록 없음 — 수량을 고치면 자동으로 기록됩니다</div>'}
+    </div></div>`;
+  document.body.appendChild(div);
 }
 async function pcAddColor(style){
   const color = (window.prompt('칼라 이름 (' + style + ')')||'').trim().toUpperCase();
