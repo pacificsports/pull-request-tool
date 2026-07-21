@@ -132,7 +132,7 @@ main{max-width:1100px;margin:0 auto;padding:16px;}
     <button class="btn btn-sm" onclick="doLogout()" style="padding:2px 8px;font-size:10px;" data-i18n="logout">로그아웃</button>
   </span>
   <select id="lang-sel" onchange="setLang(this.value)" style="font-size:11px;padding:3px 6px;border-radius:5px;border:none;background:#1d3f66;color:#fff;"><option value="ko">한국어</option><option value="en">English</option><option value="es">Español</option></select>
-  <span style="font-size:10px;color:#9fb8d4;">v207</span>
+  <span style="font-size:10px;color:#9fb8d4;">v208</span>
 </div>
 <script type="text/javascript" src="https://js.authorize.net/v1/Accept.js" charset="utf-8"></script>
 <div id="po-viewer" style="display:none;position:fixed;top:0;right:0;width:44%;height:100vh;background:#fff;border-left:2px solid var(--border);z-index:60;box-shadow:-6px 0 20px rgba(0,0,0,.15);">
@@ -1736,7 +1736,7 @@ async function saveCurrent(){
   }
   (function(){
     const custV = $('m-cust').value.trim();
-    const _cp = custStore[custKey(custV)] || {};
+    const _cp = custGroupStore(custV);
     const lim = Number(_cp.creditLimit) || 0;
     window.__holdFlag = null;
     if(_cp.termType === 'cc') return;
@@ -2705,10 +2705,17 @@ function invBalance(rec, wh){
   if(!iv || !iv.savedAt) return 0;
   return Math.max(0, invTotalOf(iv, rec, wh) - invPaidSum(iv) - invMemoSum(iv));
 }
+function custGroupName(name){
+  const cs = custStore[custKey(name)] || {};
+  return cs.parent ? cs.parent : custCanon(name);
+}
+function custGroupStore(name){
+  return custStore[custKey(custGroupName(name))] || custStore[custKey(name)] || {};
+}
 function custOpenOrdersAmt(cust, excludeBase){
-  const key = custCanon(cust); let s = 0;
+  const key = custGroupName(cust); let s = 0;
   (savedCache||[]).forEach(r=>{
-    if(!r.meta || custCanon(r.meta.cust) !== key) return;
+    if(!r.meta || custGroupName(r.meta.cust) !== key) return;
     if(excludeBase && r.base === excludeBase) return;
     const orderAmt = (r.lines||[]).filter(l=>l.wh!=='NA').reduce((a,l)=>a+(Number(l.qty)||0)*(Number(l.price)||0),0);
     let invAmt = 0;
@@ -2722,8 +2729,8 @@ function custOpenOrdersAmt(cust, excludeBase){
   return s;
 }
 function custOutstanding(cust){
-  const key = custCanon(cust); let s = 0;
-  (savedCache||[]).forEach(r=>{ if(r.meta && custCanon(r.meta.cust)===key) Object.keys(r.inv||{}).forEach(w=>{ s += invBalance(r, w); }); });
+  const key = custGroupName(cust); let s = 0;
+  (savedCache||[]).forEach(r=>{ if(r.meta && custGroupName(r.meta.cust)===key) Object.keys(r.inv||{}).forEach(w=>{ s += invBalance(r, w); }); });
   return s;
 }
 function holdBlocked(rec){ return !!(rec && rec.meta && rec.meta._hold && !rec.meta._holdOk); }
@@ -4152,10 +4159,10 @@ function cmToggleAR(name){
   if(cmOpenAR){ const p = $('cust-ar-panel'); if(p) setTimeout(()=>p.scrollIntoView({behavior:'smooth', block:'nearest'}), 60); }
 }
 function custARRows(cust){
-  const key = custCanon(cust);
+  const key = custGroupName(cust);
   const rows = [];
   (savedCache||[]).forEach(r=>{
-    if(!r.meta || custCanon(r.meta.cust) !== key) return;
+    if(!r.meta || custGroupName(r.meta.cust) !== key) return;
     Object.keys(r.inv||{}).forEach(w=>{
       const iv = r.inv[w]; if(!iv || !iv.savedAt) return;
       const tot = invTotalOf(iv, r, w), paid = invPaidSum(iv), memo = invMemoSum(iv), bal = Math.max(0, tot - paid - memo);
@@ -4294,18 +4301,21 @@ function renderCustomers(){
   const q = (($('cm-search')||{}).value || '').trim().toLowerCase();
   const map = {};
   (savedCache||[]).forEach(rec=>{
-    const c = custCanon(rec.meta && rec.meta.cust); if(!c) return;
-    const m = map[c] = map[c] || { name: c, orders: 0, sales: 0, last: '' };
+    const raw = custCanon(rec.meta && rec.meta.cust); if(!raw) return;
+    const c = custGroupName(raw);
+    const m = map[c] = map[c] || { name: c, orders: 0, sales: 0, last: '', brands: {} };
     m.orders++;
     m.sales += recLineAmt(rec).a;
+    m.brands[raw] = 1;
     const d = String((rec.meta&&rec.meta.date) || rec.savedAt || '');
     if(d > m.last) m.last = d;
   });
   Object.keys(custStore||{}).forEach(k=>{
     const cs = custStore[k]; const nm = cs && cs.name;
     if(!nm) return;
-    const c = custCanon(nm);
-    if(!map[c]) map[c] = { name: c, orders: 0, sales: 0, last: '', manual: true };
+    const c = custGroupName(nm);
+    if(!map[c]) map[c] = { name: c, orders: 0, sales: 0, last: '', manual: true, brands: {} };
+    if(custCanon(nm) !== c) map[c].brands[custCanon(nm)] = 1;
   });
   const money2 = n => '$' + Number(n).toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2});
   const list = Object.values(map).filter(m=>!q || m.name.toLowerCase().includes(q)).sort((a,b)=> cmSort==='sales' ? (b.sales - a.sales) : a.name.toLowerCase().localeCompare(b.name.toLowerCase()));
@@ -4329,7 +4339,7 @@ function renderCustomers(){
       const addr1 = [bo.addr||prof.billAddr, bo.city||prof.billCity, String(bo.state||prof.billState||'').toUpperCase()].filter(Boolean).join(', ');
       const room = lim > 0 ? (lim - out - openOrd) : null;
       return `<tr ${over?'style="background:#fef2f2;"':''}>
-        <td class="tl" style="font-weight:700;cursor:pointer;user-select:none;" onclick="cmToggleAR('${esc(m.name)}')" title="Click for A/R detail"><span style="color:var(--text2);font-size:10px;">${cmOpenAR===m.name?'▼':'▶'}</span> ${esc(m.name)}${over?' <span style="color:#b91c1c;font-size:10px;font-weight:900;">🔒 OVER</span>':''}</td>
+        <td class="tl" style="font-weight:700;cursor:pointer;user-select:none;" onclick="cmToggleAR('${esc(m.name)}')" title="Click for A/R detail"><span style="color:var(--text2);font-size:10px;">${cmOpenAR===m.name?'▼':'▶'}</span> ${esc(m.name)}${over?' <span style="color:#b91c1c;font-size:10px;font-weight:900;">🔒 OVER</span>':''}${(()=>{ const br=Object.keys(m.brands||{}).filter(b=>b!==m.name); return br.length?`<div style="font-size:9.5px;font-weight:400;color:#64748b;">brands: ${br.map(esc).join(' · ')}</div>`:''; })()}</td>
         <td class="tl" style="font-size:11px;color:var(--text2);max-width:190px;"><div style="display:flex;align-items:center;gap:4px;"><span style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap;" title="${esc(addr1)}">${esc(addr1)||'—'}</span><button class="btn btn-sm" style="border:none;padding:0 3px;flex-shrink:0;" onclick="openCustAddr('${esc(m.name)}')" title="Edit address">✎</button></div></td>
         <td class="tl" style="font-size:12px;min-width:230px;">${(()=>{
           const sts = cs.shipTos || [];
@@ -4349,7 +4359,8 @@ function renderCustomers(){
         </select></td>
         <td><input class="fi" value="${esc(em)}" placeholder="email" onchange="cmSet('${esc(k)}','email',this.value)" style="width:180px;font-size:11px;"></td>
         <td style="white-space:nowrap;"><button class="btn btn-sm" onclick="openCustPrices('${esc(m.name)}')" title="Last selling prices by item for this customer">💲 Prices</button>
-          <label style="display:inline-flex;align-items:center;gap:4px;margin-left:6px;font-size:11px;font-weight:700;color:#0e7490;cursor:pointer;vertical-align:middle;" title="Website customer — new orders auto-check 🌐 Website Customer"><input type="checkbox" ${cs.webCust?'checked':''} onchange="cmSet('${esc(k)}','webCust',this.checked)" style="width:13px;height:13px;accent-color:#0e7490;cursor:pointer;">🌐 Website</label></td>
+          <label style="display:inline-flex;align-items:center;gap:4px;margin-left:6px;font-size:11px;font-weight:700;color:#0e7490;cursor:pointer;vertical-align:middle;" title="Website customer — new orders auto-check 🌐 Website Customer"><input type="checkbox" ${cs.webCust?'checked':''} onchange="cmSet('${esc(k)}','webCust',this.checked)" style="width:13px;height:13px;accent-color:#0e7490;cursor:pointer;">🌐 Website</label>
+          <button class="btn btn-sm" style="border:none;padding:0 5px;margin-left:2px;" onclick="openCustLink('${esc(m.name)}')" title="같은 회사의 다른 브랜드로 묶기 / 해제">🔗</button></td>
       </tr>`;
     }).join('') || '<tr><td colspan="12" class="muted" style="padding:14px;">No customers yet</td></tr>'}</tbody>
   </table></div>
@@ -4359,6 +4370,53 @@ function renderCustomers(){
       <button class="btn btn-sm" style="margin-left:auto;background:transparent;color:#cbd5e1;border-color:#475569;" onclick="cmToggleAR('${esc(cmOpenAR)}')">✕ Close</button>
     </div>${custARDetailHtml(cmOpenAR)}</div>` : `<div class="muted" style="font-size:11px;padding:4px 2px;">👆 Click a customer name to see their A/R detail &amp; statement here</div>`}</div>
   <div style="font-size:10.5px;color:var(--text2);margin-top:8px;">Outstanding = saved invoices − payments − credit memos. Open Orders = received orders not yet invoiced. Available = Credit Limit − Outstanding − Open Orders; a new order that would go below $0 is locked as 🔒 CREDIT HOLD until approved. Terms set here become the default for that customer's new invoices.</div>`;
+}
+function openCustLink(name){
+  const ex = document.getElementById('modal-custlink'); if(ex) ex.remove();
+  const myKey = custKey(name);
+  const all = {};
+  (savedCache||[]).forEach(r=>{ const c=custCanon(r.meta&&r.meta.cust); if(c) all[c]=1; });
+  Object.values(custStore||{}).forEach(cs=>{ if(cs&&cs.name) all[custCanon(cs.name)]=1; });
+  const others = Object.keys(all).filter(n=>custKey(n)!==myKey).sort();
+  const children = Object.keys(custStore).filter(k=>{ const cs=custStore[k]; return cs && cs.parent && custKey(cs.parent)===myKey; });
+  const div = document.createElement('div');
+  div.id = 'modal-custlink';
+  div.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,.55);z-index:130;display:flex;align-items:center;justify-content:center;';
+  div.innerHTML = `<div style="background:#fff;border-radius:12px;width:440px;max-width:92vw;overflow:hidden;box-shadow:0 20px 60px rgba(0,0,0,.35);">
+    <div style="background:#0f2a4a;color:#fff;padding:11px 16px;font-weight:800;">🔗 ${esc(name)} — 같은 회사 묶기</div>
+    <div style="padding:14px 16px;">
+      <div class="ff"><label>이 거래처를 아래 회사의 브랜드로 묶기 (AR·Credit Limit이 그 회사로 합산)</label>
+        <select class="fi" id="cl-parent"><option value="">— 선택 —</option>${others.map(n=>`<option>${esc(n)}</option>`).join('')}</select></div>
+      ${children.length ? `<div style="margin-top:10px;font-size:12px;"><b>이 회사에 묶인 브랜드:</b><br>${children.map(k=>`<span style="display:inline-flex;align-items:center;gap:4px;background:#f1f5f9;border:1px solid #cbd5e1;border-radius:16px;padding:2px 4px 2px 10px;margin:3px 4px 0 0;font-size:11.5px;">${esc(custStore[k].name||k)} <button class="btn btn-sm" style="border:none;padding:0 5px;color:#b91c1c;" onclick="custUnlink('${esc(k)}')">✕</button></span>`).join('')}</div>` : ''}
+    </div>
+    <div style="padding:0 16px 14px;display:flex;gap:8px;justify-content:flex-end;">
+      <button class="btn btn-sm" onclick="document.getElementById('modal-custlink').remove()">닫기</button>
+      <button class="btn btn-sm btn-primary" onclick="saveCustLink('${esc(name)}')">💾 묶기</button>
+    </div>
+  </div>`;
+  document.body.appendChild(div);
+}
+async function saveCustLink(name){
+  const parent = ($('cl-parent').value||'').trim();
+  if(!parent){ showToast('⚠ 회사를 선택하세요'); return; }
+  const k = custKey(name);
+  const cur = custStore[k] || {};
+  cur.name = cur.name || name;
+  cur.parent = parent;
+  await saveCustomer(k, cur);
+  const pk = custKey(parent);
+  if(!custStore[pk]) await saveCustomer(pk, { name: parent });
+  document.getElementById('modal-custlink').remove();
+  showToast('🔗 ' + name + ' → ' + parent + ' 로 묶음');
+  renderCustomers();
+}
+async function custUnlink(k){
+  const cur = custStore[k] || {};
+  delete cur.parent;
+  await saveCustomer(k, cur);
+  showToast('해제됨');
+  document.getElementById('modal-custlink').remove();
+  renderCustomers();
 }
 function openAddCustomer(){
   const ex = document.getElementById('modal-addcust'); if(ex) ex.remove();
