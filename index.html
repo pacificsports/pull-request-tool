@@ -132,7 +132,7 @@ main{max-width:1100px;margin:0 auto;padding:16px;}
     <button class="btn btn-sm" onclick="doLogout()" style="padding:2px 8px;font-size:10px;" data-i18n="logout">로그아웃</button>
   </span>
   <select id="lang-sel" onchange="setLang(this.value)" style="font-size:11px;padding:3px 6px;border-radius:5px;border:none;background:#1d3f66;color:#fff;"><option value="ko">한국어</option><option value="en">English</option><option value="es">Español</option></select>
-  <span style="font-size:10px;color:#9fb8d4;">v216</span>
+  <span style="font-size:10px;color:#9fb8d4;">v217</span>
 </div>
 <script type="text/javascript" src="https://js.authorize.net/v1/Accept.js" charset="utf-8"></script>
 <div id="po-viewer" style="display:none;position:fixed;top:0;right:0;width:44%;height:100vh;background:#fff;border-left:2px solid var(--border);z-index:60;box-shadow:-6px 0 20px rgba(0,0,0,.15);">
@@ -2105,12 +2105,47 @@ async function osumViewPO(base){
   const mo = document.getElementById('modal-osum');
   if(mo && window.innerWidth > 1100) mo.style.paddingRight = '45%';
 }
+async function attachPoToSaved(base){
+  const inp = document.createElement('input');
+  inp.type = 'file'; inp.accept = 'application/pdf,image/*';
+  inp.onchange = async ()=>{
+    const f = inp.files && inp.files[0]; if(!f) return;
+    showToast('📄 PO 첨부 중...');
+    try{
+      let b64;
+      if((f.type||'').includes('pdf')){
+        b64 = await new Promise((res,rej)=>{ const rd=new FileReader(); rd.onload=()=>res(String(rd.result).split(',')[1]); rd.onerror=rej; rd.readAsDataURL(f); });
+      } else {
+        // 사진이면 스캔 보정 후 PDF로 변환
+        await loadPdfMergeLib();
+        const doc = await PDFLib.PDFDocument.create();
+        const bytes = await imgFileToJpegBytes(f, 1800);
+        const img = await doc.embedJpg(bytes);
+        const pw=612, ph=792, mg=24;
+        const sc = Math.min((pw-mg*2)/img.width, (ph-mg*2)/img.height);
+        const page = doc.addPage([pw,ph]);
+        page.drawImage(img, {x:(pw-img.width*sc)/2, y:(ph-img.height*sc)/2, width:img.width*sc, height:img.height*sc});
+        b64 = await doc.saveAsBase64();
+      }
+      const r = await sbFetch('/rest/v1/pr_orders?base=eq.'+encodeURIComponent(base), {method:'PATCH', headers:{Prefer:'return=minimal'}, body:JSON.stringify({po_pdf: b64, updated_at:new Date().toISOString()})});
+      if(!r.ok) throw new Error('save ' + r.status);
+      const rc = savedCache.find(s=>s.base===base); if(rc) rc.poPdf = b64;
+      logHist(base, 'Customer PO attached (after save)');
+      showToast('✅ PO 첨부됨 — 📄 PO 버튼으로 볼 수 있습니다');
+      viewSavedPO(base);
+    }catch(e){ showToast('⚠ PO 첨부 실패: ' + (e.message||e)); }
+  };
+  inp.click();
+}
 async function viewSavedPO(base){
   try{
     const r = await sbFetch('/rest/v1/pr_orders?base=eq.'+encodeURIComponent(base)+'&select=po_pdf');
     const rows = await r.json();
     const b64 = rows && rows[0] && rows[0].po_pdf;
-    if(!b64){ alert(t('no_po_pdf')); return; }
+    if(!b64){
+      if(confirm('이 오더에는 거래처 PO 파일이 첨부되어 있지 않습니다.\n\n지금 PO 파일(PDF/사진)을 첨부할까요?')) attachPoToSaved(base);
+      return;
+    }
     const bin = atob(b64);
     const arr = new Uint8Array(bin.length);
     for(let i=0;i<bin.length;i++) arr[i] = bin.charCodeAt(i);
