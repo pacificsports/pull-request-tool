@@ -132,7 +132,7 @@ main{max-width:1100px;margin:0 auto;padding:16px;}
     <button class="btn btn-sm" onclick="doLogout()" style="padding:2px 8px;font-size:10px;" data-i18n="logout">로그아웃</button>
   </span>
   <select id="lang-sel" onchange="setLang(this.value)" style="font-size:11px;padding:3px 6px;border-radius:5px;border:none;background:#1d3f66;color:#fff;"><option value="ko">한국어</option><option value="en">English</option><option value="es">Español</option></select>
-  <span style="font-size:10px;color:#9fb8d4;">v213</span>
+  <span style="font-size:10px;color:#9fb8d4;">v214</span>
 </div>
 <script type="text/javascript" src="https://js.authorize.net/v1/Accept.js" charset="utf-8"></script>
 <div id="po-viewer" style="display:none;position:fixed;top:0;right:0;width:44%;height:100vh;background:#fff;border-left:2px solid var(--border);z-index:60;box-shadow:-6px 0 20px rgba(0,0,0,.15);">
@@ -3019,6 +3019,34 @@ function buildBOLDoc(rec, wh, d){
   </div>`;
 }
 let _ccPending = null;
+function ccOtherOpen(curRec){
+  const grp = custGroupName((curRec.meta&&curRec.meta.cust)||'');
+  const out = [];
+  (savedCache||[]).forEach(r=>{
+    if(!r.meta || custGroupName(r.meta.cust) !== grp) return;
+    const whset = [...new Set([...(r.whs||[]), ...Object.keys(r.pl||{}), ...Object.keys(r.inv||{})])];
+    whset.forEach(w=>{
+      if(r.base === plBase && w === plWh) return;
+      if(w === 'BO' || w === 'NA') return;
+      const iv = (r.inv||{})[w] || {};
+      if(iv.paid) return;
+      if(iv.savedAt && invPaidSum(iv) + invMemoSum(iv) > 0.005) return; // 이미 부분결제된 건 제외
+      const amt = invTotalOf(iv, r, w);
+      if(!(amt > 0)) return;
+      out.push({ base: r.base, wh: w, po: (r.meta.po||''), amt: Math.round(amt*100)/100 });
+    });
+  });
+  window._ccOthers = out;
+  return out;
+}
+function ccComboToggle(i, on){
+  const o = (window._ccOthers||[])[i]; if(!o) return;
+  window._ccExtra = window._ccExtra || [];
+  window._ccExtra = window._ccExtra.filter(x=>!(x.base===o.base && x.wh===o.wh));
+  if(on) window._ccExtra.push(o);
+  const ex = window._ccExtra.reduce((a,x)=>a+x.amt,0);
+  const el = $('cc-amt'); if(el) el.value = ((window._ccBaseAmt||0) + ex).toFixed(2);
+}
 const ANET_LOGIN_ID = '538BhgBf';
 const ANET_CLIENT_KEY = '9S9dzP4nBNaYQ82fVdvL8uV4F34xx6nzJK584a6vfg4srBCQQxkA5ZYcds737GjC';
 function startCharge(){
@@ -3032,7 +3060,7 @@ function startCharge(){
   if(cvv.length < 3){ bad('CVV 3~4 digits'); return; }
   if(!(amt > 0)){ bad('Check amount'); return; }
   if(typeof Accept === 'undefined'){ bad('Payment module loading... try again'); return; }
-  _ccPending = { base: plBase, wh: plWh, amt: amt };
+  _ccPending = { base: plBase, wh: plWh, amt: amt, extras: JSON.parse(JSON.stringify(window._ccExtra||[])) };
   const st = $('cc-status'); if(st){ st.style.color = '#92400e'; st.innerHTML = '<span class="ccspin"></span>Processing...'; }
   Accept.dispatchData({
     authData: { apiLoginID: ANET_LOGIN_ID, clientKey: ANET_CLIENT_KEY },
@@ -3064,12 +3092,23 @@ async function anetResponseHandler(response){
       if(st){ st.textContent = '❌ Declined — ' + (j.error || ('HTTP ' + r.status)); st.style.color = '#b91c1c'; }
       showToast('❌ Declined'); return;
     }
+    const extras = p.extras || [];
+    const exSum = extras.reduce((a,x)=>a+x.amt,0);
+    const primaryAmt = Math.round((p.amt - exSum)*100)/100;
     rec.inv = rec.inv || {}; const cur = rec.inv[p.wh] || {};
     // 카드 승인 = 인보이스 자동 발행 처리 (번호 부여 + 초록)
-    rec.inv[p.wh] = { ...cur, termType:'cc', printed: true, invNo: cur.invNo || nextInvNo(), savedAt: cur.savedAt || new Date().toISOString(), paid: { amt: p.amt, transId: j.transId||'', authCode: j.authCode||'', acct: j.acct||'', at: new Date().toISOString(), by: (SESS&&SESS.email)||'' } };
+    rec.inv[p.wh] = { ...cur, termType:'cc', printed: true, invNo: cur.invNo || nextInvNo(), savedAt: cur.savedAt || new Date().toISOString(), paid: { amt: primaryAmt, transId: j.transId||'', authCode: j.authCode||'', acct: j.acct||'', at: new Date().toISOString(), by: (SESS&&SESS.email)||'' } };
     if(invDrafts[p.wh]){ invDrafts[p.wh].termType = 'cc'; invDrafts[p.wh].invNo = rec.inv[p.wh].invNo; }
     try{ await sbFetch('/rest/v1/pr_orders?base=eq.'+encodeURIComponent(p.base), {method:'PATCH', headers:{Prefer:'return=minimal'}, body:JSON.stringify({inv:rec.inv, updated_at:new Date().toISOString()})}); }catch(e){}
-    logHist(p.base, 'Credit card charged $' + p.amt.toFixed(2) + ' — ' + p.wh + ' (Auth ' + (j.authCode||'') + ', ' + (j.acct||'') + ')');
+    logHist(p.base, 'Credit card charged $' + p.amt.toFixed(2) + ' — ' + p.wh + ' (Auth ' + (j.authCode||'') + ', ' + (j.acct||'') + ')' + (extras.length ? ' [합산: 이 건 $' + primaryAmt.toFixed(2) + ' + ' + extras.length + '건]' : ''));
+    for(const x of extras){
+      const r2 = savedCache.find(s=>s.base===x.base); if(!r2) continue;
+      r2.inv = r2.inv || {}; const c2 = r2.inv[x.wh] || {};
+      r2.inv[x.wh] = { ...c2, termType:'cc', printed: true, invNo: c2.invNo || nextInvNo(), savedAt: c2.savedAt || new Date().toISOString(), paid: { amt: x.amt, transId: j.transId||'', authCode: j.authCode||'', acct: j.acct||'', at: new Date().toISOString(), by: (SESS&&SESS.email)||'', note: 'Combined charge w/ ' + p.base } };
+      try{ await sbFetch('/rest/v1/pr_orders?base=eq.'+encodeURIComponent(x.base), {method:'PATCH', headers:{Prefer:'return=minimal'}, body:JSON.stringify({inv:r2.inv, updated_at:new Date().toISOString()})}); }catch(e){}
+      logHist(x.base, 'Credit card charged $' + x.amt.toFixed(2) + ' — ' + x.wh + ' (합산결제, ' + p.base + ' 와 한 번에 · Trans ' + (j.transId||'') + ')');
+    }
+    window._ccExtra = [];
     if(st){ st.textContent = '✅ Charged'; st.style.color = '#166534'; }
     showToast('✅ 결제 승인 — $' + p.amt.toFixed(2) + ' (' + (j.acct||'') + ') — 인보이스 발행 처리됨');
     _ccPending = null;
@@ -3764,7 +3803,9 @@ function refreshPLPreview(){
   if(ccA){
     const dd = invDocData();
     const tot = (dd.lines||[]).reduce((a,l)=>a+(Number(l.qty)||0)*(Number(l.price)||0),0) + (Number(dd.freight)||0);
-    ccA.value = tot.toFixed(2);
+    window._ccBaseAmt = tot;
+    const ex = (window._ccExtra||[]).reduce((a,x)=>a+x.amt,0);
+    ccA.value = (tot + ex).toFixed(2);
   }
 }
 function renderPL(){
@@ -3883,6 +3924,9 @@ function renderPL(){
           }
           const dd = invDocData();
           const totNow = (dd.lines||[]).reduce((a,l)=>a+(Number(l.qty)||0)*(Number(l.price)||0),0) + (Number(dd.freight)||0);
+          window._ccBaseAmt = totNow;
+          window._ccExtra = [];
+          const others = ccOtherOpen(rec);
           return `<div style="margin-top:8px;padding:9px 12px;background:#fffbeb;border:1.5px solid #fcd34d;border-radius:8px;display:flex;align-items:center;gap:7px;flex-wrap:wrap;">
             <span style="font-size:12px;font-weight:800;color:#92400e;">💳</span>
             <input class="fi" id="cc-num" placeholder="Card Number" maxlength="19" oninput="this.value=this.value.replace(/[^0-9]/g,'').replace(/(.{4})/g,'$1 ').trim()" style="width:180px;font-family:Consolas,monospace;font-weight:700;letter-spacing:1px;">
@@ -3892,6 +3936,11 @@ function renderPL(){
             <input class="fi num" id="cc-amt" value="${totNow.toFixed(2)}" style="width:100px;text-align:center;font-family:Consolas,monospace;font-weight:700;">
             <button class="btn btn-sm" style="background:#065f46;color:#fff;border-color:#065f46;font-weight:800;" onclick="startCharge()">Charge</button>
             <span id="cc-status" style="font-size:11.5px;font-weight:700;color:#92400e;"></span>
+            ${others.length ? `<div style="flex-basis:100%;border-top:1px dashed #fcd34d;margin-top:4px;padding-top:6px;font-size:11.5px;">
+              <span style="font-weight:800;color:#92400e;">➕ 이 거래처의 다른 미결제 건 함께 결제:</span>
+              ${others.map((o,i)=>`<label style="display:inline-flex;align-items:center;gap:4px;margin-left:10px;cursor:pointer;font-weight:700;color:#78350f;white-space:nowrap;"><input type="checkbox" onchange="ccComboToggle(${i},this.checked)" style="width:13px;height:13px;accent-color:#065f46;cursor:pointer;">PO ${esc(o.po)} ${o.wh} — $${o.amt.toFixed(2)}</label>`).join('')}
+              <div style="font-size:10px;color:#92400e;margin-top:3px;">체크하면 위 금액에 합산되고, 승인되면 각 오더에 결제가 나눠 기록됩니다</div>
+            </div>` : ''}
           </div>`;
         })() : ''}
         <div style="display:flex;align-items:center;gap:10px;margin-top:8px;">
