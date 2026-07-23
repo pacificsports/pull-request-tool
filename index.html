@@ -135,7 +135,7 @@ main{max-width:1100px;margin:0 auto;padding:16px;}
     <button class="btn btn-sm" onclick="doLogout()" style="padding:2px 8px;font-size:10px;" data-i18n="logout">로그아웃</button>
   </span>
   <select id="lang-sel" onchange="setLang(this.value)" style="font-size:11px;padding:3px 6px;border-radius:5px;border:none;background:#1d3f66;color:#fff;"><option value="ko">한국어</option><option value="en">English</option><option value="es">Español</option></select>
-  <span style="font-size:10px;color:#9fb8d4;">v237</span>
+  <span style="font-size:10px;color:#9fb8d4;">v238</span>
 </div>
 <script type="text/javascript" src="https://js.authorize.net/v1/Accept.js" charset="utf-8"></script>
 <div id="po-viewer" style="display:none;position:fixed;top:0;right:0;width:44%;height:100vh;background:#fff;border-left:2px solid var(--border);z-index:60;box-shadow:-6px 0 20px rgba(0,0,0,.15);">
@@ -3827,6 +3827,53 @@ function invTermUpd(type, days){
   renderPL();
 }
 function invNoUpd(v){ if(invDrafts[plWh]){ invDrafts[plWh].invNo = v.trim(); invDrafts[plWh]._touched = true; refreshPLPreview(); } }
+async function sendInvoiceEmail(){
+  const rec = savedCache.find(s=>s.base===plBase); if(!rec) return;
+  const em = (($('inv-email')||{}).value||'').trim();
+  const toList = em.split(',').map(e=>e.trim()).filter(e=>e.includes('@'));
+  if(!toList.length){ showToast('⚠ 거래처 이멜을 입력하세요'); return; }
+  const d = invDocData();
+  const tot = (d.lines||[]).reduce((a,l)=>a+(Number(l.qty)||0)*(Number(l.price)||0),0) + (Number(d.freight)||0);
+  if(!confirm('📧 Invoice를 발송할까요?\n→ ' + toList.join(', ') + '\n\n금액: $' + tot.toFixed(2))) return;
+  showToast('📧 Invoice 발송 중...');
+  try{
+    // 발송 = 발행: 번호 부여 + 저장 + 초록
+    rec.inv = rec.inv || {}; const cur = rec.inv[plWh] || {};
+    const invNo = cur.invNo || (invDrafts[plWh]&&invDrafts[plWh].invNo) || nextInvNo();
+    rec.inv[plWh] = { ...cur, savedAt: cur.savedAt || new Date().toISOString(), printed: true, invNo: invNo,
+      termType: d.termType || cur.termType || '', termDays: d.termDays || cur.termDays || 0, freight: Number(d.freight)||0, lines: d.lines || cur.lines || [] };
+    if(invDrafts[plWh]) invDrafts[plWh].invNo = invNo;
+    await sbFetch('/rest/v1/pr_orders?base=eq.'+encodeURIComponent(plBase), {method:'PATCH', headers:{Prefer:'return=minimal'}, body:JSON.stringify({inv:rec.inv, updated_at:new Date().toISOString()})});
+    const blob = await makePdfBlob(buildStageDoc(rec, plWh, 'invoice', invDocData()), []);
+    const b64 = await blobToB64(blob);
+    const meta = rec.meta || {};
+    const row = (k,v) => `<tr><td style="padding:4px 14px 4px 0;color:#666;">${k}</td><td style="font-weight:700;">${v}</td></tr>`;
+    const bodyHtml = `<div style="font-family:Helvetica,Arial,sans-serif;font-size:14px;color:#111;">
+      <table width="100%" cellpadding="0" cellspacing="0" style="background:#0f2a4a;border-collapse:collapse;"><tr><td style="padding:10px 18px;"><img src="https://pacificsports.github.io/pull-request-tool/logo-sm.png" width="150" height="37" alt="Pacific Sports" style="display:block;border:0;"></td><td style="padding:10px 18px;text-align:right;color:#fff;font-size:16px;font-weight:800;letter-spacing:1.5px;white-space:nowrap;">INVOICE</td></tr></table>
+      <p style="margin-top:16px;">Hello,</p>
+      <p>Please find your invoice attached.</p>
+      <table style="border-collapse:collapse;font-size:14px;">
+        ${row('Invoice #', esc(invNo))}
+        ${row('PO #', esc(meta.po||''))}
+        ${row('Invoice Date', new Date().toLocaleDateString('en-US'))}
+        ${d.termDays ? row('Terms', 'Net ' + d.termDays) : (d.termType==='cc' ? row('Terms', 'Credit Card') : '')}
+        ${row('Amount Due', '$' + tot.toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2}))}
+      </table>
+      <p style="margin-top:16px;">Thank you,<br><b>Pacific Sports</b></p>
+    </div>`;
+    const r = await fetch('https://po-confirm-email.hjbae.workers.dev/send-pl', {
+      method:'POST', headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({ to: toList, subject: 'Invoice ' + invNo + ' — PO ' + (meta.po||'') + ' (Pacific Sports)', html: bodyHtml, reply_to: STAFF_EMAILS,
+        attachments: [{ filename: invNo + '-INVOICE.pdf', content: b64 }] })
+    });
+    const j = await r.json().catch(()=>({}));
+    if(!r.ok || j.ok === false) throw new Error(j.error || ('HTTP ' + r.status));
+    if(plDrafts[plWh] && em){ plDrafts[plWh].custEmail = em; }
+    logHist(plBase, 'Invoice emailed (' + invNo + ') → ' + toList.join(', '));
+    showToast('✅ Invoice 발송됨 → ' + toList.join(', '));
+    renderPL(); renderSaved();
+  }catch(e){ showToast('❌ 발송 실패: ' + (e.message||e)); }
+}
 function invDocData(){
   const d = plDrafts[plWh] || {};
   const iv = invDrafts[plWh] || {};
@@ -3914,7 +3961,10 @@ function renderPL(){
       </div>`}
       <div class="no-print" style="display:flex;gap:6px;justify-content:flex-end;margin-bottom:12px;flex-wrap:wrap;">
         ${plShowInv
-          ? `<button class="btn btn-sm" style="background:#fff;color:#7c3aed;border-color:#c4b5fd;margin-right:auto;" onclick="viewSavedPO(plBase)" title="거래처에서 받은 원본 PO를 옆에 띄워 인보이스와 비교">📄 Customer PO</button><button class="btn btn-sm btn-primary" onclick="saveInvStage()">${t('save_inv')}</button><button class="btn btn-sm" id="invpdf-btn" onclick="downloadPLPdf('invoice')">${t('inv_pdf')}</button><button class="btn btn-sm" onclick="printStageDoc('invoice')">🖨 Invoice</button>`
+          ? `<button class="btn btn-sm" style="background:#fff;color:#7c3aed;border-color:#c4b5fd;margin-right:auto;" onclick="viewSavedPO(plBase)" title="거래처에서 받은 원본 PO를 옆에 띄워 인보이스와 비교">📄 Customer PO</button>
+             <input class="fi" id="inv-email" value="${esc((plDrafts[plWh]&&plDrafts[plWh].custEmail)||((rec.meta&&rec.meta.custEmail)||'')||custEmailFor(rec.meta&&rec.meta.cust)||'')}" placeholder="거래처 이멜 (쉼표로 여러명)" style="width:230px;font-size:11.5px;padding:5px 8px;">
+             <button class="btn btn-sm" style="background:#0e7490;color:#fff;border-color:#0e7490;font-weight:800;" onclick="sendInvoiceEmail()" title="입력한 이멜로 Invoice PDF 발송">📧 Send Invoice</button>
+             <button class="btn btn-sm btn-primary" onclick="saveInvStage()">${t('save_inv')}</button><button class="btn btn-sm" id="invpdf-btn" onclick="downloadPLPdf('invoice')">${t('inv_pdf')}</button><button class="btn btn-sm" onclick="printStageDoc('invoice')">🖨 Invoice</button>`
           : `<label style="display:flex;align-items:center;gap:5px;font-size:11.5px;font-weight:700;color:#0e7490;margin-right:auto;cursor:pointer;"><input type="checkbox" id="plf-sendpl" ${(plDrafts[plWh]&&plDrafts[plWh].sendPl)?'checked':''} onchange="if(plDrafts[plWh])plDrafts[plWh].sendPl=this.checked" style="width:14px;height:14px;accent-color:#0e7490;cursor:pointer;"> ${t('sendpl_cb')}</label>${plInfo(rec,plWh).savedAt ? `<button class="btn btn-sm" style="background:#0e7490;color:#fff;border-color:#0e7490;" onclick="resendPL()" title="Customer Email 칸의 주소로 Packing List를 다시 발송">📧 Resend PL</button><button class="btn btn-sm" style="background:#fff;color:#b91c1c;border-color:#fca5a5;" onclick="unshipPL()" title="이 창고의 Packing List/Invoice 기록을 삭제하고 출고 전 상태로 되돌립니다">↩ 출고 취소</button>` : ''}<button class="btn btn-sm" style="background:#7c3aed;color:#fff;border-color:#7c3aed;" onclick="document.getElementById('pl-scan-file').click()" title="핸드폰으로 서명된 BOL/Packing List 사진을 찍으면 자동으로 PDF로 변환해 이 오더에 첨부됩니다">📷 Scan</button><input type="file" id="pl-scan-file" accept="image/*,application/pdf" capture="environment" multiple style="display:none;" onchange="plScanUpload(this)"><button class="btn btn-sm" style="background:#374151;color:#fff;border-color:#374151;" onclick="openBOL()" title="Bill of Lading — 창에서 수정·저장 후 인쇄">🚛 BOL</button><button class="btn btn-sm btn-primary" onclick="savePL()">${t('save_pl')}</button>${(()=>{ const dd = plInfo(rec,plWh); return dd.savedAt && !dd._completed ? `<button class="btn btn-sm" style="background:#16a34a;color:#fff;border-color:#16a34a;font-weight:800;" onclick="completePL()" title="수정 끝났을 때 누르세요 — 초록 처리 + 거래처 이멜 발송">✅ Complete</button>` : (dd._completed ? `<span style="align-self:center;padding:3px 10px;border-radius:20px;font-size:10.5px;font-weight:800;background:#dcfce7;color:#166534;white-space:nowrap;">✅ Completed ${new Date(dd._completed).toLocaleDateString()}</span>` : ''); })()}<button class="btn btn-sm" id="plpdf-btn" onclick="downloadPLPdf('packing')">${t('pl_pdf')}</button><button class="btn btn-sm" onclick="printStageDoc('packing')">🖨</button>`}
         <button class="btn btn-sm" onclick="closePL()">${t('close')}</button>
       </div>
