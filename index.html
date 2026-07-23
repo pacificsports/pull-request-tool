@@ -135,7 +135,7 @@ main{max-width:1100px;margin:0 auto;padding:16px;}
     <button class="btn btn-sm" onclick="doLogout()" style="padding:2px 8px;font-size:10px;" data-i18n="logout">로그아웃</button>
   </span>
   <select id="lang-sel" onchange="setLang(this.value)" style="font-size:11px;padding:3px 6px;border-radius:5px;border:none;background:#1d3f66;color:#fff;"><option value="ko">한국어</option><option value="en">English</option><option value="es">Español</option></select>
-  <span style="font-size:10px;color:#9fb8d4;">v238</span>
+  <span style="font-size:10px;color:#9fb8d4;">v239</span>
 </div>
 <script type="text/javascript" src="https://js.authorize.net/v1/Accept.js" charset="utf-8"></script>
 <div id="po-viewer" style="display:none;position:fixed;top:0;right:0;width:44%;height:100vh;background:#fff;border-left:2px solid var(--border);z-index:60;box-shadow:-6px 0 20px rgba(0,0,0,.15);">
@@ -173,6 +173,7 @@ main{max-width:1100px;margin:0 auto;padding:16px;}
   <button id="nav-dash" class="nav-btn" onclick="showView('dash')">📊 Dashboard</button>
   <button id="nav-cust" class="nav-btn" onclick="showView('cust')">👥 Customers</button>
   <button id="nav-pc" class="nav-btn" onclick="showView('pc')">🧺 PC Room</button>
+  <button id="nav-tx" class="nav-btn" onclick="showView('tx')">💳 Transactions</button>
 </div>
 <div id="orders-view">
 
@@ -336,6 +337,7 @@ main{max-width:1100px;margin:0 auto;padding:16px;}
     <div id="cust-body"><div class="muted">로딩...</div></div>
   </div>
 </div>
+<div id="tx-view" style="display:none;"></div>
 <div id="pc-view" style="display:none;">
   <div class="card">
     <div class="card-title"><span>🧺 PC Room — SC Partial Pcs Inventory</span>
@@ -2750,6 +2752,7 @@ function invTotalOf(iv, rec, wh){
 }
 function invPaidSum(iv){
   let p = (iv.payments||[]).reduce((a,x)=>a+(Number(x.amt)||0),0);
+  p += (iv.dupPays||[]).reduce((a,d)=>a + (Number(d.amt)||0) - (d.refunds||[]).reduce((s,r)=>s+(Number(r.amt)||0),0) - (d.refunded ? (Number(d.amt)||0) : 0), 0);
   if(iv.paid){
     p += Number(iv.paid.amt)||0;
     p -= (iv.paid.refunds||[]).reduce((a,r)=>a+(Number(r.amt)||0),0) + (iv.paid.refunded ? (Number(iv.paid.amt)||0) : 0);
@@ -3117,7 +3120,15 @@ async function markPaidWebsite(){
   showToast('🌐 웹사이트 결제 확인 — PAID 처리됨 ($' + amt.toFixed(2) + ')');
   renderPL(); renderSaved();
 }
-function startCharge(){
+function ccBusy(on){
+  window._ccBusy = !!on;
+  const b = $('cc-go');
+  if(b){ b.disabled = !!on; b.textContent = on ? '⏳ Processing…' : 'Charge'; b.style.opacity = on ? '.55' : '1'; }
+  if(on){ clearTimeout(window._ccBusyTo); window._ccBusyTo = setTimeout(()=>{ if(window._ccBusy){ ccBusy(false); const s=$('cc-status'); if(s){s.textContent='⚠ 응답 없음 — 결제가 됐는지 Transactions 탭에서 확인 후 다시 시도하세요'; s.style.color='#b91c1c';} } }, 60000); }
+  else clearTimeout(window._ccBusyTo);
+}
+async function startCharge(){
+  if(window._ccBusy){ showToast('⏳ 결제 진행 중 — 잠시만요 (중복 클릭 방지)'); return; }
   const num = (($('cc-num') && $('cc-num').value) || '').replace(/\s/g, '');
   const exp = (($('cc-exp') && $('cc-exp').value) || '').replace(/[^0-9]/g, '');
   const cvv = (($('cc-cvv') && $('cc-cvv').value) || '').trim();
@@ -3128,8 +3139,29 @@ function startCharge(){
   if(cvv.length < 3){ bad('CVV 3~4 digits'); return; }
   if(!(amt > 0)){ bad('Check amount'); return; }
   if(typeof Accept === 'undefined'){ bad('Payment module loading... try again'); return; }
+  ccBusy(true);
+  const st = $('cc-status'); if(st){ st.style.color = '#92400e'; st.innerHTML = '<span class="ccspin"></span>결제 확인 중...'; }
+  // ⚠ 이중 결제 방지: 서버에서 최신 상태 확인 (다른 직원/다른 컴퓨터에서 이미 결제했는지)
+  try{
+    const fr = await sbFetch('/rest/v1/pr_orders?select=inv&base=eq.'+encodeURIComponent(plBase));
+    if(fr.ok){
+      const rows = await fr.json();
+      const fiv = rows[0] && rows[0].inv && rows[0].inv[plWh];
+      if(fiv && fiv.paid){
+        const pd0 = fiv.paid;
+        const rec0 = savedCache.find(s=>s.base===plBase);
+        if(rec0){ rec0.inv = rec0.inv || {}; rec0.inv[plWh] = fiv; } // 최신 반영
+        ccBusy(false);
+        if(!confirm('🚨 이미 결제 기록이 있습니다!\n\n$' + Number(pd0.amt).toFixed(2) + ' — ' + (pd0.method==='website'?'Website':('Card ' + (pd0.acct||''))) + '\n' + new Date(pd0.at).toLocaleString() + ' · ' + (pd0.by||'') + (pd0.transId?('\nTrans ' + pd0.transId):'') + '\n\n같은 인보이스에 카드를 한 번 더 긁으면 이중 결제가 됩니다.\n정말 추가로 결제할까요?')){
+          if(st){ st.textContent = '⛔ 취소됨 — 이미 결제된 인보이스'; st.style.color = '#b91c1c'; }
+          renderPL(); renderSaved(); return;
+        }
+        ccBusy(true);
+      }
+    }
+  }catch(e){}
+  if(st){ st.style.color = '#92400e'; st.innerHTML = '<span class="ccspin"></span>Processing...'; }
   _ccPending = { base: plBase, wh: plWh, amt: amt, extras: JSON.parse(JSON.stringify(window._ccExtra||[])) };
-  const st = $('cc-status'); if(st){ st.style.color = '#92400e'; st.innerHTML = '<span class="ccspin"></span>Processing...'; }
   Accept.dispatchData({
     authData: { apiLoginID: ANET_LOGIN_ID, clientKey: ANET_CLIENT_KEY },
     cardData: { cardNumber: num, month: exp.slice(0,2), year: '20' + exp.slice(2), cardCode: cvv }
@@ -3140,10 +3172,10 @@ async function anetResponseHandler(response){
     if(response && response.messages && response.messages.resultCode === 'Error'){
       const st0 = $('cc-status');
       if(st0){ st0.textContent = '❌ Declined — ' + (response.messages.message||[]).map(x=>x.text).join(', '); st0.style.color = '#b91c1c'; }
-      showToast('❌ 카드 정보 오류'); return;
+      ccBusy(false); showToast('❌ 카드 정보 오류'); return;
     }
-    if(!response || !response.opaqueData){ return; }
-    const p = _ccPending; if(!p){ return; }
+    if(!response || !response.opaqueData){ ccBusy(false); return; }
+    const p = _ccPending; if(!p){ ccBusy(false); return; }
     const st = $('cc-status'); if(st){ st.style.color = '#92400e'; st.innerHTML = '<span class="ccspin"></span>Processing...'; }
     const rec = savedCache.find(s=>s.base===p.base); if(!rec){ return; }
     const iv = invDrafts[p.wh] || {};
@@ -3158,14 +3190,22 @@ async function anetResponseHandler(response){
     const j = await r.json().catch(()=>({}));
     if(!r.ok || !j.ok){
       if(st){ st.textContent = '❌ Declined — ' + (j.error || ('HTTP ' + r.status)); st.style.color = '#b91c1c'; }
-      showToast('❌ Declined'); return;
+      ccBusy(false); showToast('❌ Declined'); return;
     }
     const extras = p.extras || [];
     const exSum = extras.reduce((a,x)=>a+x.amt,0);
     const primaryAmt = Math.round((p.amt - exSum)*100)/100;
     rec.inv = rec.inv || {}; const cur = rec.inv[p.wh] || {};
-    // 카드 승인 = 인보이스 자동 발행 처리 (번호 부여 + 초록)
-    rec.inv[p.wh] = { ...cur, termType:'cc', printed: true, invNo: cur.invNo || nextInvNo(), savedAt: cur.savedAt || new Date().toISOString(), paid: { amt: primaryAmt, transId: j.transId||'', authCode: j.authCode||'', acct: j.acct||'', at: new Date().toISOString(), by: (SESS&&SESS.email)||'' } };
+    const payRec = { amt: primaryAmt, transId: j.transId||'', authCode: j.authCode||'', acct: j.acct||'', at: new Date().toISOString(), by: (SESS&&SESS.email)||'' };
+    if(cur.paid && cur.paid.transId !== payRec.transId){
+      // 🚨 이중 결제 발생 — 덮어쓰지 않고 둘 다 기록해서 눈에 보이게
+      rec.inv[p.wh] = { ...cur, dupPays: [...(cur.dupPays||[]), payRec] };
+      logHist(p.base, '🚨 DUPLICATE charge $' + p.amt.toFixed(2) + ' — ' + p.wh + ' (Trans ' + (j.transId||'') + ') 이중 결제! 둘 다 기록됨');
+      showToast('🚨 이중 결제 감지! 두 건 모두 기록됨 — 한 건은 Refund 하세요');
+    }else{
+      // 카드 승인 = 인보이스 자동 발행 처리 (번호 부여 + 초록)
+      rec.inv[p.wh] = { ...cur, termType:'cc', printed: true, invNo: cur.invNo || nextInvNo(), savedAt: cur.savedAt || new Date().toISOString(), paid: payRec };
+    }
     if(invDrafts[p.wh]){ invDrafts[p.wh].termType = 'cc'; invDrafts[p.wh].invNo = rec.inv[p.wh].invNo; }
     try{ await sbFetch('/rest/v1/pr_orders?base=eq.'+encodeURIComponent(p.base), {method:'PATCH', headers:{Prefer:'return=minimal'}, body:JSON.stringify({inv:rec.inv, updated_at:new Date().toISOString()})}); }catch(e){}
     logHist(p.base, 'Credit card charged $' + p.amt.toFixed(2) + ' — ' + p.wh + ' (Auth ' + (j.authCode||'') + ', ' + (j.acct||'') + ')' + (extras.length ? ' [합산: 이 건 $' + primaryAmt.toFixed(2) + ' + ' + extras.length + '건]' : ''));
@@ -3177,6 +3217,7 @@ async function anetResponseHandler(response){
       logHist(x.base, 'Credit card charged $' + x.amt.toFixed(2) + ' — ' + x.wh + ' (합산결제, ' + p.base + ' 와 한 번에 · Trans ' + (j.transId||'') + ')');
     }
     window._ccExtra = [];
+    ccBusy(false);
     if(st){ st.textContent = '✅ Charged'; st.style.color = '#166534'; }
     showToast('✅ 결제 승인 — $' + p.amt.toFixed(2) + ' (' + (j.acct||'') + ') — 인보이스 발행 처리됨');
     _ccPending = null;
@@ -3184,6 +3225,7 @@ async function anetResponseHandler(response){
   }catch(e){
     const st = $('cc-status');
     if(st){ st.textContent = '❌ Error — ' + e.message; st.style.color = '#b91c1c'; }
+    ccBusy(false);
     showToast('❌ 결제 처리 오류');
   }
 }
@@ -3192,9 +3234,13 @@ function refundTotals(pd){
   const refTot = (pd.refunds||[]).reduce((a,r)=>a+(Number(r.amt)||0),0) + (pd.refunded ? (Number(pd.amt)||0) : 0);
   return { refTot, remain: Math.max(0, (Number(pd.amt)||0) - refTot) };
 }
-function refundCharge(base, wh){
+function payOf(rec, wh, dupIdx){
+  const iv = rec.inv && rec.inv[wh]; if(!iv) return null;
+  return (dupIdx==null || dupIdx==='') ? iv.paid : (iv.dupPays||[])[dupIdx];
+}
+function refundCharge(base, wh, dupIdx){
   const rec = savedCache.find(s=>s.base===base); if(!rec) return;
-  const pd = rec.inv && rec.inv[wh] && rec.inv[wh].paid; if(!pd) return;
+  const pd = payOf(rec, wh, dupIdx); if(!pd) return;
   const { refTot, remain } = refundTotals(pd);
   if(remain <= 0.005) return;
   const ex = document.getElementById('modal-refund'); if(ex) ex.remove();
@@ -3217,15 +3263,15 @@ function refundCharge(base, wh){
     </div>
     <div style="padding:0 16px 14px;display:flex;gap:8px;justify-content:flex-end;">
       <button class="btn btn-sm" onclick="document.getElementById('modal-refund').remove()">취소</button>
-      <button class="btn btn-sm" id="rf-go" style="background:#b91c1c;color:#fff;border-color:#b91c1c;font-weight:800;" onclick="submitRefund('${esc(base)}','${wh}')">↩ Refund</button>
+      <button class="btn btn-sm" id="rf-go" style="background:#b91c1c;color:#fff;border-color:#b91c1c;font-weight:800;" onclick="submitRefund('${esc(base)}','${wh}',${dupIdx==null?'null':dupIdx})">↩ Refund</button>
     </div>
   </div>`;
   document.body.appendChild(div);
   initModalDrag(div);
 }
-async function submitRefund(base, wh){
+async function submitRefund(base, wh, dupIdx){
   const rec = savedCache.find(s=>s.base===base); if(!rec) return;
-  const pd = rec.inv && rec.inv[wh] && rec.inv[wh].paid; if(!pd) return;
+  const pd = payOf(rec, wh, dupIdx); if(!pd) return;
   const { refTot, remain } = refundTotals(pd);
   const amt = parseFloat(($('rf-amt') && $('rf-amt').value) || '0');
   const st = $('rf-status');
@@ -4035,10 +4081,18 @@ function renderPL(){
           const ivRec = (rec.inv && rec.inv[plWh]) || {};
           if(ivRec.paid){
             const rt = refundTotals(ivRec.paid);
-            if(rt.remain <= 0.005){
-              return `<div style="margin-top:8px;padding:8px 12px;background:#f5f5f4;border:1.5px solid #d6d3d1;border-radius:8px;font-size:12px;font-weight:700;color:#57534e;">↩ REFUNDED $${rt.refTot.toFixed(2)} — Card ${esc(ivRec.paid.acct||'')}</div>`;
-            }
-            return `<div style="margin-top:8px;padding:8px 12px;background:#f0fdf4;border:1.5px solid #86efac;border-radius:8px;font-size:12px;font-weight:700;color:#166534;">✅ PAID $${Number(ivRec.paid.amt).toFixed(2)} — ${ivRec.paid.method==='website' ? '🌐 Paid via Website' : `Card ${esc(ivRec.paid.acct||'')} · Auth ${esc(ivRec.paid.authCode||'')} · Trans ${esc(ivRec.paid.transId||'')}`} · ${new Date(ivRec.paid.at).toLocaleString()} · ${esc(ivRec.paid.by||'')}${rt.refTot>0?` <span style=\"color:#b91c1c;\">· ↩ refunded $${rt.refTot.toFixed(2)}</span>`:''}</div>`;
+            const dups = ivRec.dupPays || [];
+            const payBox = rt.remain <= 0.005
+              ? `<div style="margin-top:8px;padding:8px 12px;background:#f5f5f4;border:1.5px solid #d6d3d1;border-radius:8px;font-size:12px;font-weight:700;color:#57534e;">↩ REFUNDED $${rt.refTot.toFixed(2)} — Card ${esc(ivRec.paid.acct||'')}</div>`
+              : `<div style="margin-top:8px;padding:8px 12px;background:#f0fdf4;border:1.5px solid #86efac;border-radius:8px;font-size:12px;font-weight:700;color:#166534;">✅ PAID $${Number(ivRec.paid.amt).toFixed(2)} — ${ivRec.paid.method==='website' ? '🌐 Paid via Website' : `Card ${esc(ivRec.paid.acct||'')} · Auth ${esc(ivRec.paid.authCode||'')} · Trans ${esc(ivRec.paid.transId||'')}`} · ${new Date(ivRec.paid.at).toLocaleString()} · ${esc(ivRec.paid.by||'')}${rt.refTot>0?` <span style=\"color:#b91c1c;\">· ↩ refunded $${rt.refTot.toFixed(2)}</span>`:''}</div>`;
+            const dupBoxes = dups.map((d,i)=>{
+              const drt = refundTotals(d);
+              return drt.remain <= 0.005
+                ? `<div style="margin-top:6px;padding:8px 12px;background:#f5f5f4;border:1.5px solid #d6d3d1;border-radius:8px;font-size:12px;font-weight:700;color:#57534e;">↩ 이중 결제분 환불 완료 $${drt.refTot.toFixed(2)} — Trans ${esc(d.transId||'')}</div>`
+                : `<div style="margin-top:6px;padding:8px 12px;background:#fef2f2;border:2px solid #dc2626;border-radius:8px;font-size:12px;font-weight:800;color:#b91c1c;display:flex;align-items:center;gap:8px;flex-wrap:wrap;">🚨 이중 결제 #${i+2} — $${Number(d.amt).toFixed(2)} · Card ${esc(d.acct||'')} · Trans ${esc(d.transId||'')} · ${new Date(d.at).toLocaleString()} · ${esc(d.by||'')}
+                   <button class="btn btn-sm" style="background:#b91c1c;color:#fff;border-color:#b91c1c;font-weight:800;" onclick="refundCharge('${esc(plBase)}','${plWh}',${i})">↩ 이 건 Refund</button></div>`;
+            }).join('');
+            return payBox + dupBoxes;
           }
           const dd = invDocData();
           const totNow = (dd.lines||[]).reduce((a,l)=>a+(Number(l.qty)||0)*(Number(l.price)||0),0) + (Number(dd.freight)||0);
@@ -4052,7 +4106,7 @@ function renderPL(){
             <input class="fi" id="cc-cvv" placeholder="CVV" maxlength="4" oninput="this.value=this.value.replace(/[^0-9]/g,'')" style="width:54px;text-align:center;font-family:Consolas,monospace;font-weight:700;">
             <span style="font-size:12px;font-weight:800;color:#92400e;margin-left:4px;">$</span>
             <input class="fi num" id="cc-amt" value="${totNow.toFixed(2)}" style="width:100px;text-align:center;font-family:Consolas,monospace;font-weight:700;">
-            <button class="btn btn-sm" style="background:#065f46;color:#fff;border-color:#065f46;font-weight:800;" onclick="startCharge()">Charge</button>
+            <button class="btn btn-sm" id="cc-go" style="background:#065f46;color:#fff;border-color:#065f46;font-weight:800;" onclick="startCharge()">Charge</button>
             <button class="btn btn-sm" style="background:#0e7490;color:#fff;border-color:#0e7490;font-weight:800;" onclick="markPaidWebsite()" title="웹사이트에서 이미 결제된 오더 — 카드 안 긁고 PAID 처리">🌐 Paid via Website</button>
             <span id="cc-status" style="font-size:11.5px;font-weight:700;color:#92400e;"></span>
             ${others.length ? `<div style="flex-basis:100%;border-top:1px dashed #fcd34d;margin-top:4px;padding-top:6px;font-size:11.5px;">
@@ -4077,22 +4131,107 @@ function renderPL(){
 }
 
 // ═══════════════ 📊 Dashboard ═══════════════
+let txPeriod = '30', txQ = '';
+function txRows(){
+  const rows = [];
+  (savedCache||[]).forEach(r=>{
+    const meta = r.meta || {};
+    Object.keys(r.inv||{}).forEach(w=>{
+      const iv = r.inv[w] || {};
+      const ctx = { base:r.base, wh:w, cust:meta.cust||'', po:meta.po||'', invNo:iv.invNo||'' };
+      const dupN = (iv.dupPays||[]).length;
+      const pushPay = (pd, isDup, di) => {
+        if(!pd) return;
+        rows.push({ ...ctx, at:pd.at, type: pd.method==='website'?'website':'charge', amt:+(Number(pd.amt)||0), acct:pd.acct||'', transId:pd.transId||'', auth:pd.authCode||'', by:pd.by||'', dup:(isDup||dupN>0), note: isDup?('이중 결제 #'+(di+2)) : (pd.note||'') });
+        (pd.refunds||[]).forEach(rf=>rows.push({ ...ctx, at:rf.at, type: rf.type==='void'?'void':'refund', amt:-(Number(rf.amt)||0), acct:pd.acct||'', transId:rf.transId||pd.transId||'', auth:'', by:rf.by||'', dup:(isDup||dupN>0), note: rf.type==='void'?'청구 취소':'' }));
+        if(pd.refunded) rows.push({ ...ctx, at:pd.refundedAt||pd.at, type:'refund', amt:-(Number(pd.amt)||0), acct:pd.acct||'', transId:pd.transId||'', auth:'', by:'', dup:false, note:'전액 환불' });
+      };
+      pushPay(iv.paid, false, 0);
+      (iv.dupPays||[]).forEach((d,i)=>pushPay(d, true, i));
+      (iv.payments||[]).forEach(pm=>rows.push({ ...ctx, at:pm.at, type:'payment', amt:+(Number(pm.amt)||0), acct:'', transId:'', auth:'', by:pm.by||'', dup:false, note:pm.note||'입금' }));
+      (iv.memos||[]).forEach(mm=>rows.push({ ...ctx, at:mm.at, type:'memo', amt:-(Number(mm.amt)||0), acct:'', transId:'', auth:'', by:mm.by||'', dup:false, note:'Credit Memo' }));
+    });
+  });
+  rows.sort((a,b)=>new Date(b.at||0) - new Date(a.at||0));
+  return rows;
+}
+function renderTx(){
+  const tv = $('tx-view'); if(!tv) return;
+  let rows = txRows();
+  // 합산결제 표시 (같은 카드 승인 transId가 여러 오더에 나눠 기록됨)
+  const tcount = {};
+  rows.forEach(r=>{ if(r.transId && r.type==='charge') tcount[r.transId]=(tcount[r.transId]||0)+1; });
+  if(txPeriod !== 'all'){
+    const since = Date.now() - Number(txPeriod)*86400000;
+    rows = rows.filter(r=>new Date(r.at||0).getTime() >= since);
+  }
+  const q = txQ.trim().toLowerCase();
+  if(q) rows = rows.filter(r=>(r.cust+' '+r.po+' '+r.invNo+' '+r.transId+' '+r.acct+' '+r.by+' '+r.note).toLowerCase().includes(q));
+  const charged = rows.filter(r=>r.amt>0).reduce((a,r)=>a+r.amt,0);
+  const refunded = rows.filter(r=>r.amt<0).reduce((a,r)=>a-r.amt,0);
+  const dupCnt = new Set(rows.filter(r=>r.dup).map(r=>r.base+'|'+r.wh)).size;
+  const TYPE = { charge:['💳 Card','#065f46','#ecfdf5','#6ee7b7'], website:['🌐 Website','#0e7490','#ecfeff','#67e8f9'], refund:['↩ Refund','#b91c1c','#fef2f2','#fca5a5'], void:['⊘ Void','#57534e','#f5f5f4','#d6d3d1'], payment:['💰 Payment','#92400e','#fffbeb','#fcd34d'], memo:['📝 Memo','#7c2d12','#fef2f2','#fecaca'] };
+  tv.innerHTML = `<div style="max-width:1200px;margin:0 auto;padding:16px 6px;">
+    <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin-bottom:12px;">
+      <h2 style="margin:0;font-size:17px;">💳 All Transactions</h2>
+      <select class="fi" onchange="txPeriod=this.value;renderTx()" style="width:auto;font-size:12px;">
+        <option value="7" ${txPeriod==='7'?'selected':''}>최근 7일</option>
+        <option value="30" ${txPeriod==='30'?'selected':''}>최근 30일</option>
+        <option value="90" ${txPeriod==='90'?'selected':''}>최근 90일</option>
+        <option value="all" ${txPeriod==='all'?'selected':''}>전체</option>
+      </select>
+      <input class="fi" value="${esc(txQ)}" oninput="txQ=this.value;renderTx()" placeholder="🔍 거래처 / PO / Inv# / Trans ID / 카드 / 직원" style="width:290px;font-size:12px;">
+      <span style="margin-left:auto;display:flex;gap:8px;flex-wrap:wrap;">
+        <span style="padding:5px 12px;border-radius:8px;background:#ecfdf5;border:1.5px solid #6ee7b7;font-size:12px;font-weight:800;color:#065f46;">받음 $${charged.toLocaleString(undefined,{minimumFractionDigits:2})}</span>
+        <span style="padding:5px 12px;border-radius:8px;background:#fef2f2;border:1.5px solid #fca5a5;font-size:12px;font-weight:800;color:#b91c1c;">환불/메모 −$${refunded.toLocaleString(undefined,{minimumFractionDigits:2})}</span>
+        <span style="padding:5px 12px;border-radius:8px;background:#f0f9ff;border:1.5px solid #7dd3fc;font-size:12px;font-weight:800;color:#075985;">순수령 $${(charged-refunded).toLocaleString(undefined,{minimumFractionDigits:2})}</span>
+        ${dupCnt ? `<span style="padding:5px 12px;border-radius:8px;background:#fef2f2;border:2px solid #dc2626;font-size:12px;font-weight:800;color:#b91c1c;animation:overdue-pulse 1s ease-in-out infinite;">🚨 이중결제 ${dupCnt}건</span>` : ''}
+      </span>
+    </div>
+    <table class="tbl" style="width:100%;font-size:12px;">
+      <thead><tr style="background:#0f2a4a;color:#fff;">
+        <th style="text-align:left;padding:7px 10px;">일시</th><th style="text-align:left;">Type</th><th style="text-align:left;">Customer</th><th style="text-align:left;">PO</th><th>WH</th><th>Inv #</th><th style="text-align:right;">Amount</th><th>Card</th><th style="text-align:left;">Trans ID</th><th style="text-align:left;">By</th><th style="text-align:left;">비고</th>
+      </tr></thead>
+      <tbody>${rows.map(r=>{
+        const tp = TYPE[r.type]||TYPE.charge;
+        const combo = r.transId && tcount[r.transId]>1;
+        return `<tr style="${r.dup?'background:#fef2f2;box-shadow:inset 3px 0 0 #dc2626;':''}border-bottom:1px solid var(--border);">
+          <td style="padding:6px 10px;white-space:nowrap;font-family:Consolas,monospace;font-size:11px;">${r.at?new Date(r.at).toLocaleString('en-US',{month:'numeric',day:'numeric',year:'2-digit',hour:'numeric',minute:'2-digit'}):'—'}</td>
+          <td><span style="padding:2px 8px;border-radius:20px;font-size:10px;font-weight:800;color:${tp[1]};background:${tp[2]};border:1px solid ${tp[3]};white-space:nowrap;">${tp[0]}</span>${r.dup?' <span style="font-size:10px;font-weight:800;color:#dc2626;">🚨</span>':''}${combo?' <span title="합산결제 — 한 번 긁어서 여러 오더에 나눔" style="font-size:10px;font-weight:800;color:#7c3aed;">🔗</span>':''}</td>
+          <td style="font-weight:700;max-width:170px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${esc(r.cust)}</td>
+          <td><a href="#" onclick="openOrderSummary('${esc(r.base)}');return false;" style="color:#1d4ed8;font-weight:700;text-decoration:none;">${esc(r.po)||'—'}</a></td>
+          <td style="text-align:center;"><span class="chip chip-${esc(r.wh)}" style="font-size:9.5px;padding:1px 7px;">${esc(r.wh)}</span></td>
+          <td style="text-align:center;font-family:Consolas,monospace;font-weight:700;">${esc(r.invNo)||'—'}</td>
+          <td style="text-align:right;font-family:Consolas,monospace;font-weight:800;color:${r.amt<0?'#b91c1c':'#065f46'};white-space:nowrap;">${r.amt<0?'−':''}$${Math.abs(r.amt).toFixed(2)}</td>
+          <td style="text-align:center;font-family:Consolas,monospace;font-size:11px;white-space:nowrap;">${esc(String(r.acct||'').replace('XXXX','•'))||'—'}</td>
+          <td style="font-family:Consolas,monospace;font-size:11px;">${esc(r.transId)||'—'}</td>
+          <td style="font-size:11px;color:var(--text2);white-space:nowrap;">${esc(String(r.by||'').split('@')[0])}</td>
+          <td style="font-size:11px;color:${r.dup?'#dc2626':'var(--text2)'};font-weight:${r.dup?'800':'400'};">${esc(r.note)}</td>
+        </tr>`;
+      }).join('') || '<tr><td colspan="11" style="text-align:center;padding:30px;color:#64748b;">기간 내 거래 없음</td></tr>'}</tbody>
+    </table>
+    <div style="font-size:10.5px;color:#9ca3af;margin-top:10px;line-height:1.7;">💳 카드결제 · 🌐 웹사이트결제 · ↩ 환불 · ⊘ 정산 전 취소 · 💰 수동입금 · 📝 크레딧메모 · 🔗 합산결제(한 번 긁어 여러 오더 분할) · 🚨 이중결제(같은 인보이스에 2번 결제 — 한 건 환불 필요)</div>
+  </div>`;
+}
 let dashPeriod = 'all', dashFrom = '', dashTo = '';
 function showView(v){
   try{ localStorage.setItem('pr_view', v); }catch(e){}
-  const ov = $('orders-view'), dv = $('dash-view'), cv = $('cust-view'), pv = $('pc-view');
+  const ov = $('orders-view'), dv = $('dash-view'), cv = $('cust-view'), pv = $('pc-view'), tv = $('tx-view');
   if(!ov || !dv) return;
   ov.style.display = v==='orders' ? 'block' : 'none';
   dv.style.display = v==='dash' ? 'block' : 'none';
   if(cv) cv.style.display = v==='cust' ? 'block' : 'none';
   if(pv) pv.style.display = v==='pc' ? 'block' : 'none';
+  if(tv) tv.style.display = v==='tx' ? 'block' : 'none';
   $('nav-orders').classList.toggle('nav-active', v==='orders');
   $('nav-dash').classList.toggle('nav-active', v==='dash');
   const nc = $('nav-cust'); if(nc) nc.classList.toggle('nav-active', v==='cust');
   const np = $('nav-pc'); if(np) np.classList.toggle('nav-active', v==='pc');
+  const nt = $('nav-tx'); if(nt) nt.classList.toggle('nav-active', v==='tx');
   if(v==='dash') renderDash();
   if(v==='cust') renderCustomers();
   if(v==='pc') loadPcRoom();
+  if(v==='tx') renderTx();
 }
 // ═══ PC Room (SC partial pcs inventory) ═══
 const PC_ADULT = ['XS','S','M','L','XL','2XL','3XL','4XL','5XL'];
@@ -5752,12 +5891,14 @@ function renderSaved(){
         ${w!=='BO' && w!=='NA' ? `<button class="btn btn-sm" style="background:${mp.label?'#16a34a':'#7c3aed'};color:#fff;border-color:${mp.label?'#16a34a':'#7c3aed'};" onclick="docBtnClick('${esc(s.base)}','${w}','label')" oncontextmenu="return docBtnMenu(event,'${esc(s.base)}','${w}','label')" title="우클릭: 완료(초록) 표시 ${mp.label?'해제':'전환'}">🏷 Box Label</button>
         <button class="btn btn-sm" style="${(s.pl && s.pl[w] && s.pl[w]._completed)?'background:#16a34a;border-color:#16a34a;':(plSaved?'background:#0e7490;border-color:#0e7490;':'background:#f59e0b;border-color:#f59e0b;')}color:#fff;" onclick="openPLWh('${esc(s.base)}','${w}')" oncontextmenu="return plBtnMenu(event,'${esc(s.base)}','${w}')" title="${plSaved && !(s.pl[w]&&s.pl[w]._completed)?'저장됨 — Complete 전 (이멜 미발송) · ':''}우클릭: Complete 표시/해제 (이멜 없이)">📦 Packing List</button>
         ${plSaved ? `<button class="btn btn-sm" style="${invPr?'background:#16a34a;border-color:#16a34a;':'background:#dc2626;border-color:#dc2626;'}color:#fff;" onclick="docBtnClick('${esc(s.base)}','${w}','inv')" oncontextmenu="return docBtnMenu(event,'${esc(s.base)}','${w}','inv')" title="우클릭: 완료(초록) 표시 ${invPr?'해제':'전환'}">🧾 Invoice</button>${invPr ? `<button class="btn btn-sm" style="background:#065f46;color:#fff;border-color:#065f46;" onclick="payFromRow('${esc(s.base)}','${w}')" title="입금 기록 (전액/부분)">💰 Payment</button><button class="btn btn-sm" style="background:#7c2d12;color:#fff;border-color:#7c2d12;" onclick="memoFromRow('${esc(s.base)}','${w}')" title="Credit Memo (리턴) — MAS200 파일 첨부 가능">📝 Credit Memo</button>` : ''}` : ''}
-        ${(()=>{ const pd = s.inv && s.inv[w] && s.inv[w].paid; if(!pd) return '';
+        ${(()=>{ const iv0 = s.inv && s.inv[w]; const pd = iv0 && iv0.paid; if(!pd) return '';
           const rt = refundTotals(pd);
+          const dupOpen = (iv0.dupPays||[]).some(d=>refundTotals(d).remain > 0.005);
+          const dupChip = dupOpen ? `<span style="padding:3px 9px;border-radius:20px;font-size:10px;font-weight:800;background:#fef2f2;color:#b91c1c;border:2px solid #dc2626;white-space:nowrap;animation:overdue-pulse 1s ease-in-out infinite;cursor:pointer;" onclick="openPLWh('${esc(s.base)}','${w}')" title="이중 결제 감지 — 클릭해서 확인/환불">🚨 이중결제 ×${1+(iv0.dupPays||[]).length}</span>` : '';
           if(rt.remain <= 0.005){
-            return `<span style="padding:3px 9px;border-radius:20px;font-size:10px;font-weight:800;background:#f5f5f4;color:#57534e;border:1px solid #d6d3d1;white-space:nowrap;">↩ Refunded $${rt.refTot.toFixed(2)}</span>`;
+            return `<span style="padding:3px 9px;border-radius:20px;font-size:10px;font-weight:800;background:#f5f5f4;color:#57534e;border:1px solid #d6d3d1;white-space:nowrap;">↩ Refunded $${rt.refTot.toFixed(2)}</span>` + dupChip;
           }
-          return `<span style="padding:3px 9px;border-radius:20px;font-size:10px;font-weight:800;background:#f0fdf4;color:#166534;border:1px solid #86efac;white-space:nowrap;">${pd.method==='website'?'🌐':'💳'} Paid $${Number(pd.amt).toFixed(2)}${rt.refTot>0?` <span style=\"color:#b91c1c;\">−$${rt.refTot.toFixed(2)}</span>`:''}</span>${pd.method==='website' ? '' : `<button class="btn btn-sm" style="background:#fff;color:#b91c1c;border-color:#fca5a5;" onclick="refundCharge('${esc(s.base)}','${w}')" title="카드 결제 취소/환불">↩ Refund</button>`}`; })()}
+          return `<span style="padding:3px 9px;border-radius:20px;font-size:10px;font-weight:800;background:#f0fdf4;color:#166534;border:1px solid #86efac;white-space:nowrap;">${pd.method==='website'?'🌐':'💳'} Paid $${Number(pd.amt).toFixed(2)}${rt.refTot>0?` <span style=\"color:#b91c1c;\">−$${rt.refTot.toFixed(2)}</span>`:''}</span>${dupChip}${pd.method==='website' ? '' : `<button class="btn btn-sm" style="background:#fff;color:#b91c1c;border-color:#fca5a5;" onclick="refundCharge('${esc(s.base)}','${w}')" title="카드 결제 취소/환불">↩ Refund</button>`}`; })()}
         ${(()=>{ const iv2 = s.inv && s.inv[w]; if(!iv2 || !iv2.savedAt) return ''; const hasPm = (iv2.payments&&iv2.payments.length)||(iv2.memos&&iv2.memos.length)||(iv2.paid&&!iv2.paid.refunded); if(!hasPm) return ''; const bal2 = invBalance(s, w);
           return bal2 <= 0.005 ? `<span style="padding:3px 9px;border-radius:20px;font-size:10px;font-weight:800;background:#f0fdf4;color:#166534;border:1px solid #86efac;white-space:nowrap;">💰 PAID</span>` : `<span style="padding:3px 9px;border-radius:20px;font-size:10px;font-weight:800;background:#fffbeb;color:#92400e;border:1px solid #fcd34d;white-space:nowrap;">💰 Bal $${bal2.toFixed(2)}</span>`; })()}` : ''}
         ${plSaved ? (s.pl[w]._completed
