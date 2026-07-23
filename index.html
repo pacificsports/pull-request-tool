@@ -135,7 +135,7 @@ main{max-width:1100px;margin:0 auto;padding:16px;}
     <button class="btn btn-sm" onclick="doLogout()" style="padding:2px 8px;font-size:10px;" data-i18n="logout">로그아웃</button>
   </span>
   <select id="lang-sel" onchange="setLang(this.value)" style="font-size:11px;padding:3px 6px;border-radius:5px;border:none;background:#1d3f66;color:#fff;"><option value="ko">한국어</option><option value="en">English</option><option value="es">Español</option></select>
-  <span style="font-size:10px;color:#9fb8d4;">v231</span>
+  <span style="font-size:10px;color:#9fb8d4;">v232</span>
 </div>
 <script type="text/javascript" src="https://js.authorize.net/v1/Accept.js" charset="utf-8"></script>
 <div id="po-viewer" style="display:none;position:fixed;top:0;right:0;width:44%;height:100vh;background:#fff;border-left:2px solid var(--border);z-index:60;box-shadow:-6px 0 20px rgba(0,0,0,.15);">
@@ -4784,9 +4784,13 @@ function custPsPrice(cust, style, size){
   const kid = /kid|toddler|juvy|youth/i.test(row.category||'');
   const num = v => (v==null||v===''||isNaN(parseFloat(v))) ? null : Math.round(parseFloat(v)*100)/100;
   if(kid){
-    if(/^[2-5]T$/.test(s)) return num(p['price_'+s.toLowerCase()]) ?? num(p.price_toddler);
-    if(/^Y/.test(s)) return num(p.price_youth);
-    return num(p.price_juvy) ?? num(p.price_youth) ?? num(p.price_toddler);
+    const cat = (row.category||'').toLowerCase();
+    if(cat.includes('toddler')) return num(p.price_toddler);
+    if(cat.includes('juvy')) return num(p.price_juvy);
+    if(cat.includes('youth')) return num(p.price_youth);
+    // Kids (2T-5T + XS-XL)
+    if(/^[2-5]T$/.test(s)) return num(p.price_2t);
+    return num(p.base_price);
   }
   const ov = {'2XL':p.price_2xl,'3XL':p.price_3xl,'4XL':p.price_4xl,'5XL':p.price_5xl}[s];
   if(num(ov) != null) return num(ov);
@@ -4816,7 +4820,8 @@ async function openCustPrices(cust){
       <span>3XL: 2XL <b style="color:#1d4ed8;">+$0.60</b></span>
       <span>4XL: 3XL <b style="color:#1d4ed8;">+$0.80</b></span>
       <span>5XL: 4XL <b style="color:#1d4ed8;">+$1.20</b></span>
-      <span style="margin-left:auto;color:#64748b;font-size:11px;">가격 입력 후 자동 저장</span>
+      <span style="margin-left:auto;display:flex;align-items:center;gap:5px;font-size:11.5px;font-weight:700;color:#1d4ed8;">Effective <input class="fi" type="date" id="ps-eff-all" onchange="psSetEffectiveAll(this.value)" style="width:130px;font-size:11px;padding:4px;" title="전체 가격에 일괄 적용되는 발효일 (IMS에도 기록)"></span>
+      <span style="color:#64748b;font-size:11px;">가격 입력 후 자동 저장</span>
       <button class="btn btn-sm" onclick="psSelectAll(true)">전체선택</button>
       <button class="btn btn-sm" onclick="psSelectAll(false)">선택해제</button>
     </div>
@@ -4838,7 +4843,12 @@ async function openCustPrices(cust){
   initModalDrag(div);
   const ps = await loadImsPricesFor(_psCust);
   const lk = document.getElementById('ps-imslink');
-  if(ps){ if(lk) lk.textContent = '↔ IMS: ' + ps.custName; renderPsSheet(); }
+  if(ps){
+    if(lk) lk.textContent = '↔ IMS: ' + ps.custName;
+    const effs = Object.values(ps.rows).map(p=>p.effective_date).filter(Boolean).sort();
+    const ef = document.getElementById('ps-eff-all'); if(ef && effs.length) ef.value = String(effs[effs.length-1]).slice(0,10);
+    renderPsSheet();
+  }
   else {
     const list = await loadImsCustomers();
     const body = document.getElementById('ps-body');
@@ -4894,10 +4904,18 @@ function renderPsSheet(){
     const tail = `
       <td><input class="fi" value="${esc(p.notes||'')}" placeholder="notes..." onchange="psSet('${esc(x.st)}','notes',this.value,this)" style="width:150px;font-size:11px;padding:4px;"></td>`;
     if(_psTab==='kids'){
+      const cat = x.cat.toLowerCase();
+      const isTod = cat.includes('toddler'), isJv = cat.includes('juvy'), isYt = cat.includes('youth');
+      const isKid = cat.includes('kid') && !isTod && !isJv && !isYt;
+      const kcell = (f, on2) => on2
+        ? `<td style="white-space:nowrap;"><span style="color:#94a3b8;">$</span> ${inp(x.st,f,p[f])}</td>`
+        : `<td style="text-align:center;background:#f3f4f6;color:#d1d5db;">—</td>`;
       return `<tr>${common}
-        <td>${inp(x.st,'price_toddler',p.price_toddler)}</td>
-        <td>${inp(x.st,'price_juvy',p.price_juvy)}</td>
-        <td>${inp(x.st,'price_youth',p.price_youth)}</td>${tail}</tr>`;
+        ${kcell('price_toddler', isTod)}
+        ${kcell('price_juvy', isJv)}
+        ${kcell('price_youth', isYt)}
+        ${kcell('price_2t', isKid)}
+        ${kcell('base_price', isKid)}${tail}</tr>`;
     }
     const b = num(p.base_price);
     const auto = s2 => b!=null ? '$'+(b+psUp(s2)).toFixed(2) : '—';
@@ -4910,10 +4928,19 @@ function renderPsSheet(){
       <td>${has('5xl') ? inp(x.st,'price_5xl',p.price_5xl,auto('5XL')) : '<span class="muted">—</span>'}</td>${tail}</tr>`;
   }).join('');
   const head = _psTab==='kids'
-    ? `<tr><th style="width:36px;"><input type="checkbox" onchange="psSelectAll(this.checked)" style="width:14px;height:14px;"></th><th>STYLE #</th><th class="tl">DESCRIPTION</th><th style="color:#ea580c;">TODDLER</th><th style="color:#d97706;">JUVY</th><th style="color:#059669;">YOUTH</th><th class="tl">NOTES</th></tr>`
+    ? `<tr><th style="width:36px;"><input type="checkbox" onchange="psSelectAll(this.checked)" style="width:14px;height:14px;"></th><th>STYLE #</th><th class="tl">DESCRIPTION</th><th style="color:#ea580c;">TODDLER<br><span style="font-weight:400;font-size:9px;">2T-4T</span></th><th style="color:#d97706;">JUVY<br><span style="font-weight:400;font-size:9px;">S-L</span></th><th style="color:#059669;">YOUTH<br><span style="font-weight:400;font-size:9px;">XS-XL</span></th><th style="color:#7c3aed;">KIDS<br><span style="font-weight:400;font-size:9px;">2T-5T</span></th><th style="color:#7c3aed;">KIDS<br><span style="font-weight:400;font-size:9px;">XS-XL</span></th><th class="tl">NOTES</th></tr>`
     : `<tr><th style="width:36px;"><input type="checkbox" onchange="psSelectAll(this.checked)" style="width:14px;height:14px;"></th><th>STYLE #</th><th class="tl">DESCRIPTION</th><th style="color:#1a56a0;">XS–XL</th><th>2XL</th><th>3XL</th><th>4XL</th><th>5XL</th><th class="tl">NOTES</th></tr>`;
   el.innerHTML = `<table class="etbl" style="font-size:12px;"><thead style="position:sticky;top:0;z-index:2;">${head}</thead><tbody>${body || `<tr><td colspan="10" class="muted" style="padding:14px;">스타일 없음</td></tr>`}</tbody></table>`;
   psFootUpdate();
+}
+async function psSetEffectiveAll(date){
+  const ps = _imsPS[_psGk]; if(!ps || !date) return;
+  try{
+    const r = await sbFetch('/rest/v1/customer_prices?customer_id=eq.' + encodeURIComponent(ps.custId), {method:'PATCH', headers:{Prefer:'return=minimal'}, body: JSON.stringify({effective_date: date, updated_at: new Date().toISOString()})});
+    if(!r.ok) throw new Error('save ' + r.status);
+    Object.values(ps.rows).forEach(p=>{ p.effective_date = date; });
+    showToast('📅 전체 가격 발효일 ' + date + ' 적용됨 (IMS 공유)');
+  }catch(e){ showToast('⚠ 적용 실패: ' + (e.message||e)); }
 }
 async function psSelectAll(on){
   const ps = _imsPS[_psGk]; if(!ps) return;
@@ -4964,19 +4991,25 @@ async function psDownloadPdf(){
       <td style="padding:6px 10px;text-align:right;font-weight:700;color:#1a56a0;">${cell(b)}</td>
       <td style="padding:6px 10px;text-align:right;">${cell(pr('2XL'))}</td><td style="padding:6px 10px;text-align:right;">${cell(pr('3XL'))}</td>
       <td style="padding:6px 10px;text-align:right;">${has('4xl')?cell(pr('4XL')):'—'}</td><td style="padding:6px 10px;text-align:right;">${has('5xl')?cell(pr('5XL')):'—'}</td></tr>`; }).join('');
-  const kRows = kids.map(x=>{ const p=x.p||{};
+  const kRows = kids.map(x=>{ const p=x.p||{}; const cat=x.cat.toLowerCase();
+    const isTod=cat.includes('toddler'), isJv=cat.includes('juvy'), isYt=cat.includes('youth');
+    const isKid=cat.includes('kid') && !isTod && !isJv && !isYt;
     return `<tr><td style="padding:6px 10px;font-family:monospace;font-weight:700;">${esc(x.st)}</td><td style="padding:6px 10px;">${esc(x.desc)}</td>
-      <td style="padding:6px 10px;text-align:right;color:#ea580c;">${cell(num(p.price_toddler))}</td><td style="padding:6px 10px;text-align:right;color:#d97706;">${cell(num(p.price_juvy))}</td><td style="padding:6px 10px;text-align:right;color:#059669;">${cell(num(p.price_youth))}</td></tr>`; }).join('');
+      <td style="padding:6px 10px;text-align:right;color:#ea580c;">${isTod?cell(num(p.price_toddler)):'—'}</td>
+      <td style="padding:6px 10px;text-align:right;color:#d97706;">${isJv?cell(num(p.price_juvy)):'—'}</td>
+      <td style="padding:6px 10px;text-align:right;color:#059669;">${isYt?cell(num(p.price_youth)):'—'}</td>
+      <td style="padding:6px 10px;text-align:right;color:#7c3aed;">${isKid?cell(num(p.price_2t)):'—'}</td>
+      <td style="padding:6px 10px;text-align:right;color:#7c3aed;">${isKid?cell(num(p.base_price)):'—'}</td></tr>`; }).join('');
   const docHtml = `<div style="font-family:Arial,sans-serif;max-width:760px;margin:0 auto;color:#111;font-size:13px;">
     <table width="100%" cellpadding="0" cellspacing="0" style="background:#0f2a4a;"><tr>
       <td style="padding:12px 20px;"><img src="https://pacificsports.github.io/pull-request-tool/logo-sm.png" width="172" height="42" style="display:block;border:0;"></td>
       <td style="padding:12px 20px;text-align:right;color:#fff;font-size:20px;font-weight:800;letter-spacing:2px;">PRICE SHEET</td></tr></table>
-    <div style="padding:14px 4px 6px;font-weight:800;font-size:15px;">${esc(_psCust)} <span style="font-weight:400;color:#6b7280;font-size:11px;">— ${new Date().toLocaleDateString('en-US')}</span></div>
+    <div style="padding:14px 4px 6px;font-weight:800;font-size:15px;">${esc(_psCust)} <span style="font-weight:400;color:#6b7280;font-size:11px;">— ${(()=>{ const ef=document.getElementById('ps-eff-all'); return ef && ef.value ? 'Effective ' + new Date(ef.value+'T00:00:00').toLocaleDateString('en-US') : new Date().toLocaleDateString('en-US'); })()}</span></div>
     ${adult.length?`<table width="100%" cellpadding="0" cellspacing="0" style="border-collapse:collapse;font-size:12px;border:1px solid #e5e7eb;margin-bottom:14px;">
       <thead><tr style="background:#f3f4f6;"><th style="padding:6px 10px;text-align:left;">Style#</th><th style="padding:6px 10px;text-align:left;">Item</th><th style="padding:6px 10px;text-align:right;">XS–XL</th><th style="padding:6px 10px;text-align:right;">2XL</th><th style="padding:6px 10px;text-align:right;">3XL</th><th style="padding:6px 10px;text-align:right;">4XL</th><th style="padding:6px 10px;text-align:right;">5XL</th></tr></thead>
       <tbody>${aRows}</tbody></table>`:''}
     ${kids.length?`<table width="100%" cellpadding="0" cellspacing="0" style="border-collapse:collapse;font-size:12px;border:1px solid #e5e7eb;">
-      <thead><tr style="background:#f3f4f6;"><th style="padding:6px 10px;text-align:left;">Style#</th><th style="padding:6px 10px;text-align:left;">Item</th><th style="padding:6px 10px;text-align:right;">Toddler (2T-5T)</th><th style="padding:6px 10px;text-align:right;">Juvy</th><th style="padding:6px 10px;text-align:right;">Youth</th></tr></thead>
+      <thead><tr style="background:#f3f4f6;"><th style="padding:6px 10px;text-align:left;">Style#</th><th style="padding:6px 10px;text-align:left;">Item</th><th style="padding:6px 10px;text-align:right;">Toddler 2T-4T</th><th style="padding:6px 10px;text-align:right;">Juvy S-L</th><th style="padding:6px 10px;text-align:right;">Youth XS-XL</th><th style="padding:6px 10px;text-align:right;">Kids 2T-5T</th><th style="padding:6px 10px;text-align:right;">Kids XS-XL</th></tr></thead>
       <tbody>${kRows}</tbody></table>`:''}
   </div>`;
   const btn = document.getElementById('ps-pdf-btn');
