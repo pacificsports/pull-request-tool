@@ -1,8 +1,9 @@
 <!DOCTYPE html>
-<html lang="ko">
+<html lang="ko" translate="no" class="notranslate">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="google" content="notranslate">
 <title>Pacific Sports — PO Pull Request</title>
 <link rel="stylesheet" href="https://cdn.jsdelivr.net/gh/orioncactus/pretendard@v1.3.9/dist/web/variable/pretendardvariable-dynamic-subset.min.css">
 <style>
@@ -135,7 +136,7 @@ main{max-width:1100px;margin:0 auto;padding:16px;}
     <button class="btn btn-sm" onclick="doLogout()" style="padding:2px 8px;font-size:10px;" data-i18n="logout">로그아웃</button>
   </span>
   <select id="lang-sel" onchange="setLang(this.value)" style="font-size:11px;padding:3px 6px;border-radius:5px;border:none;background:#1d3f66;color:#fff;"><option value="ko">한국어</option><option value="en">English</option><option value="es">Español</option></select>
-  <span style="font-size:10px;color:#9fb8d4;">v241</span>
+  <span style="font-size:10px;color:#9fb8d4;">v243</span>
 </div>
 <script type="text/javascript" src="https://js.authorize.net/v1/Accept.js" charset="utf-8"></script>
 <div id="po-viewer" style="display:none;position:fixed;top:0;right:0;width:44%;height:100vh;background:#fff;border-left:2px solid var(--border);z-index:60;box-shadow:-6px 0 20px rgba(0,0,0,.15);">
@@ -1703,15 +1704,20 @@ async function initAuth(){
 // ═══════════════ 공유 저장소 (Supabase pr_orders — 직원 전용) ═══════════════
 let savedCache = [];
 function getSaved(){ return savedCache; }
-function rowToRec(r){ return {base:r.base, meta:r.meta||{}, lines:r.lines||[], whs:r.whs||[], pl:r.pl||{}, inv:r.inv||{}, savedAt:r.saved_at, history:r.history||[]}; }
+function rowToRec(r, lite){ return {base:r.base, meta:r.meta||{}, lines:r.lines||[], whs:r.whs||[], pl:r.pl||{}, inv:r.inv||{}, savedAt:r.saved_at, history:r.history||[], _lite:!!lite}; }
 async function loadSavedList(){
   let ok = false;
   for(let attempt = 0; attempt < 3 && !ok; attempt++){
     try{
       if(attempt > 0) await new Promise(r=>setTimeout(r, 1500 * attempt));
-      const r = await sbFetch('/rest/v1/pr_orders?select=base,meta,lines,whs,pl,inv,saved_at,history&deleted_at=is.null&order=saved_at.desc');
-      if(r.ok){ savedCache = (await r.json()).map(rowToRec); ok = true; }
-      else if(r.status === 401 && typeof ensureToken === 'function'){ await ensureToken(); }
+      let r = await sbFetch('/rest/v1/pr_orders_lite?select=base,meta,lines,whs,pl,inv,saved_at,history&deleted_at=is.null&order=saved_at.desc');
+      if(r.ok){ savedCache = (await r.json()).map(x=>rowToRec(x, true)); ok = true; }
+      else {
+        // lite view 없거나 오류 → 기존 전체 로딩으로 fallback
+        r = await sbFetch('/rest/v1/pr_orders?select=base,meta,lines,whs,pl,inv,saved_at,history&deleted_at=is.null&order=saved_at.desc');
+        if(r.ok){ savedCache = (await r.json()).map(x=>rowToRec(x)); ok = true; }
+        else if(r.status === 401 && typeof ensureToken === 'function'){ await ensureToken(); }
+      }
     }catch(e){ console.warn('loadSavedList attempt ' + attempt, e); }
   }
   if(ok){
@@ -1749,8 +1755,14 @@ async function migrateLocal(){
   }catch(e){}
 }
 async function saveCurrent(){
+  if(window._svBusy){ showToast('⏳ 저장 진행 중...'); return; }
   if(!poLines.length){ alert(t('a_nolines')); return; }
   if(!$('m-cust').value || !$('m-po').value){ alert(t('a_needinfo')); return; }
+  window._svBusy = true;
+  showToast('💾 저장 중...');
+  try{ await _saveCurrentInner(); }finally{ window._svBusy = false; }
+}
+async function _saveCurrentInner(){
   poLines.forEach(l=>{ if(l.style && (l.rawDesc||l.desc)) rememberStyle(l.rawDesc||l.desc, l.style); });
   const base = baseNumber();
   const existing = savedCache.find(s=>s.base===base);
@@ -1785,7 +1797,12 @@ async function saveCurrent(){
   }
   const ok = await upsertRec(rec);
   if(!ok){ alert(t('save_fail')); return; }
-  await loadSavedList();
+  // 전체 리스트 재다운로드 없이 로컬 캐시만 갱신 (11MB 다운로드 제거 — 저장 즉시 반영)
+  delete rec.poPdf;
+  rec._lite = existing ? !!existing._lite : false;
+  const _ci = savedCache.findIndex(s=>s.base===rec.base);
+  if(_ci >= 0) savedCache[_ci] = rec; else savedCache.unshift(rec);
+  renderSaved();
   showToast(t('a_saved',{x:activeWhs().map(w=>docNumber(w)).join(' · ')}));
   // 자동 내부 알림은 보류 (거래처 이멜에 전직원 CC로 대체) — 켜려면 아래 주석 해제
   // if(!existing) notifyNewPR(rec);
@@ -1911,7 +1928,8 @@ async function delSaved(base){
   if(!confirm(t('a_delete',{b:base}) + '\n\n(휴지통으로 이동 — 30일 안에 복구 가능)')) return;
   try{ await sbFetch('/rest/v1/pr_orders?base=eq.'+encodeURIComponent(base), {method:'PATCH', headers:{Prefer:'return=minimal'}, body:JSON.stringify({deleted_at:new Date().toISOString()})}); }catch(e){}
   showToast('🗑 휴지통으로 이동됨 (30일 보관)');
-  await loadSavedList();
+  savedCache = savedCache.filter(s=>s.base!==base);
+  renderSaved();
 }
 async function openTrash(){
   const ex = document.getElementById('modal-trash'); if(ex) ex.remove();
@@ -1942,7 +1960,7 @@ async function restoreTrash(base){
   try{ await sbFetch('/rest/v1/pr_orders?base=eq.'+encodeURIComponent(base), {method:'PATCH', headers:{Prefer:'return=minimal'}, body:JSON.stringify({deleted_at:null})}); }catch(e){}
   document.getElementById('modal-trash')?.remove();
   showToast('↩ 복구됨: ' + base);
-  await loadSavedList();
+  await refreshRec(base);
 }
 async function purgeTrash(base){
   if(!confirm('⚠ ' + base + ' 를 완전히 삭제할까요? 복구할 수 없습니다.')) return;
@@ -2563,7 +2581,13 @@ function plAttachView(i){
   }catch(e){ alert('파일을 열 수 없습니다: ' + e.message); }
 }
 async function saveInvStage(){
+  if(window._svBusy){ showToast('⏳ 저장 진행 중...'); return; }
   const rec = savedCache.find(s=>s.base===plBase); if(!rec) return;
+  window._svBusy = true;
+  showToast('💾 저장 중...');
+  try{ await _saveInvStageInner(rec); }finally{ window._svBusy = false; }
+}
+async function _saveInvStageInner(rec){
   plFieldsToDraft();
   rec.inv = rec.inv || {};
   const iv = invDrafts[plWh] || {};
@@ -2577,12 +2601,21 @@ async function saveInvStage(){
 }
 async function savePL(){
   const rec = savedCache.find(s=>s.base===plBase); if(!rec) return;
+  if(window._svBusy){ showToast('⏳ 저장 진행 중...'); return; }
+  window._svBusy = true;
+  showToast('💾 저장 중...');
+  try{ await _savePLInner(rec); }finally{ window._svBusy = false; }
+}
+async function _savePLInner(rec){
+  if(rec._lite){ await refreshRec(plBase); rec = savedCache.find(s=>s.base===plBase); if(!rec) return; }
   plFieldsToDraft();
   rec.pl = rec.pl || {};
   const _prevPl = rec.pl[plWh] || {};
   rec.pl[plWh] = { ...plDrafts[plWh], savedAt: new Date().toISOString() };
   if(_prevPl.scans && _prevPl.scans.length) rec.pl[plWh].scans = _prevPl.scans;
   if(_prevPl._completed) rec.pl[plWh]._completed = _prevPl._completed;
+  // 첨부 데이터 보존: draft에 data 없는 파일은 이전 저장본에서 복원 (실수로 빈 파일 저장 방지)
+  (rec.pl[plWh].files||[]).forEach(f=>{ if(!f.data){ const old=(_prevPl.files||[]).find(o=>o.name===f.name && o.data); if(old) f.data = old.data; } });
   // Invoice 자동 생성 (직원이 Invoice를 직접 저장한 적 없으면 PL 기준으로 초안 생성)
   rec.inv = rec.inv || {};
   const exInv = rec.inv[plWh];
@@ -5698,7 +5731,8 @@ async function submitBatchShip(){
   let okCnt = 0, fails = [];
   for(let i=0; i<bs.bases.length; i++){
     const base = bs.bases[i];
-    const rec = savedCache.find(s=>s.base===base); if(!rec){ fails.push(base); continue; }
+    let rec = savedCache.find(s=>s.base===base); if(!rec){ fails.push(base); continue; }
+    if(rec._lite){ await refreshRec(base); rec = savedCache.find(s=>s.base===base); if(!rec){ fails.push(base); continue; } }
     const trk = (document.getElementById('bship-trk-'+i)||{}).value || '';
     const em = ((document.getElementById('bship-em-'+i)||{}).value || '').trim();
     if(em && em.includes('@')) rec.meta = {...(rec.meta||{}), custEmail: em};
