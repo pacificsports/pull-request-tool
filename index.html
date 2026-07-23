@@ -135,7 +135,7 @@ main{max-width:1100px;margin:0 auto;padding:16px;}
     <button class="btn btn-sm" onclick="doLogout()" style="padding:2px 8px;font-size:10px;" data-i18n="logout">로그아웃</button>
   </span>
   <select id="lang-sel" onchange="setLang(this.value)" style="font-size:11px;padding:3px 6px;border-radius:5px;border:none;background:#1d3f66;color:#fff;"><option value="ko">한국어</option><option value="en">English</option><option value="es">Español</option></select>
-  <span style="font-size:10px;color:#9fb8d4;">v226</span>
+  <span style="font-size:10px;color:#9fb8d4;">v227</span>
 </div>
 <script type="text/javascript" src="https://js.authorize.net/v1/Accept.js" charset="utf-8"></script>
 <div id="po-viewer" style="display:none;position:fixed;top:0;right:0;width:44%;height:100vh;background:#fff;border-left:2px solid var(--border);z-index:60;box-shadow:-6px 0 20px rgba(0,0,0,.15);">
@@ -3095,6 +3095,20 @@ function ccComboToggle(i, on){
 }
 const ANET_LOGIN_ID = '538BhgBf';
 const ANET_CLIENT_KEY = '9S9dzP4nBNaYQ82fVdvL8uV4F34xx6nzJK584a6vfg4srBCQQxkA5ZYcds737GjC';
+async function markPaidWebsite(){
+  const amt = parseFloat(($('cc-amt') && $('cc-amt').value) || '0');
+  if(!(amt > 0)){ showToast('⚠ 금액 확인'); return; }
+  if(!confirm('🌐 웹사이트에서 이미 결제된 오더로 표시할까요?\n\n$' + amt.toFixed(2) + ' — 카드는 청구되지 않고 PAID로만 기록됩니다.')) return;
+  const rec = savedCache.find(s=>s.base===plBase); if(!rec) return;
+  rec.inv = rec.inv || {}; const cur = rec.inv[plWh] || {};
+  rec.inv[plWh] = { ...cur, termType:'cc', printed: true, invNo: cur.invNo || nextInvNo(), savedAt: cur.savedAt || new Date().toISOString(),
+    paid: { amt: amt, method:'website', acct:'Website', transId:'', authCode:'', at: new Date().toISOString(), by: (SESS&&SESS.email)||'' } };
+  if(invDrafts[plWh]){ invDrafts[plWh].termType = 'cc'; invDrafts[plWh].invNo = rec.inv[plWh].invNo; }
+  try{ await sbFetch('/rest/v1/pr_orders?base=eq.'+encodeURIComponent(plBase), {method:'PATCH', headers:{Prefer:'return=minimal'}, body:JSON.stringify({inv:rec.inv, updated_at:new Date().toISOString()})}); }catch(e){}
+  logHist(plBase, 'Marked PAID via website $' + amt.toFixed(2) + ' — ' + plWh + ' (' + rec.inv[plWh].invNo + ')');
+  showToast('🌐 웹사이트 결제 확인 — PAID 처리됨 ($' + amt.toFixed(2) + ')');
+  renderPL(); renderSaved();
+}
 function startCharge(){
   const num = (($('cc-num') && $('cc-num').value) || '').replace(/\s/g, '');
   const exp = (($('cc-exp') && $('cc-exp').value) || '').replace(/[^0-9]/g, '');
@@ -3966,7 +3980,7 @@ function renderPL(){
             if(rt.remain <= 0.005){
               return `<div style="margin-top:8px;padding:8px 12px;background:#f5f5f4;border:1.5px solid #d6d3d1;border-radius:8px;font-size:12px;font-weight:700;color:#57534e;">↩ REFUNDED $${rt.refTot.toFixed(2)} — Card ${esc(ivRec.paid.acct||'')}</div>`;
             }
-            return `<div style="margin-top:8px;padding:8px 12px;background:#f0fdf4;border:1.5px solid #86efac;border-radius:8px;font-size:12px;font-weight:700;color:#166534;">✅ PAID $${Number(ivRec.paid.amt).toFixed(2)} — Card ${esc(ivRec.paid.acct||'')} · Auth ${esc(ivRec.paid.authCode||'')} · Trans ${esc(ivRec.paid.transId||'')} · ${new Date(ivRec.paid.at).toLocaleString()} · ${esc(ivRec.paid.by||'')}${rt.refTot>0?` <span style=\"color:#b91c1c;\">· ↩ refunded $${rt.refTot.toFixed(2)}</span>`:''}</div>`;
+            return `<div style="margin-top:8px;padding:8px 12px;background:#f0fdf4;border:1.5px solid #86efac;border-radius:8px;font-size:12px;font-weight:700;color:#166534;">✅ PAID $${Number(ivRec.paid.amt).toFixed(2)} — ${ivRec.paid.method==='website' ? '🌐 Paid via Website' : `Card ${esc(ivRec.paid.acct||'')} · Auth ${esc(ivRec.paid.authCode||'')} · Trans ${esc(ivRec.paid.transId||'')}`} · ${new Date(ivRec.paid.at).toLocaleString()} · ${esc(ivRec.paid.by||'')}${rt.refTot>0?` <span style=\"color:#b91c1c;\">· ↩ refunded $${rt.refTot.toFixed(2)}</span>`:''}</div>`;
           }
           const dd = invDocData();
           const totNow = (dd.lines||[]).reduce((a,l)=>a+(Number(l.qty)||0)*(Number(l.price)||0),0) + (Number(dd.freight)||0);
@@ -3981,6 +3995,7 @@ function renderPL(){
             <span style="font-size:12px;font-weight:800;color:#92400e;margin-left:4px;">$</span>
             <input class="fi num" id="cc-amt" value="${totNow.toFixed(2)}" style="width:100px;text-align:center;font-family:Consolas,monospace;font-weight:700;">
             <button class="btn btn-sm" style="background:#065f46;color:#fff;border-color:#065f46;font-weight:800;" onclick="startCharge()">Charge</button>
+            <button class="btn btn-sm" style="background:#0e7490;color:#fff;border-color:#0e7490;font-weight:800;" onclick="markPaidWebsite()" title="웹사이트에서 이미 결제된 오더 — 카드 안 긁고 PAID 처리">🌐 Paid via Website</button>
             <span id="cc-status" style="font-size:11.5px;font-weight:700;color:#92400e;"></span>
             ${others.length ? `<div style="flex-basis:100%;border-top:1px dashed #fcd34d;margin-top:4px;padding-top:6px;font-size:11.5px;">
               <span style="font-weight:800;color:#92400e;">➕ 이 거래처의 다른 미결제 건 함께 결제:</span>
@@ -5438,7 +5453,7 @@ function renderSaved(){
           if(rt.remain <= 0.005){
             return `<span style="padding:3px 9px;border-radius:20px;font-size:10px;font-weight:800;background:#f5f5f4;color:#57534e;border:1px solid #d6d3d1;white-space:nowrap;">↩ Refunded $${rt.refTot.toFixed(2)}</span>`;
           }
-          return `<span style="padding:3px 9px;border-radius:20px;font-size:10px;font-weight:800;background:#f0fdf4;color:#166534;border:1px solid #86efac;white-space:nowrap;">💳 Paid $${Number(pd.amt).toFixed(2)}${rt.refTot>0?` <span style=\"color:#b91c1c;\">−$${rt.refTot.toFixed(2)}</span>`:''}</span><button class="btn btn-sm" style="background:#fff;color:#b91c1c;border-color:#fca5a5;" onclick="refundCharge('${esc(s.base)}','${w}')" title="카드 결제 취소/환불">↩ Refund</button>`; })()}
+          return `<span style="padding:3px 9px;border-radius:20px;font-size:10px;font-weight:800;background:#f0fdf4;color:#166534;border:1px solid #86efac;white-space:nowrap;">${pd.method==='website'?'🌐':'💳'} Paid $${Number(pd.amt).toFixed(2)}${rt.refTot>0?` <span style=\"color:#b91c1c;\">−$${rt.refTot.toFixed(2)}</span>`:''}</span>${pd.method==='website' ? '' : `<button class="btn btn-sm" style="background:#fff;color:#b91c1c;border-color:#fca5a5;" onclick="refundCharge('${esc(s.base)}','${w}')" title="카드 결제 취소/환불">↩ Refund</button>`}`; })()}
         ${(()=>{ const iv2 = s.inv && s.inv[w]; if(!iv2 || !iv2.savedAt) return ''; const hasPm = (iv2.payments&&iv2.payments.length)||(iv2.memos&&iv2.memos.length)||(iv2.paid&&!iv2.paid.refunded); if(!hasPm) return ''; const bal2 = invBalance(s, w);
           return bal2 <= 0.005 ? `<span style="padding:3px 9px;border-radius:20px;font-size:10px;font-weight:800;background:#f0fdf4;color:#166534;border:1px solid #86efac;white-space:nowrap;">💰 PAID</span>` : `<span style="padding:3px 9px;border-radius:20px;font-size:10px;font-weight:800;background:#fffbeb;color:#92400e;border:1px solid #fcd34d;white-space:nowrap;">💰 Bal $${bal2.toFixed(2)}</span>`; })()}` : ''}
         ${plSaved ? (s.pl[w]._completed
