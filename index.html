@@ -135,7 +135,7 @@ main{max-width:1100px;margin:0 auto;padding:16px;}
     <button class="btn btn-sm" onclick="doLogout()" style="padding:2px 8px;font-size:10px;" data-i18n="logout">로그아웃</button>
   </span>
   <select id="lang-sel" onchange="setLang(this.value)" style="font-size:11px;padding:3px 6px;border-radius:5px;border:none;background:#1d3f66;color:#fff;"><option value="ko">한국어</option><option value="en">English</option><option value="es">Español</option></select>
-  <span style="font-size:10px;color:#9fb8d4;">v227</span>
+  <span style="font-size:10px;color:#9fb8d4;">v228</span>
 </div>
 <script type="text/javascript" src="https://js.authorize.net/v1/Accept.js" charset="utf-8"></script>
 <div id="po-viewer" style="display:none;position:fixed;top:0;right:0;width:44%;height:100vh;background:#fff;border-left:2px solid var(--border);z-index:60;box-shadow:-6px 0 20px rgba(0,0,0,.15);">
@@ -1063,6 +1063,11 @@ function updLine(i,field,val){
     }
     applyMaster(poLines[i]);
   }
+  if(field==='price') poLines[i].priceAuto = false;
+  if((field==='style'||field==='size') && (!(Number(poLines[i].price)>0) || poLines[i].priceAuto)){
+    const _pp = custPsPrice($('m-cust').value.trim(), poLines[i].style, poLines[i].size);
+    if(_pp != null){ poLines[i].price = _pp; poLines[i].priceAuto = true; }
+  }
   // 표 전체를 다시 그리지 않고 바뀐 부분만 갱신 → 클릭/포커스 유지
   refreshRow(i);
   if(field==='pbox'||field==='qty'||field==='ppb') refreshPboxSums();
@@ -1214,7 +1219,7 @@ function applySplitLine(i){
 let PRICE_MAP = {};
 async function loadPriceList(){
   try{
-    const r = await sbFetch('/rest/v1/styles?select=style_number,category,min_margin_pct,unit_cost,cost_xs,cost_s,cost_m,cost_l,cost_xl,cost_2xl,cost_3xl,cost_4xl,cost_5xl,cost_2t,cost_3t,cost_4t,cost_5t,cost_kids_2t,cost_kids_3t,cost_kids_4t,cost_kids_5t,cost_kids_xs,cost_kids_s,cost_kids_m,cost_kids_l,cost_kids_xl,cost_youth_xs,cost_youth_s,cost_youth_m,cost_youth_l,cost_youth_xl,cost_juvy_s,cost_juvy_m,cost_juvy_l,cost_tod_2t,cost_tod_3t,cost_tod_4t');
+    const r = await sbFetch('/rest/v1/styles?select=style_number,description,category,min_margin_pct,unit_cost,cost_xs,cost_s,cost_m,cost_l,cost_xl,cost_2xl,cost_3xl,cost_4xl,cost_5xl,cost_2t,cost_3t,cost_4t,cost_5t,cost_kids_2t,cost_kids_3t,cost_kids_4t,cost_kids_5t,cost_kids_xs,cost_kids_s,cost_kids_m,cost_kids_l,cost_kids_xl,cost_youth_xs,cost_youth_s,cost_youth_m,cost_youth_l,cost_youth_xl,cost_juvy_s,cost_juvy_m,cost_juvy_l,cost_tod_2t,cost_tod_3t,cost_tod_4t');
     if(r.ok){ PRICE_MAP = {}; (await r.json()).forEach(function(row){ PRICE_MAP[String(row.style_number||'').trim()] = row; }); }
   }catch(e){}
 }
@@ -4111,7 +4116,7 @@ function pcCellChange(k, size, val, inputEl, note){
 function pcFillOrderPick(){
   const sel = $('pc-order-pick'); if(!sel) return;
   const cur = sel.value;
-  const opts = (savedCache||[]).slice(0, 40).map(r=>`<option value="${esc(r.base)}" ${cur===r.base?'selected':''}>${esc((r.meta&&r.meta.cust)||'')} — PO ${esc((r.meta&&r.meta.po)||'')}</option>`).join('');
+  const opts = (savedCache||[]).slice(0, 40).map(r=>{ const d=String((r.meta&&r.meta.date)||r.savedAt||'').slice(0,10); const ds=d?new Date(d+'T00:00:00').toLocaleDateString('en-US',{month:'numeric',day:'numeric'}):''; return `<option value="${esc(r.base)}" ${cur===r.base?'selected':''}>${ds?ds+' · ':''}${esc((r.meta&&r.meta.cust)||'')} — PO ${esc((r.meta&&r.meta.po)||'')}</option>`; }).join('');
   sel.innerHTML = '<option value="">📋 Pull Request 보기...</option>' + opts;
 }
 function pcApplyLine(base, li){
@@ -4732,39 +4737,157 @@ async function importShipTos(k, cust){
   renderShipTos(k, cust);
   showToast('⤵ ' + added + '개 가져옴');
 }
+function psUp(size){
+  const u = {'2XL':0.60,'3XL':1.20,'4XL':2.00,'5XL':3.20};   // IMS 누적 업차지
+  return u[String(size).toUpperCase()] || 0;
+}
+function psEntry(cust, style){
+  const k = custKey(custGroupName(cust));
+  const cs = custStore[k] || {};
+  return ((cs.ps||{})[String(style).trim()]) || null;
+}
+function custPsPrice(cust, style, size){
+  const e = psEntry(cust, style); if(!e) return null;
+  const s = String(size||'').toUpperCase();
+  const row = PRICE_MAP[String(style).trim()] || {};
+  const kid = /kid|toddler|juvy|youth/i.test(row.category||'');
+  const num = v => (v===''||v==null||isNaN(parseFloat(v))) ? null : Math.round(parseFloat(v)*100)/100;
+  if(kid){
+    if(/^[2-5]T$/.test(s)) return num(e.tod);
+    if(/^Y/.test(s)) return num(e.youth);
+    return num(e.juvy) ?? num(e.youth) ?? num(e.tod);
+  }
+  const ov = {'2XL':e.x2,'3XL':e.x3,'4XL':e.x4,'5XL':e.x5}[s];
+  if(num(ov) != null) return num(ov);
+  const b = num(e.b);
+  return b == null ? null : Math.round((b + psUp(s))*100)/100;
+}
+let _psCust = '', _psFilter = 'all', _psQ = '';
 function openCustPrices(cust){
-  const key = custCanon(cust);
-  const recs = (savedCache||[]).filter(r=>r.meta && custCanon(r.meta.cust)===key)
-    .sort((a,b)=>String(a.savedAt||'').localeCompare(String(b.savedAt||'')));
-  const pm = {};
-  recs.forEach(rec=>{
-    (rec.lines||[]).forEach(l=>{
-      if(!(Number(l.price) > 0)) return;
-      const kk = [l.style||'?', normalizePoColor(l.color||''), l.size||''].join('\u0001');
-      pm[kk] = { style: l.style||'?', color: normalizePoColor(l.color||''), size: l.size||'', price: Number(l.price), date: String((rec.meta&&rec.meta.date)||rec.savedAt||'').slice(0,10) };
-    });
-  });
-  const rows = Object.values(pm).sort((a,b)=> (a.style+a.color).localeCompare(b.style+b.color) || (SZ_ORD.indexOf(a.size) - SZ_ORD.indexOf(b.size)));
+  _psCust = custGroupName(cust); _psFilter='all'; _psQ='';
   const ex = document.getElementById('modal-cprice'); if(ex) ex.remove();
   const div = document.createElement('div');
   div.id = 'modal-cprice';
   div.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,.55);z-index:130;display:flex;align-items:center;justify-content:center;';
-  div.innerHTML = `<div style="background:#fff;border-radius:12px;width:560px;max-width:94vw;max-height:86vh;display:flex;flex-direction:column;overflow:hidden;box-shadow:0 20px 60px rgba(0,0,0,.35);">
-    <div style="background:#0f2a4a;color:#fff;padding:11px 16px;font-weight:800;display:flex;align-items:center;">💲 ${esc(cust)} — Price List <button onclick="document.getElementById('modal-cprice').remove()" style="margin-left:auto;background:none;border:none;color:#fff;font-size:16px;cursor:pointer;">✕</button></div>
-    <div style="padding:12px 16px;overflow-y:auto;flex:1;">
-      <table class="etbl"><thead><tr><th>Style#</th><th class="tl">Color</th><th>Size</th><th>Last Price</th><th>IMS Min</th><th>Last Sold</th></tr></thead>
-      <tbody>${rows.map(r2=>{
-        const ref = ourMinPrice(r2.style, r2.size);
-        const low = ref && r2.price < ref.min - 0.005;
-        return `<tr><td style="font-weight:700;">${esc(r2.style)}</td><td class="tl">${esc(r2.color)}</td><td>${esc(r2.size)}</td>
-          <td style="font-weight:800;color:${low?'#b91c1c':'#166534'};">$${r2.price.toFixed(2)}${low?' ⚠':''}</td>
-          <td style="color:var(--text2);">${ref ? '$'+ref.min.toFixed(2) : '—'}</td>
-          <td class="muted" style="font-size:11px;">${esc(r2.date)}</td></tr>`;
-      }).join('') || '<tr><td colspan="6" class="muted" style="padding:12px;">No sales history</td></tr>'}</tbody></table>
+  div.innerHTML = `<div style="background:#fff;border-radius:12px;width:880px;max-width:96vw;max-height:90vh;display:flex;flex-direction:column;overflow:hidden;box-shadow:0 20px 60px rgba(0,0,0,.35);">
+    <div style="background:#0f2a4a;color:#fff;padding:11px 16px;font-weight:800;display:flex;align-items:center;gap:8px;">💲 ${esc(_psCust)} — Price List
+      <button class="btn btn-sm" style="margin-left:auto;background:#1d4ed8;color:#fff;border-color:#1d4ed8;" onclick="psPrint()">🖨 Print</button>
+      <button class="btn btn-sm" style="background:transparent;color:#cbd5e1;border-color:#475569;" onclick="document.getElementById('modal-cprice').remove()">✕</button></div>
+    <div style="padding:8px 14px;display:flex;gap:8px;align-items:center;border-bottom:1px solid var(--border);">
+      <select class="fi" style="width:170px;font-size:12px;padding:5px 8px;" onchange="_psFilter=this.value;renderPsSheet();">
+        <option value="all">전체 스타일</option><option value="on">✓ 포함된 것만</option><option value="priced">가격 입력된 것만</option></select>
+      <input class="fi" placeholder="🔍 Style# / 이름" style="width:180px;font-size:12px;padding:5px 8px;" oninput="_psQ=this.value;renderPsSheet();">
+      <span class="muted" style="font-size:10.5px;margin-left:auto;">✓ 체크 = 이 거래처 취급 스타일 · 가격 고치면 즉시 저장 · 2XL~5XL 비우면 자동(+0.60/+1.20/+2.00/+3.20)</span>
     </div>
+    <div id="ps-body" style="overflow-y:auto;flex:1;padding:10px 14px;"></div>
   </div>`;
   document.body.appendChild(div);
-  initModalDrag(div);
+  renderPsSheet();
+}
+function psRows(){
+  const q = _psQ.trim().toLowerCase();
+  return Object.values(PRICE_MAP)
+    .map(r=>({ st: String(r.style_number).trim(), desc: ((STYLE_MASTER[String(r.style_number).trim()]||[])[0]) || r.description || '', cat: r.category||'', row: r }))
+    .filter(x=>{
+      if(q && !(x.st.toLowerCase().includes(q) || x.desc.toLowerCase().includes(q))) return false;
+      const e = psEntry(_psCust, x.st);
+      if(_psFilter==='on') return !!(e && e.on);
+      if(_psFilter==='priced') return !!(e && (e.b || e.tod || e.juvy || e.youth));
+      return true;
+    })
+    .sort((a,b)=>a.st.localeCompare(b.st, undefined, {numeric:true}));
+}
+function renderPsSheet(){
+  const el = document.getElementById('ps-body'); if(!el) return;
+  const rows = psRows();
+  const kids = rows.filter(x=>/kid|toddler|juvy|youth/i.test(x.cat));
+  const adult = rows.filter(x=>!/kid|toddler|juvy|youth/i.test(x.cat));
+  const num = v => (v===''||v==null||isNaN(parseFloat(v))) ? null : parseFloat(v);
+  const inp = (st,f,val,ph,wd)=>`<input class="num" value="${val!=null&&val!==''?Number(val).toFixed(2):''}" placeholder="${ph||''}" onchange="psSet('${esc(st)}','${f}',this.value,this)" style="width:${wd||62}px;text-align:right;font-family:Consolas,monospace;">`;
+  const adultRows = adult.map(x=>{
+    const e = psEntry(_psCust, x.st) || {};
+    const b = num(e.b);
+    const auto = s2 => b!=null ? '$'+(b+psUp(s2)).toFixed(2) : '';
+    const has = (f)=>{ const c=x.row['cost_'+f]; return c!=null && Number(c)>0; };
+    return `<tr style="${e.on?'':'opacity:.45;'}">
+      <td style="text-align:center;"><input type="checkbox" ${e.on?'checked':''} onchange="psSet('${esc(x.st)}','on',this.checked?1:0,this)" style="width:14px;height:14px;accent-color:#1a56a0;cursor:pointer;"></td>
+      <td style="font-family:Consolas,monospace;font-weight:700;">${esc(x.st)}</td>
+      <td class="tl" style="font-size:11px;color:var(--text2);">${esc(x.desc)}</td>
+      <td>${inp(x.st,'b',e.b,'', 66)}</td>
+      <td>${has('4xl')||true ? inp(x.st,'x2',e.x2,auto('2XL')) : '—'}</td>
+      <td>${inp(x.st,'x3',e.x3,auto('3XL'))}</td>
+      <td>${has('4xl') ? inp(x.st,'x4',e.x4,auto('4XL')) : '<span class="muted">—</span>'}</td>
+      <td>${has('5xl') ? inp(x.st,'x5',e.x5,auto('5XL')) : '<span class="muted">—</span>'}</td>
+    </tr>`;
+  }).join('');
+  const kidRows = kids.map(x=>{
+    const e = psEntry(_psCust, x.st) || {};
+    const cat = x.cat.toLowerCase();
+    return `<tr style="${e.on?'':'opacity:.45;'}">
+      <td style="text-align:center;"><input type="checkbox" ${e.on?'checked':''} onchange="psSet('${esc(x.st)}','on',this.checked?1:0,this)" style="width:14px;height:14px;accent-color:#1a56a0;cursor:pointer;"></td>
+      <td style="font-family:Consolas,monospace;font-weight:700;">${esc(x.st)}</td>
+      <td class="tl" style="font-size:11px;color:var(--text2);">${esc(x.desc)}</td>
+      <td>${inp(x.st,'tod',e.tod,'',66)}</td>
+      <td>${inp(x.st,'juvy',e.juvy,'',66)}</td>
+      <td>${inp(x.st,'youth',e.youth,'',66)}</td>
+    </tr>`;
+  }).join('');
+  el.innerHTML = `
+    ${adult.length ? `<table class="etbl" style="font-size:11.5px;margin-bottom:14px;">
+      <thead><tr><th style="width:34px;">✓</th><th>Style#</th><th class="tl">Item</th><th style="color:#1a56a0;">XS–XL $</th><th>2XL</th><th>3XL</th><th>4XL</th><th>5XL</th></tr></thead>
+      <tbody>${adultRows}</tbody></table>` : ''}
+    ${kids.length ? `<div style="font-weight:800;font-size:12px;color:#0f2a4a;margin:4px 0 6px;">👶 Kids / Toddler Styles</div>
+    <table class="etbl" style="font-size:11.5px;">
+      <thead><tr><th style="width:34px;">✓</th><th>Style#</th><th class="tl">Item</th><th style="color:#ea580c;">Toddler (2T-5T)</th><th style="color:#d97706;">Juvy</th><th style="color:#059669;">Youth</th></tr></thead>
+      <tbody>${kidRows}</tbody></table>` : ''}
+    ${!rows.length ? '<div class="muted" style="padding:14px;">스타일 없음 — IMS styles 테이블 로딩 확인</div>' : ''}`;
+}
+async function psSet(style, field, val, elm){
+  const k = custKey(_psCust);
+  const cs = custStore[k] || {};
+  cs.name = cs.name || _psCust;
+  cs.ps = cs.ps || {};
+  const e = cs.ps[style] = cs.ps[style] || {};
+  if(field === 'on') e.on = val ? 1 : 0;
+  else {
+    const n = parseFloat(String(val).replace(/[^0-9.]/g,''));
+    e[field] = isNaN(n) ? '' : Math.round(n*100)/100;
+    if(field !== 'on' && e[field] !== '' && e.on == null) e.on = 1;   // 가격 넣으면 자동 포함
+    if(elm && e[field] !== '') elm.value = Number(e[field]).toFixed(2);
+  }
+  await saveCustomer(k, cs);
+  if(field === 'b' || field === 'on') renderPsSheet();
+  showToast('💾 ' + style + ' 저장됨');
+}
+function psPrint(){
+  const rows = psRows().filter(x=>{ const e=psEntry(_psCust,x.st); return e && e.on; });
+  const kids = rows.filter(x=>/kid|toddler|juvy|youth/i.test(x.cat));
+  const adult = rows.filter(x=>!/kid|toddler|juvy|youth/i.test(x.cat));
+  const num = v => (v===''||v==null||isNaN(parseFloat(v))) ? null : parseFloat(v);
+  const cell = v => v!=null ? '$'+Number(v).toFixed(2) : '—';
+  const aRows = adult.map(x=>{ const e=psEntry(_psCust,x.st)||{}; const b=num(e.b);
+    const p=s2=>{ const o=num({'2XL':e.x2,'3XL':e.x3,'4XL':e.x4,'5XL':e.x5}[s2]); if(o!=null) return o; return b!=null?b+psUp(s2):null; };
+    const has=f=>{ const c=x.row['cost_'+f]; return c!=null&&Number(c)>0; };
+    return `<tr><td style="padding:6px 10px;font-family:monospace;font-weight:700;">${esc(x.st)}</td><td style="padding:6px 10px;">${esc(x.desc)}</td>
+      <td style="padding:6px 10px;text-align:right;font-weight:700;color:#1a56a0;">${cell(b)}</td>
+      <td style="padding:6px 10px;text-align:right;">${cell(p('2XL'))}</td><td style="padding:6px 10px;text-align:right;">${cell(p('3XL'))}</td>
+      <td style="padding:6px 10px;text-align:right;">${has('4xl')?cell(p('4XL')):'—'}</td><td style="padding:6px 10px;text-align:right;">${has('5xl')?cell(p('5XL')):'—'}</td></tr>`; }).join('');
+  const kRows = kids.map(x=>{ const e=psEntry(_psCust,x.st)||{};
+    return `<tr><td style="padding:6px 10px;font-family:monospace;font-weight:700;">${esc(x.st)}</td><td style="padding:6px 10px;">${esc(x.desc)}</td>
+      <td style="padding:6px 10px;text-align:right;color:#ea580c;">${cell(num(e.tod))}</td><td style="padding:6px 10px;text-align:right;color:#d97706;">${cell(num(e.juvy))}</td><td style="padding:6px 10px;text-align:right;color:#059669;">${cell(num(e.youth))}</td></tr>`; }).join('');
+  const docHtml = `<div style="font-family:Arial,sans-serif;max-width:760px;margin:0 auto;color:#111;font-size:13px;">
+    <table width="100%" cellpadding="0" cellspacing="0" style="background:#0f2a4a;"><tr>
+      <td style="padding:12px 20px;"><img src="https://pacificsports.github.io/pull-request-tool/logo-sm.png" width="172" height="42" style="display:block;border:0;"></td>
+      <td style="padding:12px 20px;text-align:right;color:#fff;font-size:20px;font-weight:800;letter-spacing:2px;">PRICE LIST</td></tr></table>
+    <div style="padding:14px 4px 6px;font-weight:800;font-size:15px;">${esc(_psCust)} <span style="font-weight:400;color:#6b7280;font-size:11px;">— ${new Date().toLocaleDateString('en-US')}</span></div>
+    ${adult.length?`<table width="100%" cellpadding="0" cellspacing="0" style="border-collapse:collapse;font-size:12px;border:1px solid #e5e7eb;margin-bottom:14px;">
+      <thead><tr style="background:#f3f4f6;"><th style="padding:6px 10px;text-align:left;">Style#</th><th style="padding:6px 10px;text-align:left;">Item</th><th style="padding:6px 10px;text-align:right;">XS–XL</th><th style="padding:6px 10px;text-align:right;">2XL</th><th style="padding:6px 10px;text-align:right;">3XL</th><th style="padding:6px 10px;text-align:right;">4XL</th><th style="padding:6px 10px;text-align:right;">5XL</th></tr></thead>
+      <tbody>${aRows}</tbody></table>`:''}
+    ${kids.length?`<table width="100%" cellpadding="0" cellspacing="0" style="border-collapse:collapse;font-size:12px;border:1px solid #e5e7eb;">
+      <thead><tr style="background:#f3f4f6;"><th style="padding:6px 10px;text-align:left;">Style#</th><th style="padding:6px 10px;text-align:left;">Item</th><th style="padding:6px 10px;text-align:right;">Toddler (2T-5T)</th><th style="padding:6px 10px;text-align:right;">Juvy</th><th style="padding:6px 10px;text-align:right;">Youth</th></tr></thead>
+      <tbody>${kRows}</tbody></table>`:''}
+  </div>`;
+  printDocHtml(docHtml, _psCust.replace(/[^a-zA-Z0-9]/g,'') + '-PRICELIST');
 }
 function salesLines(rec, wh){
   const iv = rec.inv && rec.inv[wh];
