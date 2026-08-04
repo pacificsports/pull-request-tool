@@ -136,7 +136,7 @@ main{max-width:1100px;margin:0 auto;padding:16px;}
     <button class="btn btn-sm" onclick="doLogout()" style="padding:2px 8px;font-size:10px;" data-i18n="logout">로그아웃</button>
   </span>
   <select id="lang-sel" onchange="setLang(this.value)" style="font-size:11px;padding:3px 6px;border-radius:5px;border:none;background:#1d3f66;color:#fff;"><option value="ko">한국어</option><option value="en">English</option><option value="es">Español</option></select>
-  <span style="font-size:10px;color:#9fb8d4;">v245</span>
+  <span style="font-size:10px;color:#9fb8d4;">v246</span>
 </div>
 <script type="text/javascript" src="https://js.authorize.net/v1/Accept.js" charset="utf-8"></script>
 <div id="po-viewer" style="display:none;position:fixed;top:0;right:0;width:44%;height:100vh;background:#fff;border-left:2px solid var(--border);z-index:60;box-shadow:-6px 0 20px rgba(0,0,0,.15);">
@@ -4367,18 +4367,32 @@ function pcFillOrderPick(){
   const opts = (savedCache||[]).slice(0, 40).map(r=>{ const d=String((r.meta&&r.meta.date)||r.savedAt||'').slice(0,10); const ds=d?new Date(d+'T00:00:00').toLocaleDateString('en-US',{month:'numeric',day:'numeric'}):''; return `<option value="${esc(r.base)}" ${cur===r.base?'selected':''}>${ds?ds+' · ':''}${esc((r.meta&&r.meta.cust)||'')} — PO ${esc((r.meta&&r.meta.po)||'')}</option>`; }).join('');
   sel.innerHTML = '<option value="">📋 Pull Request 보기...</option>' + opts;
 }
-function pcApplyLine(base, li){
+function pcApplyLine(base, li, mode){
   const rec = savedCache.find(s=>s.base===base); if(!rec) return;
   const L = (rec.lines||[])[li]; if(!L) return;
+  if(String(L.wh||'').toUpperCase() !== 'SC'){ showToast('⚠ SC 라인만 PC Room에서 처리할 수 있습니다 — 이 라인은 [' + (L.wh||'?') + ']'); return; }
   const k = pcKey(L.style, L.color);
   const row = pcStore.find(r=>r.k===k);
   if(!row){ showToast('⚠ PC Room에 ' + L.style + ' ' + String(L.color).toUpperCase() + ' 없음 — ＋ Color로 먼저 추가하세요'); return; }
   const size = String(L.size||'').toUpperCase();
   const old = Number((row.qty||{})[size]) || 0;
-  pcCellChange(k, size, '=' + (old - (Number(L.qty)||0)), null, 'PO ' + ((rec.meta&&rec.meta.po)||'') + ' 출고');
+  const poName = 'PO ' + ((rec.meta&&rec.meta.po)||'');
+  if(mode === 'add'){
+    const ppb = Number(L.ppb) || DEFAULT_PPB;
+    pcCellChange(k, size, '=' + (old + ppb), null, poName + ' 박스 오픈 (+' + ppb + ')');
+  } else {
+    const loose = boxCalc(L).loose;
+    if(!loose){ showToast('⚠ 이 라인은 풀박스만 — PC Room에서 준비할 수량이 없습니다'); return; }
+    pcCellChange(k, size, '=' + (old - loose), null, poName + ' 출고 (partial ' + loose + ')');
+  }
   const inp = document.querySelector(`[data-pc="${cssId(k)}-${cssId(size)}"]`);
   if(inp){ inp.value = (row.qty||{})[size] || ''; inp.style.background = '#fef9c3'; setTimeout(()=>inp.style.background='', 1500); }
-  const btn = $('pcapply-'+li); if(btn){ btn.textContent = '✓ 차감됨'; btn.disabled = true; btn.style.opacity = .55; }
+  if(mode === 'add'){
+    const ab = $('pcadd-'+li); if(ab){ const t0 = ab.textContent; ab.textContent = '✓ 추가됨'; setTimeout(()=>{ ab.textContent = t0; }, 1200); }
+  } else {
+    const btn = $('pcapply-'+li); if(btn){ btn.textContent = '✓ 차감됨'; btn.disabled = true; btn.style.opacity = .55; }
+  }
+  const hv = $('pchave-'+li); if(hv){ hv.textContent = 'PC재고: ' + (Number((row.qty||{})[size])||0); }
 }
 function cssId(s){ return String(s).replace(/[^a-zA-Z0-9]/g,'_'); }
 function pcRowTotal(row){ return Object.values(row.qty||{}).reduce((a,v)=>a+(Number(v)||0),0); }
@@ -4436,14 +4450,21 @@ function renderPcRoom(){
           const inPc = pcStore.find(r=>r.k===k2);
           const size = String(L.size||'').toUpperCase();
           const have = inPc ? (Number((inPc.qty||{})[size])||0) : null;
-          return `<div style="display:flex;align-items:center;gap:6px;padding:4px 2px;border-bottom:1px solid #ede9fe;font-size:11px;">
-            <div style="flex:1;min-width:0;"><b>${esc(String(L.style||''))}</b> ${esc(String(L.color||''))} <b>${esc(size)}</b> × ${Number(L.qty)||0}
-              <span class="muted">[${esc(L.wh||'')}]</span><br>
-              <span style="color:${inPc==null?'#94a3b8':(have < (Number(L.qty)||0) ? '#dc2626' : '#166534')};font-weight:700;">PC재고: ${inPc==null?'없음':have}</span></div>
-            ${inPc ? `<button class="btn btn-sm" id="pcapply-${li}" style="flex-shrink:0;font-size:10px;padding:2px 7px;background:#fff;color:#7c3aed;border-color:#c4b5fd;" onclick="pcApplyLine('${esc(pickRec.base)}',${li})" title="이 라인 수량만큼 PC Room에서 차감">− 차감</button>` : ''}
+          const isSC = String(L.wh||'').toUpperCase() === 'SC';
+          const bc = boxCalc(L);
+          const need = bc.loose;
+          const ppb = Number(L.ppb) || DEFAULT_PPB;
+          return `<div style="display:flex;align-items:center;gap:6px;padding:4px 2px;border-bottom:1px solid #ede9fe;font-size:11px;${isSC?'':'opacity:.45;'}">
+            <div style="flex:1;min-width:0;"><b>${esc(String(L.style||''))}</b> ${esc(String(L.color||''))} <b>${esc(size)}</b> × ${need}
+              <span class="muted">(오더 ${Number(L.qty)||0}${bc.full ? ' = 풀박스 ' + bc.full + ' + ' + need : ''}) [${esc(L.wh||'')}]</span><br>
+              ${isSC
+                ? `<span id="pchave-${li}" style="color:${inPc==null?'#94a3b8':(have < need ? '#dc2626' : '#166534')};font-weight:700;">PC재고: ${inPc==null?'없음':have}</span>${need ? '' : ' <span class="muted">풀박스만 — PC 준비 없음</span>'}`
+                : `<span style="color:#94a3b8;font-weight:700;">SC 재고 아님 — 차감/추가 불가</span>`}</div>
+            ${isSC && inPc && need ? `<button class="btn btn-sm" id="pcapply-${li}" style="flex-shrink:0;font-size:10px;padding:2px 7px;background:#fff;color:#7c3aed;border-color:#c4b5fd;" onclick="pcApplyLine('${esc(pickRec.base)}',${li})" title="이 라인의 Partial 수량(${need})만큼 PC Room에서 차감">− 차감 ${need}</button>` : ''}
+            ${isSC && inPc ? `<button class="btn btn-sm" id="pcadd-${li}" style="flex-shrink:0;font-size:10px;padding:2px 7px;background:#fff;color:#166534;border-color:#86efac;" onclick="pcApplyLine('${esc(pickRec.base)}',${li},'add')" title="박스 1개 오픈 — 박스입수(${ppb}장)만큼 PC Room에 추가">＋${ppb}</button>` : ''}
           </div>`;
         }).join('') || '<div class="muted" style="padding:8px;">라인 없음</div>'}
-        <div style="font-size:10px;color:#7c3aed;padding:6px 2px 2px;">− 차감 버튼: 그 라인 수량만큼 PC 재고에서 빼고 저장합니다 (셀에 +숫자 입력으로 되돌리기 가능)</div>
+        <div style="font-size:10px;color:#7c3aed;padding:6px 2px 2px;">− 차감: 그 라인의 <b>Partial(자투리) 수량만</b> PC 재고에서 빼고 저장 · ＋숫자: 박스 1개 오픈 = 박스입수만큼 추가 · SC 라인만 가능 (셀에 +숫자 입력으로 되돌리기 가능)</div>
       </div>
     </div>` : ''}
     </div>`;
