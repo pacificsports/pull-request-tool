@@ -136,7 +136,7 @@ main{max-width:1100px;margin:0 auto;padding:16px;}
     <button class="btn btn-sm" onclick="doLogout()" style="padding:2px 8px;font-size:10px;" data-i18n="logout">로그아웃</button>
   </span>
   <select id="lang-sel" onchange="setLang(this.value)" style="font-size:11px;padding:3px 6px;border-radius:5px;border:none;background:#1d3f66;color:#fff;"><option value="ko">한국어</option><option value="en">English</option><option value="es">Español</option></select>
-  <span style="font-size:10px;color:#9fb8d4;">v286 🎨</span>
+  <span style="font-size:10px;color:#9fb8d4;">v287 🎨</span>
 </div>
 <script type="text/javascript" src="https://js.authorize.net/v1/Accept.js" charset="utf-8"></script>
 <div id="po-viewer" style="display:none;position:fixed;top:0;right:0;width:44%;height:100vh;background:#fff;border-left:2px solid var(--border);z-index:60;box-shadow:-6px 0 20px rgba(0,0,0,.15);">
@@ -6069,42 +6069,71 @@ async function hiUpload(file){
     let refM = String(file.name||'').match(/PSH\s*[- _]*(\d+)/i);
     let ref = refM ? ('PSH ' + refM[1]) : '';
     let cur = ''; let sizes = []; const lines = [];
+    const orig = [];   // 원본 인보이스 구조 (옆에 나란히 비교용): [{desc, sizes, colors:[{name, cells:{sz:{dz,bx}}}]}]
+    let curBlock = null;
     for(let i=0;i<aoa.length;i++){
       const A = String(aoa[i][0]||'').trim();
       if(!ref){ const m2 = A.match(/PSH\s*[- ]*(\d+)/i); if(m2) ref = 'PSH ' + m2[1]; }
-      if(/^STYLE/i.test(A)){ cur = String(aoa[i][1]||'').trim(); continue; }
+      if(/^STYLE/i.test(A)){ cur = String(aoa[i][1]||'').trim(); curBlock = null; continue; }
       if(/^COLOR/i.test(A)){ sizes = aoa[i].map(c=>String(c||'').trim().toUpperCase()); continue; }
       const B = String(aoa[i][1]||'').trim().toUpperCase();
       if(B==='DZS' && A && !/^TOTAL/i.test(A) && cur){
         const bxRow = aoa[i+1]||[];
         const cc = hiColorFrom(A);
+        if(!curBlock || curBlock.desc !== cur){ curBlock = { desc: cur, sizes: sizes.filter(s2=>HI_SZ.includes(s2)), colors: [] }; orig.push(curBlock); }
+        const oc = { name: A, cells: {} };
+        curBlock.colors.push(oc);
+        const bIdx = orig.length-1, cIdx = curBlock.colors.length-1;
         for(let j=2;j<sizes.length;j++){
           const sz = sizes[j]; if(!HI_SZ.includes(sz)) continue;
           const dz = parseFloat(aoa[i][j])||0;
           const bx = parseInt(bxRow[j])||0;
           if(!dz && !bx) continue;
+          oc.cells[sz] = { dz, bx };
           const pcs = bx>0 ? (Math.round(dz*12/bx)||72) : Math.round(dz*12);
           const st0 = hiStyleFrom(cur);
           const ss0 = hiIsSS(cur) || bxDefaultVariant(st0)==='Side Seam';   // 표시용: SS전용 스타일은 Side Seam 체크로 표시
           const us0 = hiIsUS(cur);
           const vr = ss0 && us0 ? 'SSUS' : (ss0 ? 'SS' : (us0 ? 'US' : ''));
           lines.push({ style: st0, color: cc.color, vr, size: sz, boxes: bx>0?bx:1, pcs,
-            note: (cc.cnote?cc.cnote+' · ':'') + cur.slice(0,40), flag: bx>0 ? '' : '⚠ 박스수 0 — 확인 필요' });
+            note: (cc.cnote?cc.cnote+' · ':'') + cur.slice(0,40), flag: bx>0 ? '' : '⚠ 박스수 0 — 확인 필요',
+            src: { b: bIdx, c: cIdx, sz } });
         }
       }
     }
     if(!lines.length){ alert('⚠ 인보이스 형식을 못 읽었어요. STYLE / COLOR / DZS / BOXES 블록이 필요합니다.'); return; }
     if(!ref) ref = window.prompt('인보이스 번호 (예: PSH 26010)', '') || ('HAITI ' + new Date().toISOString().slice(0,10));
-    hiReviewModal(ref, lines);
+    hiReviewModal(ref, lines, orig);
   }catch(e){ alert('⚠ 업로드 실패: ' + e.message); }
 }
-function hiReviewModal(ref, lines){
+function hiOrgPanel(orig){
+  if(!orig || !orig.length) return '';
+  return orig.map((b,bi)=>`<div style="margin-bottom:10px;border:1px solid #d7e2ec;border-radius:8px;overflow:hidden;">
+    <div style="background:#e8f1f7;padding:5px 9px;font-size:10.5px;font-weight:800;color:#0e7490;">${esc(b.desc)}</div>
+    <table style="width:100%;border-collapse:collapse;font-size:10.5px;">
+      <thead><tr><th style="text-align:left;padding:2px 8px;color:#64748b;font-size:9.5px;">COLOR</th>${b.sizes.map(sz=>`<th style="padding:2px 3px;color:#64748b;font-size:9.5px;">${esc(sz)}</th>`).join('')}</tr></thead>
+      <tbody>${b.colors.map((c,ci)=>`<tr style="border-top:1px solid #f1f5f9;">
+        <td style="padding:2px 8px;font-weight:700;white-space:nowrap;">${esc(c.name)}</td>
+        ${b.sizes.map(sz=>{ const cell = c.cells[sz]; return `<td id="hiorg-${bi}-${ci}-${cssId(sz)}" style="text-align:center;padding:2px 3px;font-family:Consolas,monospace;${cell?'':'color:#dbe3ec;'}">${cell ? `<b>${cell.bx}</b><span style="color:#94a3b8;font-size:9px;">bx</span><br><span style="color:#64748b;font-size:9.5px;">${cell.dz}dz</span>` : '·'}</td>`; }).join('')}
+      </tr>`).join('')}</tbody>
+    </table></div>`).join('');
+}
+function hiSrcHover(i, on){
+  const l = (window._hiLines||[])[i]; if(!l || !l.src) return;
+  const el = document.getElementById('hiorg-'+l.src.b+'-'+l.src.c+'-'+cssId(l.src.sz));
+  if(!el) return;
+  el.style.background = on ? '#fde68a' : '';
+  el.style.borderRadius = on ? '5px' : '';
+  if(on) el.scrollIntoView({block:'nearest', behavior:'smooth'});
+}
+function hiReviewModal(ref, lines, orig){
   const ex = document.getElementById('modal-hi'); if(ex) ex.remove();
   const ex2 = document.getElementById('modal-hirev'); if(ex2) ex2.remove();
+  window._hiLines = lines;
   const div = document.createElement('div');
   div.id = 'modal-hirev';
   div.style.cssText = 'position:fixed;inset:0;background:rgba(15,23,42,.55);z-index:99;display:flex;align-items:center;justify-content:center;padding:14px;';
-  const tb = lines.map((l,i)=>`<tr>
+  const tb = lines.map((l,i)=>`<tr onmouseenter="hiSrcHover(${i},true)" onmouseleave="hiSrcHover(${i},false)">
     <td><input class="fi hr-style" data-i="${i}" value="${esc(l.style)}" list="hi-dl-style" style="width:70px;font-weight:700;" oninput="hiRowCheck(this)"></td>
     <td><input class="fi hr-color" data-i="${i}" value="${esc(l.color)}" style="width:150px;text-transform:uppercase;" oninput="hiRowCheck(this)"></td>
     <td style="white-space:nowrap;">
@@ -6115,19 +6144,25 @@ function hiReviewModal(ref, lines){
     <td><input class="fi hr-size" data-i="${i}" value="${esc(l.size)}" style="width:52px;text-transform:uppercase;"></td>
     <td><input class="fi num hr-boxes" data-i="${i}" type="number" min="0" value="${l.boxes}" style="width:56px;font-weight:800;"></td>
     <td><input class="fi num hr-pcs" data-i="${i}" type="number" min="1" value="${l.pcs}" style="width:56px;"></td>
-    <td class="tl" style="font-size:10px;color:${l.flag?'#dc2626':'var(--text2)'};">${esc(l.flag || l.note || '')}</td>
+    <td style="font-size:10px;color:#dc2626;white-space:nowrap;">${esc(l.flag||'')}</td>
     <td><button class="btn btn-sm" style="border:none;color:#b91c1c;" onclick="this.closest('tr').remove()">✕</button></td>
   </tr>`).join('');
-  div.innerHTML = `<div style="background:#fff;border-radius:12px;max-width:820px;width:100%;max-height:90vh;display:flex;flex-direction:column;overflow:hidden;">
+  div.innerHTML = `<div style="background:#fff;border-radius:12px;max-width:1280px;width:100%;max-height:92vh;display:flex;flex-direction:column;overflow:hidden;">
     <div style="background:#0e7490;color:#fff;padding:10px 16px;font-weight:800;">🇭🇹 리뷰 · ${esc(ref)}
-      <div style="font-weight:400;font-size:11px;opacity:.85;">파싱 결과를 확인/수정하세요 — 저장하면 "입고 예정"으로 등록돼요 (재고에는 아직 안 들어감)</div></div>
-    <div style="overflow-y:auto;padding:10px 16px;flex:1;">
-      <table class="etbl" style="font-size:12px;">
-        <thead><tr><th>Style</th><th class="tl">Color</th><th>구분</th><th>Size</th><th>박스</th><th>입수</th><th class="tl">비고</th><th></th></tr></thead>
-        <tbody id="hirev-rows">${tb}</tbody>
-      </table>
-      <datalist id="hi-dl-style">${(skuLoaded?skuStyles():[]).map(s=>'<option value="'+esc(s)+'">').join('')}</datalist>
-      <div class="muted" style="font-size:10.5px;margin-top:6px;">칼라 칸이 <span style="background:#fef2f2;padding:0 4px;">빨간색</span>이면 🎨 SKU 마스터에 없는 조합 (마우스 올리면 이유) — 오타를 고치거나, 저장 시 새 SKU 등록 확인창이 떠요 · <b>구분</b> 칸에서 Side Seam/US를 고르면 저장할 때 자동으로 합쳐집니다 (Side Seam 전용 스타일은 접미사 없이 저장)</div>
+      <div style="font-weight:400;font-size:11px;opacity:.85;">왼쪽 = 파싱 결과 (수정 가능) · 오른쪽 = 원본 인보이스 — 줄에 마우스를 올리면 원본에서 해당 칸이 노란색으로 표시돼요</div></div>
+    <div style="display:flex;gap:0;flex:1;min-height:0;">
+      <div style="flex:1;overflow-y:auto;padding:10px 16px;min-width:0;">
+        <table class="etbl" style="font-size:12px;">
+          <thead><tr><th>Style</th><th class="tl">Color</th><th>구분</th><th>Size</th><th>박스</th><th>입수</th><th></th><th></th></tr></thead>
+          <tbody id="hirev-rows">${tb}</tbody>
+        </table>
+        <datalist id="hi-dl-style">${(skuLoaded?skuStyles():[]).map(s=>'<option value="'+esc(s)+'">').join('')}</datalist>
+        <div class="muted" style="font-size:10.5px;margin-top:6px;">칼라 칸이 <span style="background:#fef2f2;padding:0 4px;">빨간색</span>이면 🎨 SKU 마스터에 없는 조합 (마우스 올리면 이유) — 오타를 고치거나, 저장 시 새 SKU 등록 확인창이 떠요 · <b>구분</b> 체크에 따라 저장 시 자동으로 합쳐집니다 (Side Seam 전용 스타일은 접미사 없이 저장)</div>
+      </div>
+      ${orig && orig.length ? `<div id="hiorg-panel" style="flex:0 0 360px;overflow-y:auto;padding:10px 12px;border-left:1px solid var(--border);background:#f8fafc;">
+        <div style="font-size:11px;font-weight:800;color:#0e7490;margin-bottom:6px;">📄 원본 인보이스</div>
+        ${hiOrgPanel(orig)}
+      </div>` : ''}
     </div>
     <div style="padding:10px 16px;border-top:1px solid var(--border);display:flex;gap:8px;justify-content:flex-end;align-items:center;">
       <span class="muted" style="margin-right:auto;font-size:11px;">${lines.length}라인 · ${lines.reduce((a,l)=>a+l.boxes,0).toLocaleString()}박스 · ${lines.reduce((a,l)=>a+l.boxes*l.pcs,0).toLocaleString()} pcs</span>
