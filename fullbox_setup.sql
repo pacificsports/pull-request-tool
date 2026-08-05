@@ -11,6 +11,7 @@ create table if not exists public.pr_boxes (
   size    text not null,
   pcs     int  not null default 72,          -- 박스입수 (한 박스에 몇 장)
   loc     text not null default '',          -- 박스 location (예: A-12)
+  wh      text not null default 'SC',        -- 창고 (SC / CA)
   status  text not null default 'IN',        -- IN = 재고 · OUT = 출고됨
   note    text not null default '',
   in_at   timestamptz not null default now(),
@@ -21,6 +22,9 @@ create table if not exists public.pr_boxes (
 );
 
 create index if not exists pr_boxes_lookup on public.pr_boxes (status, style, color, size);
+
+-- 이미 테이블을 만든 경우 (v250 업그레이드): wh 컬럼만 추가
+alter table public.pr_boxes add column if not exists wh text not null default 'SC';
 
 alter table public.pr_boxes enable row level security;
 

@@ -136,7 +136,7 @@ main{max-width:1100px;margin:0 auto;padding:16px;}
     <button class="btn btn-sm" onclick="doLogout()" style="padding:2px 8px;font-size:10px;" data-i18n="logout">로그아웃</button>
   </span>
   <select id="lang-sel" onchange="setLang(this.value)" style="font-size:11px;padding:3px 6px;border-radius:5px;border:none;background:#1d3f66;color:#fff;"><option value="ko">한국어</option><option value="en">English</option><option value="es">Español</option></select>
-  <span style="font-size:10px;color:#9fb8d4;">v249 📦</span>
+  <span style="font-size:10px;color:#9fb8d4;">v250 📦</span>
 </div>
 <script type="text/javascript" src="https://js.authorize.net/v1/Accept.js" charset="utf-8"></script>
 <div id="po-viewer" style="display:none;position:fixed;top:0;right:0;width:44%;height:100vh;background:#fff;border-left:2px solid var(--border);z-index:60;box-shadow:-6px 0 20px rgba(0,0,0,.15);">
@@ -357,8 +357,9 @@ main{max-width:1100px;margin:0 auto;padding:16px;}
 </div>
 <div id="box-view" style="display:none;">
   <div class="card">
-    <div class="card-title"><span>📦 Full Box — SC Full Box Inventory (박스별 Location)</span>
+    <div class="card-title"><span>📦 Full Box Inventory (박스별 Location)</span>
       <select class="fi" id="bx-order-pick" onfocus="bxFillOrderPick()" onchange="renderBoxRoom()" style="margin-left:auto;max-width:280px;font-size:12px;padding:5px 8px;"><option value="">📋 Pull Request 보기...</option></select>
+      <select class="fi" id="bx-wh-filter" onchange="renderBoxRoom()" style="font-size:12px;padding:5px 8px;"><option value="">창고 전체</option><option value="SC">SC</option><option value="CA">CA</option></select>
       <input class="fi" id="bx-search" placeholder="🔍 Style / Color / Loc" oninput="renderBoxRoom()" style="width:170px;font-size:12px;padding:5px 10px;">
       <button class="btn btn-sm btn-primary" onclick="bxAddBoxes()">＋ Add Boxes</button>
       <button class="btn btn-sm" onclick="document.getElementById('bx-import-file').click()" style="background:#166534;color:#fff;border-color:#166534;">📥 Import</button>
@@ -4570,11 +4571,13 @@ async function pcExport(){
 let bxStore = [];      // status=IN 인 박스들 {id,style,color,size,pcs,loc,note,in_at,in_by}
 let bxLoaded = false;
 function bxK(style,color,size){ return (String(style).trim()+'|'+String(color).trim()+'|'+String(size).trim()).toUpperCase(); }
+function bxWh(b){ const w = String(b.wh||'').trim().toUpperCase(); return w || 'SC'; }
 function bxStockHint(l, b){
-  if(!bxLoaded || !b.full || String(l.wh||'').toUpperCase()==='CA') return '';
-  const avail = bxFind(l.style, l.color, l.size);
+  if(!bxLoaded || !b.full) return '';
+  const wh = String(l.wh||'SC').trim().toUpperCase() || 'SC';
+  const avail = bxFind(l.style, l.color, l.size, wh);
   const ok = avail.length >= b.full;
-  return `<div style="font-size:9px;line-height:1.25;font-weight:800;color:${ok?'#166534':'#dc2626'};white-space:nowrap;" title="SC 풀박스 재고 ${avail.length}박스${avail.length?' — '+bxLocsLabel(avail,99):''}">📦${avail.length}${avail.length?` <span style="color:#1d4ed8;">${esc(bxLocsLabel(avail, 2))}</span>`:''}</div>`;
+  return `<div style="font-size:9px;line-height:1.25;font-weight:800;color:${ok?'#166534':'#dc2626'};white-space:nowrap;" title="${wh} 풀박스 재고 ${avail.length}박스${avail.length?' — '+bxLocsLabel(avail,99):''}">📦${avail.length}${avail.length?` <span style="color:#1d4ed8;">${esc(bxLocsLabel(avail, 2))}</span>`:''}</div>`;
 }
 function pcStockHint(l, b){
   if(!pcLoaded || !b.loose || String(l.wh||'').toUpperCase()==='CA') return '';
@@ -4585,12 +4588,12 @@ function pcStockHint(l, b){
 }
 async function bxFetchStore(){
   try{
-    const r = await sbFetch('/rest/v1/pr_boxes?select=id,style,color,size,pcs,loc,note,in_at,in_by&status=eq.IN&order=style.asc,color.asc,size.asc,in_at.asc');
+    const r = await sbFetch('/rest/v1/pr_boxes?select=id,style,color,size,pcs,loc,wh,note,in_at,in_by&status=eq.IN&order=style.asc,color.asc,size.asc,in_at.asc');
     if(r.ok){ bxStore = await r.json(); bxLoaded = true; }
   }catch(e){ console.warn('bxFetchStore', e); }
 }
 async function loadBoxRoom(){ await bxFetchStore(); renderBoxRoom(); }
-function bxFind(style,color,size){ const k = bxK(style,color,size); return bxStore.filter(b=>bxK(b.style,b.color,b.size)===k); }
+function bxFind(style,color,size,wh){ const k = bxK(style,color,size); const w = wh ? String(wh).trim().toUpperCase() : ''; return bxStore.filter(b=>bxK(b.style,b.color,b.size)===k && (!w || bxWh(b)===w)); }
 function bxLocsLabel(list, max){
   const locs = list.map(b=>String(b.loc||'?'));
   const m = max || 4;
@@ -4617,10 +4620,11 @@ async function bxAddBoxes(pre){
   const n = parseInt(window.prompt('박스 수량 (몇 박스?)', '1')||'0');
   if(!n || n<1) return;
   const loc = (window.prompt('Location (예: A-12)\n※ 여러 박스가 같은 location이면 그대로, 다르면 일단 넣고 화면에서 개별 수정')||'').trim().toUpperCase();
+  const wh = ((window.prompt('창고 (SC 또는 CA)', (pre&&pre.wh)||'SC')||'SC').trim().toUpperCase()==='CA') ? 'CA' : 'SC';
   const pcs = parseInt(window.prompt('박스입수 (한 박스 몇 장?)', String(autoPpb({style,size})))||'0') || autoPpb({style,size});
   const by = (SESS&&SESS.email)||'';
-  const rows = Array.from({length:n}, ()=>({style, color, size, pcs, loc, status:'IN', in_by:by, note:''}));
-  try{ await bxInsert(rows); showToast('✅ '+style+' '+color+' '+size+' — '+n+'박스 추가 @'+(loc||'?')); }
+  const rows = Array.from({length:n}, ()=>({style, color, size, pcs, loc, wh, status:'IN', in_by:by, note:''}));
+  try{ await bxInsert(rows); showToast('✅ ['+wh+'] '+style+' '+color+' '+size+' — '+n+'박스 추가 @'+(loc||'?')); }
   catch(e){ showToast('⚠ 저장 실패 — 인터넷 확인'); }
   loadBoxRoom();
 }
@@ -4650,15 +4654,15 @@ function bxFillOrderPick(){
 async function bxPullLine(base, li){
   const rec = savedCache.find(s=>s.base===base); if(!rec) return;
   const L = (rec.lines||[])[li]; if(!L) return;
-  if(String(L.wh||'').toUpperCase() !== 'SC'){ showToast('⚠ SC 라인만 처리 가능 — 이 라인은 ['+(L.wh||'?')+']'); return; }
+  const lwh = String(L.wh||'SC').trim().toUpperCase() || 'SC';
   const need = boxCalc(L).full;
   if(!need){ showToast('⚠ 이 라인은 풀박스 없음 (자투리만) — PC Room에서 처리하세요'); return; }
-  const avail = bxFind(L.style, L.color, L.size);
-  if(avail.length < need){ showToast('⚠ 풀박스 부족: 필요 '+need+' · 재고 '+avail.length); if(!avail.length) return; }
+  const avail = bxFind(L.style, L.color, L.size, lwh);
+  if(avail.length < need){ showToast('⚠ ['+lwh+'] 풀박스 부족: 필요 '+need+' · 재고 '+avail.length); if(!avail.length) return; }
   const take = avail.slice(0, Math.min(need, avail.length));   // 오래된 박스(in_at asc)부터
   const locs = bxLocsLabel(take, 99);
   const po = 'PO ' + ((rec.meta&&rec.meta.po)||'');
-  if(!confirm(L.style+' '+String(L.color).toUpperCase()+' '+String(L.size).toUpperCase()+' — '+take.length+'박스 차감\n\n📍 '+locs+'\n\n'+po+' 출고로 기록할까요?')) return;
+  if(!confirm('['+lwh+'] '+L.style+' '+String(L.color).toUpperCase()+' '+String(L.size).toUpperCase()+' — '+take.length+'박스 차감\n\n📍 '+locs+'\n\n'+po+' 출고로 기록할까요?')) return;
   try{ await bxPatch(take.map(b=>b.id), {status:'OUT', out_at:new Date().toISOString(), out_by:(SESS&&SESS.email)||'', out_po:po}); }
   catch(e){ showToast('⚠ 차감 실패 — 인터넷 확인'); return; }
   const ids = new Set(take.map(b=>b.id));
@@ -4669,24 +4673,27 @@ async function bxPullLine(base, li){
 function renderBoxRoom(){
   const el = $('bx-body'); if(!el) return;
   const q = (($('bx-search')||{}).value||'').trim().toLowerCase();
-  const groups = {};   // style → color → [boxes]
-  bxStore.forEach(b=>{
+  const whF = (($('bx-wh-filter')||{}).value||'').trim().toUpperCase();
+  const shown = bxStore.filter(b=>!whF || bxWh(b)===whF);
+  const groups = {};   // "wh · style" → color → [boxes]
+  shown.forEach(b=>{
     if(q && !(String(b.style).toLowerCase().includes(q) || String(b.color).toLowerCase().includes(q) || String(b.loc||'').toLowerCase().includes(q))) return;
-    const s = String(b.style), c = String(b.color).toUpperCase();
+    const s = bxWh(b) + ' · ' + String(b.style), c = String(b.color).toUpperCase();
     ((groups[s] = groups[s] || {})[c] = groups[s][c] || []).push(b);
   });
   const styles = Object.keys(groups).sort();
-  const totBoxes = bxStore.length, totPcs = bxStore.reduce((a,b)=>a+(Number(b.pcs)||0),0);
+  const totBoxes = shown.length, totPcs = shown.reduce((a,b)=>a+(Number(b.pcs)||0),0);
   const pickBase = (($('bx-order-pick')||{}).value)||'';
   const pickRec = pickBase ? (savedCache||[]).find(s=>s.base===pickBase) : null;
   const body = !styles.length
     ? '<div class="muted" style="padding:14px;">' + (bxLoaded ? (q ? '검색 결과 없음' : '재고 없음 — ＋ Add Boxes 또는 📥 Import로 시작하세요') : '로딩...') + '</div>'
     : styles.map(sty=>{
+      const gwh = sty.split(' · ')[0], gsty = sty.split(' · ').slice(1).join(' · ');
       const colors = Object.keys(groups[sty]).sort();
       const stBoxes = colors.reduce((a,c)=>a+groups[sty][c].length,0);
       return `<details open style="margin-bottom:10px;border:1px solid var(--border);border-radius:8px;">
         <summary style="cursor:pointer;padding:8px 12px;font-weight:800;color:#0f2a4a;background:#f1f5f9;border-radius:8px;">
-          ${esc(sty)} <span class="muted" style="font-weight:400;">(${colors.length} colors)</span>
+          <span style="display:inline-block;background:${gwh==='CA'?'#9a3412':'#1d4ed8'};color:#fff;border-radius:5px;padding:1px 7px;font-size:10.5px;margin-right:6px;">${esc(gwh)}</span>${esc(gsty)} <span class="muted" style="font-weight:400;">(${colors.length} colors)</span>
           <span style="float:right;font-family:Consolas,monospace;">${stBoxes} 박스</span></summary>
         <div style="overflow-x:auto;padding:6px 10px 10px;">
         <table class="etbl" style="font-size:11.5px;">
@@ -4704,7 +4711,7 @@ function renderBoxRoom(){
                 <td style="font-family:Consolas,monospace;font-weight:800;">${list.length}</td>
                 <td style="font-family:Consolas,monospace;color:var(--text2);">${esc(String(list[0].pcs||''))}</td>
                 <td class="tl">${list.map(b=>`<span style="display:inline-flex;align-items:center;gap:2px;background:#eff6ff;border:1px solid #bfdbfe;border-radius:6px;padding:1px 4px 1px 6px;margin:1px 3px 1px 0;font-size:10.5px;font-weight:700;color:#1d4ed8;"><span style="cursor:pointer;" onclick="bxEditLoc('${b.id}')" title="location 수정">${esc(String(b.loc||'?'))}</span><span style="cursor:pointer;color:#b91c1c;padding:0 2px;" onclick="bxShipOne('${b.id}')" title="이 박스 출고">✕</span></span>`).join('')}</td>
-                <td style="white-space:nowrap;"><button class="btn btn-sm" style="border:none;padding:0 4px;" onclick="bxAddBoxes({style:'${esc(sty)}',color:'${esc(c)}',size:'${esc(sz)}'})" title="이 품목 박스 추가">＋</button><button class="btn btn-sm" style="border:none;padding:0 4px;" onclick="bxHistory('${esc(sty)}','${esc(c)}')" title="출고 이력 / 복원">📜</button></td>
+                <td style="white-space:nowrap;"><button class="btn btn-sm" style="border:none;padding:0 4px;" onclick="bxAddBoxes({style:'${esc(gsty)}',color:'${esc(c)}',size:'${esc(sz)}',wh:'${esc(gwh)}'})" title="이 품목 박스 추가">＋</button><button class="btn btn-sm" style="border:none;padding:0 4px;" onclick="bxHistory('${esc(gsty)}','${esc(c)}')" title="출고 이력 / 복원">📜</button></td>
               </tr>`;
             }).join('');
           }).join('')}</tbody>
@@ -4721,19 +4728,18 @@ function renderBoxRoom(){
       <div style="background:#1d4ed8;color:#fff;padding:8px 12px;border-radius:8px 8px 0 0;font-weight:800;font-size:12px;">📋 ${esc((pickRec.meta&&pickRec.meta.cust)||'')} — PO ${esc((pickRec.meta&&pickRec.meta.po)||'')}</div>
       <div style="padding:8px 10px;">
         ${(pickRec.lines||[]).map((L,li)=>{
-          const isSC = String(L.wh||'').toUpperCase() === 'SC';
+          const lwh = String(L.wh||'SC').trim().toUpperCase() || 'SC';
           const bc = boxCalc(L);
           const need = bc.full;
-          const avail = bxFind(L.style, L.color, L.size);
+          const avail = bxFind(L.style, L.color, L.size, lwh);
           const ok = avail.length >= need;
-          return `<div style="display:flex;align-items:center;gap:6px;padding:4px 2px;border-bottom:1px solid #dbeafe;font-size:11px;${isSC&&need?'':'opacity:.45;'}">
-            <div style="flex:1;min-width:0;"><b>${esc(String(L.style||''))}</b> ${esc(String(L.color||''))} <b>${esc(String(L.size||'').toUpperCase())}</b> — 풀박스 <b>${need}</b>
-              <span class="muted">(오더 ${Number(L.qty)||0}${bc.loose?' · 자투리 '+bc.loose+'→PC':''}) [${esc(L.wh||'')}]</span><br>
-              ${!isSC ? '<span style="color:#94a3b8;font-weight:700;">SC 재고 아님</span>'
-                : !need ? '<span class="muted">자투리만 — PC Room에서</span>'
+          return `<div style="display:flex;align-items:center;gap:6px;padding:4px 2px;border-bottom:1px solid #dbeafe;font-size:11px;${need?'':'opacity:.45;'}">
+            <div style="flex:1;min-width:0;"><span style="background:${lwh==='CA'?'#9a3412':'#1d4ed8'};color:#fff;border-radius:4px;padding:0 4px;font-size:9.5px;font-weight:800;">${esc(lwh)}</span> <b>${esc(String(L.style||''))}</b> ${esc(String(L.color||''))} <b>${esc(String(L.size||'').toUpperCase())}</b> — 풀박스 <b>${need}</b>
+              <span class="muted">(오더 ${Number(L.qty)||0}${bc.loose?' · 자투리 '+bc.loose+'→PC':''})</span><br>
+              ${!need ? '<span class="muted">자투리만 — PC Room에서</span>'
                 : `<span style="color:${ok?'#166534':'#dc2626'};font-weight:700;">재고 ${avail.length}박스</span> ${avail.length?`<span style="color:#1d4ed8;font-weight:700;">📍 ${esc(bxLocsLabel(avail.slice(0,Math.max(need,1))))}</span>`:''}`}
             </div>
-            ${isSC && need && avail.length ? `<button class="btn btn-sm" style="flex-shrink:0;font-size:10px;padding:2px 7px;background:#fff;color:#1d4ed8;border-color:#93c5fd;" onclick="bxPullLine('${esc(pickRec.base)}',${li})" title="필요한 풀박스만큼 차감 (오래된 박스부터)">− ${Math.min(need,avail.length)}박스 차감</button>` : ''}
+            ${need && avail.length ? `<button class="btn btn-sm" style="flex-shrink:0;font-size:10px;padding:2px 7px;background:#fff;color:#1d4ed8;border-color:#93c5fd;" onclick="bxPullLine('${esc(pickRec.base)}',${li})" title="필요한 풀박스만큼 차감 (오래된 박스부터)">− ${Math.min(need,avail.length)}박스 차감</button>` : ''}
           </div>`;
         }).join('') || '<div class="muted" style="padding:8px;">라인 없음</div>'}
         <div style="font-size:10px;color:#1d4ed8;padding:6px 2px 2px;">− 차감: 그 라인의 <b>풀박스 수량만</b> 재고에서 빼고 PO 기록 · 자투리는 🧺 PC Room에서 · 실수했으면 📜 이력에서 ↩ 복원</div>
@@ -4778,20 +4784,39 @@ async function bxRestore(id){
   const m = document.getElementById('modal-bxhist'); if(m) m.remove();
   loadBoxRoom();
 }
+async function bxExport(){
+  await loadXlsxLib();
+  const wb = XLSX.utils.book_new();
+  // 같은 wh/style/color/size/loc/pcs 박스를 한 줄로 묶어서 출력
+  const agg = {};
+  bxStore.forEach(b=>{
+    const k = [bxWh(b), b.style, String(b.color).toUpperCase(), String(b.size).toUpperCase(), String(b.loc||'').toUpperCase(), b.pcs].join('|');
+    (agg[k] = agg[k] || {wh:bxWh(b), style:b.style, color:String(b.color).toUpperCase(), size:String(b.size).toUpperCase(), loc:String(b.loc||'').toUpperCase(), pcs:Number(b.pcs)||0, n:0}).n++;
+  });
+  const data = [['WH','STYLE','COLOR','SIZE','LOC','BOXES','PCS/BOX','TOTAL PCS']];
+  Object.values(agg).sort((a,b)=>a.wh.localeCompare(b.wh)||String(a.style).localeCompare(String(b.style))||a.color.localeCompare(b.color)||a.size.localeCompare(b.size)||a.loc.localeCompare(b.loc))
+    .forEach(g=>data.push([g.wh, g.style, g.color, g.size, g.loc, g.n, g.pcs, g.n*g.pcs]));
+  data.push([]);
+  data.push(['','','','','합계', bxStore.length, '', bxStore.reduce((a,b)=>a+(Number(b.pcs)||0),0)]);
+  const ws = XLSX.utils.aoa_to_sheet(data);
+  ws['!cols'] = [{wch:5},{wch:8},{wch:18},{wch:6},{wch:9},{wch:7},{wch:8},{wch:10}];
+  XLSX.utils.book_append_sheet(wb, ws, 'FULL BOX');
+  XLSX.writeFile(wb, 'FULLBOX-' + new Date().toISOString().slice(0,10) + '.xlsx');
+}
 async function bxTemplate(){
   await loadXlsxLib();
   const wb = XLSX.utils.book_new();
   const data = [
-    ['STYLE','COLOR','SIZE','LOC','BOXES','PCS'],
-    ['1368','BLACK','M','A-12',3,72],
-    ['1368','BLACK','3XL','A-13',1,48],
-    ['1210','RED','L','B-04',2,72],
+    ['STYLE','COLOR','SIZE','LOC','WH','BOXES','PCS'],
+    ['1368','BLACK','M','A-12','SC',3,72],
+    ['1368','BLACK','3XL','A-13','SC',1,48],
+    ['1210','RED','L','B-04','CA',2,72],
   ];
   const ws = XLSX.utils.aoa_to_sheet(data);
-  ws['!cols'] = [{wch:8},{wch:16},{wch:6},{wch:8},{wch:7},{wch:6}];
+  ws['!cols'] = [{wch:8},{wch:16},{wch:6},{wch:8},{wch:5},{wch:7},{wch:6}];
   XLSX.utils.book_append_sheet(wb, ws, 'BOXES');
   XLSX.writeFile(wb, 'FULLBOX-IMPORT-TEMPLATE.xlsx');
-  showToast('📄 양식 다운로드 — BOXES=박스 수 · PCS=박스입수(비우면 자동) · LOC이 박스마다 다르면 줄을 나눠 적으세요');
+  showToast('📄 양식 다운로드 — BOXES=박스 수 · PCS=박스입수(비우면 자동) · WH=SC/CA · DaVinci export 원본도 그대로 임포트 가능');
 }
 async function bxImport(file){
   if(!file) return;
@@ -4812,50 +4837,94 @@ async function bxImport(file){
         else if(c==='UOM') d.uom = ci;
         else if(c==='LOT CODE') d.lot = ci;
         else if(c==='SUBLOT CODE') d.sub = ci;
+        else if(c==='DESCRIPTION') d.desc = ci;
         else if(c==='PHYSICAL QTY') d.phys = ci;
         else if(c==='AVAILABLE QTY') d.avail = ci;
       });
-      if(d.item!=null && d.lot!=null && d.sub!=null){ dv = d; dv.hi = i; break; }
+      if(d.item!=null && (d.lot!=null || d.desc!=null)){ dv = d; dv.hi = i; break; }
     }
     if(dv){
+      // 창고: 파일명에서 추측 (sc1368 → SC · ca1368 → CA) 후 확인
+      const fn = String(file.name||'').toLowerCase();
+      const guess = /ca\s*_?\d/.test(fn) && !/sc\s*_?\d/.test(fn) ? 'CA' : 'SC';
+      const whIn = window.prompt('이 파일은 어느 창고 재고인가요? (SC 또는 CA)', guess);
+      if(whIn==null) return;
+      const wh = String(whIn).trim().toUpperCase()==='CA' ? 'CA' : 'SC';
+      const SZ = ['2T','3T','4T','5T','XS','S','M','L','XL','2XL','3XL','4XL','5XL','6XL'];
       const by = (SESS&&SESS.email)||'';
       const rows = []; const bad = []; let skipped0 = 0;
       for(let i=dv.hi+1;i<aoa.length;i++){
         const r = aoa[i];
         const item = String(r[dv.item]||'').trim();
-        const lotRaw = String(r[dv.lot]||'').trim();
-        const size = String(r[dv.sub]||'').trim().toUpperCase();
-        if(!item && !lotRaw) continue;
-        if(!lotRaw || !size){ bad.push(i+1); continue; }
+        const lotRaw = dv.lot!=null ? String(r[dv.lot]||'').trim() : '';
+        let size = dv.sub!=null ? String(r[dv.sub]||'').trim().toUpperCase() : '';
+        const descRaw = dv.desc!=null ? String(r[dv.desc]||'').trim() : '';
+        if(!item && !lotRaw && !descRaw) continue;
         const qty = parseInt(dv.phys!=null ? r[dv.phys] : r[dv.avail]) || 0;
         if(qty<=0){ skipped0++; continue; }
         const um = String(dv.uom!=null ? (r[dv.uom]||'') : '').match(/:\s*(\d+)/);
         const baseM = item.match(/^(\d{2,5})/);
         const base = baseM ? baseM[1] : '';
-        const pm = lotRaw.match(/\(([^)]*)\)\s*$/);
-        const color = lotRaw.replace(/\s*\([^)]*\)\s*$/,'').trim().toUpperCase();
-        let style = base, note = 'davinci';
-        if(pm){
-          const p = pm[1].trim().toUpperCase();
-          const pc = p.replace(/\s+/g,'');
-          if(/^\d/.test(pc) && !/BAD|DMG|DAMAG/.test(pc)) style = pc;      // (1368)→1368 · (1368S)→1368S · (1368 SS)→1368SS
-          else if(p && p!==base) note = 'davinci · ' + p;                  // (1368 BAD) · (SIDE SEAM) 등은 메모로 보존
+        let style = base, color = '', note = 'davinci';
+        if(lotRaw){
+          // SC 형식: Lot Code=칼라(+괄호표기) · Sublot=사이즈
+          const pm = lotRaw.match(/\(([^)]*)\)\s*$/);
+          color = lotRaw.replace(/\s*\([^)]*\)\s*$/,'').trim().toUpperCase();
+          if(pm){
+            const p = pm[1].trim().toUpperCase();
+            const pc = p.replace(/\s+/g,'');
+            if(/^\d/.test(pc) && !/BAD|DMG|DAMAG/.test(pc)) style = pc;      // (1368)→1368 · (1368S)→1368S · (1368 SS)→1368SS
+            else if(p && p!==base) note = 'davinci · ' + p;                  // (1368 BAD) · (SIDE SEAM) 등은 메모로 보존
+          }
+        }else{
+          // CA 형식: Lot/Sublot 비어있음 → Description 파싱 ("1368 ADULT SS KEY LIME L")
+          let dsc = descRaw.toUpperCase();
+          const pm2 = dsc.match(/\(([^)]*)\)\s*$/);
+          if(pm2){ const p = pm2[1].trim(); if(p) note = 'davinci · ' + p; dsc = dsc.replace(/\s*\([^)]*\)\s*$/,'').trim(); }
+          const toks = dsc.split(/\s+/).filter(Boolean);
+          if(toks.length >= 3){
+            let last = toks[toks.length-1], extra = '';
+            if(!SZ.includes(last)){
+              // "PAPAYAXS"처럼 칼라+사이즈가 붙은 경우 분리 (긴 사이즈부터 시도)
+              const bySz = SZ.slice().sort((a,b)=>b.length-a.length);
+              for(const s of bySz){ if(last.length>s.length && last.endsWith(s)){ extra = last.slice(0, last.length-s.length); last = s; break; } }
+            }
+            if(!size || !SZ.includes(size)) size = last;
+            let mid = toks.slice(1, toks.length-1).join(' ');
+            mid = mid.replace(/^(ADULT|YOUTH)\s+/,'').replace(/^(SS|LS)\s+/,'');
+            color = (mid + (extra ? ' ' + extra : '')).replace(/\s+/g,' ').trim();
+            if(!base && toks[0]) style = toks[0];
+          }
         }
-        if(!style || !color){ bad.push(i+1); continue; }
+        if(!style || !color || !size || (!lotRaw && !SZ.includes(size))){ bad.push(i+1); continue; }
         const pcs = um ? parseInt(um[1]) : autoPpb({style,size});
         const loc = dv.loc!=null ? String(r[dv.loc]||'').trim().toUpperCase() : '';
-        for(let j=0;j<qty;j++) rows.push({style, color, size, pcs, loc, status:'IN', in_by:by, note});
+        for(let j=0;j<qty;j++) rows.push({style, color, size, pcs, loc, wh, status:'IN', in_by:by, note});
       }
       if(!rows.length){ alert('⚠ 가져올 데이터가 없어요.'); return; }
+      // 잡데이터 자동 제외: 파일의 주력 스타일과 베이스 번호가 다른 행 · BAD/불량 표기 행
+      const baseCount = {};
+      rows.forEach(b=>{ const bb = (String(b.style).match(/^\d+/)||[''])[0]; baseCount[bb] = (baseCount[bb]||0)+1; });
+      const domBase = Object.keys(baseCount).sort((a,b)=>baseCount[b]-baseCount[a])[0] || '';
+      const excluded = {};
+      const keep = rows.filter(b=>{
+        const bb = (String(b.style).match(/^\d+/)||[''])[0];
+        const junk = (bb !== domBase) ? String(b.style) : (/BAD|DMG|DAMAG/i.test(b.note||'') ? 'BAD/불량' : '');
+        if(junk){ excluded[junk] = (excluded[junk]||0)+1; return false; }
+        return true;
+      });
+      if(!keep.length){ alert('⚠ 가져올 데이터가 없어요.'); return; }
       const byStyle = {};
-      rows.forEach(b=>{ byStyle[b.style] = (byStyle[b.style]||0)+1; });
+      keep.forEach(b=>{ byStyle[b.style] = (byStyle[b.style]||0)+1; });
       const det = Object.keys(byStyle).sort().map(s=>'  · '+s+': '+byStyle[s].toLocaleString()+'박스').join('\n');
-      const summary = rows.length.toLocaleString() + '박스 (' + rows.reduce((a,b)=>a+b.pcs,0).toLocaleString() + ' pcs)';
-      if(!confirm('📥 DaVinci 임포트 미리보기\n\n' + summary + '\n' + det
+      const exDet = Object.keys(excluded).sort().map(s=>s+' '+excluded[s]+'박스').join(' · ');
+      const summary = '['+wh+'] ' + keep.length.toLocaleString() + '박스 (' + keep.reduce((a,b)=>a+b.pcs,0).toLocaleString() + ' pcs)';
+      if(!confirm('📥 DaVinci 임포트 미리보기 — 창고 '+wh+'\n\n' + summary + '\n' + det
+        + (exDet ? '\n🚫 제외됨: ' + exDet : '')
         + (skipped0 ? '\n(수량 0 행 ' + skipped0 + '개 제외)' : '')
         + (bad.length ? '\n⚠ 건너뛴 행: ' + bad.slice(0,20).join(', ') + (bad.length>20?' 외 '+(bad.length-20)+'개':'') : '')
         + '\n\n지금 재고에 추가할까요?\n(기존 재고는 그대로 두고 위에 얹습니다)')) return;
-      await bxInsert(rows);
+      await bxInsert(keep);
       showToast('✅ ' + summary + ' 임포트 완료 (DaVinci)');
       loadBoxRoom();
       return;
@@ -4872,6 +4941,7 @@ async function bxImport(file){
         else if(/^LOC|LOCATION|^BIN/.test(c)) m.loc = ci;
         else if(/^BOX|^QTY.*BOX|^CTN|CARTON|^CASES?$/.test(c)) m.boxes = ci;
         else if(/^PCS|^PPB|입수|PER.?BOX/.test(c)) m.pcs = ci;
+        else if(/^WH|WAREHOUSE|창고/.test(c)) m.wh = ci;
       });
       if(m.style!=null && m.color!=null && m.size!=null){ hi = i; map = m; break; }
     }
@@ -4888,7 +4958,8 @@ async function bxImport(file){
       const loc = map.loc!=null ? String(r[map.loc]||'').trim().toUpperCase() : '';
       const nb = map.boxes!=null ? (parseInt(r[map.boxes])||1) : 1;
       const pcs = map.pcs!=null && parseInt(r[map.pcs]) ? parseInt(r[map.pcs]) : autoPpb({style,size});
-      for(let j=0;j<nb;j++) rows.push({style, color, size, pcs, loc, status:'IN', in_by:by, note:'import'});
+      const wh = map.wh!=null && String(r[map.wh]||'').trim().toUpperCase()==='CA' ? 'CA' : 'SC';
+      for(let j=0;j<nb;j++) rows.push({style, color, size, pcs, loc, wh, status:'IN', in_by:by, note:'import'});
     }
     if(!rows.length){ alert('⚠ 가져올 데이터가 없어요.'); return; }
     const summary = rows.length + '박스 (' + rows.reduce((a,b)=>a+b.pcs,0).toLocaleString() + ' pcs)';
