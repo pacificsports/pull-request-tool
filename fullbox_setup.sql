@@ -45,6 +45,38 @@ drop policy if exists pr_boxes_auth_all on public.pr_boxes;
 create policy pr_boxes_auth_all on public.pr_boxes
   for all to authenticated using (true) with check (true);
 
+-- 🎨 SKU 마스터 (style+color) — v275. 미등록 조합은 pr_boxes 입고를 트리거가 거부
+create table if not exists public.pr_skus (
+  id uuid primary key default gen_random_uuid(),
+  style text not null,
+  color text not null,
+  active boolean not null default true,
+  created_at timestamptz not null default now(),
+  created_by text not null default '',
+  unique (style, color)
+);
+alter table public.pr_skus enable row level security;
+drop policy if exists pr_skus_auth_all on public.pr_skus;
+create policy pr_skus_auth_all on public.pr_skus
+  for all to authenticated using (true) with check (true);
+
+create or replace function public.pr_boxes_skucheck() returns trigger language plpgsql as $$
+begin
+  if tg_op='INSERT' or (new.style, upper(new.color)) is distinct from (old.style, upper(old.color)) then
+    if not exists (select 1 from public.pr_skus k where k.style=new.style and upper(k.color)=upper(new.color)) then
+      raise exception 'SKU_NOT_REGISTERED: % / %', new.style, new.color;
+    end if;
+  end if;
+  return new;
+end $$;
+drop trigger if exists pr_boxes_zz_skucheck on public.pr_boxes;
+create trigger pr_boxes_zz_skucheck before insert or update on public.pr_boxes
+  for each row execute function public.pr_boxes_skucheck();
+
+-- PC Room SC/CA 구분 (v275)
+alter table public.pr_pcroom add column if not exists wh text not null default 'SC';   -- CA 행은 k='STYLE|COLOR|CA'
+alter table public.pr_pcmoves add column if not exists wh text not null default 'SC';
+
 -- 🇭🇹 Haiti 입고 (인보이스 업로드 → 리뷰 → 도착 시 location 지정 입고)
 create table if not exists public.pr_inbound (
   id          uuid primary key default gen_random_uuid(),

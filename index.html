@@ -136,7 +136,7 @@ main{max-width:1100px;margin:0 auto;padding:16px;}
     <button class="btn btn-sm" onclick="doLogout()" style="padding:2px 8px;font-size:10px;" data-i18n="logout">로그아웃</button>
   </span>
   <select id="lang-sel" onchange="setLang(this.value)" style="font-size:11px;padding:3px 6px;border-radius:5px;border:none;background:#1d3f66;color:#fff;"><option value="ko">한국어</option><option value="en">English</option><option value="es">Español</option></select>
-  <span style="font-size:10px;color:#9fb8d4;">v274 📦</span>
+  <span style="font-size:10px;color:#9fb8d4;">v275 🎨</span>
 </div>
 <script type="text/javascript" src="https://js.authorize.net/v1/Accept.js" charset="utf-8"></script>
 <div id="po-viewer" style="display:none;position:fixed;top:0;right:0;width:44%;height:100vh;background:#fff;border-left:2px solid var(--border);z-index:60;box-shadow:-6px 0 20px rgba(0,0,0,.15);">
@@ -360,6 +360,8 @@ main{max-width:1100px;margin:0 auto;padding:16px;}
     <div class="card-title"><span>📦 Full Box Inventory (박스별 Location)</span>
       <select class="fi" id="bx-order-pick" onfocus="bxFillOrderPick()" onchange="renderBoxRoom()" style="margin-left:auto;max-width:280px;font-size:12px;padding:5px 8px;"><option value="">📋 Pull Request 보기...</option></select>
       <input class="fi" id="bx-search" placeholder="🔍 Style / Color / Loc" oninput="renderBoxRoom()" style="width:170px;font-size:12px;padding:5px 10px;">
+      <label style="display:inline-flex;align-items:center;gap:4px;font-size:11px;color:var(--text2);cursor:pointer;white-space:nowrap;"><input type="checkbox" id="bx-showall" onchange="renderBoxRoom()" style="accent-color:#0f2a4a;">전체 SKU</label>
+      <button class="btn btn-sm" onclick="skuManager()" style="background:#7c3aed;color:#fff;border-color:#7c3aed;" title="SKU 마스터 관리 — 등록/이름변경/병합">🎨 SKU</button>
       <button class="btn btn-sm btn-primary" onclick="bxAddBoxes()">＋ Add Boxes</button>
       <button class="btn btn-sm" onclick="document.getElementById('bx-import-file').click()" style="background:#166534;color:#fff;border-color:#166534;">📥 Import</button>
       <button class="btn btn-sm" onclick="bxTemplate()" title="임포트용 엑셀 템플릿 다운로드">📄 양식</button>
@@ -1713,7 +1715,7 @@ async function enterApp(){
   await loadSavedList();
   // 오더 파싱 화면에서 재고 힌트(📦풀박스+location · PC자투리)가 바로 보이도록 백그라운드 로드
   bxFetchStore().then(()=>{ if(poLines.length) renderTable(); }).catch(()=>{});
-  sbFetch('/rest/v1/pr_pcroom?select=k,style,color,qty,sizes').then(async r=>{
+  sbFetch('/rest/v1/pr_pcroom?select=k,style,color,qty,sizes,wh').then(async r=>{
     if(r.ok){ pcStore = await r.json(); pcLoaded = true; if(poLines.length) renderTable(); }
   }).catch(()=>{});
 }
@@ -2054,7 +2056,7 @@ async function delSaved(base){
     const pcl = rec && rec.meta && rec.meta._pcAuto && rec.meta._pcAuto.lines;
     if(pcl && Object.keys(pcl).some(k=>pcl[k]>0) && confirm('🧺 이 오더로 PC Room에서 자동 차감된 자투리 수량도 복구할까요?')){
       if(!pcLoaded){
-        const r4 = await sbFetch('/rest/v1/pr_pcroom?select=k,style,color,qty,sizes,updated_at,updated_by');
+        const r4 = await sbFetch('/rest/v1/pr_pcroom?select=k,style,color,qty,sizes,wh,updated_at,updated_by');
         if(r4.ok){ pcStore = await r4.json(); pcLoaded = true; }
       }
       for(const key of Object.keys(pcl)){
@@ -2615,12 +2617,12 @@ async function invSyncOnSave(rec){
       const wh = String(L.wh||'SC').trim().toUpperCase()||'SC';
       if(wh!=='SC' && wh!=='CA') return;
       const full = boxCalc(L).full; if(!full) return;
-      const key = wh + '|' + bxK(bxStyleFor(L), bxColorFor(L), L.size);
+      const key = wh + '|' + bxK(bxStyleFor(L), bxBaseColor(bxColorFor(L)), L.size);   // base 칼라 기준 (변형 통합)
       if(!need[key]) need[key] = {n:0, L, wh};
       need[key].n += full;
     });
     const have = {};
-    outRows.forEach(b=>{ const key = bxWh(b)+'|'+bxK(b.style,b.color,b.size); (have[key] = have[key]||[]).push(b); });
+    outRows.forEach(b=>{ const key = bxWh(b)+'|'+bxK(b.style, bxBaseColor(b.color), b.size); (have[key] = have[key]||[]).push(b); });
     let outN = 0, backN = 0, shortMsg = [];
     for(const key of Object.keys(need)){
       const diff = need[key].n - ((have[key]||[]).length);
@@ -2629,11 +2631,19 @@ async function invSyncOnSave(rec){
       const st = bxStyleFor(L);
       let take = [];
       if(L.pickLocs && L.pickLocs.length){
-        L.pickLocs.forEach(g=>{ take.push(...bxLocList(st, L.color, L.size, wh, String(g.loc).toUpperCase()).slice(0, g.n)); });
+        L.pickLocs.forEach(g=>{
+          const pool = g.col ? bxLocListCol(st, g.col, L.size, wh, String(g.loc).toUpperCase())
+                             : bxLocList(st, L.color, L.size, wh, String(g.loc).toUpperCase());
+          take.push(...pool.slice(0, g.n));
+        });
       }
       if(take.length < diff){
         const taken = new Set(take.map(b=>b.id));
-        take.push(...bxFind(st, L.color, L.size, wh).filter(b=>!taken.has(b.id)));
+        take.push(...bxFind(st, bxColorFor(L), L.size, wh).filter(b=>!taken.has(b.id)));   // 같은 변형 먼저
+      }
+      if(take.length < diff){
+        const taken = new Set(take.map(b=>b.id));
+        take.push(...bxFindBase(st, bxColorFor(L), L.size, wh).filter(b=>!taken.has(b.id)));  // 그래도 부족하면 다른 변형
       }
       take = take.slice(0, diff);
       if(take.length){
@@ -2652,30 +2662,31 @@ async function invSyncOnSave(rec){
       backN += back.length;
     }
     if(backN) await bxFetchStore();
-    // ── PC Room (SC 자투리): 이전 스냅샷과 비교해 차이만 반영 ──
+    // ── PC Room (SC·CA 자투리): 이전 스냅샷과 비교해 차이만 반영 ──
     const prev = (rec.meta && rec.meta._pcAuto && rec.meta._pcAuto.lines) || {};
     const cur = {};
     (rec.lines||[]).forEach(L=>{
-      if((String(L.wh||'SC').trim().toUpperCase()||'SC')!=='SC') return;
+      const whL = String(L.wh||'SC').trim().toUpperCase()||'SC';
+      if(whL!=='SC' && whL!=='CA') return;
       const loose = boxCalc(L).loose; if(!loose) return;
-      const key = bxStyleFor(L)+'|'+bxColorFor(L)+'|'+String(L.size||'').trim().toUpperCase();
+      const key = bxStyleFor(L)+'|'+bxColorFor(L)+'|'+String(L.size||'').trim().toUpperCase() + (whL==='CA' ? '|CA' : '');
       cur[key] = (cur[key]||0) + loose;
     });
     const keys = new Set(Object.keys(prev).concat(Object.keys(cur)));
     let pcN = 0;
     if(keys.size){
       if(!pcLoaded){
-        const r3 = await sbFetch('/rest/v1/pr_pcroom?select=k,style,color,qty,sizes,updated_at,updated_by');
+        const r3 = await sbFetch('/rest/v1/pr_pcroom?select=k,style,color,qty,sizes,wh,updated_at,updated_by');
         if(r3.ok){ pcStore = await r3.json(); pcLoaded = true; }
       }
       for(const key of keys){
         const delta = (cur[key]||0) - (prev[key]||0);
         if(!delta) continue;
         const parts = key.split('|');
-        const st = parts[0], col = parts[1], sz = parts[2];
-        const k = pcKey(st, col);
+        const st = parts[0], col = parts[1], sz = parts[2], whv = parts[3]==='CA' ? 'CA' : 'SC';
+        const k = pcKey(st, col, whv);
         let row = pcStore.find(x=>x.k===k);
-        if(!row){ row = { k, style: st, color: col, qty: {} }; pcStore.push(row); }
+        if(!row){ row = { k, style: st, color: col, wh: whv, qty: {} }; pcStore.push(row); }
         row.qty = row.qty || {};
         const old = Number(row.qty[sz]) || 0;
         const nv = old - delta;
@@ -2742,7 +2753,7 @@ async function printSavedPRWh(base, wh){
         const looseL = (rec.lines||[]).filter(L=>((String(L.wh||'SC').trim().toUpperCase()||'SC')===wh) && boxCalc(L).loose>0);
         if(looseL.length){
           if(!pcLoaded){
-            const r3 = await sbFetch('/rest/v1/pr_pcroom?select=k,style,color,qty,sizes,updated_at,updated_by');
+            const r3 = await sbFetch('/rest/v1/pr_pcroom?select=k,style,color,qty,sizes,wh,updated_at,updated_by');
             if(r3.ok){ pcStore = await r3.json(); pcLoaded = true; }
           }
           let cnt = 0;
@@ -4670,17 +4681,18 @@ let pcLoaded = false;
 let pcMoves = {};   // 'STYLE|COLOR|SIZE' -> {delta,at,by,note} 최근 1건 (14일 내)
 async function loadPcRoom(){
   if(!stLoaded) stFetch().then(()=>{ if($('pc-body') && typeof renderPcRoom==='function') renderPcRoom(); });
+  if(typeof skuLoaded!=='undefined' && !skuLoaded && typeof skuFetch==='function') skuFetch().then(()=>{ if($('pc-body') && typeof renderPcRoom==='function') renderPcRoom(); });
   try{
-    const r = await sbFetch('/rest/v1/pr_pcroom?select=k,style,color,qty,sizes,updated_at,updated_by&order=style.asc,color.asc');
+    const r = await sbFetch('/rest/v1/pr_pcroom?select=k,style,color,qty,sizes,wh,updated_at,updated_by&order=style.asc,color.asc');
     if(r.ok){ pcStore = await r.json(); pcLoaded = true; }
   }catch(e){ console.warn('loadPcRoom', e); }
   try{
     const since = new Date(Date.now() - 14*86400000).toISOString();
-    const r2 = await sbFetch('/rest/v1/pr_pcmoves?select=style,color,size,delta,at,by_email,note&at=gte.' + encodeURIComponent(since) + '&order=at.desc&limit=1000');
+    const r2 = await sbFetch('/rest/v1/pr_pcmoves?select=style,color,size,delta,at,by_email,note,wh&at=gte.' + encodeURIComponent(since) + '&order=at.desc&limit=1000');
     if(r2.ok){
       pcMoves = {};
       (await r2.json()).forEach(m=>{
-        const key = (String(m.style)+'|'+String(m.color)+'|'+String(m.size)).toUpperCase();
+        const key = (String(m.style)+'|'+String(m.color)+'|'+String(m.size)+'|'+(String(m.wh||'SC').toUpperCase()==='CA'?'CA':'SC')).toUpperCase();
         if(!pcMoves[key]) pcMoves[key] = m;   // desc 정렬이라 첫 건이 최신
       });
     }
@@ -4688,14 +4700,15 @@ async function loadPcRoom(){
   renderPcRoom();
 }
 function pcMoveBadge(row, s2, id){
-  const m = pcMoves[(String(row.style)+'|'+String(row.color)+'|'+s2).toUpperCase()];
+  const m = pcMoves[(String(row.style)+'|'+String(row.color)+'|'+s2+'|'+pcWhOf(row)).toUpperCase()];
   if(!m || !m.delta) return `<div id="${id}" style="font-size:8.5px;line-height:1.1;height:10px;"></div>`;
   const d = new Date(m.at);
   const dt = (d.getMonth()+1)+'/'+d.getDate();
   const c = m.delta > 0 ? '#16a34a' : '#dc2626';
   return `<div id="${id}" style="font-size:8.5px;line-height:1.1;height:10px;font-weight:800;color:${c};" title="${dt} ${esc(String(m.by_email||'').split('@')[0])}${m.note?' — '+esc(m.note):''}">${m.delta>0?'▲+':'▼'}${m.delta} <span style="color:#94a3b8;font-weight:400;">${dt}</span></div>`;
 }
-function pcKey(style, color){ return (String(style).trim()+'|'+String(color).trim()).toUpperCase(); }
+function pcKey(style, color, wh){ const base = (String(style).trim()+'|'+String(color).trim()).toUpperCase(); return (String(wh||'SC').trim().toUpperCase()==='CA') ? base+'|CA' : base; }
+function pcWhOf(row){ return String(row&&row.wh||'SC').trim().toUpperCase()==='CA' ? 'CA' : 'SC'; }
 async function pcSaveRow(row){
   row.updated_at = new Date().toISOString();
   row.updated_by = (SESS&&SESS.email)||'';
@@ -4708,11 +4721,17 @@ function pcLogMove(row, size, delta, bal, note){
   try{
     sbFetch('/rest/v1/pr_pcmoves', {method:'POST', headers:{Prefer:'return=minimal'}, body:JSON.stringify([{
       by_email: (SESS&&SESS.email)||'', style: String(row.style), color: String(row.color), size: size,
-      delta: delta, bal: bal, note: note||'' }])}).catch(()=>{});
+      delta: delta, bal: bal, note: note||'', wh: pcWhOf(row) }])}).catch(()=>{});
   }catch(e){}
 }
 function pcCellChange(k, size, val, inputEl, note){
-  const row = pcStore.find(r=>r.k===k); if(!row) return;
+  let row = pcStore.find(r=>r.k===k);
+  if(!row){  // 마스터 뼈대의 빈 칸 — 첫 입력 시 행 생성
+    const parts = String(k).split('|');
+    const wh = parts[2]==='CA' ? 'CA' : 'SC';
+    row = { k, style: parts[0], color: parts[1], wh, qty: {}, sizes: pcSizesFor(parts[0]) };
+    pcStore.push(row);
+  }
   row.qty = row.qty || {};
   const old = Number(row.qty[size]) || 0;
   const s2 = String(val).trim();
@@ -4730,7 +4749,7 @@ function pcCellChange(k, size, val, inputEl, note){
   const diff = n - old;
   pcLogMove(row, size, diff, n, note);
   if(diff){
-    pcMoves[(String(row.style)+'|'+String(row.color)+'|'+size).toUpperCase()] = { delta: diff, at: new Date().toISOString(), by_email: (SESS&&SESS.email)||'', note: note||'' };
+    pcMoves[(String(row.style)+'|'+String(row.color)+'|'+size+'|'+pcWhOf(row)).toUpperCase()] = { delta: diff, at: new Date().toISOString(), by_email: (SESS&&SESS.email)||'', note: note||'' };
     const bd = $('pcm-'+cssId(k)+'-'+cssId(size));
     if(bd){ const tmp=document.createElement('div'); tmp.innerHTML = pcMoveBadge(row, size, 'pcm-'+cssId(k)+'-'+cssId(size)); bd.replaceWith(tmp.firstChild); }
   }
@@ -4745,10 +4764,11 @@ function pcFillOrderPick(){
 function pcApplyLine(base, li, mode){
   const rec = savedCache.find(s=>s.base===base); if(!rec) return;
   const L = (rec.lines||[])[li]; if(!L) return;
-  if(String(L.wh||'').toUpperCase() !== 'SC'){ showToast('⚠ SC 라인만 PC Room에서 처리할 수 있습니다 — 이 라인은 [' + (L.wh||'?') + ']'); return; }
-  const k = pcKey(L.style, L.color);
+  const whL = String(L.wh||'').toUpperCase();
+  if(whL !== 'SC' && whL !== 'CA'){ showToast('⚠ SC/CA 라인만 PC Room에서 처리할 수 있습니다 — 이 라인은 [' + (L.wh||'?') + ']'); return; }
+  const k = pcKey(L.style, L.color, whL);
   const row = pcStore.find(r=>r.k===k);
-  if(!row){ showToast('⚠ PC Room에 ' + L.style + ' ' + String(L.color).toUpperCase() + ' 없음 — ＋ Color로 먼저 추가하세요'); return; }
+  if(!row){ showToast('⚠ PC Room ['+whL+']에 ' + L.style + ' ' + String(L.color).toUpperCase() + ' 없음 — 칸에 수량을 입력하면 자동 생성됩니다'); return; }
   const size = String(L.size||'').toUpperCase();
   const old = Number((row.qty||{})[size]) || 0;
   const poName = 'PO ' + ((rec.meta&&rec.meta.po)||'');
@@ -4798,21 +4818,36 @@ function renderPcRoom(){
     </div>
     <div style="display:flex;gap:12px;align-items:flex-start;">
     <div style="flex:1;min-width:0;">` + styles.map(sty=>{
-    const rows = byStyle[sty].sort((a,b)=>String(a.color).localeCompare(String(b.color)));
+    const rows = byStyle[sty];
+    const styMatch = !q || String(sty).toLowerCase().includes(q);
+    // 마스터 SKU 칼라 전체 + 재고에 있는 칼라 (마스터가 뼈대 — 재고 0이어도 칸이 준비됨)
+    let colors = [...new Set([].concat(
+      pcStore.filter(r=>String(r.style)===String(sty)).map(r=>String(r.color).toUpperCase()),
+      (typeof skuLoaded!=='undefined' && skuLoaded) ? skuColors(sty).map(c=>String(c).toUpperCase()) : []
+    ))].sort();
+    if(q && !styMatch) colors = colors.filter(c=>c.toLowerCase().includes(q));
     const sizes = pcSizesFor(sty);
     return `<details open style="margin-bottom:10px;border:1px solid var(--border);border-radius:8px;">
       <summary style="cursor:pointer;padding:8px 12px;font-weight:800;color:#0f2a4a;background:#f1f5f9;border-radius:8px;">
-        ${esc(String(sty))} <span class="muted" style="font-weight:400;">(${rows.length} colors)</span>
+        ${esc(String(sty))} <span class="muted" style="font-weight:400;">(${colors.length} colors)</span>
         <span style="float:right;font-family:Consolas,monospace;" id="pcst-${cssId(String(sty))}">${pcStyleTotal(sty).toLocaleString()}</span></summary>
       <div style="overflow-x:auto;padding:6px 10px 10px;">
       <table class="etbl" style="font-size:11.5px;">
-        <thead><tr><th class="tl" style="min-width:120px;">Color</th>${sizes.map(s2=>`<th>${s2}</th>`).join('')}<th>Total</th><th></th></tr></thead>
-        <tbody>${rows.map(r=>`<tr>
-          <td class="tl" style="font-weight:700;white-space:nowrap;">${esc(String(r.color))}${stBadge('PC', r.style, r.color)}</td>
-          ${sizes.map(s2=>{ const v = (r.qty||{})[s2]; return `<td style="padding:2px 2px 0;vertical-align:top;"><input class="num" data-pc="${cssId(r.k)}-${cssId(s2)}" value="${v!=null?v:''}" onchange="pcCellChange('${esc(r.k)}','${s2}',this.value,this)" style="width:52px;text-align:center;${v<0?'color:#dc2626;font-weight:800;':''}">${pcMoveBadge(r, s2, 'pcm-'+cssId(r.k)+'-'+cssId(s2))}</td>`; }).join('')}
-          <td style="font-family:Consolas,monospace;font-weight:800;" id="pcrt-${cssId(r.k)}">${pcRowTotal(r)||''}</td>
-          <td style="white-space:nowrap;"><button class="btn btn-sm" style="border:none;padding:0 5px;" onclick="pcHistory('${esc(String(r.style))}','${esc(String(r.color))}')" title="이 칼라의 변동 내역 (원장)">📜</button><button class="btn btn-sm" style="border:none;color:#b91c1c;padding:0 6px;" oncontextmenu="return false;" onclick="pcDelRow('${esc(r.k)}')" title="이 칼라 행 삭제">✕</button></td>
-        </tr>`).join('')}</tbody>
+        <thead><tr><th class="tl" style="min-width:120px;">Color</th><th>창고</th>${sizes.map(s2=>`<th>${s2}</th>`).join('')}<th>Total</th><th class="tl">재고확인</th><th></th></tr></thead>
+        <tbody>${colors.map(col=>['SC','CA'].map((w,wi)=>{
+          const k = pcKey(sty, col, w);
+          let r = pcStore.find(x=>x.k===k);
+          const virtual = !r;
+          if(virtual) r = { k, style: String(sty), color: col, wh: w, qty: {} };
+          const whCol = w==='SC' ? '#1d4ed8' : '#c2410c';
+          return `<tr${wi===0?' style="border-top:2px solid #dbe4f0;"':''}>
+          ${wi===0?`<td class="tl" rowspan="2" style="font-weight:700;white-space:nowrap;vertical-align:top;padding-top:7px;">${esc(col)}</td>`:''}
+          <td style="font-weight:800;font-size:10px;color:${whCol};">${w}</td>
+          ${sizes.map(s2=>{ const v = (r.qty||{})[s2]; return `<td style="padding:2px 2px 0;vertical-align:top;"><input class="num" data-pc="${cssId(k)}-${cssId(s2)}" value="${v!=null?v:''}" onchange="pcCellChange('${esc(k)}','${s2}',this.value,this)" style="width:52px;text-align:center;${v<0?'color:#dc2626;font-weight:800;':''}${virtual?'background:#fafbfd;':''}">${pcMoveBadge(r, s2, 'pcm-'+cssId(k)+'-'+cssId(s2))}</td>`; }).join('')}
+          <td style="font-family:Consolas,monospace;font-weight:800;" id="pcrt-${cssId(k)}">${pcRowTotal(r)||''}</td>
+          <td class="tl" style="white-space:nowrap;">${stBadge('PC', sty, col, w==='CA'?'CA':'')}</td>
+          <td style="white-space:nowrap;"><button class="btn btn-sm" style="border:none;padding:0 5px;" onclick="pcHistory('${esc(String(sty))}','${esc(col)}','${w}')" title="[${w}] 이 칼라의 변동 내역 (원장)">📜</button>${virtual?'':`<button class="btn btn-sm" style="border:none;color:#b91c1c;padding:0 6px;" oncontextmenu="return false;" onclick="pcDelRow('${esc(k)}')" title="[${w}] 이 칼라 행 삭제">✕</button>`}</td>
+        </tr>`;}).join('')).join('')}</tbody>
       </table>
       <button class="btn btn-sm" style="margin-top:5px;" onclick="pcAddColor('${esc(String(sty))}')">＋ Color</button>
       </div></details>`;
@@ -4821,11 +4856,12 @@ function renderPcRoom(){
       <div style="background:#7c3aed;color:#fff;padding:8px 12px;border-radius:8px 8px 0 0;font-weight:800;font-size:12px;">📋 ${esc((pickRec.meta&&pickRec.meta.cust)||'')} — PO ${esc((pickRec.meta&&pickRec.meta.po)||'')}</div>
       <div style="padding:8px 10px;">
         ${(pickRec.lines||[]).map((L,li)=>{
-          const k2 = pcKey(L.style, L.color);
+          const whL2 = String(L.wh||'').toUpperCase();
+          const k2 = pcKey(L.style, L.color, whL2);
           const inPc = pcStore.find(r=>r.k===k2);
           const size = String(L.size||'').toUpperCase();
           const have = inPc ? (Number((inPc.qty||{})[size])||0) : null;
-          const isSC = String(L.wh||'').toUpperCase() === 'SC';
+          const isSC = whL2 === 'SC' || whL2 === 'CA';
           const bc = boxCalc(L);
           const need = bc.loose;
           const ppb = Number(L.ppb) || DEFAULT_PPB;
@@ -4833,8 +4869,8 @@ function renderPcRoom(){
             <div style="flex:1;min-width:0;"><b>${esc(String(L.style||''))}</b> ${esc(String(L.color||''))} <b>${esc(size)}</b> × ${need}
               <span class="muted">(오더 ${Number(L.qty)||0}${bc.full ? ' = 풀박스 ' + bc.full + ' + ' + need : ''}) [${esc(L.wh||'')}]</span><br>
               ${isSC
-                ? `<span id="pchave-${li}" style="color:${inPc==null?'#94a3b8':(have < need ? '#dc2626' : '#166534')};font-weight:700;">PC재고: ${inPc==null?'없음':have}</span>${need ? '' : ' <span class="muted">풀박스만 — PC 준비 없음</span>'}`
-                : `<span style="color:#94a3b8;font-weight:700;">SC 재고 아님 — 차감/추가 불가</span>`}</div>
+                ? `<span id="pchave-${li}" style="color:${inPc==null?'#94a3b8':(have < need ? '#dc2626' : '#166534')};font-weight:700;">[${whL2}] PC재고: ${inPc==null?'없음':have}</span>${need ? '' : ' <span class="muted">풀박스만 — PC 준비 없음</span>'}`
+                : `<span style="color:#94a3b8;font-weight:700;">SC/CA 재고 아님 — 차감/추가 불가</span>`}</div>
             ${isSC && inPc && need ? `<button class="btn btn-sm" id="pcapply-${li}" style="flex-shrink:0;font-size:10px;padding:2px 7px;background:#fff;color:#7c3aed;border-color:#c4b5fd;" onclick="pcApplyLine('${esc(pickRec.base)}',${li})" title="이 라인의 Partial 수량(${need})만큼 PC Room에서 차감">− 차감 ${need}</button>` : ''}
             ${isSC && inPc ? `<button class="btn btn-sm" id="pcadd-${li}" style="flex-shrink:0;font-size:10px;padding:2px 7px;background:#fff;color:#166534;border-color:#86efac;" onclick="pcApplyLine('${esc(pickRec.base)}',${li},'add')" title="박스 1개 오픈 — 박스입수(${ppb}장)만큼 PC Room에 추가">＋${ppb}</button>` : ''}
           </div>`;
@@ -4844,11 +4880,12 @@ function renderPcRoom(){
     </div>` : ''}
     </div>`;
 }
-async function pcHistory(style, color){
+async function pcHistory(style, color, wh){
   const ex = document.getElementById('modal-pchist'); if(ex) ex.remove();
   let rows = [];
   try{
-    const r = await sbFetch('/rest/v1/pr_pcmoves?style=eq.'+encodeURIComponent(style)+'&color=eq.'+encodeURIComponent(color)+'&order=at.desc&limit=200');
+    const whQ = wh ? '&wh=eq.'+encodeURIComponent(wh) : '';
+    const r = await sbFetch('/rest/v1/pr_pcmoves?style=eq.'+encodeURIComponent(style)+'&color=eq.'+encodeURIComponent(color)+whQ+'&order=at.desc&limit=200');
     if(r.ok) rows = await r.json();
   }catch(e){}
   const money0 = n => (n>0?'+':'') + n;
@@ -4856,7 +4893,7 @@ async function pcHistory(style, color){
   div.id = 'modal-pchist';
   div.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,.55);z-index:130;display:flex;align-items:center;justify-content:center;';
   div.innerHTML = `<div style="background:#fff;border-radius:12px;width:640px;max-width:94vw;max-height:85vh;display:flex;flex-direction:column;overflow:hidden;box-shadow:0 20px 60px rgba(0,0,0,.35);">
-    <div style="background:#0f2a4a;color:#fff;padding:11px 16px;font-weight:800;display:flex;align-items:center;">📜 ${esc(style)} ${esc(color)} — 변동 내역
+    <div style="background:#0f2a4a;color:#fff;padding:11px 16px;font-weight:800;display:flex;align-items:center;">📜 ${wh?'['+esc(wh)+'] ':''}${esc(style)} ${esc(color)} — 변동 내역
       <button class="btn btn-sm" style="margin-left:auto;background:transparent;color:#cbd5e1;border-color:#475569;" onclick="document.getElementById('modal-pchist').remove()">✕</button></div>
     <div style="overflow-y:auto;padding:12px 16px;">
       ${rows.length ? `<table class="etbl" style="font-size:11.5px;">
@@ -4874,22 +4911,29 @@ async function pcHistory(style, color){
   document.body.appendChild(div);
 }
 async function pcAddColor(style){
-  const color = (window.prompt('칼라 이름 (' + style + ')')||'').trim().toUpperCase();
+  const color = (window.prompt('칼라 이름 (' + style + ')' + (skuLoaded && skuColors(style).length ? '\n\n🎨 마스터 칼라:\n' + skuColors(style).join(' · ').slice(0,600) : ''))||'').trim().toUpperCase();
   if(!color) return;
+  if(!(await skuConfirmRegister(skuGateRows([{style, color}])))) return;
   const k = pcKey(style, color);
   if(pcStore.find(r=>r.k===k)){ showToast('⚠ 이미 있는 칼라'); return; }
-  const row = { k, style: String(style), color, qty:{}, sizes: pcSizesFor(style) };
+  const row = { k, style: String(style), color, wh:'SC', qty:{}, sizes: pcSizesFor(style) };
   pcStore.push(row);
   await pcSaveRow(row);
   renderPcRoom();
 }
 async function pcAddStyle(){
-  const style = (window.prompt('스타일 번호 (예: 1368)')||'').trim();
+  const style = (window.prompt('스타일 번호 (예: 1368)' + (skuLoaded ? '\n\n🎨 마스터 스타일: ' + skuStyles().join(', ') : ''))||'').trim();
   if(!style) return;
   const kids = window.confirm('Kids/Toddler 사이즈(2T-5T·XS-XL)인가요?\n확인=Kids · 취소=성인(XS-5XL)');
-  const color = (window.prompt('첫 칼라 이름')||'').trim().toUpperCase();
-  if(!color) return;
-  const row = { k: pcKey(style,color), style, color, qty:{}, sizes: kids ? PC_KIDS.slice() : PC_ADULT.slice() };
+  let color = '';
+  if(skuLoaded && skuColors(style).length){
+    color = String(skuColors(style)[0]).toUpperCase();   // 마스터 첫 칼라로 시작 — 나머지 칼라는 자동으로 뼈대에 나옴
+  }else{
+    color = (window.prompt('첫 칼라 이름')||'').trim().toUpperCase();
+    if(!color) return;
+    if(!(await skuConfirmRegister(skuGateRows([{style, color}])))) return;
+  }
+  const row = { k: pcKey(style,color), style, color, wh:'SC', qty:{}, sizes: kids ? PC_KIDS.slice() : PC_ADULT.slice() };
   pcStore.push(row);
   await pcSaveRow(row);
   renderPcRoom();
@@ -4931,6 +4975,180 @@ function bxColorFor(L){
   return c;
 }
 function bxWh(b){ const w = String(b.wh||'').trim().toUpperCase(); return w || 'SC'; }
+// ═══ 🎨 SKU Master (pr_skus) — style+color 마스터. 미등록 조합은 DB 트리거가 입고 거부 ═══
+let skuStore = []; let skuLoaded = false;
+async function skuFetch(){
+  try{
+    const r = await sbFetch('/rest/v1/pr_skus?select=style,color&active=eq.true&order=style.asc,color.asc&limit=5000');
+    if(r.ok){ skuStore = await r.json(); skuLoaded = true; }
+  }catch(e){ console.warn('skuFetch', e); }
+}
+function skuStyles(){ return [...new Set(skuStore.map(k=>String(k.style)))].sort(); }
+function skuColors(style){ const s = String(style).trim(); return skuStore.filter(k=>String(k.style)===s).map(k=>k.color); }
+function skuHas(style, color){ const s = String(style).trim(), c = String(color).trim().toUpperCase(); return skuStore.some(k=>String(k.style)===s && String(k.color).toUpperCase()===c); }
+function skuDist(a, b){
+  if(Math.abs(a.length-b.length) > 2) return 9;
+  const dp = Array.from({length:b.length+1}, (_,j)=>j);
+  for(let i=1;i<=a.length;i++){
+    let prev = dp[0]; dp[0] = i;
+    for(let j=1;j<=b.length;j++){ const cur = dp[j]; dp[j] = Math.min(dp[j]+1, dp[j-1]+1, prev + (a[i-1]===b[j-1]?0:1)); prev = cur; }
+  }
+  return dp[b.length];
+}
+function skuSuggest(style, color){
+  const c = String(color).trim().toUpperCase(); let best = null, bd = 3;
+  skuColors(style).forEach(x=>{ const d = skuDist(String(x).toUpperCase(), c); if(d < bd){ bd = d; best = x; } });
+  return best;
+}
+async function skuRegister(list){
+  const by = (SESS&&SESS.email)||'';
+  const rows = list.map(x=>({style:String(x.style).trim(), color:String(x.color).trim().toUpperCase(), created_by:by}));
+  const r = await sbFetch('/rest/v1/pr_skus?on_conflict=style,color', {method:'POST', headers:{Prefer:'resolution=ignore-duplicates,return=minimal'}, body:JSON.stringify(rows)});
+  if(!r.ok) throw new Error('HTTP '+r.status);
+  rows.forEach(x=>{ if(!skuHas(x.style, x.color)) skuStore.push({style:x.style, color:x.color}); });
+}
+// 사람이 직접 보고 새 SKU 등록 (오타 의심은 기존 칼라 제안) — false면 저장 중단
+async function skuConfirmRegister(unknown){
+  if(!skuLoaded || !unknown.length) return true;
+  const msg = '🎨 SKU 마스터에 없는 조합입니다:\n\n'
+    + unknown.map(u=>{ const s = skuSuggest(u.style, u.color); return '· ' + u.style + ' / ' + String(u.color).toUpperCase() + (s ? '   ← 혹시 "' + s + '" 오타?' : '   (새 칼라)'); }).join('\n')
+    + '\n\n오타라면 [취소] 후 이름을 고치세요.\n정말 새 SKU로 등록하고 계속하려면 [확인].';
+  if(!confirm(msg)) return false;
+  try{ await skuRegister(unknown); }catch(e){ showToast('⚠ SKU 등록 실패 — 인터넷 확인'); return false; }
+  showToast('🎨 새 SKU ' + unknown.length + '개 등록됨');
+  return true;
+}
+function skuGateRows(rows){  // rows: [{style,color}] → 미등록 조합 목록 (중복 제거)
+  const m = {};
+  rows.forEach(r=>{ const st = String(r.style).trim(), c = String(r.color).trim().toUpperCase(); if(st && c && !skuHas(st, c)) m[st+'|'+c] = {style:st, color:c}; });
+  return Object.values(m);
+}
+// 변형(variant): (SIDE SEAM) · (US)는 같은 base 칼라의 변형 — 그 외 괄호((HT)(TK)(KJ)...)는 별개 칼라
+function bxBaseColor(c){ return String(c||'').toUpperCase().replace(/\s*\((SIDE SEAM|US)\)/g,'').replace(/\s+/g,' ').trim(); }
+function bxVariantLabel(c){
+  const s = String(c||'').toUpperCase(); const m = [];
+  if(/\(SIDE SEAM\)/.test(s)) m.push('Side Seam');
+  if(/\(US\)/.test(s)) m.push('US');
+  return m.length ? m.join('·') : 'Tubular';
+}
+function bxFindBase(style, color, size, wh){
+  const st = String(style).trim().toUpperCase(), bc = bxBaseColor(color), sz = String(size||'').trim().toUpperCase();
+  const w = wh ? String(wh).trim().toUpperCase() : '';
+  return bxStore.filter(b=>String(b.style).trim().toUpperCase()===st && bxBaseColor(b.color)===bc && String(b.size).trim().toUpperCase()===sz && (!w || bxWh(b)===w));
+}
+function bxLocListCol(style, colorFull, size, wh, loc){
+  const st = String(style).trim().toUpperCase(), c = String(colorFull).toUpperCase(), sz = String(size||'').trim().toUpperCase();
+  return bxStore.filter(b=>String(b.style).trim().toUpperCase()===st && String(b.color).toUpperCase()===c && String(b.size).trim().toUpperCase()===sz && bxWh(b)===wh && String(b.loc||'?').toUpperCase()===loc);
+}
+// ═══ 🎨 SKU 마스터 관리 모달 (등록 / 이름변경·병합 / 삭제) ═══
+async function skuManager(){
+  if(!skuLoaded) await skuFetch();
+  if(!bxLoaded) await bxFetchStore();
+  const ex = document.getElementById('modal-sku'); if(ex) ex.remove();
+  const cnt = {};  // style|COLOR → IN 박스수
+  bxStore.forEach(b=>{ const k = String(b.style)+'|'+String(b.color).toUpperCase(); cnt[k] = (cnt[k]||0)+1; });
+  const pcCnt = {};
+  pcStore.forEach(r=>{ const k = String(r.style)+'|'+String(r.color).toUpperCase(); pcCnt[k] = (pcCnt[k]||0) + pcRowTotal(r); });
+  const div = document.createElement('div');
+  div.id = 'modal-sku';
+  div.style.cssText = 'position:fixed;inset:0;background:rgba(15,23,42,.55);z-index:99;display:flex;align-items:center;justify-content:center;padding:20px;';
+  div.onclick = e=>{ if(e.target===div) div.remove(); };
+  const stys = skuStyles();
+  div.innerHTML = `<div style="background:#fff;border-radius:12px;max-width:640px;width:100%;max-height:88vh;display:flex;flex-direction:column;overflow:hidden;">
+    <div style="background:#7c3aed;color:#fff;padding:10px 16px;font-weight:800;display:flex;align-items:center;gap:10px;">🎨 SKU 마스터
+      <span style="font-weight:400;font-size:11px;opacity:.85;">${skuStore.length}개 조합 · 여기 없는 조합은 입고 자체가 안 됩니다</span>
+      <button class="btn btn-sm" style="margin-left:auto;background:transparent;color:#e9d5ff;border-color:#a78bfa;" onclick="document.getElementById('modal-sku').remove()">✕</button></div>
+    <div style="padding:8px 16px;border-bottom:1px solid var(--border);display:flex;gap:8px;align-items:center;">
+      <input class="fi" id="sku-q" placeholder="🔍 스타일/칼라 검색" oninput="skuMgrFilter()" style="width:200px;font-size:12px;padding:5px 10px;">
+      <button class="btn btn-sm btn-primary" style="margin-left:auto;background:#7c3aed;border-color:#7c3aed;" onclick="skuAddCombo()">➕ 새 SKU 등록</button>
+    </div>
+    <div style="overflow-y:auto;padding:8px 16px;flex:1;" id="sku-list">
+      ${stys.map(sty=>{
+        const cols = skuColors(sty);
+        return `<details class="sku-sty" data-style="${esc(sty)}" style="margin-bottom:6px;border:1px solid var(--border);border-radius:8px;">
+          <summary style="cursor:pointer;padding:6px 10px;font-weight:800;color:#0f2a4a;background:#f8fafc;border-radius:8px;font-size:12.5px;">${esc(sty)} <span class="muted" style="font-weight:400;">(${cols.length} colors)</span></summary>
+          <div style="padding:4px 10px 8px;">
+          ${cols.map(c=>{ const k = sty+'|'+String(c).toUpperCase(); const n = cnt[k]||0, p = pcCnt[k]||0;
+            return `<div class="sku-row" data-c="${esc(String(c).toUpperCase())}" style="display:flex;align-items:center;gap:8px;padding:2px 0;border-bottom:1px solid #f8fafc;font-size:11.5px;">
+            <span style="font-weight:600;">${esc(c)}</span>
+            <span class="muted" style="font-size:10px;">${n?('📦'+n):''}${p?(' 🧺'+p):''}</span>
+            <span style="margin-left:auto;white-space:nowrap;">
+              <button class="btn btn-sm" style="border:none;padding:0 4px;" onclick="skuRenameColor('${esc(sty)}','${esc(String(c).toUpperCase())}')" title="이름변경 / 병합 (재고·PC Room도 함께 변경)">✏️</button>
+              ${(!n && !p) ? `<button class="btn btn-sm" style="border:none;color:#b91c1c;padding:0 4px;" onclick="skuDeleteColor('${esc(sty)}','${esc(String(c).toUpperCase())}')" title="마스터에서 삭제 (재고 0일 때만)">🗑</button>` : ''}
+            </span></div>`; }).join('')}
+          </div></details>`;
+      }).join('')}
+    </div></div>`;
+  document.body.appendChild(div);
+}
+function skuMgrFilter(){
+  const q = (($('sku-q')||{}).value||'').trim().toUpperCase();
+  document.querySelectorAll('#sku-list .sku-sty').forEach(d=>{
+    const sty = d.dataset.style.toUpperCase();
+    if(!q){ d.style.display=''; d.removeAttribute('open'); d.querySelectorAll('.sku-row').forEach(r=>r.style.display=''); return; }
+    if(sty.includes(q)){ d.style.display=''; d.setAttribute('open',''); d.querySelectorAll('.sku-row').forEach(r=>r.style.display=''); return; }
+    let any = false;
+    d.querySelectorAll('.sku-row').forEach(r=>{ const hit = r.dataset.c.includes(q); r.style.display = hit?'':'none'; if(hit) any = true; });
+    d.style.display = any?'':'none'; if(any) d.setAttribute('open','');
+  });
+}
+async function skuAddCombo(){
+  const style = (window.prompt('스타일 번호 (기존: '+skuStyles().join(', ').slice(0,300)+')')||'').trim();
+  if(!style) return;
+  const color = (window.prompt('칼라 이름 ('+style+')\n· Side Seam은 "칼라 (SIDE SEAM)" · US는 "칼라 (US)"')||'').trim().toUpperCase();
+  if(!color) return;
+  if(skuHas(style,color)){ showToast('⚠ 이미 등록된 조합'); return; }
+  try{ await skuRegister([{style, color}]); }catch(e){ showToast('⚠ 등록 실패'); return; }
+  showToast('🎨 등록: '+style+' / '+color);
+  skuManager();
+}
+async function skuRenameColor(style, oldC){
+  const nc = (window.prompt('['+style+'] "'+oldC+'" 의 새 이름\n(기존 칼라 이름을 넣으면 그 칼라로 병합됩니다)', oldC)||'').trim().toUpperCase();
+  if(!nc || nc===oldC) return;
+  const merging = skuHas(style, nc);
+  if(!confirm('['+style+'] '+oldC+' → '+nc+(merging?' (기존 칼라로 병합)':'')+'\n\n박스 재고·PC Room·마스터가 모두 함께 변경됩니다. 계속할까요?')) return;
+  try{
+    if(!merging) await skuRegister([{style, color:nc}]);
+    // 1) 박스 (IN + OUT 이력 포함)
+    const r1 = await sbFetch('/rest/v1/pr_boxes?style=eq.'+encodeURIComponent(style)+'&color=eq.'+encodeURIComponent(oldC), {method:'PATCH', headers:{Prefer:'return=minimal'}, body:JSON.stringify({color:nc})});
+    if(!r1.ok) throw new Error('boxes HTTP '+r1.status);
+    // 2) PC Room (SC/CA 각각)
+    if(!pcLoaded){ try{ const r0 = await sbFetch('/rest/v1/pr_pcroom?select=k,style,color,qty,sizes,wh,updated_at,updated_by'); if(r0.ok){ pcStore = await r0.json(); pcLoaded = true; } }catch(e){} }
+    for(const w of ['SC','CA']){
+      const kOld = pcKey(style, oldC, w), kNew = pcKey(style, nc, w);
+      const rowOld = pcStore.find(x=>x.k===kOld);
+      if(!rowOld) continue;
+      const rowNew = pcStore.find(x=>x.k===kNew);
+      if(rowNew){
+        rowNew.qty = rowNew.qty||{};
+        Object.keys(rowOld.qty||{}).forEach(sz=>{ rowNew.qty[sz] = (Number(rowNew.qty[sz])||0) + (Number(rowOld.qty[sz])||0); if(!rowNew.qty[sz]) delete rowNew.qty[sz]; });
+        await pcSaveRow(rowNew);
+        await sbFetch('/rest/v1/pr_pcroom?k=eq.'+encodeURIComponent(kOld), {method:'DELETE', headers:{Prefer:'return=minimal'}});
+        pcStore = pcStore.filter(x=>x.k!==kOld);
+      }else{
+        await sbFetch('/rest/v1/pr_pcroom?k=eq.'+encodeURIComponent(kOld), {method:'PATCH', headers:{Prefer:'return=minimal'}, body:JSON.stringify({k:kNew, color:nc})});
+        rowOld.k = kNew; rowOld.color = nc;
+      }
+    }
+    // 3) 마스터에서 옛 이름 제거
+    await sbFetch('/rest/v1/pr_skus?style=eq.'+encodeURIComponent(style)+'&color=eq.'+encodeURIComponent(oldC), {method:'DELETE', headers:{Prefer:'return=minimal'}});
+    skuStore = skuStore.filter(k=>!(String(k.style)===String(style) && String(k.color).toUpperCase()===oldC));
+    await bxFetchStore();
+  }catch(e){ showToast('⚠ 변경 실패: '+String(e.message||'').slice(0,80)); return; }
+  showToast('✏️ '+style+' '+oldC+' → '+nc+(merging?' 병합 완료':' 변경 완료'));
+  if($('bx-body')) renderBoxRoom();
+  if(typeof renderPcRoom==='function' && $('pc-body')) renderPcRoom();
+  skuManager();
+}
+async function skuDeleteColor(style, color){
+  if(!confirm('['+style+'] '+color+' 를 SKU 마스터에서 삭제할까요?\n(박스/PC 재고가 0인 조합만 삭제하세요 — 앞으로 이 조합은 입고가 막힙니다)')) return;
+  try{
+    await sbFetch('/rest/v1/pr_skus?style=eq.'+encodeURIComponent(style)+'&color=eq.'+encodeURIComponent(color), {method:'DELETE', headers:{Prefer:'return=minimal'}});
+    skuStore = skuStore.filter(k=>!(String(k.style)===String(style) && String(k.color).toUpperCase()===String(color).toUpperCase()));
+  }catch(e){ showToast('⚠ 삭제 실패'); return; }
+  showToast('🗑 삭제: '+style+' / '+color);
+  skuManager();
+}
 // ═══ 재고조사 날짜 스탬프 (style+color 단위 · PC Room / Full Box 공용) ═══
 let stMap = {}; let stLoaded = false;
 async function stFetch(){
@@ -4984,7 +5202,7 @@ async function bxFetchStore(){
     if(r.ok){ bxStore = await r.json(); bxLoaded = true; }
   }catch(e){ console.warn('bxFetchStore', e); }
 }
-async function loadBoxRoom(){ if(!stLoaded) stFetch().then(()=>{ if($('bx-body')) renderBoxRoom(); }); await bxFetchStore(); renderBoxRoom(); }
+async function loadBoxRoom(){ if(!stLoaded) stFetch().then(()=>{ if($('bx-body')) renderBoxRoom(); }); if(!skuLoaded) skuFetch().then(()=>{ if($('bx-body')) renderBoxRoom(); }); await bxFetchStore(); renderBoxRoom(); }
 function bxFind(style,color,size,wh){ const k = bxK(style,color,size); const w = wh ? String(wh).trim().toUpperCase() : ''; return bxStore.filter(b=>bxK(b.style,b.color,b.size)===k && (!w || bxWh(b)===w)); }
 function bxLocsLabel(list, max){
   const locs = list.map(b=>String(b.loc||'?'));
@@ -4999,13 +5217,13 @@ async function bxPatch(ids, body){
 async function bxInsert(rows){
   for(let i=0;i<rows.length;i+=500){
     const r = await sbFetch('/rest/v1/pr_boxes', {method:'POST', headers:{Prefer:'return=minimal'}, body:JSON.stringify(rows.slice(i,i+500))});
-    if(!r.ok) throw new Error('HTTP '+r.status);
+    if(!r.ok){ let t=''; try{ t = await r.text(); }catch(e){} throw new Error('HTTP '+r.status+' '+t.slice(0,300)); }
   }
 }
 function bxAddBoxes(pre){
   const ex = document.getElementById('modal-bxadd'); if(ex) ex.remove();
-  const dlStyle = [...new Set(bxStore.map(b=>String(b.style)))].sort();
-  const dlColor = [...new Set(bxStore.map(b=>String(b.color).toUpperCase()))].sort();
+  const dlStyle = skuLoaded ? skuStyles() : [...new Set(bxStore.map(b=>String(b.style)))].sort();
+  const dlColor = skuLoaded ? [...new Set(skuStore.map(k=>String(k.color).toUpperCase()))].sort() : [...new Set(bxStore.map(b=>String(b.color).toUpperCase()))].sort();
   const dlLoc = [...new Set(bxStore.map(b=>String(b.loc||'').toUpperCase()).filter(Boolean))].sort();
   const div = document.createElement('div');
   div.id = 'modal-bxadd';
@@ -5025,7 +5243,7 @@ function bxAddBoxes(pre){
       <datalist id="bx-dl-color">${dlColor.map(s=>'<option value="'+esc(s)+'">').join('')}</datalist>
       <datalist id="bx-dl-loc">${dlLoc.map(s=>'<option value="'+esc(s)+'">').join('')}</datalist>
       <datalist id="bx-dl-size">${['XXS','XS','S','M','L','XL','2XL','3XL','4XL','5XL'].map(s=>'<option value="'+s+'">').join('')}</datalist>
-      <div style="font-size:10.5px;color:var(--text2);margin-top:8px;">입수 비우면 스타일 규칙으로 자동 (예: 3XL=48) · Style/Color/Location은 기존 재고에서 자동완성 · 같은 품목이 location 여러 곳에 있으면 줄을 나눠 입력</div>
+      <div style="font-size:10.5px;color:var(--text2);margin-top:8px;">입수 비우면 스타일 규칙으로 자동 (예: 3XL=48) · Style/Color는 <b>🎨 SKU 마스터</b>에서 자동완성 — 마스터에 없는 조합은 등록 확인 후에만 저장됩니다 · 같은 품목이 location 여러 곳에 있으면 줄을 나눠 입력</div>
     </div>
     <div style="padding:10px 16px;border-top:1px solid var(--border);display:flex;gap:8px;justify-content:flex-end;align-items:center;">
       <span id="bxadd-sum" class="muted" style="margin-right:auto;font-size:11px;"></span>
@@ -5040,8 +5258,8 @@ function bxAddRow(pre){
   const tr = document.createElement('tr');
   tr.innerHTML = `
     <td><select class="fi ba-wh" style="padding:4px 6px;font-size:12px;"><option${(!pre||String(pre.wh).toUpperCase()!=='CA')?' selected':''}>SC</option><option${(pre&&String(pre.wh).toUpperCase()==='CA')?' selected':''}>CA</option></select></td>
-    <td><input class="fi ba-style" list="bx-dl-style" style="width:72px;" value="${pre?esc(String(pre.style||'')):''}"></td>
-    <td><input class="fi ba-color" list="bx-dl-color" style="width:150px;text-transform:uppercase;" value="${pre?esc(String(pre.color||'')):''}"></td>
+    <td><input class="fi ba-style" list="bx-dl-style" style="width:72px;" value="${pre?esc(String(pre.style||'')):''}" oninput="bxRowStyleChanged(this)"></td>
+    <td><input class="fi ba-color" list="bx-dl-color" style="width:150px;text-transform:uppercase;" value="${pre?esc(String(pre.color||'')):''}" oninput="bxRowColorCheck(this)"></td>
     <td><input class="fi ba-size" list="bx-dl-size" style="width:58px;text-transform:uppercase;" value="${pre?esc(String(pre.size||'')):''}"></td>
     <td><input class="fi ba-loc" list="bx-dl-loc" style="width:92px;text-transform:uppercase;"></td>
     <td><input class="fi ba-n" type="number" min="1" value="1" style="width:56px;" oninput="bxAddSum()"></td>
@@ -5050,6 +5268,28 @@ function bxAddRow(pre){
   tb.appendChild(tr);
   bxAddSum();
   const f = tr.querySelector(pre&&pre.style ? '.ba-loc' : '.ba-style'); if(f) f.focus();
+}
+function bxRowStyleChanged(inp){
+  const tr = inp.closest('tr'); if(!tr) return;
+  const ci = tr.querySelector('.ba-color'); if(!ci) return;
+  const st = String(inp.value).trim();
+  if(!st || !skuLoaded || !skuColors(st).length){ ci.setAttribute('list','bx-dl-color'); bxRowColorCheck(ci); return; }
+  const id = 'bx-dl-color-' + cssId(st);
+  if(!document.getElementById(id)){
+    const dl = document.createElement('datalist'); dl.id = id;
+    dl.innerHTML = skuColors(st).map(c=>'<option value="'+esc(c)+'">').join('');
+    (document.getElementById('modal-bxadd')||document.body).appendChild(dl);
+  }
+  ci.setAttribute('list', id);
+  bxRowColorCheck(ci);
+}
+function bxRowColorCheck(ci){
+  const tr = ci.closest('tr'); if(!tr) return;
+  const st = String((tr.querySelector('.ba-style')||{}).value||'').trim();
+  const c = String(ci.value||'').trim();
+  if(!skuLoaded || !st || !c){ ci.style.background=''; ci.title=''; return; }
+  if(skuHas(st, c)){ ci.style.background='#f0fdf4'; ci.title='✓ SKU 마스터에 있음'; }
+  else { const s = skuSuggest(st, c); ci.style.background='#fef2f2'; ci.title = '⚠ 마스터에 없는 조합' + (s ? ' — 혹시 "' + s + '"?' : ''); }
 }
 function bxAddSum(){
   const el = document.getElementById('bxadd-sum'); if(!el) return;
@@ -5073,8 +5313,9 @@ async function bxAddSave(){
   });
   if(errs.length){ alert('⚠ '+errs.join(', ')+'번째 줄에 빈칸이 있어요 (Style/Color/Size/박스수는 필수)'); return; }
   if(!rows.length){ alert('⚠ 입력된 줄이 없어요.'); return; }
+  if(!(await skuConfirmRegister(skuGateRows(rows)))) return;
   try{ await bxInsert(rows); }
-  catch(e){ showToast('⚠ 저장 실패 — 인터넷 확인'); return; }
+  catch(e){ showToast(/SKU_NOT_REGISTERED/.test(String(e&&e.message))?'⚠ 미등록 SKU — 🎨 SKU 마스터에 먼저 등록하세요':'⚠ 저장 실패 — 인터넷 확인'); return; }
   const m = document.getElementById('modal-bxadd'); if(m) m.remove();
   showToast('✅ '+rows.length+'박스 입고 완료');
   loadBoxRoom();
@@ -5236,9 +5477,10 @@ async function bxPullLine(base, li){
   bxOpenPicker(L, String(L.wh||'SC').trim().toUpperCase()||'SC', 'PO '+((rec.meta&&rec.meta.po)||''));
 }
 function pcShortFor(L){
-  if((String(L.wh||'SC').trim().toUpperCase()||'SC') !== 'SC') return false;
+  const whL = String(L.wh||'SC').trim().toUpperCase()||'SC';
+  if(whL !== 'SC' && whL !== 'CA') return false;
   const loose = boxCalc(L).loose; if(!loose) return false;
-  const row = pcStore.find(r=>r.k===pcKey(bxStyleFor(L), bxColorFor(L)));
+  const row = pcStore.find(r=>r.k===pcKey(bxStyleFor(L), bxColorFor(L), whL));
   const v = row ? (Number((row.qty||{})[String(L.size||'').trim().toUpperCase()])||0) : 0;
   return v < loose;
 }
@@ -5258,10 +5500,11 @@ async function bxPickFromEditor(i){
 }
 async function bxToPcFromEditor(i){
   const L = poLines[i]; if(!L) return;
-  if(String(L.wh||'SC').trim().toUpperCase() !== 'SC'){ showToast('⚠ PC Room은 SC 창고만'); return; }
+  const lwh0 = String(L.wh||'SC').trim().toUpperCase() || 'SC';
+  if(lwh0 !== 'SC' && lwh0 !== 'CA'){ showToast('⚠ PC Room은 SC/CA 창고만'); return; }
   if(!bxLoaded) await bxFetchStore();
   const poN = String(((typeof getMeta==='function'?getMeta():{}).po)||'').trim();
-  bxOpenPicker(L, 'SC', 'PC ROOM' + (poN?' (PO '+poN+')':''), res=>{
+  bxOpenPicker(L, lwh0, 'PC ROOM' + (poN?' (PO '+poN+')':''), res=>{
     if(res && res.locs && res.locs.length){
       poLines[i].pcMove = (poLines[i].pcMove||[]).concat(res.locs);
       renderTable();
@@ -5272,18 +5515,22 @@ function bxOpenPicker(L, lwh, po, onDone, mode, needOverride){
   const need = (needOverride!=null) ? needOverride : boxCalc(L).full;
   if(!need){ showToast('⚠ 이 라인은 풀박스 없음 (자투리만) — PC Room에서 처리하세요'); if(onDone) onDone(false); return; }
   const st = bxStyleFor(L);
-  const avail = bxFind(st, bxColorFor(L), L.size, lwh);   // in_at asc = 오래된 순
+  const wantCol = String(bxColorFor(L)).toUpperCase();
+  const avail = bxFindBase(st, wantCol, L.size, lwh);   // 같은 base 칼라의 모든 변형 (Tubular/Side Seam/US) · in_at asc = 오래된 순
   if(!avail.length){ showToast('⚠ ['+lwh+'] '+L.style+' '+String(L.color).toUpperCase()+' '+String(L.size).toUpperCase()+' 풀박스 재고 없음'); if(onDone) onDone(false); return; }
-  // location별 그룹 (가장 오래된 박스가 있는 location부터)
+  // 변형+location별 그룹 (주문과 같은 변형 먼저, 그 다음 오래된 순)
   const groups = []; const gm = {};
   avail.forEach(b=>{
     const Lc = String(b.loc||'?').toUpperCase();
-    if(!gm[Lc]){ gm[Lc] = {loc:Lc, boxes:[], oldest:b.in_at}; groups.push(gm[Lc]); }
-    gm[Lc].boxes.push(b);
+    const col = String(b.color).toUpperCase();
+    const gk = col + '@' + Lc;
+    if(!gm[gk]){ gm[gk] = {loc:Lc, col, boxes:[], oldest:b.in_at}; groups.push(gm[gk]); }
+    gm[gk].boxes.push(b);
   });
-  // 오래된 것부터 자동 배정
+  groups.sort((a,b)=> (a.col===wantCol?0:1) - (b.col===wantCol?0:1) || String(a.oldest||'').localeCompare(String(b.oldest||'')));
+  // 주문 변형과 일치하는 그룹부터, 오래된 것부터 자동 배정
   let remaining = Math.min(need, avail.length);
-  groups.forEach(g=>{ g.take = Math.min(g.boxes.length, remaining); remaining -= g.take; });
+  groups.forEach(g=>{ g.take = (g.col===wantCol) ? Math.min(g.boxes.length, remaining) : 0; remaining -= g.take; });
   bxPullCtx = {lwh, need, groups, po, mode: mode||'deduct', onDone: onDone||null, sku:{style:st, color:bxColorFor(L), size:String(L.size||'').trim().toUpperCase()}, label:'['+lwh+'] '+st+' '+bxColorFor(L)+' '+String(L.size).toUpperCase()};
   const ex = document.getElementById('modal-bxpull'); if(ex) ex.remove();
   const div = document.createElement('div');
@@ -5295,13 +5542,14 @@ function bxOpenPicker(L, lwh, po, onDone, mode, needOverride){
       <div style="font-weight:400;font-size:11px;color:#e9d5ff;">필요 ${need}박스 · 재고 ${avail.length}박스 · 위에서부터 오래된 순 — 어느 location에서 뺄지 수량을 조절하세요${bxPullCtx.mode==='reserve'?' (지금은 지정만, 차감은 PR 인쇄 때)':(bxPullCtx.mode==='topc'?' (풀박스 차감 + PC Room 입고, 즉시)':'')}</div></div>
     <div style="overflow-y:auto;padding:10px 16px;">
       <table class="etbl" style="font-size:12px;">
-        <thead><tr><th class="tl">📍 Location</th><th>재고</th><th>입고일 (가장 오래된)</th><th>차감</th></tr></thead>
-        <tbody>${groups.map((g,gi)=>`<tr>
+        <thead><tr><th class="tl">📍 Location</th><th class="tl">구분</th><th>재고</th><th>입고일 (가장 오래된)</th><th>차감</th></tr></thead>
+        <tbody>${groups.map((g,gi)=>{ const vl = bxVariantLabel(g.col); const vc = vl==='Tubular' ? '#64748b' : (/US/.test(vl) ? '#c2410c' : '#7c3aed'); return `<tr>
           <td class="tl" style="font-weight:800;color:#1d4ed8;">${esc(g.loc)}</td>
+          <td class="tl"><span style="font-size:10px;font-weight:800;color:${vc};background:${vl==='Tubular'?'#f1f5f9':(/US/.test(vl)?'#fff7ed':'#f5f3ff')};padding:1px 7px;border-radius:10px;white-space:nowrap;">${esc(vl)}</span></td>
           <td style="font-family:Consolas,monospace;">${g.boxes.length}</td>
           <td style="font-size:11px;color:var(--text2);">${g.oldest?String(g.oldest).slice(0,10):''}</td>
           <td><input class="fi bp-take" data-gi="${gi}" type="number" min="0" max="${g.boxes.length}" value="${g.take}" style="width:60px;font-weight:800;" oninput="bxPullSum()"></td>
-        </tr>`).join('')}</tbody>
+        </tr>`;}).join('')}</tbody>
       </table>
     </div>
     <div style="padding:10px 16px;border-top:1px solid var(--border);display:flex;gap:8px;align-items:center;">
@@ -5340,23 +5588,31 @@ async function bxPullSave(){
     const ids2 = new Set(sel.map(b=>b.id));
     bxStore = bxStore.filter(b=>!ids2.has(b.id));
     const sku = bxPullCtx.sku;
+    const pcWh = bxPullCtx.lwh==='CA' ? 'CA' : 'SC';
     const addPcs = sel.reduce((a,b)=>a+(Number(b.pcs)||0),0);
     const locs2 = {};
     sel.forEach(b=>{ const Lc=String(b.loc||'?').toUpperCase(); locs2[Lc]=(locs2[Lc]||0)+1; });
     const locLabel = Object.keys(locs2).map(l=>l+(locs2[l]>1?' ×'+locs2[l]:'')).join(', ');
     try{
       if(!pcLoaded){
-        const r0 = await sbFetch('/rest/v1/pr_pcroom?select=k,style,color,qty,sizes,updated_at,updated_by');
+        const r0 = await sbFetch('/rest/v1/pr_pcroom?select=k,style,color,qty,sizes,wh,updated_at,updated_by');
         if(r0.ok){ pcStore = await r0.json(); pcLoaded = true; }
       }
-      const k = pcKey(sku.style, sku.color);
-      let row = pcStore.find(r=>r.k===k);
-      if(!row){ row = { k, style: sku.style, color: sku.color, qty: {} }; pcStore.push(row); }
-      row.qty = row.qty || {};
-      const old = Number(row.qty[sku.size]) || 0;
-      row.qty[sku.size] = old + addPcs;
-      await pcSaveRow(row);
-      pcLogMove(row, sku.size, addPcs, row.qty[sku.size], '📦 박스 이동 @'+locLabel);
+      // 선택 박스를 실제 칼라(변형)별로 나눠서 각 PC Room 행에 입고
+      const byCol = {};
+      sel.forEach(b=>{ const c = String(b.color).toUpperCase(); (byCol[c] = byCol[c]||[]).push(b); });
+      for(const col of Object.keys(byCol)){
+        const grp = byCol[col];
+        const add = grp.reduce((a,b)=>a+(Number(b.pcs)||0),0);
+        const k = pcKey(sku.style, col, pcWh);
+        let row = pcStore.find(r=>r.k===k);
+        if(!row){ row = { k, style: sku.style, color: col, wh: pcWh, qty: {} }; pcStore.push(row); }
+        row.qty = row.qty || {};
+        const old = Number(row.qty[sku.size]) || 0;
+        row.qty[sku.size] = old + add;
+        await pcSaveRow(row);
+        pcLogMove(row, sku.size, add, row.qty[sku.size], '📦 박스 이동 @'+locLabel);
+      }
     }catch(e){ showToast('⚠ 풀박스는 차감됐지만 PC Room 입고 저장 실패 — PC Room에서 수동으로 +'+addPcs+' 해주세요'); }
     showToast('📦→🧺 '+sel.length+'박스 ('+addPcs+' pcs) PC Room 입고 — 📍 '+locLabel);
     const m2 = document.getElementById('modal-bxpull'); if(m2) m2.remove();
@@ -5368,9 +5624,9 @@ async function bxPullSave(){
     return;
   }
   if(bxPullCtx.mode==='reserve'){
-    // 지정만 — 차감은 PR 인쇄 때
+    // 지정만 — 차감은 오더 저장 때 (변형 칼라 포함해 기록)
     const locs = [];
-    bxPullCtx.groups.forEach((g,gi)=>{ const n = Math.min(takes[gi]||0, g.boxes.length); if(n>0) locs.push({loc:g.loc, n}); });
+    bxPullCtx.groups.forEach((g,gi)=>{ const n = Math.min(takes[gi]||0, g.boxes.length); if(n>0) locs.push({loc:g.loc, n, col:g.col}); });
     const m0 = document.getElementById('modal-bxpull'); if(m0) m0.remove();
     const cb0 = bxPullCtx && bxPullCtx.onDone;
     bxPullCtx = null;
@@ -5399,6 +5655,15 @@ function renderBoxRoom(){
     const s = String(b.style), c = String(b.color).toUpperCase();
     ((groups[s] = groups[s] || {})[c] = groups[s][c] || []).push(b);
   });
+  // 전체 SKU 보기: 마스터 뼈대 전체 (재고 0 조합도 표시)
+  if((($('bx-showall')||{}).checked) && skuLoaded){
+    skuStore.forEach(k=>{
+      const s = String(k.style), c = String(k.color).toUpperCase();
+      if(q && !(s.toLowerCase().includes(q) || c.toLowerCase().includes(q))) return;
+      (groups[s] = groups[s] || {});
+      if(!groups[s][c]) groups[s][c] = [];
+    });
+  }
   const styles = Object.keys(groups).sort();
   const pickBase = (($('bx-order-pick')||{}).value)||'';
   const pickRec = pickBase ? (savedCache||[]).find(s=>s.base===pickBase) : null;
@@ -5422,6 +5687,13 @@ function renderBoxRoom(){
         <table class="etbl" style="font-size:11.5px;">
           <thead><tr><th class="tl" style="min-width:110px;">Color</th><th>Size</th><th>입수</th><th>합계</th><th style="color:#1d4ed8;">SC</th><th class="tl" style="min-width:150px;color:#1d4ed8;">📍 SC Locations</th><th style="color:#9a3412;">CA</th><th class="tl" style="min-width:150px;color:#9a3412;">📍 CA Locations</th><th></th></tr></thead>
           <tbody>${colors.map(c=>{
+            if(!groups[sty][c].length){
+              return `<tr style="opacity:.55;">
+                <td class="tl" style="font-weight:600;white-space:nowrap;color:#94a3b8;">${esc(c)}${stBadge('BX', sty, c)}</td>
+                <td colspan="7" style="color:#b6bfcc;font-size:10.5px;">재고 없음 (SKU 등록됨)</td>
+                <td style="white-space:nowrap;"><button class="btn btn-sm" style="border:none;padding:0 4px;" onclick="bxAddBoxes({style:'${esc(sty)}',color:'${esc(c)}'})" title="이 품목 박스 추가">＋</button></td>
+              </tr>`;
+            }
             const bySize = {};
             groups[sty][c].forEach(b=>{ (bySize[String(b.size).toUpperCase()] = bySize[String(b.size).toUpperCase()] || []).push(b); });
             const sizeOrder = ['2T','3T','4T','5T','XXS','XS','S','M','L','XL','2XL','3XL','4XL','5XL','6XL'];
@@ -5543,10 +5815,10 @@ async function bxExport(){
 const HI_SZ = ['2T','3T','4T','5T','XXS','XS','S','M','L','XL','2XL','3XL','4XL','5XL','6XL'];
 function hiStyleFrom(desc){
   const m = String(desc||'').match(/-\s*(\d{3,5})\s*S?\s*-/);
-  let st = m ? m[1] : '';
-  if(/\(\s*US\s*\)/i.test(desc)) st += 'US';
-  return st;
+  return m ? m[1] : '';
 }
+function hiIsUS(desc){ return /\(\s*US\s*\)/i.test(String(desc||'')); }
+function hiIsSS(desc){ return /side\s*seam|-\s*\d{3,5}\s*S\s*-/i.test(String(desc||'')); }
 function hiColorFrom(name){
   let c = String(name||'').trim().toUpperCase();
   let note = '';
@@ -5619,7 +5891,8 @@ async function hiUpload(file){
           const bx = parseInt(bxRow[j])||0;
           if(!dz && !bx) continue;
           const pcs = bx>0 ? (Math.round(dz*12/bx)||72) : Math.round(dz*12);
-          lines.push({ style: hiStyleFrom(cur), color: cc.color, size: sz, boxes: bx>0?bx:1, pcs,
+          const colV = cc.color + (hiIsSS(cur)?' (SIDE SEAM)':'') + (hiIsUS(cur)?' (US)':'');
+          lines.push({ style: hiStyleFrom(cur), color: colV, size: sz, boxes: bx>0?bx:1, pcs,
             note: (cc.cnote?cc.cnote+' · ':'') + cur.slice(0,40), flag: bx>0 ? '' : '⚠ 박스수 0 — 확인 필요' });
         }
       }
@@ -5636,8 +5909,8 @@ function hiReviewModal(ref, lines){
   div.id = 'modal-hirev';
   div.style.cssText = 'position:fixed;inset:0;background:rgba(15,23,42,.55);z-index:99;display:flex;align-items:center;justify-content:center;padding:14px;';
   const tb = lines.map((l,i)=>`<tr>
-    <td><input class="fi hr-style" data-i="${i}" value="${esc(l.style)}" style="width:70px;font-weight:700;"></td>
-    <td><input class="fi hr-color" data-i="${i}" value="${esc(l.color)}" style="width:150px;text-transform:uppercase;"></td>
+    <td><input class="fi hr-style" data-i="${i}" value="${esc(l.style)}" list="hi-dl-style" style="width:70px;font-weight:700;" oninput="hiRowCheck(this)"></td>
+    <td><input class="fi hr-color" data-i="${i}" value="${esc(l.color)}" style="width:170px;text-transform:uppercase;${skuLoaded&&!skuHas(l.style,l.color)?'background:#fef2f2;':''}" oninput="hiRowCheck(this)" title="${skuLoaded&&!skuHas(l.style,l.color)?'⚠ SKU 마스터에 없는 조합':''}"></td>
     <td><input class="fi hr-size" data-i="${i}" value="${esc(l.size)}" style="width:52px;text-transform:uppercase;"></td>
     <td><input class="fi num hr-boxes" data-i="${i}" type="number" min="0" value="${l.boxes}" style="width:56px;font-weight:800;"></td>
     <td><input class="fi num hr-pcs" data-i="${i}" type="number" min="1" value="${l.pcs}" style="width:56px;"></td>
@@ -5652,6 +5925,8 @@ function hiReviewModal(ref, lines){
         <thead><tr><th>Style</th><th class="tl">Color</th><th>Size</th><th>박스</th><th>입수</th><th class="tl">비고</th><th></th></tr></thead>
         <tbody id="hirev-rows">${tb}</tbody>
       </table>
+      <datalist id="hi-dl-style">${(skuLoaded?skuStyles():[]).map(s=>'<option value="'+esc(s)+'">').join('')}</datalist>
+      <div class="muted" style="font-size:10.5px;margin-top:6px;">칼라 칸이 <span style="background:#fef2f2;padding:0 4px;">빨간색</span>이면 🎨 SKU 마스터에 없는 조합 — 오타를 고치거나, 저장 시 새 SKU 등록 확인창이 떠요 · Side Seam은 칼라 뒤 (SIDE SEAM) · US 버전은 (US)</div>
     </div>
     <div style="padding:10px 16px;border-top:1px solid var(--border);display:flex;gap:8px;justify-content:flex-end;align-items:center;">
       <span class="muted" style="margin-right:auto;font-size:11px;">${lines.length}라인 · ${lines.reduce((a,l)=>a+l.boxes,0).toLocaleString()}박스 · ${lines.reduce((a,l)=>a+l.boxes*l.pcs,0).toLocaleString()} pcs</span>
@@ -5659,6 +5934,15 @@ function hiReviewModal(ref, lines){
       <button class="btn btn-primary" style="background:#0e7490;border-color:#0e7490;" onclick="hiSaveDraft('${esc(ref)}')">💾 입고 예정으로 저장</button>
     </div></div>`;
   document.body.appendChild(div);
+}
+function hiRowCheck(inp){
+  const tr = inp.closest('tr'); if(!tr || !skuLoaded) return;
+  const st = String((tr.querySelector('.hr-style')||{}).value||'').trim();
+  const ci = tr.querySelector('.hr-color'); if(!ci) return;
+  const c = String(ci.value||'').trim();
+  if(!st || !c){ ci.style.background=''; ci.title=''; return; }
+  if(skuHas(st, c)){ ci.style.background='#f0fdf4'; ci.title='✓ SKU 마스터에 있음'; }
+  else { const s = skuSuggest(st, c); ci.style.background='#fef2f2'; ci.title='⚠ 마스터에 없는 조합' + (s?' — 혹시 "'+s+'"?':''); }
 }
 function hiCollectRows(prefix){
   const trs = [...document.querySelectorAll('#'+prefix+'-rows tr')];
@@ -5676,6 +5960,8 @@ function hiCollectRows(prefix){
 async function hiSaveDraft(ref){
   const lines = hiCollectRows('hirev');
   if(!lines.length){ alert('⚠ 저장할 라인이 없어요.'); return; }
+  if(!skuLoaded) await skuFetch();
+  if(!(await skuConfirmRegister(skuGateRows(lines)))) return;
   try{
     const r = await sbFetch('/rest/v1/pr_inbound', {method:'POST', headers:{Prefer:'return=minimal'}, body:JSON.stringify([{ref, status:'PENDING', lines, created_by:(SESS&&SESS.email)||''}])});
     if(!r.ok) throw new Error('HTTP '+r.status);
@@ -5733,6 +6019,8 @@ async function hiConfirm(id, ref){
   if(!lines.length){ alert('⚠ 입고할 라인이 없어요.'); return; }
   const totB = lines.reduce((a,l)=>a+l.boxes,0);
   if(!confirm('✅ '+ref+' — '+lines.length+'라인, '+totB.toLocaleString()+'박스를 SC 재고로 입고할까요?')) return;
+  if(!skuLoaded) await skuFetch();
+  if(!(await skuConfirmRegister(skuGateRows(lines)))) return;
   const by = (SESS&&SESS.email)||'';
   const rows = [];
   lines.forEach(l=>{ for(let j=0;j<l.boxes;j++) rows.push({style:l.style, color:l.color, size:l.size, pcs:l.pcs, loc:l.loc||'', wh:'SC', status:'IN', in_by:by, note:'haiti '+ref}); });
@@ -5868,6 +6156,8 @@ async function bxImport(file){
         + (skipped0 ? '\n(수량 0 행 ' + skipped0 + '개 제외)' : '')
         + (bad.length ? '\n⚠ 건너뛴 행: ' + bad.slice(0,20).join(', ') + (bad.length>20?' 외 '+(bad.length-20)+'개':'') : '')
         + '\n\n지금 재고에 추가할까요?\n(기존 재고는 그대로 두고 위에 얹습니다)')) return;
+      if(!skuLoaded) await skuFetch();
+      if(!(await skuConfirmRegister(skuGateRows(keep)))) return;
       await bxInsert(keep);
       showToast('✅ ' + summary + ' 임포트 완료 (DaVinci)');
       loadBoxRoom();
@@ -5908,6 +6198,8 @@ async function bxImport(file){
     if(!rows.length){ alert('⚠ 가져올 데이터가 없어요.'); return; }
     const summary = rows.length + '박스 (' + rows.reduce((a,b)=>a+b.pcs,0).toLocaleString() + ' pcs)';
     if(!confirm('📥 임포트 미리보기\n\n' + summary + (bad.length ? '\n⚠ 건너뛴 행(빈칸 있음): ' + bad.join(', ') : '') + '\n\n지금 재고에 추가할까요?\n(기존 재고는 그대로 두고 위에 얹습니다)')) return;
+    if(!skuLoaded) await skuFetch();
+    if(!(await skuConfirmRegister(skuGateRows(rows)))) return;
     await bxInsert(rows);
     showToast('✅ ' + summary + ' 임포트 완료');
     loadBoxRoom();
