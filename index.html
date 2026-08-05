@@ -136,7 +136,7 @@ main{max-width:1100px;margin:0 auto;padding:16px;}
     <button class="btn btn-sm" onclick="doLogout()" style="padding:2px 8px;font-size:10px;" data-i18n="logout">로그아웃</button>
   </span>
   <select id="lang-sel" onchange="setLang(this.value)" style="font-size:11px;padding:3px 6px;border-radius:5px;border:none;background:#1d3f66;color:#fff;"><option value="ko">한국어</option><option value="en">English</option><option value="es">Español</option></select>
-  <span style="font-size:10px;color:#9fb8d4;">v247</span>
+  <span style="font-size:10px;color:#9fb8d4;">v248</span>
 </div>
 <script type="text/javascript" src="https://js.authorize.net/v1/Accept.js" charset="utf-8"></script>
 <div id="po-viewer" style="display:none;position:fixed;top:0;right:0;width:44%;height:100vh;background:#fff;border-left:2px solid var(--border);z-index:60;box-shadow:-6px 0 20px rgba(0,0,0,.15);">
@@ -2212,6 +2212,49 @@ async function viewSavedPO(base){
     $('po-viewer-name').textContent = base + ' — PO';
   }catch(e){ alert(t('save_fail')); }
 }
+async function viewDayPOs(dKey){
+  const recs = (savedCache||[]).filter(r => String((r.meta&&r.meta.date) || r.savedAt || '').slice(0,10) === dKey);
+  if(!recs.length){ showToast('이 날짜의 오더가 없습니다'); return; }
+  showToast('📄 PO 모으는 중... (' + recs.length + '건)');
+  try{
+    const bases = recs.map(r=>r.base);
+    const inList = bases.map(b=>'"' + String(b).replace(/"/g,'') + '"').join(',');
+    const r = await sbFetch('/rest/v1/pr_orders?base=in.(' + encodeURIComponent(inList) + ')&select=base,po_pdf');
+    const rows = await r.json();
+    const byBase = {}; (rows||[]).forEach(x=>{ if(x.po_pdf) byBase[x.base] = x.po_pdf; });
+    const have = bases.filter(b=>byBase[b]);
+    const missing = recs.filter(r2=>!byBase[r2.base]).map(r2=>((r2.meta&&r2.meta.cust)||'') + ' PO ' + ((r2.meta&&r2.meta.po)||''));
+    if(!have.length){ showToast('⚠ 이 날짜에는 첨부된 PO 파일이 없습니다'); return; }
+    await loadPdfMergeLib();
+    const out = await PDFLib.PDFDocument.create();
+    let ok = 0;
+    for(const b of have){
+      try{
+        const bin = atob(byBase[b]);
+        const bytes = new Uint8Array(bin.length);
+        for(let i2=0;i2<bin.length;i2++) bytes[i2] = bin.charCodeAt(i2);
+        const src = await PDFLib.PDFDocument.load(bytes, {ignoreEncryption:true});
+        const pages = await out.copyPages(src, src.getPageIndices());
+        pages.forEach(p=>out.addPage(p));
+        ok++;
+      }catch(e){ console.warn('PO merge fail', b, e); }
+    }
+    if(!ok){ showToast('⚠ PO 병합에 실패했습니다'); return; }
+    const bytes2 = await out.save();
+    const url = URL.createObjectURL(new Blob([bytes2], {type:'application/pdf'}));
+    const ex = document.getElementById('modal-daypo'); if(ex) ex.remove();
+    const div = document.createElement('div');
+    div.id = 'modal-daypo';
+    div.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,.6);z-index:99999;display:flex;align-items:center;justify-content:center;';
+    div.innerHTML = '<div style="background:#fff;border-radius:12px;width:900px;max-width:96vw;height:90vh;display:flex;flex-direction:column;overflow:hidden;box-shadow:0 20px 60px rgba(0,0,0,.35);">'
+      + '<div style="background:#0f2a4a;color:#fff;padding:10px 16px;font-weight:800;font-size:13px;display:flex;align-items:center;gap:10px;">📄 ' + dKey + ' — PO 모아보기 (' + ok + '/' + recs.length + '건)'
+      + (missing.length ? '<span style="font-size:10.5px;font-weight:600;color:#fbbf24;">PO 미첨부: ' + esc(missing.join(', ')).slice(0,120) + '</span>' : '')
+      + '<button class="btn btn-sm" style="margin-left:auto;background:#16a34a;color:#fff;border-color:#16a34a;" onclick="document.getElementById(\'daypo-frame\').contentWindow.print()">🖨 인쇄</button>'
+      + '<button class="btn btn-sm" style="background:transparent;color:#cbd5e1;border-color:#475569;" onclick="document.getElementById(\'modal-daypo\').remove()">✕</button></div>'
+      + '<iframe id="daypo-frame" src="' + url + '" style="flex:1;border:none;"></iframe></div>';
+    document.body.appendChild(div);
+  }catch(e){ console.warn('viewDayPOs', e); showToast('⚠ PO 불러오기에 실패했습니다'); }
+}
 function buildPRDocFromRec(rec, wh){
   const bak = { lines: poLines, meta: getMeta(), fb: window._forceBase };
   window._forceBase = rec.base;
@@ -2255,7 +2298,7 @@ function openHistory(base){
 async function markDocPrinted(base, wh, kind){
   const rec = savedCache.find(s=>s.base===base); if(!rec) return;
   const mp = { ...((rec.meta && rec.meta._printed) || {}) };
-  mp[wh] = { ...(mp[wh] || {}), [kind]: true };
+  mp[wh] = { ...(mp[wh] || {}), [kind]: { at: new Date().toISOString(), by: (SESS && SESS.email) || '' } };
   rec.meta = { ...(rec.meta || {}), _printed: mp };
   try{ await sbFetch('/rest/v1/pr_orders?base=eq.'+encodeURIComponent(base), {method:'PATCH', headers:{Prefer:'return=minimal'}, body:JSON.stringify({meta:rec.meta, updated_at:new Date().toISOString()})}); }catch(e){}
   renderSaved();
@@ -2431,7 +2474,7 @@ async function markPrintedManually(base, wh, kind){
       await sbFetch('/rest/v1/pr_orders?base=eq.'+encodeURIComponent(base), {method:'PATCH', headers:{Prefer:'return=minimal'}, body:JSON.stringify({inv:rec.inv, updated_at:new Date().toISOString()})});
     } else {
       const mp = { ...((rec.meta && rec.meta._printed) || {}) };
-      mp[wh] = { ...(mp[wh]||{}), [kind]: true };
+      mp[wh] = { ...(mp[wh]||{}), [kind]: { at: new Date().toISOString(), by: (SESS && SESS.email) || '', manual: true } };
       rec.meta = { ...rec.meta, _printed: mp };
       await sbFetch('/rest/v1/pr_orders?base=eq.'+encodeURIComponent(base), {method:'PATCH', headers:{Prefer:'return=minimal'}, body:JSON.stringify({meta:rec.meta, updated_at:new Date().toISOString()})});
     }
@@ -3760,7 +3803,7 @@ function calcPartialBoxesFromLines(lines, whTag){
       const bn = String(l.pbox);
       const key = (whTag||'') + '|' + bn;
       if(!byBox[key]) byBox[key] = { boxNum: bn, wh: whTag||'', items: [] };
-      byBox[key].items.push({ styleNum: l.style||'', color: l.color||'', size: l.size||'', qty: loose });
+      byBox[key].items.push({ styleNum: l.style||'', color: l.color||'', size: l.size||'', qty: loose, desc: l.desc||'', rawDesc: l.rawDesc||'' });
     }
   });
   return Object.values(byBox).sort((a,b)=>(a.wh+'').localeCompare(b.wh+'') || Number(a.boxNum)-Number(b.boxNum));
@@ -3802,7 +3845,9 @@ function buildBoxLabelZpl(box, totalBoxes, order) {
     const col = item.color || box.color || '';
     const key = sNum + '|' + col;
     if (!groups[key]) groups[key] = { styleNum: sNum, color: col, sizes: [] };
-    groups[key].sizes.push({ size: item.size, qty: item.qty });
+    // 고객 ITEM/설명의 괄호 메모 — 예: "Adult S/S (Side Seam)" → 사이즈 옆에 "M (Side Seam)"으로 표시
+    const noteM = (String(item.desc||'') + ' ' + String(item.rawDesc||'')).match(/\([^)]+\)/);
+    groups[key].sizes.push({ size: item.size, qty: item.qty, note: noteM ? noteM[0].trim() : '' });
   });
   const totalQty = box.items.reduce((s, i) => s + (i.qty || 0), 0);
   let totalLineCount = 0;
@@ -3816,12 +3861,18 @@ function buildBoxLabelZpl(box, totalBoxes, order) {
   const styleFontH = Math.max(28, Math.round(itemFontH * 0.75));
   let itemLines = '';
   let yPos = ITEM_START_Y;
+  const zplSafe = s => String(s).replace(/[\^~\\]/g, ' ');
+  const hasNotes = Object.values(groups).some(g => g.sizes.some(s => s.note));
+  const qtyX = hasNotes ? 520 : 300; // 메모가 있으면 수량 칼럼을 오른쪽으로 옮겨 공간 확보
   Object.values(groups).forEach(g => {
-    itemLines += '^FO30,' + yPos + '^A0N,' + styleFontH + ',' + styleFontH + '^FD' + g.styleNum + '  ' + g.color + '^FS\n';
+    itemLines += '^FO30,' + yPos + '^A0N,' + styleFontH + ',' + styleFontH + '^FD' + zplSafe(g.styleNum) + '  ' + zplSafe(g.color) + '^FS\n';
     yPos += Math.round(lineH * 0.82);
     g.sizes.forEach(s => {
-      itemLines += '^FO30,' + yPos + '^A0N,' + itemFontH + ',' + itemFontH + '^FD' + s.size + '^FS\n';
-      itemLines += '^FO300,' + yPos + '^A0N,' + itemFontH + ',' + itemFontH + '^FD' + s.qty + ' pcs^FS\n';
+      const sizeTxt = s.note ? (s.size + ' ' + s.note) : String(s.size||'');
+      let f = itemFontH;
+      if (sizeTxt.length > 12) f = Math.max(30, Math.min(itemFontH, Math.floor((qtyX - 40) / (sizeTxt.length * 0.55))));
+      itemLines += '^FO30,' + yPos + '^A0N,' + f + ',' + f + '^FD' + zplSafe(sizeTxt) + '^FS\n';
+      itemLines += '^FO' + qtyX + ',' + yPos + '^A0N,' + itemFontH + ',' + itemFontH + '^FD' + s.qty + ' pcs^FS\n';
       yPos += lineH;
     });
   });
@@ -3837,7 +3888,7 @@ function buildBoxLabelZpl(box, totalBoxes, order) {
     + itemLines
     + '^FO20,' + totalDivY + '^GB772,3,3^FS\n'
     + '^FO30,' + totalTextY + '^A0N,' + itemFontH + ',' + itemFontH + '^FDTotal:^FS\n'
-    + '^FO300,' + totalTextY + '^A0N,' + itemFontH + ',' + itemFontH + '^FD' + totalQty + ' pcs^FS\n'
+    + '^FO' + qtyX + ',' + totalTextY + '^A0N,' + itemFontH + ',' + itemFontH + '^FD' + totalQty + ' pcs^FS\n'
     + '^FO0,1175^FB812,1,0,C,0^A0N,28,28^FDPacific Sports^FS\n'
     + '^XZ';
 }
@@ -3863,7 +3914,8 @@ function openBoxLabelModal(boxes, order){
   window._blBoxes = boxes;
   window._blOrder = order || {};
   const boxListHtml = boxes.map((box, idx)=>{
-    const desc = box.items.map(i=>`${i.styleNum} ${i.color} ${i.size} ${i.qty}pcs`).join(' / ');
+    const desc = box.items.map(i=>`${i.styleNum} ${i.color} ${i.size} ${i.qty}pcs`).join(' / ')
+      + (()=>{ const ns = [...new Set(box.items.flatMap(i => ((String(i.desc||'')+' '+String(i.rawDesc||'')).match(/\([^)]+\)/g)||[]).map(x=>x.trim())))]; return ns.length ? ' — ' + ns.join(' ') : ''; })();
     return '<label style="display:flex;align-items:center;gap:8px;padding:6px 10px;border-bottom:1px solid #f3f4f6;cursor:pointer;">'
       + '<input type="checkbox" class="box-label-cb" value="' + idx + '" checked style="width:16px;height:16px;accent-color:#7c3aed;cursor:pointer;">'
       + '<span style="font-size:12px;font-weight:700;color:#7c3aed;min-width:76px;font-family:Consolas,monospace;">' + (box.wh?('['+box.wh+'] '):'') + 'BOX ' + esc(box.boxNum) + '</span>'
@@ -5963,10 +6015,10 @@ function renderSaved(){
         return `<div style="display:flex;align-items:center;gap:6px;flex-wrap:wrap;margin-top:6px;padding-top:6px;border-top:1px dashed var(--border);">
         ${w!=='BO' && w!=='NA' ? `<input type="checkbox" class="bship-cb" data-base="${esc(s.base)}" data-wh="${w}" onchange="updateBatchBar()" title="Batch 작업에 포함 (출고 전=Batch Ship / 출고 후=Invoice Print)" style="width:15px;height:15px;accent-color:#1d4ed8;cursor:pointer;">` : ''}
         <span class="chip chip-${w}" style="min-width:34px;text-align:center;">${w}</span>
-        <button class="btn btn-sm" style="background:${c};color:#fff;border-color:${c};" onclick="docBtnClick('${esc(s.base)}','${w}','pr')" oncontextmenu="return docBtnMenu(event,'${esc(s.base)}','${w}','pr')" title="우클릭: 완료(초록) 표시 ${mp.pr?'해제':'전환'}">🖨 Pull Request</button>
+        <button class="btn btn-sm" style="background:${c};color:#fff;border-color:${c};" onclick="docBtnClick('${esc(s.base)}','${w}','pr')" oncontextmenu="return docBtnMenu(event,'${esc(s.base)}','${w}','pr')" title="${mp.pr&&mp.pr.by?`출력: ${esc(mp.pr.by)} · ${new Date(mp.pr.at).toLocaleString()}${mp.pr.manual?' (수동 표시)':''} — `:''}우클릭: 완료(초록) 표시 ${mp.pr?'해제':'전환'}">🖨 Pull Request${mp.pr&&mp.pr.by?` <span style="font-size:9px;font-weight:400;opacity:.9;">· ${esc(String(mp.pr.by).split('@')[0])}</span>`:''}</button>
         ${w==='BO' ? (()=>{ const days = Math.floor((Date.now() - new Date(s.savedAt||s.meta.date||Date.now()).getTime())/86400000); const c2 = days>=14?'#dc2626':(days>=7?'#ea580c':'#6b7280'); return `<span style="padding:2px 8px;border-radius:20px;font-size:10px;font-weight:800;background:#fff;color:${c2};border:1.5px solid ${c2};white-space:nowrap;${days>=14?'animation:overdue-pulse 1s ease-in-out infinite;':''}">⏳ ${days}일째</span>`; })() : ''}
         ${(w==='BO'||w==='NA') ? `<button class="btn btn-sm" style="background:#f5f3ff;color:#6d28d9;border-color:#c4b5fd;font-weight:700;" onclick="processFromWh('${esc(s.base)}','${w}','SC')" title="재고 입고 — 별도 건(-${w==='BO'?'B':'N'})으로 분리해 SC에서 출고 진행">⚙ Process from SC</button><button class="btn btn-sm" style="background:#fff7ed;color:#c2410c;border-color:#fed7aa;font-weight:700;" onclick="processFromWh('${esc(s.base)}','${w}','CA')" title="재고 입고 — 별도 건(-${w==='BO'?'B':'N'})으로 분리해 CA에서 출고 진행">⚙ Process from CA</button>` : ''}
-        ${w!=='BO' && w!=='NA' ? `<button class="btn btn-sm" style="background:${mp.label?'#16a34a':'#7c3aed'};color:#fff;border-color:${mp.label?'#16a34a':'#7c3aed'};" onclick="docBtnClick('${esc(s.base)}','${w}','label')" oncontextmenu="return docBtnMenu(event,'${esc(s.base)}','${w}','label')" title="우클릭: 완료(초록) 표시 ${mp.label?'해제':'전환'}">🏷 Box Label</button>
+        ${w!=='BO' && w!=='NA' ? `<button class="btn btn-sm" style="background:${mp.label?'#16a34a':'#7c3aed'};color:#fff;border-color:${mp.label?'#16a34a':'#7c3aed'};" onclick="docBtnClick('${esc(s.base)}','${w}','label')" oncontextmenu="return docBtnMenu(event,'${esc(s.base)}','${w}','label')" title="${mp.label&&mp.label.by?`출력: ${esc(mp.label.by)} · ${new Date(mp.label.at).toLocaleString()}${mp.label.manual?' (수동 표시)':''} — `:''}우클릭: 완료(초록) 표시 ${mp.label?'해제':'전환'}">🏷 Box Label${mp.label&&mp.label.by?` <span style="font-size:9px;font-weight:400;opacity:.9;">· ${esc(String(mp.label.by).split('@')[0])}</span>`:''}</button>
         <button class="btn btn-sm" style="${(s.pl && s.pl[w] && s.pl[w]._completed)?'background:#16a34a;border-color:#16a34a;':(plSaved?'background:#0e7490;border-color:#0e7490;':'background:#f59e0b;border-color:#f59e0b;')}color:#fff;" onclick="openPLWh('${esc(s.base)}','${w}')" oncontextmenu="return plBtnMenu(event,'${esc(s.base)}','${w}')" title="${plSaved && !(s.pl[w]&&s.pl[w]._completed)?'저장됨 — Complete 전 (이멜 미발송) · ':''}우클릭: Complete 표시/해제 (이멜 없이)">📦 Packing List</button>
         ${plSaved ? `<button class="btn btn-sm" style="${invPr?'background:#16a34a;border-color:#16a34a;':'background:#dc2626;border-color:#dc2626;'}color:#fff;" onclick="docBtnClick('${esc(s.base)}','${w}','inv')" oncontextmenu="return docBtnMenu(event,'${esc(s.base)}','${w}','inv')" title="우클릭: 완료(초록) 표시 ${invPr?'해제':'전환'}">🧾 Invoice</button>${invPr ? `<button class="btn btn-sm" style="background:#065f46;color:#fff;border-color:#065f46;" onclick="payFromRow('${esc(s.base)}','${w}')" title="입금 기록 (전액/부분)">💰 Payment</button><button class="btn btn-sm" style="background:#7c2d12;color:#fff;border-color:#7c2d12;" onclick="memoFromRow('${esc(s.base)}','${w}')" title="Credit Memo (리턴) — MAS200 파일 첨부 가능">📝 Credit Memo</button>` : ''}` : ''}
         ${(()=>{ const iv0 = s.inv && s.inv[w]; const pd = iv0 && iv0.paid; if(!pd) return '';
@@ -6016,7 +6068,7 @@ function renderSaved(){
     const gBg = allDone ? '#f6f8fa' : '#fffbeb';
     const gBd = allDone ? '#dbe2ea' : '#fde68a';
     return `<div style="background:${gBg};border:1.5px solid ${gBd};border-radius:12px;padding:8px 10px ${collapsed?'8px':'4px'};margin-bottom:14px;">
-      <div class="date-hdr" style="cursor:pointer;user-select:none;position:sticky;top:0;z-index:5;background:${gBg};margin:-4px -4px ${collapsed?'-4px':'6px'};padding:6px 4px;border-radius:8px;color:#0f2a4a;font-size:12.5px;" onclick="toggleDateGroup('${g.key}')" title="클릭해서 접기/펴기"><span style="font-size:10px;">${collapsed?'▶':'▼'}</span> 📅 ${dLabel} <span class="muted" style="font-weight:600;">(${g.recs.length})</span> ${badge}</div>
+      <div class="date-hdr" style="cursor:pointer;user-select:none;position:sticky;top:0;z-index:5;background:${gBg};margin:-4px -4px ${collapsed?'-4px':'6px'};padding:6px 4px;border-radius:8px;color:#0f2a4a;font-size:12.5px;" onclick="toggleDateGroup('${g.key}')" title="클릭해서 접기/펴기"><span style="font-size:10px;">${collapsed?'▶':'▼'}</span> 📅 ${dLabel} <span class="muted" style="font-weight:600;">(${g.recs.length})</span> ${badge} <button class="btn btn-sm" style="margin-left:6px;font-size:10px;padding:2px 9px;background:#fff;color:#0f2a4a;" onclick="event.stopPropagation();viewDayPOs('${g.key}')" title="이 날짜에 받은 모든 거래처 PO를 한 문서로 보고 인쇄">📄 PO</button></div>
       ${collapsed ? '' : g.htmls.join('')}
     </div>`;
   }).join('') : `<div class="muted">${q ? '🔍 "' + esc(savedQuery.trim()) + '" 검색 결과 없음' : t('saved_empty')}</div>`;
