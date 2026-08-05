@@ -136,7 +136,7 @@ main{max-width:1100px;margin:0 auto;padding:16px;}
     <button class="btn btn-sm" onclick="doLogout()" style="padding:2px 8px;font-size:10px;" data-i18n="logout">로그아웃</button>
   </span>
   <select id="lang-sel" onchange="setLang(this.value)" style="font-size:11px;padding:3px 6px;border-radius:5px;border:none;background:#1d3f66;color:#fff;"><option value="ko">한국어</option><option value="en">English</option><option value="es">Español</option></select>
-  <span style="font-size:10px;color:#9fb8d4;">v248 📦</span>
+  <span style="font-size:10px;color:#9fb8d4;">v249 📦</span>
 </div>
 <script type="text/javascript" src="https://js.authorize.net/v1/Accept.js" charset="utf-8"></script>
 <div id="po-viewer" style="display:none;position:fixed;top:0;right:0;width:44%;height:100vh;background:#fff;border-left:2px solid var(--border);z-index:60;box-shadow:-6px 0 20px rgba(0,0,0,.15);">
@@ -4801,6 +4801,65 @@ async function bxImport(file){
     const wb = XLSX.read(buf);
     const ws = wb.Sheets[wb.SheetNames[0]];
     const aoa = XLSX.utils.sheet_to_json(ws, {header:1, raw:false, defval:''});
+    // ── DaVinci export 자동 인식 (Location/Item Code/UOM/Lot Code/Sublot Code/Qty) ──
+    let dv = null;
+    for(let i=0;i<Math.min(aoa.length,10);i++){
+      const cells = aoa[i].map(c=>String(c).trim().toUpperCase());
+      const d = {};
+      cells.forEach((c,ci)=>{
+        if(c==='LOCATION') d.loc = ci;
+        else if(c==='ITEM CODE') d.item = ci;
+        else if(c==='UOM') d.uom = ci;
+        else if(c==='LOT CODE') d.lot = ci;
+        else if(c==='SUBLOT CODE') d.sub = ci;
+        else if(c==='PHYSICAL QTY') d.phys = ci;
+        else if(c==='AVAILABLE QTY') d.avail = ci;
+      });
+      if(d.item!=null && d.lot!=null && d.sub!=null){ dv = d; dv.hi = i; break; }
+    }
+    if(dv){
+      const by = (SESS&&SESS.email)||'';
+      const rows = []; const bad = []; let skipped0 = 0;
+      for(let i=dv.hi+1;i<aoa.length;i++){
+        const r = aoa[i];
+        const item = String(r[dv.item]||'').trim();
+        const lotRaw = String(r[dv.lot]||'').trim();
+        const size = String(r[dv.sub]||'').trim().toUpperCase();
+        if(!item && !lotRaw) continue;
+        if(!lotRaw || !size){ bad.push(i+1); continue; }
+        const qty = parseInt(dv.phys!=null ? r[dv.phys] : r[dv.avail]) || 0;
+        if(qty<=0){ skipped0++; continue; }
+        const um = String(dv.uom!=null ? (r[dv.uom]||'') : '').match(/:\s*(\d+)/);
+        const baseM = item.match(/^(\d{2,5})/);
+        const base = baseM ? baseM[1] : '';
+        const pm = lotRaw.match(/\(([^)]*)\)\s*$/);
+        const color = lotRaw.replace(/\s*\([^)]*\)\s*$/,'').trim().toUpperCase();
+        let style = base, note = 'davinci';
+        if(pm){
+          const p = pm[1].trim().toUpperCase();
+          const pc = p.replace(/\s+/g,'');
+          if(/^\d/.test(pc) && !/BAD|DMG|DAMAG/.test(pc)) style = pc;      // (1368)→1368 · (1368S)→1368S · (1368 SS)→1368SS
+          else if(p && p!==base) note = 'davinci · ' + p;                  // (1368 BAD) · (SIDE SEAM) 등은 메모로 보존
+        }
+        if(!style || !color){ bad.push(i+1); continue; }
+        const pcs = um ? parseInt(um[1]) : autoPpb({style,size});
+        const loc = dv.loc!=null ? String(r[dv.loc]||'').trim().toUpperCase() : '';
+        for(let j=0;j<qty;j++) rows.push({style, color, size, pcs, loc, status:'IN', in_by:by, note});
+      }
+      if(!rows.length){ alert('⚠ 가져올 데이터가 없어요.'); return; }
+      const byStyle = {};
+      rows.forEach(b=>{ byStyle[b.style] = (byStyle[b.style]||0)+1; });
+      const det = Object.keys(byStyle).sort().map(s=>'  · '+s+': '+byStyle[s].toLocaleString()+'박스').join('\n');
+      const summary = rows.length.toLocaleString() + '박스 (' + rows.reduce((a,b)=>a+b.pcs,0).toLocaleString() + ' pcs)';
+      if(!confirm('📥 DaVinci 임포트 미리보기\n\n' + summary + '\n' + det
+        + (skipped0 ? '\n(수량 0 행 ' + skipped0 + '개 제외)' : '')
+        + (bad.length ? '\n⚠ 건너뛴 행: ' + bad.slice(0,20).join(', ') + (bad.length>20?' 외 '+(bad.length-20)+'개':'') : '')
+        + '\n\n지금 재고에 추가할까요?\n(기존 재고는 그대로 두고 위에 얹습니다)')) return;
+      await bxInsert(rows);
+      showToast('✅ ' + summary + ' 임포트 완료 (DaVinci)');
+      loadBoxRoom();
+      return;
+    }
     // 헤더 행 찾기 (STYLE + COLOR + SIZE 가 모두 있는 행)
     let hi = -1, map = {};
     for(let i=0;i<Math.min(aoa.length,10);i++){
