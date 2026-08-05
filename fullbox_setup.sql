@@ -30,6 +30,17 @@ alter table public.pr_boxes enable row level security;
 
 -- 로그인한 직원만 접근 (pr_pcroom과 동일한 방식 — 만약 pr_pcroom에 더 엄격한
 -- policy를 쓰고 있다면 그거에 맞춰 아래를 바꿔주세요)
+-- 재고조사 날짜 스탬프 (PC Room / Full Box 공용, style+color 단위)
+create table if not exists public.pr_stocktake (
+  k        text primary key,          -- 'PC|1368|BLACK' 또는 'BX|1368|BLACK'
+  at       timestamptz not null default now(),
+  by_email text not null default ''
+);
+alter table public.pr_stocktake enable row level security;
+drop policy if exists pr_stocktake_auth_all on public.pr_stocktake;
+create policy pr_stocktake_auth_all on public.pr_stocktake
+  for all to authenticated using (true) with check (true);
+
 drop policy if exists pr_boxes_auth_all on public.pr_boxes;
 create policy pr_boxes_auth_all on public.pr_boxes
   for all to authenticated using (true) with check (true);

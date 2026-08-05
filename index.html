@@ -136,7 +136,7 @@ main{max-width:1100px;margin:0 auto;padding:16px;}
     <button class="btn btn-sm" onclick="doLogout()" style="padding:2px 8px;font-size:10px;" data-i18n="logout">로그아웃</button>
   </span>
   <select id="lang-sel" onchange="setLang(this.value)" style="font-size:11px;padding:3px 6px;border-radius:5px;border:none;background:#1d3f66;color:#fff;"><option value="ko">한국어</option><option value="en">English</option><option value="es">Español</option></select>
-  <span style="font-size:10px;color:#9fb8d4;">v262 📦</span>
+  <span style="font-size:10px;color:#9fb8d4;">v263 📦</span>
 </div>
 <script type="text/javascript" src="https://js.authorize.net/v1/Accept.js" charset="utf-8"></script>
 <div id="po-viewer" style="display:none;position:fixed;top:0;right:0;width:44%;height:100vh;background:#fff;border-left:2px solid var(--border);z-index:60;box-shadow:-6px 0 20px rgba(0,0,0,.15);">
@@ -4398,6 +4398,7 @@ let pcStore = [];
 let pcLoaded = false;
 let pcMoves = {};   // 'STYLE|COLOR|SIZE' -> {delta,at,by,note} 최근 1건 (14일 내)
 async function loadPcRoom(){
+  if(!stLoaded) stFetch().then(()=>{ if($('pc-body') && typeof renderPcRoom==='function') renderPcRoom(); });
   try{
     const r = await sbFetch('/rest/v1/pr_pcroom?select=k,style,color,qty,sizes,updated_at,updated_by&order=style.asc,color.asc');
     if(r.ok){ pcStore = await r.json(); pcLoaded = true; }
@@ -4536,7 +4537,7 @@ function renderPcRoom(){
       <table class="etbl" style="font-size:11.5px;">
         <thead><tr><th class="tl" style="min-width:120px;">Color</th>${sizes.map(s2=>`<th>${s2}</th>`).join('')}<th>Total</th><th></th></tr></thead>
         <tbody>${rows.map(r=>`<tr>
-          <td class="tl" style="font-weight:700;">${esc(String(r.color))}</td>
+          <td class="tl" style="font-weight:700;white-space:nowrap;">${esc(String(r.color))}${stBadge('PC', r.style, r.color)}</td>
           ${sizes.map(s2=>{ const v = (r.qty||{})[s2]; return `<td style="padding:2px 2px 0;vertical-align:top;"><input class="num" data-pc="${cssId(r.k)}-${cssId(s2)}" value="${v!=null?v:''}" onchange="pcCellChange('${esc(r.k)}','${s2}',this.value,this)" style="width:52px;text-align:center;${v<0?'color:#dc2626;font-weight:800;':''}">${pcMoveBadge(r, s2, 'pcm-'+cssId(r.k)+'-'+cssId(s2))}</td>`; }).join('')}
           <td style="font-family:Consolas,monospace;font-weight:800;" id="pcrt-${cssId(r.k)}">${pcRowTotal(r)||''}</td>
           <td style="white-space:nowrap;"><button class="btn btn-sm" style="border:none;padding:0 5px;" onclick="pcHistory('${esc(String(r.style))}','${esc(String(r.color))}')" title="이 칼라의 변동 내역 (원장)">📜</button><button class="btn btn-sm" style="border:none;color:#b91c1c;padding:0 6px;" oncontextmenu="return false;" onclick="pcDelRow('${esc(r.k)}')" title="이 칼라 행 삭제">✕</button></td>
@@ -4651,6 +4652,30 @@ let bxStore = [];      // status=IN 인 박스들 {id,style,color,size,pcs,loc,n
 let bxLoaded = false;
 function bxK(style,color,size){ return (String(style).trim()+'|'+String(color).trim()+'|'+String(size).trim()).toUpperCase(); }
 function bxWh(b){ const w = String(b.wh||'').trim().toUpperCase(); return w || 'SC'; }
+// ═══ 재고조사 날짜 스탬프 (style+color 단위 · PC Room / Full Box 공용) ═══
+let stMap = {}; let stLoaded = false;
+async function stFetch(){
+  try{ const r = await sbFetch('/rest/v1/pr_stocktake?select=k,at,by_email'); if(r.ok){ stMap = {}; (await r.json()).forEach(x=>{ stMap[x.k] = x; }); stLoaded = true; } }catch(e){}
+}
+function stKey(kind, style, color){ return kind+'|'+String(style).trim().toUpperCase()+'|'+String(color).trim().toUpperCase(); }
+function stBadge(kind, style, color){
+  const x = stMap[stKey(kind, style, color)];
+  const btn = `<span style="cursor:pointer;font-size:10px;opacity:.55;" onclick="event.stopPropagation();stMark('${kind}','${esc(String(style))}','${esc(String(color))}')" title="재고조사 완료 표시 (오늘 날짜로 기록)">📅</span>`;
+  if(!x) return ' ' + btn;
+  const d = new Date(x.at); const days = (Date.now() - d.getTime()) / 864e5;
+  const col = days < 30 ? '#16a34a' : (days < 90 ? '#d97706' : '#dc2626');
+  return ` <span style="font-size:9px;font-weight:800;color:${col};white-space:nowrap;" title="재고조사 ${d.toLocaleDateString('en-US')} · ${esc(String(x.by_email||'').split('@')[0])} — 📅 누르면 오늘로 갱신">✓${d.getMonth()+1}/${d.getDate()}</span> ${btn}`;
+}
+async function stMark(kind, style, color){
+  if(!confirm((kind==='PC'?'[PC Room] ':'[Full Box] ')+style+' '+String(color).toUpperCase()+'\n오늘 날짜로 재고조사 완료 표시할까요?')) return;
+  const rec = { k: stKey(kind, style, color), at: new Date().toISOString(), by_email: (SESS&&SESS.email)||'' };
+  try{ await sbFetch('/rest/v1/pr_stocktake?on_conflict=k', {method:'POST', headers:{Prefer:'resolution=merge-duplicates,return=minimal'}, body:JSON.stringify([rec])}); }
+  catch(e){ showToast('⚠ 저장 실패 — 인터넷 확인'); return; }
+  stMap[rec.k] = rec;
+  showToast('📅 재고조사 완료 표시: '+style+' '+String(color).toUpperCase());
+  if(kind==='PC' && typeof renderPcRoom==='function' && $('pc-body')) renderPcRoom();
+  if(kind==='BX' && $('bx-body')) renderBoxRoom();
+}
 function bxFixColor(c){
   c = String(c||'').toUpperCase().replace(/\([^)]*\)/g,' ').replace(/_/g,' ').replace(/\s+/g,' ').trim();
   const M = {'ICE BERG':'ICEBERG','HONEY COMB':'HONEYCOMB','LIGHT BLUE':'LIGHT BLUE HTR','LT BLUE HTR':'LIGHT BLUE HTR','AERTICHOKE':'ARTICHOKE'};
@@ -4676,7 +4701,7 @@ async function bxFetchStore(){
     if(r.ok){ bxStore = await r.json(); bxLoaded = true; }
   }catch(e){ console.warn('bxFetchStore', e); }
 }
-async function loadBoxRoom(){ await bxFetchStore(); renderBoxRoom(); }
+async function loadBoxRoom(){ if(!stLoaded) stFetch().then(()=>{ if($('bx-body')) renderBoxRoom(); }); await bxFetchStore(); renderBoxRoom(); }
 function bxFind(style,color,size,wh){ const k = bxK(style,color,size); const w = wh ? String(wh).trim().toUpperCase() : ''; return bxStore.filter(b=>bxK(b.style,b.color,b.size)===k && (!w || bxWh(b)===w)); }
 function bxLocsLabel(list, max){
   const locs = list.map(b=>String(b.loc||'?'));
@@ -5011,7 +5036,7 @@ function renderBoxRoom(){
               const list = bySize[sz];
               const sc = list.filter(b=>bxWh(b)==='SC'), ca = list.filter(b=>bxWh(b)==='CA');
               return `<tr>
-                ${si===0 ? `<td class="tl" style="font-weight:700;" rowspan="${sizes.length}">${esc(c)}</td>` : ''}
+                ${si===0 ? `<td class="tl" style="font-weight:700;white-space:nowrap;" rowspan="${sizes.length}">${esc(c)}${stBadge('BX', sty, c)}</td>` : ''}
                 <td style="font-weight:800;">${esc(sz)}</td>
                 <td style="font-family:Consolas,monospace;color:var(--text2);">${esc(String(list[0].pcs||''))}</td>
                 <td><span style="display:inline-block;min-width:30px;background:#0f2a4a;color:#fff;border-radius:8px;padding:2px 9px;font-family:Consolas,monospace;font-weight:800;font-size:13px;">${list.length}</span></td>
