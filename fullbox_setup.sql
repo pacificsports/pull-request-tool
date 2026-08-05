@@ -44,3 +44,19 @@ create policy pr_stocktake_auth_all on public.pr_stocktake
 drop policy if exists pr_boxes_auth_all on public.pr_boxes;
 create policy pr_boxes_auth_all on public.pr_boxes
   for all to authenticated using (true) with check (true);
+
+-- 🇭🇹 Haiti 입고 (인보이스 업로드 → 리뷰 → 도착 시 location 지정 입고)
+create table if not exists public.pr_inbound (
+  id          uuid primary key default gen_random_uuid(),
+  ref         text not null default '',          -- 예: PSH 26010
+  status      text not null default 'PENDING',   -- PENDING → RECEIVED
+  lines       jsonb not null default '[]',       -- [{style,color,size,boxes,pcs,loc}]
+  created_at  timestamptz not null default now(),
+  created_by  text not null default '',
+  received_at timestamptz,
+  received_by text
+);
+alter table public.pr_inbound enable row level security;
+drop policy if exists pr_inbound_auth_all on public.pr_inbound;
+create policy pr_inbound_auth_all on public.pr_inbound
+  for all to authenticated using (true) with check (true);
