@@ -136,7 +136,7 @@ main{max-width:1100px;margin:0 auto;padding:16px;}
     <button class="btn btn-sm" onclick="doLogout()" style="padding:2px 8px;font-size:10px;" data-i18n="logout">로그아웃</button>
   </span>
   <select id="lang-sel" onchange="setLang(this.value)" style="font-size:11px;padding:3px 6px;border-radius:5px;border:none;background:#1d3f66;color:#fff;"><option value="ko">한국어</option><option value="en">English</option><option value="es">Español</option></select>
-  <span style="font-size:10px;color:#9fb8d4;">v264 📦</span>
+  <span style="font-size:10px;color:#9fb8d4;">v265 📦</span>
 </div>
 <script type="text/javascript" src="https://js.authorize.net/v1/Accept.js" charset="utf-8"></script>
 <div id="po-viewer" style="display:none;position:fixed;top:0;right:0;width:44%;height:100vh;background:#fff;border-left:2px solid var(--border);z-index:60;box-shadow:-6px 0 20px rgba(0,0,0,.15);">
@@ -1951,10 +1951,27 @@ async function loadSaved(base){
 }
 async function delSaved(base){
   if(!confirm(t('a_delete',{b:base}) + '\n\n(휴지통으로 이동 — 30일 안에 복구 가능)')) return;
+  const rec = savedCache.find(s=>s.base===base);
   try{ await sbFetch('/rest/v1/pr_orders?base=eq.'+encodeURIComponent(base), {method:'PATCH', headers:{Prefer:'return=minimal'}, body:JSON.stringify({deleted_at:new Date().toISOString()})}); }catch(e){}
   showToast('🗑 휴지통으로 이동됨 (30일 보관)');
   savedCache = savedCache.filter(s=>s.base!==base);
   renderSaved();
+  // 이 오더로 차감된 풀박스가 있으면 복구 제안
+  try{
+    const poN = String((rec&&rec.meta&&rec.meta.po)||'').trim();
+    if(poN){
+      const po = 'PO ' + poN;
+      const r = await sbFetch('/rest/v1/pr_boxes?select=id&status=eq.OUT&out_po=eq.'+encodeURIComponent(po));
+      if(r.ok){
+        const rows = await r.json();
+        if(rows.length && confirm('📦 이 오더('+po+')로 차감된 풀박스가 '+rows.length+'개 있어요.\n재고로 복구할까요?')){
+          await sbFetch('/rest/v1/pr_boxes?status=eq.OUT&out_po=eq.'+encodeURIComponent(po), {method:'PATCH', headers:{Prefer:'return=minimal'}, body:JSON.stringify({status:'IN', out_at:null, out_by:null, out_po:null})});
+          showToast('↩ 풀박스 '+rows.length+'개 재고로 복구됨');
+          if(bxLoaded){ await bxFetchStore(); if($('bx-body')) renderBoxRoom(); }
+        }
+      }
+    }
+  }catch(e){}
 }
 async function openTrash(){
   const ex = document.getElementById('modal-trash'); if(ex) ex.remove();
@@ -4657,23 +4674,26 @@ let stMap = {}; let stLoaded = false;
 async function stFetch(){
   try{ const r = await sbFetch('/rest/v1/pr_stocktake?select=k,at,by_email'); if(r.ok){ stMap = {}; (await r.json()).forEach(x=>{ stMap[x.k] = x; }); stLoaded = true; } }catch(e){}
 }
-function stKey(kind, style, color){ return kind+'|'+String(style).trim().toUpperCase()+'|'+String(color).trim().toUpperCase(); }
-function stBadge(kind, style, color){
-  const x = stMap[stKey(kind, style, color)];
-  const btn = `<span style="cursor:pointer;font-size:10px;opacity:.55;" onclick="event.stopPropagation();stMark('${kind}','${esc(String(style))}','${esc(String(color))}')" title="재고조사 완료 표시 (오늘 날짜로 기록)">📅</span>`;
+function stKey(kind, style, color, extra){ return kind+'|'+String(style).trim().toUpperCase()+'|'+String(color).trim().toUpperCase()+(extra?'|'+String(extra).trim().toUpperCase():''); }
+function stInfo(kind, style, color, extra){ return stMap[stKey(kind, style, color, extra)] || null; }
+function stBadge(kind, style, color, extra){
+  const x = stInfo(kind, style, color, extra);
+  const btn = `<span style="cursor:pointer;font-size:10px;opacity:.55;" onclick="event.stopPropagation();stMark('${kind}','${esc(String(style))}','${esc(String(color))}'${extra?`,'${esc(String(extra))}'`:''})" title="재고조사 완료 표시 (오늘 날짜로 기록)">📅</span>`;
   if(!x) return ' ' + btn;
   const d = new Date(x.at); const days = (Date.now() - d.getTime()) / 864e5;
   const col = days < 30 ? '#16a34a' : (days < 90 ? '#d97706' : '#dc2626');
   return ` <span style="font-size:9px;font-weight:800;color:${col};white-space:nowrap;" title="재고조사 ${d.toLocaleDateString('en-US')} · ${esc(String(x.by_email||'').split('@')[0])} — 📅 누르면 오늘로 갱신">✓${d.getMonth()+1}/${d.getDate()}</span> ${btn}`;
 }
-async function stMark(kind, style, color){
-  const rec = { k: stKey(kind, style, color), at: new Date().toISOString(), by_email: (SESS&&SESS.email)||'' };
+async function stMark(kind, style, color, extra){
+  const rec = { k: stKey(kind, style, color, extra), at: new Date().toISOString(), by_email: (SESS&&SESS.email)||'' };
   try{ await sbFetch('/rest/v1/pr_stocktake?on_conflict=k', {method:'POST', headers:{Prefer:'resolution=merge-duplicates,return=minimal'}, body:JSON.stringify([rec])}); }
   catch(e){ showToast('⚠ 저장 실패 — 인터넷 확인'); return; }
   stMap[rec.k] = rec;
-  showToast('📅 재고조사 완료 표시: '+style+' '+String(color).toUpperCase());
+  showToast('📅 재고조사 완료 표시: '+style+' '+String(color).toUpperCase()+(extra?' @'+extra:''));
   if(kind==='PC' && typeof renderPcRoom==='function' && $('pc-body')) renderPcRoom();
   if(kind==='BX' && $('bx-body')) renderBoxRoom();
+  const lm = document.getElementById('modal-bxloc');
+  if(lm && window._blmCtx){ const c = window._blmCtx; bxLocModal(c.style, c.color, c.size, c.wh, c.loc); }
 }
 function bxFixColor(c){
   c = String(c||'').toUpperCase().replace(/\([^)]*\)/g,' ').replace(/_/g,' ').replace(/\s+/g,' ').trim();
@@ -4846,6 +4866,98 @@ async function bxLocShip(style,color,size,wh,loc){
   showToast('📦→ 출고: '+n+'박스 @'+loc);
   renderBoxRoom();
 }
+// ═══ location 클릭 모달: 수량 조정 / 이동 / 출고 / 재고조사 ═══
+function bxLocModal(style, color, size, wh, loc){
+  const ex = document.getElementById('modal-bxloc'); if(ex) ex.remove();
+  const list = bxLocList(style, color, size, wh, loc);
+  window._blmCtx = {style, color, size, wh, loc};
+  const pcs = list.length ? (Number(list[0].pcs)||72) : autoPpb({style, size});
+  const div = document.createElement('div');
+  div.id = 'modal-bxloc';
+  div.style.cssText = 'position:fixed;inset:0;background:rgba(15,23,42,.55);z-index:99;display:flex;align-items:center;justify-content:center;padding:20px;';
+  div.onclick = e=>{ if(e.target===div){ div.remove(); window._blmCtx = null; } };
+  div.innerHTML = `<div style="background:#fff;border-radius:12px;max-width:430px;width:100%;overflow:hidden;">
+    <div style="background:${wh==='CA'?'#9a3412':'#1d4ed8'};color:#fff;padding:10px 16px;font-weight:800;">📍 ${esc(loc)} · [${wh}] ${esc(String(style))} ${esc(String(color))} ${esc(String(size))}
+      <div style="font-weight:400;font-size:11px;opacity:.85;">현재 ${list.length}박스 · 입수 ${pcs}</div></div>
+    <div style="padding:14px 16px;display:flex;flex-direction:column;gap:12px;">
+      <div style="display:flex;align-items:center;gap:8px;font-size:12px;background:#f8fafc;border:1px solid var(--border);border-radius:8px;padding:8px 10px;">
+        <span style="font-weight:800;">재고조사</span>${stBadge('BX', style, color, wh+'|'+loc)}
+        <button class="btn btn-sm" style="margin-left:auto;font-size:11px;" onclick="stMark('BX','${esc(String(style))}','${esc(String(color))}','${esc(wh+'|'+loc)}')">📅 오늘 완료 표시</button>
+      </div>
+      <div style="display:flex;align-items:center;gap:8px;font-size:12px;">
+        <span style="font-weight:800;min-width:60px;">박스 수</span>
+        <input id="blm-set" class="fi num" type="number" min="0" value="${list.length}" style="width:75px;font-weight:800;font-size:14px;">
+        <button class="btn btn-sm btn-primary" onclick="bxLocSet()">적용</button>
+        <span class="muted" style="font-size:10.5px;">늘리면 박스 추가 · 줄이면 오래된 것부터 차감</span>
+      </div>
+      <div style="display:flex;align-items:center;gap:8px;font-size:12px;">
+        <span style="font-weight:800;min-width:60px;">이동</span>
+        <input id="blm-mvn" class="fi num" type="number" min="1" max="${list.length}" value="1" style="width:60px;">박스 →
+        <input id="blm-mvloc" class="fi" placeholder="새 location" style="width:100px;text-transform:uppercase;">
+        <button class="btn btn-sm" onclick="bxLocMoveDo()">📍 이동</button>
+      </div>
+      <div style="display:flex;align-items:center;gap:8px;font-size:12px;">
+        <span style="font-weight:800;min-width:60px;">출고</span>
+        <input id="blm-outn" class="fi num" type="number" min="1" max="${list.length}" value="1" style="width:60px;">박스
+        <button class="btn btn-sm" style="background:#dc2626;color:#fff;border-color:#dc2626;" onclick="bxLocOutDo()">− 출고</button>
+        <span class="muted" style="font-size:10.5px;">오래된 것부터 · 📜에서 복원 가능</span>
+      </div>
+    </div>
+    <div style="padding:10px 16px;border-top:1px solid var(--border);display:flex;justify-content:flex-end;">
+      <button class="btn" onclick="document.getElementById('modal-bxloc').remove();window._blmCtx=null;">닫기</button>
+    </div></div>`;
+  document.body.appendChild(div);
+}
+async function bxLocSet(){
+  const c = window._blmCtx; if(!c) return;
+  const list = bxLocList(c.style, c.color, c.size, c.wh, c.loc);
+  const target = parseInt(($('blm-set')||{}).value)||0;
+  const diff = target - list.length;
+  if(!diff){ showToast('변화 없음'); return; }
+  const by = (SESS&&SESS.email)||'';
+  try{
+    if(diff > 0){
+      const pcs = list.length ? (Number(list[0].pcs)||72) : autoPpb({style:c.style, size:c.size});
+      const rows = Array.from({length:diff}, ()=>({style:c.style, color:c.color, size:c.size, pcs, loc:c.loc, wh:c.wh, status:'IN', in_by:by, note:'재고조사 조정'}));
+      await bxInsert(rows);
+      showToast('✅ +'+diff+'박스 추가 @'+c.loc);
+    }else{
+      const take = list.slice(0, -diff);
+      await bxPatch(take.map(b=>b.id), {status:'OUT', out_at:new Date().toISOString(), out_by:by, out_po:'재고조사 조정'});
+      showToast('✅ '+(-diff)+'박스 차감 @'+c.loc);
+    }
+  }catch(e){ showToast('⚠ 저장 실패 — 인터넷 확인'); return; }
+  await bxFetchStore();
+  renderBoxRoom();
+  bxLocModal(c.style, c.color, c.size, c.wh, c.loc);
+}
+async function bxLocMoveDo(){
+  const c = window._blmCtx; if(!c) return;
+  const list = bxLocList(c.style, c.color, c.size, c.wh, c.loc);
+  const n = Math.min(parseInt(($('blm-mvn')||{}).value)||0, list.length);
+  const nl = String((($('blm-mvloc')||{}).value)||'').trim().toUpperCase();
+  if(!n || !nl){ showToast('⚠ 수량과 새 location을 입력하세요'); return; }
+  const take = list.slice(0, n);
+  try{ await bxPatch(take.map(b=>b.id), {loc:nl}); }catch(e){ showToast('⚠ 저장 실패'); return; }
+  take.forEach(b=>{ b.loc = nl; });
+  showToast('📍 '+n+'박스 '+c.loc+' → '+nl);
+  renderBoxRoom();
+  bxLocModal(c.style, c.color, c.size, c.wh, c.loc);
+}
+async function bxLocOutDo(){
+  const c = window._blmCtx; if(!c) return;
+  const list = bxLocList(c.style, c.color, c.size, c.wh, c.loc);
+  const n = Math.min(parseInt(($('blm-outn')||{}).value)||0, list.length);
+  if(!n){ showToast('⚠ 수량을 입력하세요'); return; }
+  const take = list.slice(0, n);
+  try{ await bxPatch(take.map(b=>b.id), {status:'OUT', out_at:new Date().toISOString(), out_by:(SESS&&SESS.email)||'', out_po:'수동 출고'}); }
+  catch(e){ showToast('⚠ 실패'); return; }
+  const ids = new Set(take.map(b=>b.id));
+  bxStore = bxStore.filter(b=>!ids.has(b.id));
+  showToast('📦→ 출고: '+n+'박스 @'+c.loc);
+  renderBoxRoom();
+  bxLocModal(c.style, c.color, c.size, c.wh, c.loc);
+}
 function bxFillOrderPick(){
   const sel = $('bx-order-pick'); if(!sel) return;
   const cur = sel.value;
@@ -5017,7 +5129,7 @@ function renderBoxRoom(){
         if(!arr.length) return '<span style="color:#cbd5e1;">—</span>';
         const byLoc = {};
         arr.forEach(b=>{ const L = String(b.loc||'?').toUpperCase(); byLoc[L] = (byLoc[L]||0)+1; });
-        return Object.keys(byLoc).sort().map(L=>`<span style="display:inline-flex;align-items:center;gap:2px;background:${bg};border:1px solid ${bd};border-radius:6px;padding:1px 4px 1px 6px;margin:1px 3px 1px 0;font-size:10.5px;font-weight:700;color:${fg};"><span style="cursor:pointer;" onclick="bxLocEdit('${esc(sty)}','${esc(c)}','${esc(sz)}','${wh}','${esc(L)}')" title="location 수정/이동">${esc(L)}${byLoc[L]>1?' <b>×'+byLoc[L]+'</b>':''}</span><span style="cursor:pointer;color:#b91c1c;padding:0 2px;" onclick="bxLocShip('${esc(sty)}','${esc(c)}','${esc(sz)}','${wh}','${esc(L)}')" title="이 location에서 출고">✕</span></span>`).join('');
+        return Object.keys(byLoc).sort().map(L=>`<span style="display:inline-flex;align-items:center;gap:2px;background:${bg};border:1px solid ${bd};border-radius:6px;padding:1px 4px 1px 6px;margin:1px 3px 1px 0;font-size:10.5px;font-weight:700;color:${fg};"><span style="cursor:pointer;" onclick="bxLocModal('${esc(sty)}','${esc(c)}','${esc(sz)}','${wh}','${esc(L)}')" title="클릭: 수량 조정 / 이동 / 출고 / 재고조사">${esc(L)}${byLoc[L]>1?' <b>×'+byLoc[L]+'</b>':''}</span><span style="cursor:pointer;color:#b91c1c;padding:0 2px;" onclick="bxLocShip('${esc(sty)}','${esc(c)}','${esc(sz)}','${wh}','${esc(L)}')" title="이 location에서 출고">✕</span></span>`).join('');
       };
       return `<details open style="margin-bottom:10px;border:1px solid var(--border);border-radius:8px;">
         <summary style="cursor:pointer;padding:8px 12px;font-weight:800;color:#0f2a4a;background:#f1f5f9;border-radius:8px;">
