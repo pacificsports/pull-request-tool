@@ -136,7 +136,7 @@ main{max-width:1100px;margin:0 auto;padding:16px;}
     <button class="btn btn-sm" onclick="doLogout()" style="padding:2px 8px;font-size:10px;" data-i18n="logout">로그아웃</button>
   </span>
   <select id="lang-sel" onchange="setLang(this.value)" style="font-size:11px;padding:3px 6px;border-radius:5px;border:none;background:#1d3f66;color:#fff;"><option value="ko">한국어</option><option value="en">English</option><option value="es">Español</option></select>
-  <span style="font-size:10px;color:#9fb8d4;">v259 📦</span>
+  <span style="font-size:10px;color:#9fb8d4;">v260 📦</span>
 </div>
 <script type="text/javascript" src="https://js.authorize.net/v1/Accept.js" charset="utf-8"></script>
 <div id="po-viewer" style="display:none;position:fixed;top:0;right:0;width:44%;height:100vh;background:#fff;border-left:2px solid var(--border);z-index:60;box-shadow:-6px 0 20px rgba(0,0,0,.15);">
@@ -2489,22 +2489,22 @@ async function printSavedPRWh(base, wh){
       const po = 'PO ' + ((rec.meta&&rec.meta.po)||'');
       const r = await sbFetch('/rest/v1/pr_boxes?select=style,color,size,loc,wh&status=eq.OUT&out_po=eq.'+encodeURIComponent(po));
       if(r.ok) outRows = await r.json();
-      // ── PR 인쇄 시 풀박스 자동 차감 (아직 차감 안 된 라인만, 오래된 박스부터) ──
-      const toTake = [];
-      (rec.lines||[]).filter(L=>(String(L.wh||'SC').trim().toUpperCase()||'SC')===wh).forEach(L=>{
-        const need = boxCalc(L).full; if(!need) return;
+      // ── PR 인쇄 시 풀박스 차감: 라인별로 location 선택 창 (기본값 = 오래된 순, 취소하면 차감 안 함) ──
+      const pending = (rec.lines||[]).filter(L=>{
+        if((String(L.wh||'SC').trim().toUpperCase()||'SC')!==wh) return false;
+        const need = boxCalc(L).full; if(!need) return false;
         const k = bxK(L.style, L.color, L.size);
-        if((outRows||[]).some(b=>bxWh(b)===wh && bxK(b.style,b.color,b.size)===k)) return;  // 이미 차감됨
-        const avail = bxFind(L.style, L.color, L.size, wh);
-        toTake.push(...avail.slice(0, Math.min(need, avail.length)));
+        if((outRows||[]).some(b=>bxWh(b)===wh && bxK(b.style,b.color,b.size)===k)) return false;  // 이미 차감됨
+        return bxFind(L.style, L.color, L.size, wh).length > 0;
       });
-      if(toTake.length){
-        await bxPatch(toTake.map(b=>b.id), {status:'OUT', out_at:new Date().toISOString(), out_by:(SESS&&SESS.email)||'', out_po:po});
-        const ids = new Set(toTake.map(b=>b.id));
-        bxStore = bxStore.filter(b=>!ids.has(b.id));
-        toTake.forEach(b=>outRows.push({style:b.style, color:b.color, size:b.size, loc:b.loc, wh:bxWh(b)}));
-        showToast('📦 풀박스 '+toTake.length+'박스 자동 차감 ('+po+') — 실수면 재고 화면 📜에서 복원');
-        if(typeof renderBoxRoom === 'function' && $('bx-body')) renderBoxRoom();
+      let anyPicked = false;
+      for(const L of pending){
+        const done = await new Promise(res=>bxOpenPicker(L, wh, po, res));
+        if(done) anyPicked = true;
+      }
+      if(anyPicked){
+        const r2 = await sbFetch('/rest/v1/pr_boxes?select=style,color,size,loc,wh&status=eq.OUT&out_po=eq.'+encodeURIComponent(po));
+        if(r2.ok) outRows = await r2.json();
       }
       pick = bxPickListHtml(rec, wh, outRows);
     }catch(e){}
@@ -4640,7 +4640,7 @@ let bxLoaded = false;
 function bxK(style,color,size){ return (String(style).trim()+'|'+String(color).trim()+'|'+String(size).trim()).toUpperCase(); }
 function bxWh(b){ const w = String(b.wh||'').trim().toUpperCase(); return w || 'SC'; }
 function bxFixColor(c){
-  c = String(c||'').toUpperCase().replace(/\([^)]*\)/g,' ').replace(/\s+/g,' ').trim();
+  c = String(c||'').toUpperCase().replace(/\([^)]*\)/g,' ').replace(/_/g,' ').replace(/\s+/g,' ').trim();
   const M = {'ICE BERG':'ICEBERG','HONEY COMB':'HONEYCOMB','LIGHT BLUE':'LIGHT BLUE HTR','LT BLUE HTR':'LIGHT BLUE HTR','AERTICHOKE':'ARTICHOKE'};
   return M[c] || c;
 }
@@ -4832,11 +4832,11 @@ async function bxPickFromEditor(i){
   if(!bxLoaded) await bxFetchStore();
   bxOpenPicker(L, lwh, 'PO ' + po);
 }
-function bxOpenPicker(L, lwh, po){
+function bxOpenPicker(L, lwh, po, onDone){
   const need = boxCalc(L).full;
-  if(!need){ showToast('⚠ 이 라인은 풀박스 없음 (자투리만) — PC Room에서 처리하세요'); return; }
+  if(!need){ showToast('⚠ 이 라인은 풀박스 없음 (자투리만) — PC Room에서 처리하세요'); if(onDone) onDone(false); return; }
   const avail = bxFind(L.style, L.color, L.size, lwh);   // in_at asc = 오래된 순
-  if(!avail.length){ showToast('⚠ ['+lwh+'] 풀박스 재고 없음'); return; }
+  if(!avail.length){ showToast('⚠ ['+lwh+'] '+L.style+' '+String(L.color).toUpperCase()+' '+String(L.size).toUpperCase()+' 풀박스 재고 없음'); if(onDone) onDone(false); return; }
   // location별 그룹 (가장 오래된 박스가 있는 location부터)
   const groups = []; const gm = {};
   avail.forEach(b=>{
@@ -4847,12 +4847,12 @@ function bxOpenPicker(L, lwh, po){
   // 오래된 것부터 자동 배정
   let remaining = Math.min(need, avail.length);
   groups.forEach(g=>{ g.take = Math.min(g.boxes.length, remaining); remaining -= g.take; });
-  bxPullCtx = {lwh, need, groups, po, label:'['+lwh+'] '+L.style+' '+String(L.color).toUpperCase()+' '+String(L.size).toUpperCase()};
+  bxPullCtx = {lwh, need, groups, po, onDone: onDone||null, label:'['+lwh+'] '+L.style+' '+String(L.color).toUpperCase()+' '+String(L.size).toUpperCase()};
   const ex = document.getElementById('modal-bxpull'); if(ex) ex.remove();
   const div = document.createElement('div');
   div.id = 'modal-bxpull';
   div.style.cssText = 'position:fixed;inset:0;background:rgba(15,23,42,.55);z-index:99;display:flex;align-items:center;justify-content:center;padding:20px;';
-  div.onclick = e=>{ if(e.target===div) div.remove(); };
+  div.onclick = e=>{ if(e.target===div) bxPullCancel(); };
   div.innerHTML = `<div style="background:#fff;border-radius:12px;max-width:560px;width:100%;max-height:85vh;display:flex;flex-direction:column;overflow:hidden;">
     <div style="background:#1d4ed8;color:#fff;padding:10px 16px;font-weight:800;">− 풀박스 차감 · ${esc(bxPullCtx.label)}
       <div style="font-weight:400;font-size:11px;color:#dbeafe;">필요 ${need}박스 · 재고 ${avail.length}박스 · 위에서부터 오래된 순 — 어느 location에서 뺄지 수량을 조절하세요</div></div>
@@ -4869,11 +4869,17 @@ function bxOpenPicker(L, lwh, po){
     </div>
     <div style="padding:10px 16px;border-top:1px solid var(--border);display:flex;gap:8px;align-items:center;">
       <span id="bxpull-sum" style="margin-right:auto;font-size:12px;font-weight:800;"></span>
-      <button class="btn" onclick="document.getElementById('modal-bxpull').remove()">취소</button>
+      <button class="btn" onclick="bxPullCancel()">취소</button>
       <button class="btn btn-primary" onclick="bxPullSave()">− 차감 (${esc(bxPullCtx.po)})</button>
     </div></div>`;
   document.body.appendChild(div);
   bxPullSum();
+}
+function bxPullCancel(){
+  const m = document.getElementById('modal-bxpull'); if(m) m.remove();
+  const cb = bxPullCtx && bxPullCtx.onDone;
+  bxPullCtx = null;
+  if(cb) cb(false);
 }
 function bxPullSum(){
   const el = document.getElementById('bxpull-sum'); if(!el || !bxPullCtx) return;
@@ -4897,8 +4903,10 @@ async function bxPullSave(){
   sel.forEach(b=>{ const Lc=String(b.loc||'?').toUpperCase(); locs[Lc]=(locs[Lc]||0)+1; });
   showToast('✅ '+sel.length+'박스 차감 ('+bxPullCtx.po+') — 📍 '+Object.keys(locs).map(l=>l+(locs[l]>1?' ×'+locs[l]:'')).join(', '));
   const m = document.getElementById('modal-bxpull'); if(m) m.remove();
+  const cb = bxPullCtx && bxPullCtx.onDone;
   bxPullCtx = null;
-  renderBoxRoom();
+  if($('bx-body')) renderBoxRoom();
+  if(cb) cb(true);
 }
 function renderBoxRoom(){
   const el = $('bx-body'); if(!el) return;
