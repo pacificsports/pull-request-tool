@@ -136,7 +136,7 @@ main{max-width:1100px;margin:0 auto;padding:16px;}
     <button class="btn btn-sm" onclick="doLogout()" style="padding:2px 8px;font-size:10px;" data-i18n="logout">로그아웃</button>
   </span>
   <select id="lang-sel" onchange="setLang(this.value)" style="font-size:11px;padding:3px 6px;border-radius:5px;border:none;background:#1d3f66;color:#fff;"><option value="ko">한국어</option><option value="en">English</option><option value="es">Español</option></select>
-  <span style="font-size:10px;color:#9fb8d4;">v265 📦</span>
+  <span style="font-size:10px;color:#9fb8d4;">v266 📦</span>
 </div>
 <script type="text/javascript" src="https://js.authorize.net/v1/Accept.js" charset="utf-8"></script>
 <div id="po-viewer" style="display:none;position:fixed;top:0;right:0;width:44%;height:100vh;background:#fff;border-left:2px solid var(--border);z-index:60;box-shadow:-6px 0 20px rgba(0,0,0,.15);">
@@ -2510,16 +2510,16 @@ async function printSavedPRWh(base, wh){
       const pending = (rec.lines||[]).filter(L=>{
         if((String(L.wh||'SC').trim().toUpperCase()||'SC')!==wh) return false;
         const need = boxCalc(L).full; if(!need) return false;
-        const k = bxK(L.style, L.color, L.size);
+        const k = bxK(bxStyleFor(L), L.color, L.size);
         if((outRows||[]).some(b=>bxWh(b)===wh && bxK(b.style,b.color,b.size)===k)) return false;  // 이미 차감됨
-        return bxFind(L.style, L.color, L.size, wh).length > 0;
+        return bxFind(bxStyleFor(L), L.color, L.size, wh).length > 0;
       });
       let anyPicked = false;
       for(const L of pending){
         // 편집 때 📍로 지정해둔 location이 있으면 거기서 자동 차감 (location 안에서는 오래된 순)
         if(L.pickLocs && L.pickLocs.length){
           const take = [];
-          L.pickLocs.forEach(g=>{ take.push(...bxLocList(L.style, L.color, L.size, wh, String(g.loc).toUpperCase()).slice(0, g.n)); });
+          L.pickLocs.forEach(g=>{ take.push(...bxLocList(bxStyleFor(L), L.color, L.size, wh, String(g.loc).toUpperCase()).slice(0, g.n)); });
           if(take.length){
             await bxPatch(take.map(b=>b.id), {status:'OUT', out_at:new Date().toISOString(), out_by:(SESS&&SESS.email)||'', out_po:po});
             const ids = new Set(take.map(b=>b.id));
@@ -2547,13 +2547,13 @@ function bxPickListHtml(rec, wh, outRows){
   const items = [];
   lines.forEach(L=>{
     const need = boxCalc(L).full; if(!need) return;
-    const k = bxK(L.style, L.color, L.size);
+    const k = bxK(bxStyleFor(L), L.color, L.size);
     const done = (outRows||[]).filter(b=>bxWh(b)===wh && bxK(b.style,b.color,b.size)===k);
     if(done.length){
       const byLoc = {}; done.forEach(b=>{ const lc=String(b.loc||'?').toUpperCase(); byLoc[lc]=(byLoc[lc]||0)+1; });
       items.push({L, need, mode:'PICKED', locs:Object.keys(byLoc).sort().map(l=>({loc:l,n:byLoc[l]})), short: Math.max(0, need - done.length)});
     }else{
-      const avail = bxFind(L.style, L.color, L.size, wh);   // in_at asc = oldest first
+      const avail = bxFind(bxStyleFor(L), L.color, L.size, wh);   // in_at asc = oldest first
       let rem = Math.min(need, avail.length);
       const byLoc = {}; const order = [];
       avail.forEach(b=>{ if(rem<=0) return; const lc=String(b.loc||'?').toUpperCase(); if(!(lc in byLoc)){ byLoc[lc]=0; order.push(lc); } byLoc[lc]++; rem--; });
@@ -4668,6 +4668,12 @@ async function pcExport(){
 let bxStore = [];      // status=IN 인 박스들 {id,style,color,size,pcs,loc,note,in_at,in_by}
 let bxLoaded = false;
 function bxK(style,color,size){ return (String(style).trim()+'|'+String(color).trim()+'|'+String(size).trim()).toUpperCase(); }
+// 오더 라인 → 재고 스타일 매칭: 설명에 (Side Seam)이 있으면 base+'S' 재고를 찾는다 (예: 1315 → 1315S)
+function bxStyleFor(L){
+  const st = String((L&&L.style)||'').trim();
+  if(/^\d+$/.test(st) && /side\s*seam/i.test(String((L&&L.desc)||'')+' '+String((L&&L.rawDesc)||''))) return st + 'S';
+  return st;
+}
 function bxWh(b){ const w = String(b.wh||'').trim().toUpperCase(); return w || 'SC'; }
 // ═══ 재고조사 날짜 스탬프 (style+color 단위 · PC Room / Full Box 공용) ═══
 let stMap = {}; let stLoaded = false;
@@ -4703,7 +4709,7 @@ function bxFixColor(c){
 function bxStockHint(l, b){
   if(!bxLoaded || !b.full) return '';
   const wh = String(l.wh||'SC').trim().toUpperCase() || 'SC';
-  const avail = bxFind(l.style, l.color, l.size, wh);
+  const avail = bxFind(bxStyleFor(l), l.color, l.size, wh);
   const ok = avail.length >= b.full;
   return `<div style="font-size:9px;line-height:1.25;font-weight:800;color:${ok?'#166534':'#dc2626'};white-space:nowrap;" title="${wh} 풀박스 재고 ${avail.length}박스${avail.length?' — '+bxLocsLabel(avail,99):''}">📦${avail.length}${avail.length?` <span style="color:#1d4ed8;">${esc(bxLocsLabel(avail, 2))}</span>`:''}</div>`;
 }
@@ -4989,7 +4995,8 @@ async function bxToPcFromEditor(i){
 function bxOpenPicker(L, lwh, po, onDone, mode, needOverride){
   const need = (needOverride!=null) ? needOverride : boxCalc(L).full;
   if(!need){ showToast('⚠ 이 라인은 풀박스 없음 (자투리만) — PC Room에서 처리하세요'); if(onDone) onDone(false); return; }
-  const avail = bxFind(L.style, L.color, L.size, lwh);   // in_at asc = 오래된 순
+  const st = bxStyleFor(L);
+  const avail = bxFind(st, L.color, L.size, lwh);   // in_at asc = 오래된 순
   if(!avail.length){ showToast('⚠ ['+lwh+'] '+L.style+' '+String(L.color).toUpperCase()+' '+String(L.size).toUpperCase()+' 풀박스 재고 없음'); if(onDone) onDone(false); return; }
   // location별 그룹 (가장 오래된 박스가 있는 location부터)
   const groups = []; const gm = {};
@@ -5001,7 +5008,7 @@ function bxOpenPicker(L, lwh, po, onDone, mode, needOverride){
   // 오래된 것부터 자동 배정
   let remaining = Math.min(need, avail.length);
   groups.forEach(g=>{ g.take = Math.min(g.boxes.length, remaining); remaining -= g.take; });
-  bxPullCtx = {lwh, need, groups, po, mode: mode||'deduct', onDone: onDone||null, sku:{style:String(L.style||'').trim(), color:String(L.color||'').trim().toUpperCase(), size:String(L.size||'').trim().toUpperCase()}, label:'['+lwh+'] '+L.style+' '+String(L.color).toUpperCase()+' '+String(L.size).toUpperCase()};
+  bxPullCtx = {lwh, need, groups, po, mode: mode||'deduct', onDone: onDone||null, sku:{style:st, color:String(L.color||'').trim().toUpperCase(), size:String(L.size||'').trim().toUpperCase()}, label:'['+lwh+'] '+st+' '+String(L.color).toUpperCase()+' '+String(L.size).toUpperCase()};
   const ex = document.getElementById('modal-bxpull'); if(ex) ex.remove();
   const div = document.createElement('div');
   div.id = 'modal-bxpull';
@@ -5184,7 +5191,7 @@ function renderBoxRoom(){
           const lwh = String(L.wh||'SC').trim().toUpperCase() || 'SC';
           const bc = boxCalc(L);
           const need = bc.full;
-          const avail = bxFind(L.style, L.color, L.size, lwh);
+          const avail = bxFind(bxStyleFor(L), L.color, L.size, lwh);
           const ok = avail.length >= need;
           return `<div style="display:flex;align-items:center;gap:6px;padding:4px 2px;border-bottom:1px solid #dbeafe;font-size:11px;${need?'':'opacity:.45;'}">
             <div style="flex:1;min-width:0;"><span style="background:${lwh==='CA'?'#9a3412':'#1d4ed8'};color:#fff;border-radius:4px;padding:0 4px;font-size:9.5px;font-weight:800;">${esc(lwh)}</span> <b>${esc(String(L.style||''))}</b> ${esc(String(L.color||''))} <b>${esc(String(L.size||'').toUpperCase())}</b> — 풀박스 <b>${need}</b>
@@ -5326,7 +5333,7 @@ async function bxImport(file){
           if(pm){
             const p = pm[1].trim().toUpperCase();
             const pc = p.replace(/\s+/g,'');
-            if(/^\d/.test(pc) && !/BAD|DMG|DAMAG/.test(pc)) style = pc;      // (1368)→1368 · (1368S)→1368S · (1368 SS)→1368SS
+            if(/^\d/.test(pc) && !/BAD|DMG|DAMAG/.test(pc)) style = pc.replace(/^(\d+)SS$/, '$1S');      // (1368)→1368 · (1368S)→1368S · (1368 SS)→1368S
             else if(p && p!==base) note = 'davinci · ' + p;                  // (1368 BAD) · (SIDE SEAM) 등은 메모로 보존
           }
         }else{
