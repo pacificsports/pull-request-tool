@@ -136,7 +136,7 @@ main{max-width:1100px;margin:0 auto;padding:16px;}
     <button class="btn btn-sm" onclick="doLogout()" style="padding:2px 8px;font-size:10px;" data-i18n="logout">로그아웃</button>
   </span>
   <select id="lang-sel" onchange="setLang(this.value)" style="font-size:11px;padding:3px 6px;border-radius:5px;border:none;background:#1d3f66;color:#fff;"><option value="ko">한국어</option><option value="en">English</option><option value="es">Español</option></select>
-  <span style="font-size:10px;color:#9fb8d4;">v253 📦</span>
+  <span style="font-size:10px;color:#9fb8d4;">v254 📦</span>
 </div>
 <script type="text/javascript" src="https://js.authorize.net/v1/Accept.js" charset="utf-8"></script>
 <div id="po-viewer" style="display:none;position:fixed;top:0;right:0;width:44%;height:100vh;background:#fff;border-left:2px solid var(--border);z-index:60;box-shadow:-6px 0 20px rgba(0,0,0,.15);">
@@ -4743,23 +4743,76 @@ function bxFillOrderPick(){
   const opts = (savedCache||[]).slice(0, 40).map(r=>{ const d=String((r.meta&&r.meta.date)||r.savedAt||'').slice(0,10); const ds=d?new Date(d+'T00:00:00').toLocaleDateString('en-US',{month:'numeric',day:'numeric'}):''; return `<option value="${esc(r.base)}" ${cur===r.base?'selected':''}>${ds?ds+' · ':''}${esc((r.meta&&r.meta.cust)||'')} — PO ${esc((r.meta&&r.meta.po)||'')}</option>`; }).join('');
   sel.innerHTML = '<option value="">📋 Pull Request 보기...</option>' + opts;
 }
-async function bxPullLine(base, li){
+let bxPullCtx = null;
+function bxPullLine(base, li){
   const rec = savedCache.find(s=>s.base===base); if(!rec) return;
   const L = (rec.lines||[])[li]; if(!L) return;
   const lwh = String(L.wh||'SC').trim().toUpperCase() || 'SC';
   const need = boxCalc(L).full;
   if(!need){ showToast('⚠ 이 라인은 풀박스 없음 (자투리만) — PC Room에서 처리하세요'); return; }
-  const avail = bxFind(L.style, L.color, L.size, lwh);
-  if(avail.length < need){ showToast('⚠ ['+lwh+'] 풀박스 부족: 필요 '+need+' · 재고 '+avail.length); if(!avail.length) return; }
-  const take = avail.slice(0, Math.min(need, avail.length));   // 오래된 박스(in_at asc)부터
-  const locs = bxLocsLabel(take, 99);
-  const po = 'PO ' + ((rec.meta&&rec.meta.po)||'');
-  if(!confirm('['+lwh+'] '+L.style+' '+String(L.color).toUpperCase()+' '+String(L.size).toUpperCase()+' — '+take.length+'박스 차감\n\n📍 '+locs+'\n\n'+po+' 출고로 기록할까요?')) return;
-  try{ await bxPatch(take.map(b=>b.id), {status:'OUT', out_at:new Date().toISOString(), out_by:(SESS&&SESS.email)||'', out_po:po}); }
+  const avail = bxFind(L.style, L.color, L.size, lwh);   // in_at asc = 오래된 순
+  if(!avail.length){ showToast('⚠ ['+lwh+'] 풀박스 재고 없음'); return; }
+  // location별 그룹 (가장 오래된 박스가 있는 location부터)
+  const groups = []; const gm = {};
+  avail.forEach(b=>{
+    const Lc = String(b.loc||'?').toUpperCase();
+    if(!gm[Lc]){ gm[Lc] = {loc:Lc, boxes:[], oldest:b.in_at}; groups.push(gm[Lc]); }
+    gm[Lc].boxes.push(b);
+  });
+  // 오래된 것부터 자동 배정
+  let remaining = Math.min(need, avail.length);
+  groups.forEach(g=>{ g.take = Math.min(g.boxes.length, remaining); remaining -= g.take; });
+  bxPullCtx = {base, li, lwh, need, groups, po:'PO '+((rec.meta&&rec.meta.po)||''), label:'['+lwh+'] '+L.style+' '+String(L.color).toUpperCase()+' '+String(L.size).toUpperCase()};
+  const ex = document.getElementById('modal-bxpull'); if(ex) ex.remove();
+  const div = document.createElement('div');
+  div.id = 'modal-bxpull';
+  div.style.cssText = 'position:fixed;inset:0;background:rgba(15,23,42,.55);z-index:99;display:flex;align-items:center;justify-content:center;padding:20px;';
+  div.onclick = e=>{ if(e.target===div) div.remove(); };
+  div.innerHTML = `<div style="background:#fff;border-radius:12px;max-width:560px;width:100%;max-height:85vh;display:flex;flex-direction:column;overflow:hidden;">
+    <div style="background:#1d4ed8;color:#fff;padding:10px 16px;font-weight:800;">− 풀박스 차감 · ${esc(bxPullCtx.label)}
+      <div style="font-weight:400;font-size:11px;color:#dbeafe;">필요 ${need}박스 · 재고 ${avail.length}박스 · 위에서부터 오래된 순 — 어느 location에서 뺄지 수량을 조절하세요</div></div>
+    <div style="overflow-y:auto;padding:10px 16px;">
+      <table class="etbl" style="font-size:12px;">
+        <thead><tr><th class="tl">📍 Location</th><th>재고</th><th>입고일 (가장 오래된)</th><th>차감</th></tr></thead>
+        <tbody>${groups.map((g,gi)=>`<tr>
+          <td class="tl" style="font-weight:800;color:#1d4ed8;">${esc(g.loc)}</td>
+          <td style="font-family:Consolas,monospace;">${g.boxes.length}</td>
+          <td style="font-size:11px;color:var(--text2);">${g.oldest?String(g.oldest).slice(0,10):''}</td>
+          <td><input class="fi bp-take" data-gi="${gi}" type="number" min="0" max="${g.boxes.length}" value="${g.take}" style="width:60px;font-weight:800;" oninput="bxPullSum()"></td>
+        </tr>`).join('')}</tbody>
+      </table>
+    </div>
+    <div style="padding:10px 16px;border-top:1px solid var(--border);display:flex;gap:8px;align-items:center;">
+      <span id="bxpull-sum" style="margin-right:auto;font-size:12px;font-weight:800;"></span>
+      <button class="btn" onclick="document.getElementById('modal-bxpull').remove()">취소</button>
+      <button class="btn btn-primary" onclick="bxPullSave()">− 차감 (${esc(bxPullCtx.po)})</button>
+    </div></div>`;
+  document.body.appendChild(div);
+  bxPullSum();
+}
+function bxPullSum(){
+  const el = document.getElementById('bxpull-sum'); if(!el || !bxPullCtx) return;
+  let n = 0;
+  document.querySelectorAll('.bp-take').forEach(i=>{ n += parseInt(i.value)||0; });
+  el.innerHTML = '선택 ' + n + ' / 필요 ' + bxPullCtx.need + '박스' + (n===bxPullCtx.need?' <span style="color:#166534;">✓</span>':' <span style="color:#dc2626;">('+(n<bxPullCtx.need?'부족':'초과')+')</span>');
+}
+async function bxPullSave(){
+  if(!bxPullCtx) return;
+  const takes = {};
+  document.querySelectorAll('.bp-take').forEach(i=>{ takes[i.dataset.gi] = parseInt(i.value)||0; });
+  const sel = [];
+  bxPullCtx.groups.forEach((g,gi)=>{ sel.push(...g.boxes.slice(0, Math.min(takes[gi]||0, g.boxes.length))); });
+  if(!sel.length){ alert('⚠ 차감할 박스를 선택하세요.'); return; }
+  if(sel.length !== bxPullCtx.need && !confirm('필요 '+bxPullCtx.need+'박스와 다르게 '+sel.length+'박스를 차감합니다. 계속할까요?')) return;
+  try{ await bxPatch(sel.map(b=>b.id), {status:'OUT', out_at:new Date().toISOString(), out_by:(SESS&&SESS.email)||'', out_po:bxPullCtx.po}); }
   catch(e){ showToast('⚠ 차감 실패 — 인터넷 확인'); return; }
-  const ids = new Set(take.map(b=>b.id));
+  const ids = new Set(sel.map(b=>b.id));
   bxStore = bxStore.filter(b=>!ids.has(b.id));
-  showToast('✅ '+take.length+'박스 차감 ('+po+') — 📍 '+locs);
+  const locs = {};
+  sel.forEach(b=>{ const Lc=String(b.loc||'?').toUpperCase(); locs[Lc]=(locs[Lc]||0)+1; });
+  showToast('✅ '+sel.length+'박스 차감 ('+bxPullCtx.po+') — 📍 '+Object.keys(locs).map(l=>l+(locs[l]>1?' ×'+locs[l]:'')).join(', '));
+  const m = document.getElementById('modal-bxpull'); if(m) m.remove();
+  bxPullCtx = null;
   renderBoxRoom();
 }
 function renderBoxRoom(){
