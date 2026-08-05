@@ -136,7 +136,7 @@ main{max-width:1100px;margin:0 auto;padding:16px;}
     <button class="btn btn-sm" onclick="doLogout()" style="padding:2px 8px;font-size:10px;" data-i18n="logout">로그아웃</button>
   </span>
   <select id="lang-sel" onchange="setLang(this.value)" style="font-size:11px;padding:3px 6px;border-radius:5px;border:none;background:#1d3f66;color:#fff;"><option value="ko">한국어</option><option value="en">English</option><option value="es">Español</option></select>
-  <span style="font-size:10px;color:#9fb8d4;">v258 📦</span>
+  <span style="font-size:10px;color:#9fb8d4;">v259 📦</span>
 </div>
 <script type="text/javascript" src="https://js.authorize.net/v1/Accept.js" charset="utf-8"></script>
 <div id="po-viewer" style="display:none;position:fixed;top:0;right:0;width:44%;height:100vh;background:#fff;border-left:2px solid var(--border);z-index:60;box-shadow:-6px 0 20px rgba(0,0,0,.15);">
@@ -1294,7 +1294,7 @@ function renderTable(){
       <td><input class="num" value="${l.qty||''}" onchange="updLine(${i},'qty',this.value)" style="max-width:80px;"></td>
       <td>${priceCellHtml(l,i)}</td>
       <td><input id="ppb-${i}" class="num" value="${l.ppb||DEFAULT_PPB}" onchange="updLine(${i},'ppb',this.value)" style="max-width:65px;"></td>
-      <td id="fb-${i}" style="font-family:Consolas,monospace;">${b.full||''}${bxStockHint(l,b)}</td>
+      <td id="fb-${i}" style="font-family:Consolas,monospace;white-space:nowrap;">${b.full||''}${b.full&&(l.wh==='SC'||l.wh==='CA')?`<button class="btn btn-sm" style="border:none;padding:0 3px;font-size:11px;" onclick="bxPickFromEditor(${i})" title="풀박스를 어느 location에서 뽑을지 지정 (지금 차감)">📍</button>`:''}${bxStockHint(l,b)}</td>
       <td id="ls-${i}" style="font-family:Consolas,monospace;color:${b.loose?'#d97706':'#9ca3af'};">${b.loose||''}${pcStockHint(l,b)}</td>
       <td id="pbox-td-${i}" style="white-space:nowrap;">${b.loose ? `<input class="num" value="${l.pbox||''}" onchange="updLine(${i},'pbox',this.value)" style="max-width:50px;">${pboxBadgeHtml(poLines,l,'pbsum-'+i)}` : ''}</td>
       <td style="text-align:center;"><input type="checkbox" id="whsc-${i}" ${l.wh==='SC'?'checked':''} onchange="whLineToggle(${i},'SC',this.checked)" style="accent-color:#1d4ed8;width:16px;height:16px;cursor:pointer;"></td>
@@ -1598,7 +1598,7 @@ function normalizeLines(lines){
     if(st && !/^\d{3,4}/.test(st)){ out.rawDesc = out.rawDesc || out.desc || st; out.style = guessStyle(out.rawDesc); }
     // 긴 원본 설명이 desc에 그대로 있으면 rawDesc로 옮기고 간단 표기로
     if(!out.rawDesc && out.desc && /crew|sleeve|neck|tee|shirt|hood|tank|cotton|\d+\/\d+/i.test(out.desc)){ out.rawDesc = out.desc; }
-    if(out.rawDesc) out.desc = simplifyDesc(out.rawDesc) || out.desc;
+    if(out.rawDesc && !out.descManual) out.desc = simplifyDesc(out.rawDesc) || out.desc;
     if(!out.style && (out.rawDesc||out.desc)) out.style = guessStyle(out.rawDesc || out.desc);
     const mm = STYLE_MASTER[String(out.style||'').trim()];
     if(mm && mm[0] && !out.descManual) out.desc = mm[0];
@@ -2489,6 +2489,23 @@ async function printSavedPRWh(base, wh){
       const po = 'PO ' + ((rec.meta&&rec.meta.po)||'');
       const r = await sbFetch('/rest/v1/pr_boxes?select=style,color,size,loc,wh&status=eq.OUT&out_po=eq.'+encodeURIComponent(po));
       if(r.ok) outRows = await r.json();
+      // ── PR 인쇄 시 풀박스 자동 차감 (아직 차감 안 된 라인만, 오래된 박스부터) ──
+      const toTake = [];
+      (rec.lines||[]).filter(L=>(String(L.wh||'SC').trim().toUpperCase()||'SC')===wh).forEach(L=>{
+        const need = boxCalc(L).full; if(!need) return;
+        const k = bxK(L.style, L.color, L.size);
+        if((outRows||[]).some(b=>bxWh(b)===wh && bxK(b.style,b.color,b.size)===k)) return;  // 이미 차감됨
+        const avail = bxFind(L.style, L.color, L.size, wh);
+        toTake.push(...avail.slice(0, Math.min(need, avail.length)));
+      });
+      if(toTake.length){
+        await bxPatch(toTake.map(b=>b.id), {status:'OUT', out_at:new Date().toISOString(), out_by:(SESS&&SESS.email)||'', out_po:po});
+        const ids = new Set(toTake.map(b=>b.id));
+        bxStore = bxStore.filter(b=>!ids.has(b.id));
+        toTake.forEach(b=>outRows.push({style:b.style, color:b.color, size:b.size, loc:b.loc, wh:bxWh(b)}));
+        showToast('📦 풀박스 '+toTake.length+'박스 자동 차감 ('+po+') — 실수면 재고 화면 📜에서 복원');
+        if(typeof renderBoxRoom === 'function' && $('bx-body')) renderBoxRoom();
+      }
       pick = bxPickListHtml(rec, wh, outRows);
     }catch(e){}
   }
@@ -2504,13 +2521,13 @@ function bxPickListHtml(rec, wh, outRows){
     const done = (outRows||[]).filter(b=>bxWh(b)===wh && bxK(b.style,b.color,b.size)===k);
     if(done.length){
       const byLoc = {}; done.forEach(b=>{ const lc=String(b.loc||'?').toUpperCase(); byLoc[lc]=(byLoc[lc]||0)+1; });
-      items.push({L, need, mode:'확정', locs:Object.keys(byLoc).sort().map(l=>({loc:l,n:byLoc[l]})), short:0});
+      items.push({L, need, mode:'PICKED', locs:Object.keys(byLoc).sort().map(l=>({loc:l,n:byLoc[l]})), short: Math.max(0, need - done.length)});
     }else{
-      const avail = bxFind(L.style, L.color, L.size, wh);   // in_at asc = 오래된 순
+      const avail = bxFind(L.style, L.color, L.size, wh);   // in_at asc = oldest first
       let rem = Math.min(need, avail.length);
       const byLoc = {}; const order = [];
       avail.forEach(b=>{ if(rem<=0) return; const lc=String(b.loc||'?').toUpperCase(); if(!(lc in byLoc)){ byLoc[lc]=0; order.push(lc); } byLoc[lc]++; rem--; });
-      items.push({L, need, mode: avail.length ? '추천' : '재고없음', locs: order.map(l=>({loc:l,n:byLoc[l]})), short: need - Math.min(need, avail.length)});
+      items.push({L, need, mode: avail.length ? 'SUGGESTED' : 'NO STOCK', locs: order.map(l=>({loc:l,n:byLoc[l]})), short: need - Math.min(need, avail.length)});
     }
   });
   if(!items.length) return '';
@@ -2518,18 +2535,18 @@ function bxPickListHtml(rec, wh, outRows){
   return `<div style="margin-top:16px;page-break-inside:avoid;padding:0 4px;">
     <div style="font-weight:800;font-size:13px;border-top:2px solid #0f2a4a;padding-top:8px;">📦 Full Box Pick List — ${wh}</div>
     <table style="width:100%;border-collapse:collapse;font-size:11px;margin-top:6px;">
-      <thead><tr>${['✓','Style','Color','Size','박스','📍 Location (오래된 순)',''].map(h=>`<th style="${td}background:#f1f5f9;">${h}</th>`).join('')}</tr></thead>
+      <thead><tr>${['✓','Style','Color','Size','Boxes','📍 Pick Location (oldest first)','Status'].map(h=>`<th style="${td}background:#f1f5f9;">${h}</th>`).join('')}</tr></thead>
       <tbody>${items.map(it=>`<tr>
         <td style="${td}text-align:center;font-size:14px;width:26px;">☐</td>
         <td style="${td}font-weight:700;">${esc(String(it.L.style||''))}</td>
         <td style="${td}">${esc(String(it.L.color||'').toUpperCase())}</td>
-        <td style="${td}font-weight:800;text-align:center;">${esc(String(it.L.size||'').toUpperCase())}</td>
+        <td style="${td}font-weight:800;text-align:center;">${esc(String(it.L.size||'').toUpperCase())}${/side\s*seam/i.test(String(it.L.desc||'')+' '+String(it.L.rawDesc||''))?' <span style="font-size:9px;">(Side Seam)</span>':''}</td>
         <td style="${td}text-align:center;font-weight:800;">${it.need}</td>
-        <td style="${td}font-weight:700;">${it.locs.length ? it.locs.map(g=>`${esc(g.loc)}${g.n>1?' ×'+g.n:''}`).join(' · ') : '—'}${it.short?` <span style="color:#dc2626;font-weight:800;">(부족 ${it.short})</span>`:''}</td>
-        <td style="${td}text-align:center;font-size:10px;font-weight:800;color:${it.mode==='확정'?'#166534':(it.mode==='추천'?'#1d4ed8':'#dc2626')};">${it.mode}</td>
+        <td style="${td}font-weight:700;">${it.locs.length ? it.locs.map(g=>`${esc(g.loc)}${g.n>1?' ×'+g.n:''}`).join(' · ') : '—'}${it.short?` <span style="color:#dc2626;font-weight:800;">(short ${it.short})</span>`:''}</td>
+        <td style="${td}text-align:center;font-size:10px;font-weight:800;color:${it.mode==='PICKED'?'#166534':(it.mode==='SUGGESTED'?'#1d4ed8':'#dc2626')};">${it.mode}</td>
       </tr>`).join('')}</tbody>
     </table>
-    <div style="font-size:9.5px;color:#64748b;margin-top:3px;">확정 = 시스템에서 이 PO로 차감 완료된 박스 위치 · 추천 = 현재 재고 기준 가장 오래된 박스부터 · 자투리 수량은 🧺 PC Room</div>
+    <div style="font-size:9.5px;color:#64748b;margin-top:3px;">PICKED = boxes deducted from inventory for this PO · SUGGESTED = oldest stock first (not yet deducted) · Loose pieces: PC Room</div>
   </div>`;
 }
 function printSavedPR(base){
@@ -3829,7 +3846,7 @@ function calcPartialBoxesFromLines(lines, whTag){
       const bn = String(l.pbox);
       const key = (whTag||'') + '|' + bn;
       if(!byBox[key]) byBox[key] = { boxNum: bn, wh: whTag||'', items: [] };
-      byBox[key].items.push({ styleNum: l.style||'', color: l.color||'', size: l.size||'', qty: loose });
+      byBox[key].items.push({ styleNum: l.style||'', color: l.color||'', size: l.size||'', qty: loose, ss: /side\s*seam/i.test(String(l.desc||'')+' '+String(l.rawDesc||'')) });
     }
   });
   return Object.values(byBox).sort((a,b)=>(a.wh+'').localeCompare(b.wh+'') || Number(a.boxNum)-Number(b.boxNum));
@@ -3871,7 +3888,7 @@ function buildBoxLabelZpl(box, totalBoxes, order) {
     const col = item.color || box.color || '';
     const key = sNum + '|' + col;
     if (!groups[key]) groups[key] = { styleNum: sNum, color: col, sizes: [] };
-    groups[key].sizes.push({ size: item.size, qty: item.qty });
+    groups[key].sizes.push({ size: item.size, qty: item.qty, ss: !!item.ss });
   });
   const totalQty = box.items.reduce((s, i) => s + (i.qty || 0), 0);
   let totalLineCount = 0;
@@ -3889,8 +3906,10 @@ function buildBoxLabelZpl(box, totalBoxes, order) {
     itemLines += '^FO30,' + yPos + '^A0N,' + styleFontH + ',' + styleFontH + '^FD' + g.styleNum + '  ' + g.color + '^FS\n';
     yPos += Math.round(lineH * 0.82);
     g.sizes.forEach(s => {
-      itemLines += '^FO30,' + yPos + '^A0N,' + itemFontH + ',' + itemFontH + '^FD' + s.size + '^FS\n';
-      itemLines += '^FO300,' + yPos + '^A0N,' + itemFontH + ',' + itemFontH + '^FD' + s.qty + ' pcs^FS\n';
+      const f = s.ss ? Math.min(itemFontH, 42) : itemFontH;
+      const disp = s.size + (s.ss ? ' (Side Seam)' : '');
+      itemLines += '^FO30,' + yPos + '^A0N,' + f + ',' + f + '^FD' + disp + '^FS\n';
+      itemLines += '^FO' + (s.ss ? 520 : 300) + ',' + yPos + '^A0N,' + itemFontH + ',' + itemFontH + '^FD' + s.qty + ' pcs^FS\n';
       yPos += lineH;
     });
   });
@@ -4798,10 +4817,22 @@ function bxFillOrderPick(){
   sel.innerHTML = '<option value="">📋 Pull Request 보기...</option>' + opts;
 }
 let bxPullCtx = null;
-function bxPullLine(base, li){
+async function bxPullLine(base, li){
   const rec = savedCache.find(s=>s.base===base); if(!rec) return;
   const L = (rec.lines||[])[li]; if(!L) return;
+  if(!bxLoaded) await bxFetchStore();
+  bxOpenPicker(L, String(L.wh||'SC').trim().toUpperCase()||'SC', 'PO '+((rec.meta&&rec.meta.po)||''));
+}
+async function bxPickFromEditor(i){
+  const L = poLines[i]; if(!L) return;
   const lwh = String(L.wh||'SC').trim().toUpperCase() || 'SC';
+  if(lwh!=='SC' && lwh!=='CA'){ showToast('⚠ SC/CA 라인만 지정 가능'); return; }
+  const po = String(((typeof getMeta==='function'?getMeta():{}).po)||'').trim();
+  if(!po){ showToast('⚠ PO# 를 먼저 입력하세요 — 차감 기록에 필요해요'); return; }
+  if(!bxLoaded) await bxFetchStore();
+  bxOpenPicker(L, lwh, 'PO ' + po);
+}
+function bxOpenPicker(L, lwh, po){
   const need = boxCalc(L).full;
   if(!need){ showToast('⚠ 이 라인은 풀박스 없음 (자투리만) — PC Room에서 처리하세요'); return; }
   const avail = bxFind(L.style, L.color, L.size, lwh);   // in_at asc = 오래된 순
@@ -4816,7 +4847,7 @@ function bxPullLine(base, li){
   // 오래된 것부터 자동 배정
   let remaining = Math.min(need, avail.length);
   groups.forEach(g=>{ g.take = Math.min(g.boxes.length, remaining); remaining -= g.take; });
-  bxPullCtx = {base, li, lwh, need, groups, po:'PO '+((rec.meta&&rec.meta.po)||''), label:'['+lwh+'] '+L.style+' '+String(L.color).toUpperCase()+' '+String(L.size).toUpperCase()};
+  bxPullCtx = {lwh, need, groups, po, label:'['+lwh+'] '+L.style+' '+String(L.color).toUpperCase()+' '+String(L.size).toUpperCase()};
   const ex = document.getElementById('modal-bxpull'); if(ex) ex.remove();
   const div = document.createElement('div');
   div.id = 'modal-bxpull';
