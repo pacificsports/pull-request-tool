@@ -136,7 +136,7 @@ main{max-width:1100px;margin:0 auto;padding:16px;}
     <button class="btn btn-sm" onclick="doLogout()" style="padding:2px 8px;font-size:10px;" data-i18n="logout">로그아웃</button>
   </span>
   <select id="lang-sel" onchange="setLang(this.value)" style="font-size:11px;padding:3px 6px;border-radius:5px;border:none;background:#1d3f66;color:#fff;"><option value="ko">한국어</option><option value="en">English</option><option value="es">Español</option></select>
-  <span style="font-size:10px;color:#9fb8d4;">v256 📦</span>
+  <span style="font-size:10px;color:#9fb8d4;">v257 📦</span>
 </div>
 <script type="text/javascript" src="https://js.authorize.net/v1/Accept.js" charset="utf-8"></script>
 <div id="po-viewer" style="display:none;position:fixed;top:0;right:0;width:44%;height:100vh;background:#fff;border-left:2px solid var(--border);z-index:60;box-shadow:-6px 0 20px rgba(0,0,0,.15);">
@@ -1431,7 +1431,8 @@ function printDocHtml(docHtml, title){
   document.body.appendChild(f);
   const d = f.contentDocument;
   d.open();
-  d.write(`<!DOCTYPE html><html><head><meta charset="utf-8"><title>${title}</title><link rel="stylesheet" href="https://cdn.jsdelivr.net/gh/orioncactus/pretendard@v1.3.9/dist/web/variable/pretendardvariable-dynamic-subset.min.css"><style>${DOC_CSS}\nbody{background:#fff;padding:0;margin:0;}\n.no-print{display:none;}</style></head><body>${docHtml}</body></html>`);
+  const printStamp = `<div style="font-size:9px;color:#94a3b8;text-align:right;padding:6px 10px 2px;">Printed by ${esc(String((SESS&&SESS.email)||'').split('@')[0])} · ${new Date().toLocaleString('en-US',{month:'numeric',day:'numeric',year:'numeric',hour:'numeric',minute:'2-digit'})}</div>`;
+  d.write(`<!DOCTYPE html><html><head><meta charset="utf-8"><title>${title}</title><link rel="stylesheet" href="https://cdn.jsdelivr.net/gh/orioncactus/pretendard@v1.3.9/dist/web/variable/pretendardvariable-dynamic-subset.min.css"><style>${DOC_CSS}\nbody{background:#fff;padding:0;margin:0;}\n.no-print{display:none;}</style></head><body>${docHtml}${printStamp}</body></html>`);
   d.close();
   setTimeout(()=>{ try{ f.contentWindow.focus(); f.contentWindow.print(); }catch(e){} }, 700);
 }
@@ -2275,7 +2276,7 @@ function openHistory(base){
 async function markDocPrinted(base, wh, kind){
   const rec = savedCache.find(s=>s.base===base); if(!rec) return;
   const mp = { ...((rec.meta && rec.meta._printed) || {}) };
-  mp[wh] = { ...(mp[wh] || {}), [kind]: true };
+  mp[wh] = { ...(mp[wh] || {}), [kind]: { at: new Date().toISOString(), by: (SESS&&SESS.email)||'' } };
   rec.meta = { ...(rec.meta || {}), _printed: mp };
   try{ await sbFetch('/rest/v1/pr_orders?base=eq.'+encodeURIComponent(base), {method:'PATCH', headers:{Prefer:'return=minimal'}, body:JSON.stringify({meta:rec.meta, updated_at:new Date().toISOString()})}); }catch(e){}
   renderSaved();
@@ -2451,7 +2452,7 @@ async function markPrintedManually(base, wh, kind){
       await sbFetch('/rest/v1/pr_orders?base=eq.'+encodeURIComponent(base), {method:'PATCH', headers:{Prefer:'return=minimal'}, body:JSON.stringify({inv:rec.inv, updated_at:new Date().toISOString()})});
     } else {
       const mp = { ...((rec.meta && rec.meta._printed) || {}) };
-      mp[wh] = { ...(mp[wh]||{}), [kind]: true };
+      mp[wh] = { ...(mp[wh]||{}), [kind]: { at: new Date().toISOString(), by: (SESS&&SESS.email)||'', manual: true } };
       rec.meta = { ...rec.meta, _printed: mp };
       await sbFetch('/rest/v1/pr_orders?base=eq.'+encodeURIComponent(base), {method:'PATCH', headers:{Prefer:'return=minimal'}, body:JSON.stringify({meta:rec.meta, updated_at:new Date().toISOString()})});
     }
@@ -6550,16 +6551,17 @@ function renderSaved(){
       </div>
       ${['SC','CA','BO','NA'].filter(w=>whs.includes(w)).map(w=>{
         const mp = (s.meta && s.meta._printed && s.meta._printed[w]) || {};
+        const pby = v => (v && v.by) ? `<span style="font-size:9.5px;font-weight:800;color:#16a34a;white-space:nowrap;" title="${esc(String(v.by))} · ${esc(String(v.at||'').slice(0,16).replace('T',' '))}${v.manual?' (수동 표시)':''}">✓${esc(String(v.by).split('@')[0])} ${String(v.at||'').slice(5,10)}</span>` : '';
         const c = mp.pr ? '#16a34a' : (w==='SC'?'#1d4ed8':(w==='CA'?'#c2410c':(w==='BO'?'#dc2626':'#6b7280')));
         const plSaved = s.pl && s.pl[w] && s.pl[w].savedAt;
         const invPr = s.inv && s.inv[w] && s.inv[w].printed;
         return `<div style="display:flex;align-items:center;gap:6px;flex-wrap:wrap;margin-top:6px;padding-top:6px;border-top:1px dashed var(--border);">
         ${w!=='BO' && w!=='NA' ? `<input type="checkbox" class="bship-cb" data-base="${esc(s.base)}" data-wh="${w}" onchange="updateBatchBar()" title="Batch 작업에 포함 (출고 전=Batch Ship / 출고 후=Invoice Print)" style="width:15px;height:15px;accent-color:#1d4ed8;cursor:pointer;">` : ''}
         <span class="chip chip-${w}" style="min-width:34px;text-align:center;">${w}</span>
-        <button class="btn btn-sm" style="background:${c};color:#fff;border-color:${c};" onclick="docBtnClick('${esc(s.base)}','${w}','pr')" oncontextmenu="return docBtnMenu(event,'${esc(s.base)}','${w}','pr')" title="우클릭: 완료(초록) 표시 ${mp.pr?'해제':'전환'}">🖨 Pull Request</button>
+        <button class="btn btn-sm" style="background:${c};color:#fff;border-color:${c};" onclick="docBtnClick('${esc(s.base)}','${w}','pr')" oncontextmenu="return docBtnMenu(event,'${esc(s.base)}','${w}','pr')" title="우클릭: 완료(초록) 표시 ${mp.pr?'해제':'전환'}">🖨 Pull Request</button>${pby(mp.pr)}
         ${w==='BO' ? (()=>{ const days = Math.floor((Date.now() - new Date(s.savedAt||s.meta.date||Date.now()).getTime())/86400000); const c2 = days>=14?'#dc2626':(days>=7?'#ea580c':'#6b7280'); return `<span style="padding:2px 8px;border-radius:20px;font-size:10px;font-weight:800;background:#fff;color:${c2};border:1.5px solid ${c2};white-space:nowrap;${days>=14?'animation:overdue-pulse 1s ease-in-out infinite;':''}">⏳ ${days}일째</span>`; })() : ''}
         ${(w==='BO'||w==='NA') ? `<button class="btn btn-sm" style="background:#f5f3ff;color:#6d28d9;border-color:#c4b5fd;font-weight:700;" onclick="processFromWh('${esc(s.base)}','${w}','SC')" title="재고 입고 — 별도 건(-${w==='BO'?'B':'N'})으로 분리해 SC에서 출고 진행">⚙ Process from SC</button><button class="btn btn-sm" style="background:#fff7ed;color:#c2410c;border-color:#fed7aa;font-weight:700;" onclick="processFromWh('${esc(s.base)}','${w}','CA')" title="재고 입고 — 별도 건(-${w==='BO'?'B':'N'})으로 분리해 CA에서 출고 진행">⚙ Process from CA</button>` : ''}
-        ${w!=='BO' && w!=='NA' ? `<button class="btn btn-sm" style="background:${mp.label?'#16a34a':'#7c3aed'};color:#fff;border-color:${mp.label?'#16a34a':'#7c3aed'};" onclick="docBtnClick('${esc(s.base)}','${w}','label')" oncontextmenu="return docBtnMenu(event,'${esc(s.base)}','${w}','label')" title="우클릭: 완료(초록) 표시 ${mp.label?'해제':'전환'}">🏷 Box Label</button>
+        ${w!=='BO' && w!=='NA' ? `<button class="btn btn-sm" style="background:${mp.label?'#16a34a':'#7c3aed'};color:#fff;border-color:${mp.label?'#16a34a':'#7c3aed'};" onclick="docBtnClick('${esc(s.base)}','${w}','label')" oncontextmenu="return docBtnMenu(event,'${esc(s.base)}','${w}','label')" title="우클릭: 완료(초록) 표시 ${mp.label?'해제':'전환'}">🏷 Box Label</button>${pby(mp.label)}
         <button class="btn btn-sm" style="${(s.pl && s.pl[w] && s.pl[w]._completed)?'background:#16a34a;border-color:#16a34a;':(plSaved?'background:#0e7490;border-color:#0e7490;':'background:#f59e0b;border-color:#f59e0b;')}color:#fff;" onclick="openPLWh('${esc(s.base)}','${w}')" oncontextmenu="return plBtnMenu(event,'${esc(s.base)}','${w}')" title="${plSaved && !(s.pl[w]&&s.pl[w]._completed)?'저장됨 — Complete 전 (이멜 미발송) · ':''}우클릭: Complete 표시/해제 (이멜 없이)">📦 Packing List</button>
         ${plSaved ? `<button class="btn btn-sm" style="${invPr?'background:#16a34a;border-color:#16a34a;':'background:#dc2626;border-color:#dc2626;'}color:#fff;" onclick="docBtnClick('${esc(s.base)}','${w}','inv')" oncontextmenu="return docBtnMenu(event,'${esc(s.base)}','${w}','inv')" title="우클릭: 완료(초록) 표시 ${invPr?'해제':'전환'}">🧾 Invoice</button>${invPr ? `<button class="btn btn-sm" style="background:#065f46;color:#fff;border-color:#065f46;" onclick="payFromRow('${esc(s.base)}','${w}')" title="입금 기록 (전액/부분)">💰 Payment</button><button class="btn btn-sm" style="background:#7c2d12;color:#fff;border-color:#7c2d12;" onclick="memoFromRow('${esc(s.base)}','${w}')" title="Credit Memo (리턴) — MAS200 파일 첨부 가능">📝 Credit Memo</button>` : ''}` : ''}
         ${(()=>{ const iv0 = s.inv && s.inv[w]; const pd = iv0 && iv0.paid; if(!pd) return '';
