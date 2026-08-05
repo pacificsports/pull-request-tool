@@ -136,7 +136,7 @@ main{max-width:1100px;margin:0 auto;padding:16px;}
     <button class="btn btn-sm" onclick="doLogout()" style="padding:2px 8px;font-size:10px;" data-i18n="logout">로그아웃</button>
   </span>
   <select id="lang-sel" onchange="setLang(this.value)" style="font-size:11px;padding:3px 6px;border-radius:5px;border:none;background:#1d3f66;color:#fff;"><option value="ko">한국어</option><option value="en">English</option><option value="es">Español</option></select>
-  <span style="font-size:10px;color:#9fb8d4;">v266 📦</span>
+  <span style="font-size:10px;color:#9fb8d4;">v267 📦</span>
 </div>
 <script type="text/javascript" src="https://js.authorize.net/v1/Accept.js" charset="utf-8"></script>
 <div id="po-viewer" style="display:none;position:fixed;top:0;right:0;width:44%;height:100vh;background:#fff;border-left:2px solid var(--border);z-index:60;box-shadow:-6px 0 20px rgba(0,0,0,.15);">
@@ -1833,6 +1833,7 @@ async function _saveCurrentInner(){
   // if(!existing) notifyNewPR(rec);
   if(existing && orderChanges.length) notifyModified(rec, orderChanges);
   logHist(base, existing ? ('Order modified (' + orderChanges.length + ' changes)') : 'Order created');
+  await invSyncOnSave(rec);   // 저장 = 재고 자동 반영 (풀박스 차감/정산 + PC Room 자투리)
   clearOrderForm();
 }
 function clearOrderForm(){
@@ -1970,6 +1971,29 @@ async function delSaved(base){
           if(bxLoaded){ await bxFetchStore(); if($('bx-body')) renderBoxRoom(); }
         }
       }
+    }
+    // PC Room 자동 차감분 복구
+    const pcl = rec && rec.meta && rec.meta._pcAuto && rec.meta._pcAuto.lines;
+    if(pcl && Object.keys(pcl).some(k=>pcl[k]>0) && confirm('🧺 이 오더로 PC Room에서 자동 차감된 자투리 수량도 복구할까요?')){
+      if(!pcLoaded){
+        const r4 = await sbFetch('/rest/v1/pr_pcroom?select=k,style,color,qty,sizes,updated_at,updated_by');
+        if(r4.ok){ pcStore = await r4.json(); pcLoaded = true; }
+      }
+      for(const key of Object.keys(pcl)){
+        const v = Number(pcl[key])||0; if(!v) continue;
+        const parts = key.split('|');
+        const st = parts[0], col = parts[1], sz = parts[2];
+        const k2 = pcKey(st, col);
+        let row = pcStore.find(x=>x.k===k2);
+        if(!row){ row = { k: k2, style: st, color: col, qty: {} }; pcStore.push(row); }
+        row.qty = row.qty || {};
+        const nv = (Number(row.qty[sz])||0) + v;
+        if(nv === 0) delete row.qty[sz]; else row.qty[sz] = nv;
+        await pcSaveRow(row);
+        pcLogMove(row, sz, v, nv, '복구 (오더 삭제)');
+      }
+      showToast('↩ PC Room 자투리 복구 완료');
+      if(typeof renderPcRoom==='function' && $('pc-body')) renderPcRoom();
     }
   }catch(e){}
 }
@@ -2496,6 +2520,105 @@ async function undoPrinted(base, wh, kind){
   renderSaved();
   showToast('↩ ' + label + ' 완료 표시 해제됨');
 }
+// ═══ 저장 시 재고 자동 반영: 풀박스 차감(📍 지정 우선, 없으면 오래된 순) + PC Room 자투리 차감 · 재저장 시 차이 정산 ═══
+async function invSyncOnSave(rec){
+  try{
+    const poN = String((rec.meta&&rec.meta.po)||'').trim();
+    if(!poN) return;
+    const po = 'PO ' + poN;
+    if(!bxLoaded) await bxFetchStore();
+    let outRows = [];
+    const r = await sbFetch('/rest/v1/pr_boxes?select=id,style,color,size,loc,wh&status=eq.OUT&out_po=eq.'+encodeURIComponent(po));
+    if(r.ok) outRows = await r.json(); else return;
+    const by = (SESS&&SESS.email)||'';
+    // ── 풀박스: 라인별 필요 수량 vs 이미 차감된 수량 ──
+    const need = {};
+    (rec.lines||[]).forEach(L=>{
+      const wh = String(L.wh||'SC').trim().toUpperCase()||'SC';
+      if(wh!=='SC' && wh!=='CA') return;
+      const full = boxCalc(L).full; if(!full) return;
+      const key = wh + '|' + bxK(bxStyleFor(L), L.color, L.size);
+      if(!need[key]) need[key] = {n:0, L, wh};
+      need[key].n += full;
+    });
+    const have = {};
+    outRows.forEach(b=>{ const key = bxWh(b)+'|'+bxK(b.style,b.color,b.size); (have[key] = have[key]||[]).push(b); });
+    let outN = 0, backN = 0, shortMsg = [];
+    for(const key of Object.keys(need)){
+      const diff = need[key].n - ((have[key]||[]).length);
+      if(diff <= 0) continue;
+      const L = need[key].L, wh = need[key].wh;
+      const st = bxStyleFor(L);
+      let take = [];
+      if(L.pickLocs && L.pickLocs.length){
+        L.pickLocs.forEach(g=>{ take.push(...bxLocList(st, L.color, L.size, wh, String(g.loc).toUpperCase()).slice(0, g.n)); });
+      }
+      if(take.length < diff){
+        const taken = new Set(take.map(b=>b.id));
+        take.push(...bxFind(st, L.color, L.size, wh).filter(b=>!taken.has(b.id)));
+      }
+      take = take.slice(0, diff);
+      if(take.length){
+        await bxPatch(take.map(b=>b.id), {status:'OUT', out_at:new Date().toISOString(), out_by:by, out_po:po});
+        const ids = new Set(take.map(b=>b.id));
+        bxStore = bxStore.filter(b=>!ids.has(b.id));
+        outN += take.length;
+      }
+      if(take.length < diff) shortMsg.push('['+wh+'] '+st+' '+String(L.color).toUpperCase()+' '+String(L.size).toUpperCase()+' 부족 '+(diff-take.length));
+    }
+    for(const key of Object.keys(have)){
+      const excess = have[key].length - (need[key] ? need[key].n : 0);
+      if(excess <= 0) continue;
+      const back = have[key].slice(-excess);
+      await bxPatch(back.map(b=>b.id), {status:'IN', out_at:null, out_by:null, out_po:null});
+      backN += back.length;
+    }
+    if(backN) await bxFetchStore();
+    // ── PC Room (SC 자투리): 이전 스냅샷과 비교해 차이만 반영 ──
+    const prev = (rec.meta && rec.meta._pcAuto && rec.meta._pcAuto.lines) || {};
+    const cur = {};
+    (rec.lines||[]).forEach(L=>{
+      if((String(L.wh||'SC').trim().toUpperCase()||'SC')!=='SC') return;
+      const loose = boxCalc(L).loose; if(!loose) return;
+      const key = bxStyleFor(L)+'|'+String(L.color||'').trim().toUpperCase()+'|'+String(L.size||'').trim().toUpperCase();
+      cur[key] = (cur[key]||0) + loose;
+    });
+    const keys = new Set(Object.keys(prev).concat(Object.keys(cur)));
+    let pcN = 0;
+    if(keys.size){
+      if(!pcLoaded){
+        const r3 = await sbFetch('/rest/v1/pr_pcroom?select=k,style,color,qty,sizes,updated_at,updated_by');
+        if(r3.ok){ pcStore = await r3.json(); pcLoaded = true; }
+      }
+      for(const key of keys){
+        const delta = (cur[key]||0) - (prev[key]||0);
+        if(!delta) continue;
+        const parts = key.split('|');
+        const st = parts[0], col = parts[1], sz = parts[2];
+        const k = pcKey(st, col);
+        let row = pcStore.find(x=>x.k===k);
+        if(!row){ row = { k, style: st, color: col, qty: {} }; pcStore.push(row); }
+        row.qty = row.qty || {};
+        const old = Number(row.qty[sz]) || 0;
+        const nv = old - delta;
+        if(nv === 0) delete row.qty[sz]; else row.qty[sz] = nv;
+        await pcSaveRow(row);
+        pcLogMove(row, sz, -delta, nv, po + (delta>0 ? ' 자동차감' : ' 자동차감 조정(복구)'));
+        pcN++;
+      }
+      rec.meta = { ...(rec.meta||{}), _pcAuto: { ...((rec.meta&&rec.meta._pcAuto)||{}), SC: { at: new Date().toISOString(), by }, lines: cur } };
+      try{ await sbFetch('/rest/v1/pr_orders?base=eq.'+encodeURIComponent(rec.base), {method:'PATCH', headers:{Prefer:'return=minimal'}, body:JSON.stringify({meta: rec.meta})}); }catch(e){}
+    }
+    const msg = [];
+    if(outN) msg.push('풀박스 −'+outN);
+    if(backN) msg.push('풀박스 복구 +'+backN);
+    if(pcN) msg.push('PC Room '+pcN+'건');
+    if(msg.length) showToast('📦 재고 자동 반영: '+msg.join(' · '));
+    if(shortMsg.length) setTimeout(()=>showToast('⚠ 풀박스 재고 부족: '+shortMsg.join(' / ')), 1200);
+    if($('bx-body')) renderBoxRoom();
+    if(typeof renderPcRoom==='function' && $('pc-body')) renderPcRoom();
+  }catch(e){ console.warn('invSyncOnSave', e); }
+}
 async function printSavedPRWh(base, wh){
   const rec = savedCache.find(s=>s.base===base); if(!rec) return;
   let pick = '';
@@ -2535,6 +2658,36 @@ async function printSavedPRWh(base, wh){
       if(anyPicked){
         const r2 = await sbFetch('/rest/v1/pr_boxes?select=style,color,size,loc,wh&status=eq.OUT&out_po=eq.'+encodeURIComponent(po));
         if(r2.ok) outRows = await r2.json();
+      }
+      // ── PC Room 자동 차감 (SC 라인의 자투리 수량 · 최초 인쇄 1회만) ──
+      if(wh==='SC' && !(rec.meta && rec.meta._pcAuto && rec.meta._pcAuto[wh])){
+        const looseL = (rec.lines||[]).filter(L=>((String(L.wh||'SC').trim().toUpperCase()||'SC')===wh) && boxCalc(L).loose>0);
+        if(looseL.length){
+          if(!pcLoaded){
+            const r3 = await sbFetch('/rest/v1/pr_pcroom?select=k,style,color,qty,sizes,updated_at,updated_by');
+            if(r3.ok){ pcStore = await r3.json(); pcLoaded = true; }
+          }
+          let cnt = 0;
+          for(const L of looseL){
+            const loose = boxCalc(L).loose;
+            const st = bxStyleFor(L);
+            const col = String(L.color||'').trim().toUpperCase();
+            const sz = String(L.size||'').trim().toUpperCase();
+            const k = pcKey(st, col);
+            let row = pcStore.find(r=>r.k===k);
+            if(!row){ row = { k, style: st, color: col, qty: {} }; pcStore.push(row); }
+            row.qty = row.qty || {};
+            const old = Number(row.qty[sz]) || 0;
+            const nv = old - loose;
+            if(nv === 0) delete row.qty[sz]; else row.qty[sz] = nv;
+            await pcSaveRow(row);
+            pcLogMove(row, sz, -loose, nv, po + ' 자동차감');
+            cnt++;
+          }
+          rec.meta = { ...(rec.meta||{}), _pcAuto: { ...((rec.meta&&rec.meta._pcAuto)||{}), [wh]: { at: new Date().toISOString(), by: (SESS&&SESS.email)||'' } } };
+          showToast('🧺 PC Room 자동 차감: '+cnt+'개 라인 (자투리) — 부족하면 마이너스로 표시돼요');
+          if(typeof renderPcRoom==='function' && $('pc-body')) renderPcRoom();
+        }
       }
       pick = bxPickListHtml(rec, wh, outRows);
     }catch(e){}
