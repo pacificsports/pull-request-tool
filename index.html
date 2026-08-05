@@ -136,7 +136,7 @@ main{max-width:1100px;margin:0 auto;padding:16px;}
     <button class="btn btn-sm" onclick="doLogout()" style="padding:2px 8px;font-size:10px;" data-i18n="logout">로그아웃</button>
   </span>
   <select id="lang-sel" onchange="setLang(this.value)" style="font-size:11px;padding:3px 6px;border-radius:5px;border:none;background:#1d3f66;color:#fff;"><option value="ko">한국어</option><option value="en">English</option><option value="es">Español</option></select>
-  <span style="font-size:10px;color:#9fb8d4;">v251 📦</span>
+  <span style="font-size:10px;color:#9fb8d4;">v253 📦</span>
 </div>
 <script type="text/javascript" src="https://js.authorize.net/v1/Accept.js" charset="utf-8"></script>
 <div id="po-viewer" style="display:none;position:fixed;top:0;right:0;width:44%;height:100vh;background:#fff;border-left:2px solid var(--border);z-index:60;box-shadow:-6px 0 20px rgba(0,0,0,.15);">
@@ -359,7 +359,6 @@ main{max-width:1100px;margin:0 auto;padding:16px;}
   <div class="card">
     <div class="card-title"><span>📦 Full Box Inventory (박스별 Location)</span>
       <select class="fi" id="bx-order-pick" onfocus="bxFillOrderPick()" onchange="renderBoxRoom()" style="margin-left:auto;max-width:280px;font-size:12px;padding:5px 8px;"><option value="">📋 Pull Request 보기...</option></select>
-      <select class="fi" id="bx-wh-filter" onchange="renderBoxRoom()" style="font-size:12px;padding:5px 8px;"><option value="">창고 전체</option><option value="SC">SC</option><option value="CA">CA</option></select>
       <input class="fi" id="bx-search" placeholder="🔍 Style / Color / Loc" oninput="renderBoxRoom()" style="width:170px;font-size:12px;padding:5px 10px;">
       <button class="btn btn-sm btn-primary" onclick="bxAddBoxes()">＋ Add Boxes</button>
       <button class="btn btn-sm" onclick="document.getElementById('bx-import-file').click()" style="background:#166534;color:#fff;border-color:#166534;">📥 Import</button>
@@ -4704,6 +4703,40 @@ async function bxShipOne(id){
   showToast('📦→ 출고: '+b.style+' '+b.color+' '+b.size+' @'+(b.loc||'?'));
   renderBoxRoom();
 }
+function bxLocList(style,color,size,wh,loc){
+  const k = bxK(style,color,size);
+  return bxStore.filter(b=>bxK(b.style,b.color,b.size)===k && bxWh(b)===wh && String(b.loc||'?').toUpperCase()===loc);
+}
+async function bxLocEdit(style,color,size,wh,loc){
+  const list = bxLocList(style,color,size,wh,loc); if(!list.length) return;
+  let n = list.length;
+  if(list.length>1){
+    n = parseInt(window.prompt('['+wh+'] '+style+' '+color+' '+size+' @'+loc+' — '+list.length+'박스\n몇 박스를 옮길까요?', String(list.length)))||0;
+    if(n<1) return; n = Math.min(n, list.length);
+  }
+  const nl = window.prompt('새 location', loc); if(nl==null) return;
+  const take = list.slice(0,n);
+  const L = String(nl).trim().toUpperCase();
+  try{ await bxPatch(take.map(b=>b.id), {loc:L}); }catch(e){ showToast('⚠ 저장 실패'); return; }
+  take.forEach(b=>{ b.loc = L; });
+  showToast('📍 '+n+'박스 → '+(L||'?'));
+  renderBoxRoom();
+}
+async function bxLocShip(style,color,size,wh,loc){
+  const list = bxLocList(style,color,size,wh,loc); if(!list.length) return;
+  let n = 1;
+  if(list.length>1){
+    n = parseInt(window.prompt('['+wh+'] '+style+' '+color+' '+size+' @'+loc+' — '+list.length+'박스\n몇 박스를 출고할까요?', '1'))||0;
+    if(n<1) return; n = Math.min(n, list.length);
+  }else if(!confirm('['+wh+'] '+style+' '+color+' '+size+' @'+loc+' — 이 박스 1개를 출고 처리할까요?')) return;
+  const take = list.slice(0,n);
+  try{ await bxPatch(take.map(b=>b.id), {status:'OUT', out_at:new Date().toISOString(), out_by:(SESS&&SESS.email)||'', out_po:'수동 출고'}); }
+  catch(e){ showToast('⚠ 실패'); return; }
+  const ids = new Set(take.map(b=>b.id));
+  bxStore = bxStore.filter(b=>!ids.has(b.id));
+  showToast('📦→ 출고: '+n+'박스 @'+loc);
+  renderBoxRoom();
+}
 function bxFillOrderPick(){
   const sel = $('bx-order-pick'); if(!sel) return;
   const cur = sel.value;
@@ -4732,31 +4765,34 @@ async function bxPullLine(base, li){
 function renderBoxRoom(){
   const el = $('bx-body'); if(!el) return;
   const q = (($('bx-search')||{}).value||'').trim().toLowerCase();
-  const whF = (($('bx-wh-filter')||{}).value||'').trim().toUpperCase();
-  const shown = bxStore.filter(b=>!whF || bxWh(b)===whF);
-  const groups = {};   // "wh · style" → color → [boxes]
-  shown.forEach(b=>{
+  const groups = {};   // style → color → [boxes] (SC·CA 함께)
+  bxStore.forEach(b=>{
     if(q && !(String(b.style).toLowerCase().includes(q) || String(b.color).toLowerCase().includes(q) || String(b.loc||'').toLowerCase().includes(q))) return;
-    const s = bxWh(b) + ' · ' + String(b.style), c = String(b.color).toUpperCase();
+    const s = String(b.style), c = String(b.color).toUpperCase();
     ((groups[s] = groups[s] || {})[c] = groups[s][c] || []).push(b);
   });
   const styles = Object.keys(groups).sort();
-  const totBoxes = shown.length, totPcs = shown.reduce((a,b)=>a+(Number(b.pcs)||0),0);
   const pickBase = (($('bx-order-pick')||{}).value)||'';
   const pickRec = pickBase ? (savedCache||[]).find(s=>s.base===pickBase) : null;
   const body = !styles.length
     ? '<div class="muted" style="padding:14px;">' + (bxLoaded ? (q ? '검색 결과 없음' : '재고 없음 — ＋ Add Boxes 또는 📥 Import로 시작하세요') : '로딩...') + '</div>'
     : styles.map(sty=>{
-      const gwh = sty.split(' · ')[0], gsty = sty.split(' · ').slice(1).join(' · ');
       const colors = Object.keys(groups[sty]).sort();
-      const stBoxes = colors.reduce((a,c)=>a+groups[sty][c].length,0);
+      const all = colors.reduce((a,c)=>a.concat(groups[sty][c]),[]);
+      const scN = all.filter(b=>bxWh(b)==='SC').length, caN = all.filter(b=>bxWh(b)==='CA').length;
+      const chips = (arr, wh, c, sz, bg, bd, fg)=>{
+        if(!arr.length) return '<span style="color:#cbd5e1;">—</span>';
+        const byLoc = {};
+        arr.forEach(b=>{ const L = String(b.loc||'?').toUpperCase(); byLoc[L] = (byLoc[L]||0)+1; });
+        return Object.keys(byLoc).sort().map(L=>`<span style="display:inline-flex;align-items:center;gap:2px;background:${bg};border:1px solid ${bd};border-radius:6px;padding:1px 4px 1px 6px;margin:1px 3px 1px 0;font-size:10.5px;font-weight:700;color:${fg};"><span style="cursor:pointer;" onclick="bxLocEdit('${esc(sty)}','${esc(c)}','${esc(sz)}','${wh}','${esc(L)}')" title="location 수정/이동">${esc(L)}${byLoc[L]>1?' <b>×'+byLoc[L]+'</b>':''}</span><span style="cursor:pointer;color:#b91c1c;padding:0 2px;" onclick="bxLocShip('${esc(sty)}','${esc(c)}','${esc(sz)}','${wh}','${esc(L)}')" title="이 location에서 출고">✕</span></span>`).join('');
+      };
       return `<details open style="margin-bottom:10px;border:1px solid var(--border);border-radius:8px;">
         <summary style="cursor:pointer;padding:8px 12px;font-weight:800;color:#0f2a4a;background:#f1f5f9;border-radius:8px;">
-          <span style="display:inline-block;background:${gwh==='CA'?'#9a3412':'#1d4ed8'};color:#fff;border-radius:5px;padding:1px 7px;font-size:10.5px;margin-right:6px;">${esc(gwh)}</span>${esc(gsty)} <span class="muted" style="font-weight:400;">(${colors.length} colors)</span>
-          <span style="float:right;font-family:Consolas,monospace;">${stBoxes} 박스</span></summary>
+          ${esc(sty)} <span class="muted" style="font-weight:400;">(${colors.length} colors)</span>
+          <span style="float:right;font-family:Consolas,monospace;">${all.length.toLocaleString()} 박스 <span style="color:#1d4ed8;">SC ${scN.toLocaleString()}</span> · <span style="color:#9a3412;">CA ${caN.toLocaleString()}</span></span></summary>
         <div style="overflow-x:auto;padding:6px 10px 10px;">
         <table class="etbl" style="font-size:11.5px;">
-          <thead><tr><th class="tl" style="min-width:110px;">Color</th><th>Size</th><th>박스</th><th>입수</th><th class="tl" style="min-width:200px;">📍 Locations (클릭=수정 · ✕=출고)</th><th></th></tr></thead>
+          <thead><tr><th class="tl" style="min-width:110px;">Color</th><th>Size</th><th>입수</th><th style="color:#1d4ed8;">SC</th><th class="tl" style="min-width:150px;color:#1d4ed8;">📍 SC Locations</th><th style="color:#9a3412;">CA</th><th class="tl" style="min-width:150px;color:#9a3412;">📍 CA Locations</th><th></th></tr></thead>
           <tbody>${colors.map(c=>{
             const bySize = {};
             groups[sty][c].forEach(b=>{ (bySize[String(b.size).toUpperCase()] = bySize[String(b.size).toUpperCase()] || []).push(b); });
@@ -4764,33 +4800,34 @@ function renderBoxRoom(){
             const sizes = Object.keys(bySize).sort((a,b2)=>{ const ia=sizeOrder.indexOf(a), ib=sizeOrder.indexOf(b2); return (ia<0?99:ia)-(ib<0?99:ib) || a.localeCompare(b2); });
             return sizes.map((sz,si)=>{
               const list = bySize[sz];
+              const sc = list.filter(b=>bxWh(b)==='SC'), ca = list.filter(b=>bxWh(b)==='CA');
               return `<tr>
                 ${si===0 ? `<td class="tl" style="font-weight:700;" rowspan="${sizes.length}">${esc(c)}</td>` : ''}
                 <td style="font-weight:800;">${esc(sz)}</td>
-                <td style="font-family:Consolas,monospace;font-weight:800;">${list.length}</td>
                 <td style="font-family:Consolas,monospace;color:var(--text2);">${esc(String(list[0].pcs||''))}</td>
-                <td class="tl">${list.map(b=>`<span style="display:inline-flex;align-items:center;gap:2px;background:#eff6ff;border:1px solid #bfdbfe;border-radius:6px;padding:1px 4px 1px 6px;margin:1px 3px 1px 0;font-size:10.5px;font-weight:700;color:#1d4ed8;"><span style="cursor:pointer;" onclick="bxEditLoc('${b.id}')" title="location 수정">${esc(String(b.loc||'?'))}</span><span style="cursor:pointer;color:#b91c1c;padding:0 2px;" onclick="bxShipOne('${b.id}')" title="이 박스 출고">✕</span></span>`).join('')}</td>
-                <td style="white-space:nowrap;"><button class="btn btn-sm" style="border:none;padding:0 4px;" onclick="bxAddBoxes({style:'${esc(gsty)}',color:'${esc(c)}',size:'${esc(sz)}',wh:'${esc(gwh)}'})" title="이 품목 박스 추가">＋</button><button class="btn btn-sm" style="border:none;padding:0 4px;" onclick="bxHistory('${esc(gsty)}','${esc(c)}')" title="출고 이력 / 복원">📜</button></td>
+                <td style="font-family:Consolas,monospace;font-weight:800;color:#1d4ed8;">${sc.length||''}</td>
+                <td class="tl">${chips(sc,'SC',c,sz,'#eff6ff','#bfdbfe','#1d4ed8')}</td>
+                <td style="font-family:Consolas,monospace;font-weight:800;color:#9a3412;">${ca.length||''}</td>
+                <td class="tl">${chips(ca,'CA',c,sz,'#fff7ed','#fed7aa','#9a3412')}</td>
+                <td style="white-space:nowrap;"><button class="btn btn-sm" style="border:none;padding:0 4px;" onclick="bxAddBoxes({style:'${esc(sty)}',color:'${esc(c)}',size:'${esc(sz)}'})" title="이 품목 박스 추가">＋</button><button class="btn btn-sm" style="border:none;padding:0 4px;" onclick="bxHistory('${esc(sty)}','${esc(c)}')" title="출고 이력 / 복원">📜</button></td>
               </tr>`;
             }).join('');
           }).join('')}</tbody>
         </table>
         </div></details>`;
     }).join('');
-  const tile = (key, label, list, accent)=>{
-    const act = whF === key;
+  const tile = (label, list, accent)=>{
     const nb = list.length, np = list.reduce((a,b)=>a+(Number(b.pcs)||0),0);
-    return `<div onclick="var s=document.getElementById('bx-wh-filter');if(s){s.value='${key}';renderBoxRoom();}"
-      style="cursor:pointer;flex:1;min-width:140px;max-width:230px;border:1.5px solid ${act?accent:'var(--border)'};border-radius:10px;padding:9px 14px;background:${act?'#f0f7ff':'#fff'};box-shadow:${act?'0 1px 4px rgba(15,42,74,.12)':'none'};">
+    return `<div style="flex:1;min-width:140px;max-width:230px;border:1px solid var(--border);border-radius:10px;padding:9px 14px;background:#fff;">
       <div style="font-size:11px;font-weight:800;color:${accent};">${label}</div>
       <div style="font-size:21px;font-weight:800;color:#0f2a4a;font-family:Consolas,monospace;line-height:1.2;">${nb.toLocaleString()}<span style="font-size:11px;color:var(--text2);font-weight:700;"> 박스</span></div>
       <div style="font-size:11px;color:var(--text2);font-family:Consolas,monospace;">${np.toLocaleString()} pcs</div></div>`;
   };
   el.innerHTML = `<div style="display:flex;gap:10px;margin-bottom:12px;flex-wrap:wrap;align-items:stretch;">
-      ${tile('', '📦 전체', bxStore, '#0f2a4a')}
-      ${tile('SC', 'SC 창고', bxStore.filter(b=>bxWh(b)==='SC'), '#1d4ed8')}
-      ${tile('CA', 'CA 창고', bxStore.filter(b=>bxWh(b)==='CA'), '#9a3412')}
-      <div style="flex:2;min-width:200px;display:flex;align-items:center;"><span class="muted" style="font-size:11px;">카드 클릭 = 창고 필터 · 박스 1개 = 레코드 1개 · 차감하면 어떤 박스가 어느 PO로 나갔는지 이력이 남아요 (📜에서 복원 가능)</span></div>
+      ${tile('📦 전체', bxStore, '#0f2a4a')}
+      ${tile('SC 창고', bxStore.filter(b=>bxWh(b)==='SC'), '#1d4ed8')}
+      ${tile('CA 창고', bxStore.filter(b=>bxWh(b)==='CA'), '#9a3412')}
+      <div style="flex:2;min-width:200px;display:flex;align-items:center;"><span class="muted" style="font-size:11px;">박스 1개 = 레코드 1개 · location 클릭=수정 · ✕=출고 · 차감하면 어떤 박스가 어느 PO로 나갔는지 이력이 남아요 (📜에서 복원 가능)</span></div>
     </div>
     <div style="display:flex;gap:12px;align-items:flex-start;">
     <div style="flex:1;min-width:0;">${body}</div>
