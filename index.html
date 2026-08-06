@@ -136,7 +136,7 @@ main{max-width:1100px;margin:0 auto;padding:16px;}
     <button class="btn btn-sm" onclick="doLogout()" style="padding:2px 8px;font-size:10px;" data-i18n="logout">로그아웃</button>
   </span>
   <select id="lang-sel" onchange="setLang(this.value)" style="font-size:11px;padding:3px 6px;border-radius:5px;border:none;background:#1d3f66;color:#fff;"><option value="ko">한국어</option><option value="en">English</option><option value="es">Español</option></select>
-  <span style="font-size:10px;color:#9fb8d4;">v292 🚚</span>
+  <span style="font-size:10px;color:#9fb8d4;">v293 🚚</span>
 </div>
 <script type="text/javascript" src="https://js.authorize.net/v1/Accept.js" charset="utf-8"></script>
 <div id="po-viewer" style="display:none;position:fixed;top:0;right:0;width:44%;height:100vh;background:#fff;border-left:2px solid var(--border);z-index:60;box-shadow:-6px 0 20px rgba(0,0,0,.15);">
@@ -2359,6 +2359,49 @@ async function viewSavedPO(base){
     showPoViewer(new Blob([arr], {type:'application/pdf'}));
     $('po-viewer-name').textContent = base + ' — PO';
   }catch(e){ alert(t('save_fail')); }
+}
+async function viewDayPOs(dKey){
+  const recs = (savedCache||[]).filter(r => String((r.meta&&r.meta.date) || r.savedAt || '').slice(0,10) === dKey);
+  if(!recs.length){ showToast('이 날짜의 오더가 없습니다'); return; }
+  showToast('📄 PO 모으는 중... (' + recs.length + '건)');
+  try{
+    const bases = recs.map(r=>r.base);
+    const inList = bases.map(b=>'"' + String(b).replace(/"/g,'') + '"').join(',');
+    const r = await sbFetch('/rest/v1/pr_orders?base=in.(' + encodeURIComponent(inList) + ')&select=base,po_pdf');
+    const rows = await r.json();
+    const byBase = {}; (rows||[]).forEach(x=>{ if(x.po_pdf) byBase[x.base] = x.po_pdf; });
+    const have = bases.filter(b=>byBase[b]);
+    const missing = recs.filter(r2=>!byBase[r2.base]).map(r2=>((r2.meta&&r2.meta.cust)||'') + ' PO ' + ((r2.meta&&r2.meta.po)||''));
+    if(!have.length){ showToast('⚠ 이 날짜에는 첨부된 PO 파일이 없습니다'); return; }
+    await loadPdfMergeLib();
+    const out = await PDFLib.PDFDocument.create();
+    let ok = 0;
+    for(const b of have){
+      try{
+        const bin = atob(byBase[b]);
+        const bytes = new Uint8Array(bin.length);
+        for(let i2=0;i2<bin.length;i2++) bytes[i2] = bin.charCodeAt(i2);
+        const src = await PDFLib.PDFDocument.load(bytes, {ignoreEncryption:true});
+        const pages = await out.copyPages(src, src.getPageIndices());
+        pages.forEach(p=>out.addPage(p));
+        ok++;
+      }catch(e){ console.warn('PO merge fail', b, e); }
+    }
+    if(!ok){ showToast('⚠ PO 병합에 실패했습니다'); return; }
+    const bytes2 = await out.save();
+    const url = URL.createObjectURL(new Blob([bytes2], {type:'application/pdf'}));
+    const ex = document.getElementById('modal-daypo'); if(ex) ex.remove();
+    const div = document.createElement('div');
+    div.id = 'modal-daypo';
+    div.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,.6);z-index:99999;display:flex;align-items:center;justify-content:center;';
+    div.innerHTML = '<div style="background:#fff;border-radius:12px;width:900px;max-width:96vw;height:90vh;display:flex;flex-direction:column;overflow:hidden;box-shadow:0 20px 60px rgba(0,0,0,.35);">'
+      + '<div style="background:#0f2a4a;color:#fff;padding:10px 16px;font-weight:800;font-size:13px;display:flex;align-items:center;gap:10px;">📄 ' + dKey + ' — PO 모아보기 (' + ok + '/' + recs.length + '건)'
+      + (missing.length ? '<span style="font-size:10.5px;font-weight:600;color:#fbbf24;">PO 미첨부: ' + esc(missing.join(', ')).slice(0,120) + '</span>' : '')
+      + '<button class="btn btn-sm" style="margin-left:auto;background:#16a34a;color:#fff;border-color:#16a34a;" onclick="document.getElementById(\'daypo-frame\').contentWindow.print()">🖨 인쇄</button>'
+      + '<button class="btn btn-sm" style="background:transparent;color:#cbd5e1;border-color:#475569;" onclick="document.getElementById(\'modal-daypo\').remove()">✕</button></div>'
+      + '<iframe id="daypo-frame" src="' + url + '" style="flex:1;border:none;"></iframe></div>';
+    document.body.appendChild(div);
+  }catch(e){ console.warn('viewDayPOs', e); showToast('⚠ PO 불러오기에 실패했습니다'); }
 }
 function buildPRDocFromRec(rec, wh){
   const bak = { lines: poLines, meta: getMeta(), fb: window._forceBase };
@@ -8726,7 +8769,7 @@ function renderSaved(){
     const gBg = allDone ? '#f6f8fa' : '#fffbeb';
     const gBd = allDone ? '#dbe2ea' : '#fde68a';
     return `<div style="background:${gBg};border:1.5px solid ${gBd};border-radius:12px;padding:8px 10px ${collapsed?'8px':'4px'};margin-bottom:14px;">
-      <div class="date-hdr" style="cursor:pointer;user-select:none;position:sticky;top:0;z-index:5;background:${gBg};margin:-4px -4px ${collapsed?'-4px':'6px'};padding:6px 4px;border-radius:8px;color:#0f2a4a;font-size:12.5px;" onclick="toggleDateGroup('${g.key}')" title="클릭해서 접기/펴기"><span style="font-size:10px;">${collapsed?'▶':'▼'}</span> 📅 ${dLabel} <span class="muted" style="font-weight:600;">(${g.recs.length})</span> ${badge}</div>
+      <div class="date-hdr" style="cursor:pointer;user-select:none;position:sticky;top:0;z-index:5;background:${gBg};margin:-4px -4px ${collapsed?'-4px':'6px'};padding:6px 4px;border-radius:8px;color:#0f2a4a;font-size:12.5px;" onclick="toggleDateGroup('${g.key}')" title="클릭해서 접기/펴기"><span style="font-size:10px;">${collapsed?'▶':'▼'}</span> 📅 ${dLabel} <span class="muted" style="font-weight:600;">(${g.recs.length})</span> ${badge} <button class="btn btn-sm" style="margin-left:6px;font-size:10px;padding:2px 9px;background:#fff;color:#0f2a4a;" onclick="event.stopPropagation();viewDayPOs('${g.key}')" title="이 날짜에 받은 모든 거래처 PO를 한 문서로 보고 인쇄">📄 PO</button></div>
       ${collapsed ? '' : g.htmls.join('')}
     </div>`;
   }).join('') : `<div class="muted">${q ? '🔍 "' + esc(savedQuery.trim()) + '" 검색 결과 없음' : t('saved_empty')}</div>`;
