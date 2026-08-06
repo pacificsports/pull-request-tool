@@ -137,7 +137,7 @@ main{max-width:1100px;margin:0 auto;padding:16px;}
     <button class="btn btn-sm" onclick="doLogout()" style="padding:2px 8px;font-size:10px;" data-i18n="logout">Log out</button>
   </span>
   <select id="lang-sel" onchange="setLang(this.value)" style="font-size:11px;padding:3px 6px;border-radius:5px;border:none;background:#1d3f66;color:#fff;"><option value="ko">한국어</option><option value="en">English</option><option value="es">Español</option></select>
-  <span style="font-size:10px;color:#9fb8d4;">v304 🚚</span>
+  <span style="font-size:10px;color:#9fb8d4;">v305 🚚</span>
 </div>
 <script type="text/javascript" src="https://js.authorize.net/v1/Accept.js" charset="utf-8"></script>
 <div id="po-viewer" style="display:none;position:fixed;top:0;right:0;width:44%;height:100vh;background:#fff;border-left:2px solid var(--border);z-index:60;box-shadow:-6px 0 20px rgba(0,0,0,.15);">
@@ -1488,31 +1488,70 @@ function loadPdfMergeLib(){
 }
 async function mergePdfWithFiles(blob, files){
   await loadPdfMergeLib();
+  mergePdfWithFiles.lastFailed = [];
   const main = await PDFLib.PDFDocument.load(await blob.arrayBuffer());
+  const fitPage = (img)=>{
+    const pw = 612, ph = 792, m = 24;
+    const sc = Math.min((pw-m*2)/img.width, (ph-m*2)/img.height, 1);
+    const w = img.width*sc, h = img.height*sc;
+    const page = main.addPage([pw, ph]);
+    page.drawImage(img, {x:(pw-w)/2, y:(ph-h)/2, width:w, height:h});
+  };
   for(const f of (files||[])){
     try{
-      const b64 = (f.data||'').split(',')[1]; if(!b64) continue;
+      const raw = String(f.data||'');
+      const b64 = raw.includes(',') ? raw.split(',')[1] : raw;
+      if(!b64){ mergePdfWithFiles.lastFailed.push(f); continue; }
       const bin = atob(b64);
       const bytes = new Uint8Array(bin.length);
       for(let i=0;i<bin.length;i++) bytes[i] = bin.charCodeAt(i);
-      const ty = (f.type||'').toLowerCase();
-      if(ty.includes('pdf')){
-        const src = await PDFLib.PDFDocument.load(bytes, {ignoreEncryption:true});
-        const pages = await main.copyPages(src, src.getPageIndices());
-        pages.forEach(p=>main.addPage(p));
-      }else if(ty.includes('png') || ty.includes('jpg') || ty.includes('jpeg')){
-        const img = ty.includes('png') ? await main.embedPng(bytes) : await main.embedJpg(bytes);
-        const pw = 612, ph = 792, m = 36;
-        const sc = Math.min((pw-m*2)/img.width, (ph-m*2)/img.height, 1);
-        const w = img.width*sc, h = img.height*sc;
-        const page = main.addPage([pw, ph]);
-        page.drawImage(img, {x:(pw-w)/2, y:(ph-h)/2, width:w, height:h});
+      const ty = (f.type||'').toLowerCase(), nm = (f.name||'').toLowerCase();
+      // 실제 바이트 시그니처로 판별 — 폰 앱이 JPEG를 .pdf로 저장하는 경우 등 대응
+      const isPngB = bytes[0]===0x89 && bytes[1]===0x50;
+      const isJpgB = bytes[0]===0xFF && bytes[1]===0xD8;
+      const isPdfB = bytes[0]===0x25 && bytes[1]===0x50 && bytes[2]===0x44 && bytes[3]===0x46; // %PDF
+      if(isPngB){ fitPage(await main.embedPng(bytes)); }
+      else if(isJpgB){ fitPage(await main.embedJpg(bytes)); }
+      else if(isPdfB || ty.includes('pdf') || nm.endsWith('.pdf')){
+        try{
+          const src = await PDFLib.PDFDocument.load(bytes, {ignoreEncryption:true});
+          const pages = await main.copyPages(src, src.getPageIndices());
+          pages.forEach(p=>main.addPage(p));
+        }catch(e1){
+          // pdf-lib이 못 읽는 스캐너 앱 PDF → pdf.js로 페이지를 이미지로 렌더링해서 병합
+          console.warn('pdf-lib load failed, falling back to pdf.js render:', f.name, e1);
+          await loadPdfJsLib();
+          const srcDoc = await pdfjsLib.getDocument({data: bytes.slice()}).promise;
+          for(let p=1;p<=srcDoc.numPages;p++){
+            const pg = await srcDoc.getPage(p);
+            const vp = pg.getViewport({scale: 2});
+            const cv = document.createElement('canvas');
+            cv.width = Math.ceil(vp.width); cv.height = Math.ceil(vp.height);
+            await pg.render({canvasContext: cv.getContext('2d'), viewport: vp}).promise;
+            const du = cv.toDataURL('image/jpeg', 0.85);
+            const b2 = atob(du.split(',')[1]);
+            const jb = new Uint8Array(b2.length);
+            for(let i=0;i<b2.length;i++) jb[i] = b2.charCodeAt(i);
+            fitPage(await main.embedJpg(jb));
+          }
+        }
+      }else if(ty.includes('png') || ty.includes('jpg') || ty.includes('jpeg') || /\.(png|jpe?g)$/.test(nm)){
+        const img = (ty.includes('png') || nm.endsWith('.png')) ? await main.embedPng(bytes) : await main.embedJpg(bytes);
+        fitPage(img);
       }else{
         console.warn('Unsupported attachment format for merge:', f.name, f.type);
+        mergePdfWithFiles.lastFailed.push(f);
       }
-    }catch(e){ console.warn('Attachment merge failed:', f.name, e); }
+    }catch(e){ console.warn('Attachment merge failed:', f.name, e); mergePdfWithFiles.lastFailed.push(f); }
   }
   return new Blob([await main.save()], {type:'application/pdf'});
+}
+// 병합 실패한 첨부를 이메일에 별도 파일로 붙일 때 사용
+function mergeFailedAsEmailAtts(){
+  return (mergePdfWithFiles.lastFailed||[]).filter(f=>f && f.data).map((f,i)=>({
+    filename: f.name || ('attachment-'+(i+1)+'.pdf'),
+    content: String(f.data).includes(',') ? String(f.data).split(',')[1] : String(f.data)
+  }));
 }
 async function makePdfBlob(docHtml, attachFiles){
   await loadPdfLib();
@@ -1543,7 +1582,11 @@ async function makePdfBlob(docHtml, attachFiles){
   if(blob.size < 30000) throw new Error('PDF generation looks wrong (' + Math.round(blob.size/1024) + 'KB). Refresh (Ctrl+Shift+R) and try again.');
   if(attachFiles && attachFiles.length){
     try{ blob = await mergePdfWithFiles(blob, attachFiles); }
-    catch(e){ console.warn('Attachment merge failed:', e); }
+    catch(e){ console.warn('Attachment merge failed:', e); mergePdfWithFiles.lastFailed = (attachFiles||[]).slice(); }
+    const _mf = mergePdfWithFiles.lastFailed || [];
+    if(_mf.length){ try{ showToast('⚠ Could not merge into PDF: ' + _mf.map(x=>x.name||'file').join(', ')); }catch(e){} }
+  }else{
+    mergePdfWithFiles.lastFailed = [];
   }
   return blob;
 }
@@ -3402,6 +3445,8 @@ async function sendBatchPLEmail(recs, wh, toEmail){
     let comboBlob = new Blob([await combo.save()], {type:'application/pdf'});
     if(uniqFiles.length) comboBlob = await mergePdfWithFiles(comboBlob, uniqFiles);
     atts.unshift({ filename: 'ALL-PACKING-LISTS.pdf', content: await blobToB64(comboBlob) });
+    // 병합에 실패한 첨부(스캔 BOL 등)는 별도 파일로 같이 발송
+    mergeFailedAsEmailAtts().forEach(a=>atts.push(a));
   }catch(e){ console.warn('combo pdf fail', e); }
   if(atts.length > 50) console.warn('Over 50 attachments — some individual PLs may be dropped (merged copy included)');
   const rowTr = recs.map(rec=>{
@@ -3698,7 +3743,7 @@ async function sendPLEmailFor(rec, wh, toEmail){
       subject: 'Order Shipped — PO ' + (meta.po||'') + ' (Pacific Sports)',
       html: bodyHtml,
       reply_to: STAFF_EMAILS,
-      attachments: [{ filename: num + '-PL.pdf', content: b64 }]
+      attachments: [{ filename: num + '-PL.pdf', content: b64 }].concat(mergeFailedAsEmailAtts())
     })
   });
   if(!r.ok){ const e = await r.json().catch(()=>({})); throw new Error(e.error || e.message || ('HTTP '+r.status)); }
