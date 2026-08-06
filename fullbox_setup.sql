@@ -77,6 +77,24 @@ create trigger pr_boxes_zz_skucheck before insert or update on public.pr_boxes
 alter table public.pr_pcroom add column if not exists wh text not null default 'SC';   -- CA 행은 k='STYLE|COLOR|CA'
 alter table public.pr_pcmoves add column if not exists wh text not null default 'SC';
 
+-- 🚚 SC → CA Transfer (v288): 배치 담기 → 출발(pr_boxes.wh='TRANSIT') → CA 도착 시 wh='CA'+새 loc
+create table if not exists public.pr_transfers (
+  id uuid primary key default gen_random_uuid(),
+  ref text not null default '',
+  status text not null default 'LOADING',   -- LOADING → TRANSIT → RECEIVED
+  lines jsonb not null default '[]',        -- [{style,color,size,pcs,ids:[box uuid],locs:{LOC:n}}]
+  created_at timestamptz not null default now(),
+  created_by text not null default '',
+  departed_at timestamptz,
+  departed_by text,
+  received_at timestamptz,
+  received_by text
+);
+alter table public.pr_transfers enable row level security;
+drop policy if exists pr_transfers_auth_all on public.pr_transfers;
+create policy pr_transfers_auth_all on public.pr_transfers
+  for all to authenticated using (true) with check (true);
+
 -- 🇭🇹 Haiti 입고 (인보이스 업로드 → 리뷰 → 도착 시 location 지정 입고)
 create table if not exists public.pr_inbound (
   id          uuid primary key default gen_random_uuid(),

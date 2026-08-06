@@ -136,7 +136,7 @@ main{max-width:1100px;margin:0 auto;padding:16px;}
     <button class="btn btn-sm" onclick="doLogout()" style="padding:2px 8px;font-size:10px;" data-i18n="logout">로그아웃</button>
   </span>
   <select id="lang-sel" onchange="setLang(this.value)" style="font-size:11px;padding:3px 6px;border-radius:5px;border:none;background:#1d3f66;color:#fff;"><option value="ko">한국어</option><option value="en">English</option><option value="es">Español</option></select>
-  <span style="font-size:10px;color:#9fb8d4;">v287 🎨</span>
+  <span style="font-size:10px;color:#9fb8d4;">v288 🚚</span>
 </div>
 <script type="text/javascript" src="https://js.authorize.net/v1/Accept.js" charset="utf-8"></script>
 <div id="po-viewer" style="display:none;position:fixed;top:0;right:0;width:44%;height:100vh;background:#fff;border-left:2px solid var(--border);z-index:60;box-shadow:-6px 0 20px rgba(0,0,0,.15);">
@@ -372,6 +372,7 @@ main{max-width:1100px;margin:0 auto;padding:16px;}
       <button class="btn btn-sm" onclick="bxTemplate()" title="임포트용 엑셀 템플릿 다운로드">📄 양식</button>
       <button class="btn btn-sm" onclick="bxExport()">⬇ Excel</button>
       <button class="btn btn-sm" onclick="hiOpen()" style="background:#0e7490;color:#fff;border-color:#0e7490;" title="Haiti 인보이스 업로드 → 리뷰 → 도착 시 location 지정 입고">🇭🇹 Haiti 입고</button>
+      <button class="btn btn-sm" onclick="trOpen()" style="background:#b45309;color:#fff;border-color:#b45309;" title="SC → CA 박스 이동 (배치 담기 → 출발 → CA 도착 location 지정)">🚚 Transfer</button>
       <input type="file" id="bx-import-file" accept=".xlsx,.xls,.csv" style="display:none;" onchange="bxImport(this.files[0]);this.value='';">
       <input type="file" id="hi-file" accept=".xlsx,.xls" style="display:none;" onchange="hiUpload(this.files[0]);this.value='';">
     </div>
@@ -5834,8 +5835,9 @@ function renderBoxRoom(){
   const el = $('bx-body'); if(!el) return;
   const q = (($('bx-search')||{}).value||'').trim().toLowerCase();
   const gridMode = window._bxView !== 'detail';
-  const groups = {};   // style → color → [boxes] (SC·CA 함께)
+  const groups = {};   // style → color → [boxes] (SC·CA 함께 · In Transit 제외)
   bxStore.forEach(b=>{
+    if(bxWh(b)==='TRANSIT') return;   // 🚚 이동중 — Transfer 화면에서 관리
     if(q && !(String(b.style).toLowerCase().includes(q) || String(b.color).toLowerCase().includes(q) || String(b.loc||'').toLowerCase().includes(q))) return;
     const s = String(b.style), c = String(b.color).toUpperCase();
     ((groups[s] = groups[s] || {})[c] = groups[s][c] || []).push(b);
@@ -5909,10 +5911,15 @@ function renderBoxRoom(){
       <div style="font-size:21px;font-weight:800;color:#0f2a4a;font-family:Consolas,monospace;line-height:1.2;">${nb.toLocaleString()}<span style="font-size:11px;color:var(--text2);font-weight:700;"> 박스</span></div>
       <div style="font-size:11px;color:var(--text2);font-family:Consolas,monospace;">${np.toLocaleString()} pcs</div></div>`;
   };
+  const transitList = bxStore.filter(b=>bxWh(b)==='TRANSIT');
   el.innerHTML = `<div style="display:flex;gap:10px;margin-bottom:12px;flex-wrap:wrap;align-items:stretch;">
-      ${tile('📦 전체', bxStore, '#0f2a4a')}
+      ${tile('📦 전체', bxStore.filter(b=>bxWh(b)!=='TRANSIT'), '#0f2a4a')}
       ${tile('SC 창고', bxStore.filter(b=>bxWh(b)==='SC'), '#1d4ed8')}
       ${tile('CA 창고', bxStore.filter(b=>bxWh(b)==='CA'), '#9a3412')}
+      ${transitList.length ? `<div onclick="trOpen()" style="flex:1;min-width:140px;max-width:230px;border:1.5px solid #fcd34d;border-radius:10px;padding:9px 14px;background:#fffbeb;cursor:pointer;" title="클릭: Transfer 관리">
+        <div style="font-size:11px;font-weight:800;color:#b45309;">🚚 In Transit (SC→CA)</div>
+        <div style="font-size:21px;font-weight:800;color:#92400e;font-family:Consolas,monospace;line-height:1.2;">${transitList.length.toLocaleString()}<span style="font-size:11px;color:#b45309;font-weight:700;"> 박스</span></div>
+        <div style="font-size:11px;color:#b45309;font-family:Consolas,monospace;">${transitList.reduce((a,b)=>a+(Number(b.pcs)||0),0).toLocaleString()} pcs</div></div>` : ''}
       <div style="flex:2;min-width:200px;display:flex;align-items:center;"><span class="muted" style="font-size:11px;">박스 1개 = 레코드 1개 · location 클릭=수정 · ✕=출고 · 차감하면 어떤 박스가 어느 PO로 나갔는지 이력이 남아요 (📜에서 복원 가능)</span></div>
     </div>
     <div style="display:flex;gap:12px;align-items:flex-start;">
@@ -5998,6 +6005,263 @@ async function bxExport(){
 }
 // ═══ 🇭🇹 Haiti 입고: 인보이스 업로드 → 리뷰 → 입고 예정 → 도착 시 location 지정 → SC 재고 확정 ═══
 const HI_SZ = ['2T','3T','4T','5T','XXS','XS','S','M','L','XL','2XL','3XL','4XL','5XL','6XL'];
+// ═══════════════ 🚚 SC → CA Transfer (배치 담기 → In Transit → CA 도착 location 지정) ═══════════════
+let trCart = [];         // 편집중 배치 라인: [{style,color,size,pcs,ids:[],locs:{LOC:n}}]
+function trChunk(ids){ const out=[]; for(let i=0;i<ids.length;i+=80) out.push(ids.slice(i,i+80)); return out; }
+async function trPatchBoxes(ids, body){ for(const ch of trChunk(ids)) await bxPatch(ch, body); }
+async function trGet(id){ try{ const r = await sbFetch('/rest/v1/pr_transfers?id=eq.'+id+'&select=*'); if(r.ok) return (await r.json())[0]; }catch(e){} return null; }
+async function trSaveLines(id, lines){ try{ await sbFetch('/rest/v1/pr_transfers?id=eq.'+id, {method:'PATCH', headers:{Prefer:'return=minimal'}, body:JSON.stringify({lines})}); }catch(e){} }
+async function trOpen(){
+  ['modal-tr','modal-trd','modal-trr'].forEach(x=>{ const e=document.getElementById(x); if(e) e.remove(); });
+  let rows = [];
+  try{
+    const r = await sbFetch('/rest/v1/pr_transfers?select=id,ref,status,lines,created_at,departed_at,received_at&order=created_at.desc&limit=40');
+    if(r.ok) rows = await r.json();
+  }catch(e){}
+  const secs = [['LOADING','🧰 준비중 (박스 담는 중)'],['TRANSIT','🚚 In Transit (이동중)'],['RECEIVED','✓ 최근 도착 완료']];
+  const row = x=>{
+    const nb = (x.lines||[]).reduce((a,l)=>a+((l.ids||[]).length),0);
+    const np = (x.lines||[]).reduce((a,l)=>a+((l.ids||[]).length)*(Number(l.pcs)||0),0);
+    return `<div style="display:flex;align-items:center;gap:10px;padding:8px 10px;border-bottom:1px solid var(--border);font-size:12px;">
+      <span style="font-weight:800;min-width:120px;">${esc(x.ref||'(무제)')}</span>
+      <span class="muted">${String(x.created_at||'').slice(0,10)} · ${(x.lines||[]).length}품목 · ${nb}박스 · ${np.toLocaleString()} pcs</span>
+      <span style="margin-left:auto;display:flex;gap:6px;align-items:center;">
+        ${x.status==='LOADING' ? `<button class="btn btn-sm btn-primary" style="background:#b45309;border-color:#b45309;" onclick="trDetail('${x.id}')">🧰 담기 계속</button><button class="btn btn-sm" style="color:#b91c1c;" onclick="trDelete('${x.id}')">✕</button>` : ''}
+        ${x.status==='TRANSIT' ? `<span style="padding:2px 10px;border-radius:20px;font-size:10.5px;font-weight:800;background:#fef3c7;color:#92400e;">🚚 ${String(x.departed_at||'').slice(0,10)} 출발</span><button class="btn btn-sm btn-primary" style="background:#166534;border-color:#166534;" onclick="trReceiveModal('${x.id}')">📦 CA 도착 처리</button><button class="btn btn-sm" style="font-size:10px;" onclick="trCancel('${x.id}')" title="출발 취소 — 박스 SC 복귀">↩</button>` : ''}
+        ${x.status==='RECEIVED' ? `<span style="padding:2px 10px;border-radius:20px;font-size:10.5px;font-weight:800;background:#f0fdf4;color:#166534;">✓ 도착 ${String(x.received_at||'').slice(0,10)}</span>` : ''}
+      </span></div>`;
+  };
+  const div = document.createElement('div');
+  div.id = 'modal-tr';
+  div.style.cssText = 'position:fixed;inset:0;background:rgba(15,23,42,.55);z-index:99;display:flex;align-items:center;justify-content:center;padding:20px;';
+  div.onclick = e=>{ if(e.target===div) div.remove(); };
+  div.innerHTML = `<div style="background:#fff;border-radius:12px;max-width:720px;width:100%;max-height:85vh;display:flex;flex-direction:column;overflow:hidden;">
+    <div style="background:#b45309;color:#fff;padding:10px 16px;font-weight:800;">🚚 SC → CA Transfer
+      <div style="font-weight:400;font-size:11px;opacity:.85;">배치 만들기 → 박스 담기 → 출발(In Transit·SC에서 빠짐) → CA 도착하면 location 지정해서 CA 입고</div></div>
+    <div style="overflow-y:auto;padding:10px 16px;flex:1;">
+      ${secs.map(([st,label])=>{
+        const list = rows.filter(x=>x.status===st).slice(0, st==='RECEIVED'?6:99);
+        if(!list.length) return '';
+        return `<div style="font-weight:800;font-size:12px;margin:8px 0 4px;">${label} (${list.length})</div>` + list.map(row).join('');
+      }).join('') || '<div class="muted" style="padding:10px;font-size:12px;">Transfer 없음 — 새로 만들어 보세요</div>'}
+    </div>
+    <div style="padding:10px 16px;border-top:1px solid var(--border);display:flex;gap:8px;justify-content:flex-end;">
+      <button class="btn" onclick="document.getElementById('modal-tr').remove()">닫기</button>
+      <button class="btn btn-primary" style="background:#b45309;border-color:#b45309;" onclick="trNew()">＋ 새 Transfer</button>
+    </div></div>`;
+  document.body.appendChild(div);
+}
+async function trNew(){
+  const ref = (window.prompt('Transfer 이름 / 트럭 번호 (예: TRUCK 8/12)')||'').trim();
+  if(!ref) return;
+  let rec = null;
+  try{
+    const r = await sbFetch('/rest/v1/pr_transfers', {method:'POST', headers:{Prefer:'return=representation'}, body:JSON.stringify([{ref, status:'LOADING', lines:[], created_by:(SESS&&SESS.email)||''}])});
+    if(r.ok) rec = (await r.json())[0];
+  }catch(e){}
+  if(!rec){ showToast('⚠ 생성 실패'); return; }
+  trDetail(rec.id);
+}
+async function trDelete(id){
+  if(!confirm('이 Transfer 배치를 삭제할까요? (담긴 박스는 그대로 SC에 남습니다)')) return;
+  try{ await sbFetch('/rest/v1/pr_transfers?id=eq.'+id, {method:'DELETE', headers:{Prefer:'return=minimal'}}); }catch(e){}
+  trOpen();
+}
+async function trDetail(id){
+  const rec = await trGet(id); if(!rec){ showToast('⚠ 불러오기 실패'); return; }
+  if(!bxLoaded) await bxFetchStore();
+  if(!skuLoaded) await skuFetch();
+  window._trId = id; window._trRef = rec.ref;
+  trCart = Array.isArray(rec.lines) ? rec.lines : [];
+  ['modal-tr','modal-trd'].forEach(x=>{ const e=document.getElementById(x); if(e) e.remove(); });
+  const div = document.createElement('div');
+  div.id = 'modal-trd';
+  div.style.cssText = 'position:fixed;inset:0;background:rgba(15,23,42,.55);z-index:99;display:flex;align-items:center;justify-content:center;padding:14px;';
+  div.innerHTML = `<div style="background:#fff;border-radius:12px;max-width:860px;width:100%;max-height:92vh;display:flex;flex-direction:column;overflow:hidden;">
+    <div style="background:#b45309;color:#fff;padding:10px 16px;font-weight:800;">🧰 ${esc(rec.ref||'')} — 박스 담기
+      <div style="font-weight:400;font-size:11px;opacity:.85;">품목 검색 → location별로 몇 박스 담을지 입력 → [담기] · 다 담으면 [🚚 출발] (그때 SC에서 빠져요)</div></div>
+    <div style="overflow-y:auto;padding:10px 16px;flex:1;">
+      <div style="display:flex;gap:8px;align-items:end;flex-wrap:wrap;margin-bottom:8px;">
+        <div><div style="font-size:10px;font-weight:800;color:var(--text2);">STYLE</div><input class="fi" id="trd-style" list="trd-dl-style" style="width:90px;font-weight:700;" oninput="trdStyleChanged()"></div>
+        <div><div style="font-size:10px;font-weight:800;color:var(--text2);">COLOR</div><input class="fi" id="trd-color" list="trd-dl-color" style="width:170px;text-transform:uppercase;"></div>
+        <div><div style="font-size:10px;font-weight:800;color:var(--text2);">SIZE</div><input class="fi" id="trd-size" list="trd-dl-size" style="width:64px;text-transform:uppercase;"></div>
+        <button class="btn btn-sm btn-primary" onclick="trdQuery()">🔍 SC 재고 조회</button>
+      </div>
+      <datalist id="trd-dl-style">${skuStyles().map(s=>'<option value="'+esc(s)+'">').join('')}</datalist>
+      <datalist id="trd-dl-color"></datalist>
+      <datalist id="trd-dl-size">${['XS','S','M','L','XL','2XL','3XL','4XL','5XL','XXS','2T','3T','4T','5T'].map(s=>'<option value="'+s+'">').join('')}</datalist>
+      <div id="trd-pick"></div>
+      <div style="font-weight:800;font-size:12px;margin:12px 0 4px;">🧰 담긴 박스</div>
+      <div id="trd-cart"></div>
+    </div>
+    <div style="padding:10px 16px;border-top:1px solid var(--border);display:flex;gap:8px;justify-content:flex-end;align-items:center;">
+      <span id="trd-sum" class="muted" style="margin-right:auto;font-size:11px;"></span>
+      <button class="btn" onclick="document.getElementById('modal-trd').remove();trOpen();">닫기 (담긴 건 저장됨)</button>
+      <button class="btn btn-primary" style="background:#b45309;border-color:#b45309;" onclick="trDepart()">🚚 출발 — In Transit</button>
+    </div></div>`;
+  document.body.appendChild(div);
+  trdRenderCart();
+}
+function trdStyleChanged(){
+  const st = String(($('trd-style')||{}).value||'').trim();
+  const dl = document.getElementById('trd-dl-color'); if(!dl) return;
+  const cols = [...new Set(skuColors(st).map(c=>bxBaseColor(c)))].sort();
+  dl.innerHTML = cols.map(c=>'<option value="'+esc(c)+'">').join('');
+}
+function trdCartIds(){ const s = new Set(); trCart.forEach(l=>(l.ids||[]).forEach(id=>s.add(id))); return s; }
+function trdQuery(){
+  const st = String(($('trd-style')||{}).value||'').trim();
+  const col = String(($('trd-color')||{}).value||'').trim();
+  const sz = String(($('trd-size')||{}).value||'').trim().toUpperCase();
+  const el = $('trd-pick'); if(!el) return;
+  if(!st || !col || !sz){ el.innerHTML = '<div class="muted" style="font-size:11.5px;padding:6px;">Style / Color / Size를 입력하고 조회하세요</div>'; return; }
+  const inCart = trdCartIds();
+  const pool = bxFindBase(st, col, sz, 'SC').filter(b=>!inCart.has(b.id));
+  if(!pool.length){ el.innerHTML = '<div class="muted" style="font-size:11.5px;padding:6px;">SC 재고 없음 (또는 전부 이미 담김)</div>'; return; }
+  const gm = {};
+  pool.forEach(b=>{ const k = String(b.color).toUpperCase()+'@'+String(b.loc||'?').toUpperCase(); if(!gm[k]) gm[k] = {col:String(b.color).toUpperCase(), loc:String(b.loc||'?').toUpperCase(), boxes:[], oldest:b.in_at}; gm[k].boxes.push(b); });
+  const groups = Object.values(gm).sort((a,b)=>a.col.localeCompare(b.col)||String(a.oldest).localeCompare(String(b.oldest)));
+  window._trdGroups = groups;
+  el.innerHTML = `<table class="etbl" style="font-size:12px;">
+    <thead><tr><th class="tl">구분</th><th class="tl">📍 Location</th><th>재고</th><th>입고일</th><th>담기</th></tr></thead>
+    <tbody>${groups.map((g,gi)=>{ const vl = bxVariantLabel(g.col, st); const vc = vl==='Tubular' ? '#64748b' : (/US/.test(vl) ? '#c2410c' : '#7c3aed');
+      return `<tr>
+      <td class="tl"><span style="font-size:10px;font-weight:800;color:${vc};background:#f8fafc;padding:1px 7px;border-radius:10px;">${esc(vl)}</span></td>
+      <td class="tl" style="font-weight:800;color:#1d4ed8;">${esc(g.loc)}</td>
+      <td style="font-family:Consolas,monospace;font-weight:800;">${g.boxes.length}</td>
+      <td style="font-size:11px;color:var(--text2);">${g.oldest?String(g.oldest).slice(0,10):''}</td>
+      <td><input class="fi trd-take" data-gi="${gi}" type="number" min="0" max="${g.boxes.length}" value="0" style="width:60px;font-weight:800;"></td>
+    </tr>`;}).join('')}</tbody></table>
+    <button class="btn btn-sm btn-primary" style="margin-top:6px;background:#b45309;border-color:#b45309;" onclick="trdAdd()">🧰 담기</button>`;
+}
+async function trdAdd(){
+  const groups = window._trdGroups || [];
+  let added = 0;
+  document.querySelectorAll('.trd-take').forEach(inp=>{
+    const g = groups[Number(inp.dataset.gi)]; if(!g) return;
+    const n = Math.min(parseInt(inp.value)||0, g.boxes.length); if(n<1) return;
+    const take = g.boxes.slice(0, n);   // 오래된 것부터
+    const key = String(take[0].style)+'|'+g.col+'|'+String(take[0].size).toUpperCase();
+    let line = trCart.find(l=>String(l.style)+'|'+String(l.color).toUpperCase()+'|'+String(l.size).toUpperCase()===key);
+    if(!line){ line = { style:String(take[0].style), color:g.col, size:String(take[0].size).toUpperCase(), pcs:Number(take[0].pcs)||0, ids:[], locs:{} }; trCart.push(line); }
+    take.forEach(b=>{ line.ids.push(b.id); });
+    line.locs[g.loc] = (line.locs[g.loc]||0) + n;
+    added += n;
+  });
+  if(!added){ showToast('⚠ 담을 수량을 입력하세요'); return; }
+  await trSaveLines(window._trId, trCart);
+  showToast('🧰 +'+added+'박스 담김');
+  trdRenderCart();
+  trdQuery();
+}
+function trdRenderCart(){
+  const el = $('trd-cart'); if(!el) return;
+  if(!trCart.length){ el.innerHTML = '<div class="muted" style="font-size:11.5px;padding:6px;">아직 담긴 박스 없음</div>'; const s0=$('trd-sum'); if(s0) s0.textContent=''; return; }
+  el.innerHTML = `<table class="etbl" style="font-size:12px;">
+    <thead><tr><th class="tl">Style</th><th class="tl">Color</th><th>Size</th><th>박스</th><th>pcs</th><th class="tl">From 📍</th><th></th></tr></thead>
+    <tbody>${trCart.map((l,i)=>{ const vl = bxVariantLabel(l.color, l.style);
+      return `<tr>
+      <td class="tl" style="font-weight:800;">${esc(l.style)}</td>
+      <td class="tl">${esc(bxBaseColor(l.color))}${vl!==bxDefaultVariant(l.style)?` <span style="font-size:9px;font-weight:800;color:#7c3aed;">${esc(vl)}</span>`:''}</td>
+      <td style="font-weight:800;">${esc(l.size)}</td>
+      <td style="font-family:Consolas,monospace;font-weight:800;">${(l.ids||[]).length}</td>
+      <td style="font-family:Consolas,monospace;color:var(--text2);">${((l.ids||[]).length*(Number(l.pcs)||0)).toLocaleString()}</td>
+      <td class="tl" style="font-size:10.5px;color:#1d4ed8;">${Object.keys(l.locs||{}).map(L=>L+((l.locs[L]>1)?' ×'+l.locs[L]:'')).join(', ')}</td>
+      <td><button class="btn btn-sm" style="border:none;color:#b91c1c;" onclick="trdRemove(${i})" title="이 품목 빼기">✕</button></td>
+    </tr>`;}).join('')}</tbody></table>`;
+  const nb = trCart.reduce((a,l)=>a+(l.ids||[]).length,0);
+  const np = trCart.reduce((a,l)=>a+(l.ids||[]).length*(Number(l.pcs)||0),0);
+  const s = $('trd-sum'); if(s) s.textContent = '총 '+trCart.length+'품목 · '+nb+'박스 · '+np.toLocaleString()+' pcs';
+}
+async function trdRemove(i){
+  trCart.splice(i,1);
+  await trSaveLines(window._trId, trCart);
+  trdRenderCart(); trdQuery();
+}
+async function trDepart(){
+  if(!trCart.length){ alert('⚠ 담긴 박스가 없어요.'); return; }
+  if(!bxLoaded) await bxFetchStore();
+  const validSC = new Set(bxStore.filter(b=>bxWh(b)==='SC').map(b=>b.id));
+  let dropped = 0;
+  trCart.forEach(l=>{ const ok = (l.ids||[]).filter(id=>validSC.has(id)); dropped += (l.ids||[]).length - ok.length; l.ids = ok; });
+  trCart = trCart.filter(l=>(l.ids||[]).length);
+  if(dropped) showToast('⚠ '+dropped+'박스는 이미 출고/이동돼서 제외했어요');
+  const ids = trCart.reduce((a,l)=>a.concat(l.ids),[]);
+  if(!ids.length){ alert('⚠ 담긴 박스가 모두 무효화됐어요.'); await trSaveLines(window._trId, trCart); trdRenderCart(); return; }
+  if(!confirm('🚚 '+window._trRef+' — '+ids.length+'박스 출발할까요?\nSC 재고에서 빠지고 In Transit 상태가 됩니다.')) return;
+  try{
+    await trPatchBoxes(ids, {wh:'TRANSIT'});
+    await sbFetch('/rest/v1/pr_transfers?id=eq.'+window._trId, {method:'PATCH', headers:{Prefer:'return=minimal'}, body:JSON.stringify({status:'TRANSIT', lines:trCart, departed_at:new Date().toISOString(), departed_by:(SESS&&SESS.email)||''})});
+  }catch(e){ showToast('⚠ 출발 처리 실패 — 인터넷 확인'); return; }
+  await bxFetchStore();
+  if($('bx-body')) renderBoxRoom();
+  const m = document.getElementById('modal-trd'); if(m) m.remove();
+  showToast('🚚 출발! '+ids.length+'박스 In Transit');
+  trOpen();
+}
+async function trCancel(id){
+  const rec = await trGet(id); if(!rec) return;
+  const ids = (rec.lines||[]).reduce((a,l)=>a.concat(l.ids||[]),[]);
+  if(!confirm('↩ '+rec.ref+' 출발을 취소하고 '+ids.length+'박스를 SC로 복귀시킬까요?')) return;
+  try{
+    await trPatchBoxes(ids, {wh:'SC'});
+    await sbFetch('/rest/v1/pr_transfers?id=eq.'+id, {method:'PATCH', headers:{Prefer:'return=minimal'}, body:JSON.stringify({status:'LOADING', departed_at:null, departed_by:null})});
+  }catch(e){ showToast('⚠ 취소 실패'); return; }
+  await bxFetchStore();
+  if($('bx-body')) renderBoxRoom();
+  showToast('↩ SC 복귀 완료');
+  trOpen();
+}
+async function trReceiveModal(id){
+  const rec = await trGet(id); if(!rec){ showToast('⚠ 불러오기 실패'); return; }
+  if(!bxLoaded) await bxFetchStore();
+  ['modal-tr','modal-trr'].forEach(x=>{ const e=document.getElementById(x); if(e) e.remove(); });
+  const dlLoc = [...new Set(bxStore.filter(b=>bxWh(b)==='CA').map(b=>String(b.loc||'').toUpperCase()).filter(Boolean))].sort();
+  const div = document.createElement('div');
+  div.id = 'modal-trr';
+  div.style.cssText = 'position:fixed;inset:0;background:rgba(15,23,42,.55);z-index:99;display:flex;align-items:center;justify-content:center;padding:14px;';
+  div.innerHTML = `<div style="background:#fff;border-radius:12px;max-width:760px;width:100%;max-height:92vh;display:flex;flex-direction:column;overflow:hidden;">
+    <div style="background:#166534;color:#fff;padding:10px 16px;font-weight:800;">📦 CA 도착 · ${esc(rec.ref||'')}
+      <div style="font-weight:400;font-size:11px;opacity:.85;">품목별로 CA location(bin)을 지정하고 확정하면 CA 재고로 들어갑니다</div></div>
+    <div style="overflow-y:auto;padding:10px 16px;flex:1;">
+      <table class="etbl" style="font-size:12px;">
+        <thead><tr><th class="tl">Style</th><th class="tl">Color</th><th>Size</th><th>박스</th><th>📍 CA Location</th></tr></thead>
+        <tbody>${(rec.lines||[]).map((l,i)=>{ const vl = bxVariantLabel(l.color, l.style);
+          return `<tr>
+          <td class="tl" style="font-weight:800;">${esc(l.style)}</td>
+          <td class="tl">${esc(bxBaseColor(l.color))}${vl!==bxDefaultVariant(l.style)?` <span style="font-size:9px;font-weight:800;color:#7c3aed;">${esc(vl)}</span>`:''}</td>
+          <td style="font-weight:800;">${esc(l.size)}</td>
+          <td style="font-family:Consolas,monospace;font-weight:800;">${(l.ids||[]).length}</td>
+          <td><input class="fi trr-loc" data-i="${i}" list="trr-dl-loc" style="width:110px;text-transform:uppercase;" placeholder="예: N12B"></td>
+        </tr>`;}).join('')}</tbody></table>
+      <datalist id="trr-dl-loc">${dlLoc.map(L=>'<option value="'+esc(L)+'">').join('')}</datalist>
+      <div class="muted" style="font-size:10.5px;margin-top:6px;">location을 비워두면 빈칸(미지정)으로 입고돼요 — 나중에 Full Box에서 location 클릭으로 지정 가능</div>
+    </div>
+    <div style="padding:10px 16px;border-top:1px solid var(--border);display:flex;gap:8px;justify-content:flex-end;">
+      <button class="btn" onclick="document.getElementById('modal-trr').remove();trOpen();">취소</button>
+      <button class="btn btn-primary" style="background:#166534;border-color:#166534;" onclick="trReceiveDo('${rec.id}')">✅ CA 재고로 확정 입고</button>
+    </div></div>`;
+  document.body.appendChild(div);
+}
+async function trReceiveDo(id){
+  const rec = await trGet(id); if(!rec) return;
+  const locs = {};
+  document.querySelectorAll('.trr-loc').forEach(inp=>{ locs[Number(inp.dataset.i)] = String(inp.value||'').trim().toUpperCase(); });
+  const totB = (rec.lines||[]).reduce((a,l)=>a+(l.ids||[]).length,0);
+  if(!confirm('✅ '+rec.ref+' — '+totB+'박스를 CA 재고로 입고할까요?')) return;
+  try{
+    for(let i=0;i<(rec.lines||[]).length;i++){
+      const l = rec.lines[i];
+      await trPatchBoxes(l.ids||[], {wh:'CA', loc: locs[i]||''});
+    }
+    await sbFetch('/rest/v1/pr_transfers?id=eq.'+id, {method:'PATCH', headers:{Prefer:'return=minimal'}, body:JSON.stringify({status:'RECEIVED', received_at:new Date().toISOString(), received_by:(SESS&&SESS.email)||''})});
+  }catch(e){ showToast('⚠ 입고 실패 — 인터넷 확인 후 다시 시도'); return; }
+  await bxFetchStore();
+  if($('bx-body')) renderBoxRoom();
+  const m = document.getElementById('modal-trr'); if(m) m.remove();
+  showToast('✅ '+rec.ref+' CA 입고 완료 — '+totB+'박스');
+  trOpen();
+}
 function hiStyleFrom(desc){
   const m = String(desc||'').match(/-\s*(\d{3,5})\s*S?\s*-/);
   return m ? m[1] : '';
