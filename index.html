@@ -136,7 +136,7 @@ main{max-width:1100px;margin:0 auto;padding:16px;}
     <button class="btn btn-sm" onclick="doLogout()" style="padding:2px 8px;font-size:10px;" data-i18n="logout">로그아웃</button>
   </span>
   <select id="lang-sel" onchange="setLang(this.value)" style="font-size:11px;padding:3px 6px;border-radius:5px;border:none;background:#1d3f66;color:#fff;"><option value="ko">한국어</option><option value="en">English</option><option value="es">Español</option></select>
-  <span style="font-size:10px;color:#9fb8d4;">v295 🚚</span>
+  <span style="font-size:10px;color:#9fb8d4;">v298 🚚</span>
 </div>
 <script type="text/javascript" src="https://js.authorize.net/v1/Accept.js" charset="utf-8"></script>
 <div id="po-viewer" style="display:none;position:fixed;top:0;right:0;width:44%;height:100vh;background:#fff;border-left:2px solid var(--border);z-index:60;box-shadow:-6px 0 20px rgba(0,0,0,.15);">
@@ -371,6 +371,7 @@ main{max-width:1100px;margin:0 auto;padding:16px;}
       <button class="btn btn-sm" onclick="document.getElementById('bx-import-file').click()" style="background:#166534;color:#fff;border-color:#166534;">📥 Import</button>
       <button class="btn btn-sm" onclick="bxTemplate()" title="임포트용 엑셀 템플릿 다운로드">📄 양식</button>
       <button class="btn btn-sm" onclick="bxExport()">⬇ Excel</button>
+      <button class="btn btn-sm" onclick="bxAuditOpen()" style="background:#0f2a4a;color:#fff;border-color:#0f2a4a;" title="Style+Color로 location별 박스/수량 시트 — 인쇄·엑셀로 현장 재고조사">🔍 재고조사</button>
       <button class="btn btn-sm" onclick="hiOpen()" style="background:#0e7490;color:#fff;border-color:#0e7490;" title="Haiti 인보이스 업로드 → 리뷰 → 도착 시 location 지정 입고">🇭🇹 Haiti 입고</button>
       <button class="btn btn-sm" onclick="trOpen()" style="background:#b45309;color:#fff;border-color:#b45309;" title="SC → CA 박스 이동 (배치 담기 → 출발 → CA 도착 location 지정)">🚚 Transfer</button>
       <input type="file" id="bx-import-file" accept=".xlsx,.xls,.csv" style="display:none;" onchange="bxImport(this.files[0]);this.value='';">
@@ -1721,7 +1722,7 @@ async function enterApp(){
   await loadSavedList();
   // 오더 파싱 화면에서 재고 힌트(📦풀박스+location · PC자투리)가 바로 보이도록 백그라운드 로드
   bxFetchStore().then(()=>{ if(poLines.length) renderTable(); }).catch(()=>{});
-  sbFetch('/rest/v1/pr_pcroom?select=k,style,color,qty,sizes,wh').then(async r=>{
+  sbFetch('/rest/v1/pr_pcroom?select=k,style,color,qty,bqty,bnote,sizes,wh').then(async r=>{
     if(r.ok){ pcStore = await r.json(); pcLoaded = true; if(poLines.length) renderTable(); }
   }).catch(()=>{});
 }
@@ -2036,6 +2037,77 @@ async function splitOrderDo(base){
   await invSyncOnSave(orig);   // 원본: 빠진 수량만큼 차감 자동 복구
   await invSyncOnSave(rec2);   // 분리 오더: 새 PO 태그로 재차감
 }
+// ═══ 🔁 Replace 오더 — 출고 완료 후 하자 교체 (무상 · 인보이스 없음) ═══
+function replaceOrderOpen(base){
+  const rec = savedCache.find(s=>s.base===base); if(!rec) return;
+  const items = [];
+  (rec.whs||[]).filter(w=>w==='SC'||w==='CA').forEach(w=>{
+    const src = (rec.pl && rec.pl[w] && Array.isArray(rec.pl[w].lines) && rec.pl[w].lines.length)
+      ? rec.pl[w].lines : (rec.lines||[]).filter(l=>String(l.wh||'').toUpperCase()===w);
+    src.forEach(l=>{ if((Number(l.qty)||0)>0) items.push({wh:w, style:l.style||'', desc:l.desc||'', color:l.color||'', size:l.size||'', qty:Number(l.qty)||0, ppb:Number(l.ppb)||DEFAULT_PPB, price:Number(l.price)||0}); });
+  });
+  if(!items.length){ showToast('⚠ 출고된 라인이 없습니다'); return; }
+  window._rpItems = items;
+  const ex = document.getElementById('modal-replace'); if(ex) ex.remove();
+  const div = document.createElement('div');
+  div.id = 'modal-replace';
+  div.style.cssText = 'position:fixed;inset:0;background:rgba(15,23,42,.55);z-index:99;display:flex;align-items:center;justify-content:center;padding:20px;';
+  div.onclick = e=>{ if(e.target===div) div.remove(); };
+  div.innerHTML = `<div style="background:#fff;border-radius:12px;max-width:680px;width:100%;max-height:88vh;display:flex;flex-direction:column;overflow:hidden;">
+    <div style="background:#be123c;color:#fff;padding:10px 16px;font-weight:800;">🔁 Replace (하자 교체) · ${esc((rec.meta&&rec.meta.cust)||'')} — PO ${esc((rec.meta&&rec.meta.po)||'')}
+      <div style="font-weight:400;font-size:11px;color:#fecdd3;">출고된 아이템 중 교체할 것을 체크하고 수량을 정하세요 — PO#에 R이 붙은 무상 교체 오더가 생기고, 인보이스는 발행되지 않습니다</div></div>
+    <div style="overflow-y:auto;padding:10px 16px;">
+      <table class="etbl" style="font-size:12px;">
+        <thead><tr><th></th><th>Style</th><th class="tl">Color</th><th>Size</th><th>WH</th><th>출고수량</th><th>교체수량</th></tr></thead>
+        <tbody>${items.map((x,i)=>`<tr>
+          <td><input type="checkbox" class="rp-cb" data-i="${i}" style="width:15px;height:15px;accent-color:#be123c;cursor:pointer;" onchange="const q=document.querySelector('#modal-replace .rp-q[data-i=\\'${i}\\']'); if(q && this.checked && !(parseInt(q.value)>0)) q.focus();"></td>
+          <td style="font-weight:700;">${esc(String(x.style))}</td>
+          <td class="tl">${esc(String(x.color).toUpperCase())}</td>
+          <td style="font-weight:700;">${esc(String(x.size).toUpperCase())}</td>
+          <td><span class="chip chip-${esc(x.wh)}" style="font-size:9.5px;padding:1px 7px;">${esc(x.wh)}</span></td>
+          <td style="font-family:Consolas,monospace;">${x.qty.toLocaleString()}</td>
+          <td><input class="fi num rp-q" data-i="${i}" type="number" min="0" max="${x.qty}" placeholder="0" style="width:80px;font-weight:800;"></td>
+        </tr>`).join('')}</tbody>
+      </table>
+      <div class="ff" style="margin-top:10px;"><label>하자 사유 (교체 이유 — 기록에 남습니다)</label>
+        <input class="fi" id="rp-reason" placeholder="예: yellow spot 불량, 사이즈 라벨 오류"></div>
+      <div class="muted" style="font-size:10.5px;margin-top:6px;">새 오더 PO#는 "${esc((rec.meta&&rec.meta.po)||'')}R" — 재고는 정상 차감되고, Pull Request/Box Label/Packing List는 그대로 진행되지만 인보이스는 만들 수 없습니다. 리턴 받을 물건이 있으면 원본 오더의 📝 Credit Memo로 별도 처리하세요.</div>
+    </div>
+    <div style="padding:10px 16px;border-top:1px solid var(--border);display:flex;gap:8px;justify-content:flex-end;">
+      <button class="btn" onclick="document.getElementById('modal-replace').remove()">취소</button>
+      <button class="btn btn-primary" style="background:#be123c;border-color:#be123c;" onclick="replaceOrderDo('${esc(base)}')">🔁 교체 오더 생성</button>
+    </div></div>`;
+  document.body.appendChild(div);
+}
+async function replaceOrderDo(base){
+  const rec = savedCache.find(s=>s.base===base); if(!rec) return;
+  const items = window._rpItems||[];
+  const lines2 = [];
+  document.querySelectorAll('#modal-replace .rp-cb:checked').forEach(cb=>{
+    const i = Number(cb.dataset.i);
+    const x = items[i]; if(!x) return;
+    const q = Math.min(parseInt((document.querySelector('#modal-replace .rp-q[data-i="'+i+'"]')||{}).value)||0, x.qty);
+    if(q>0) lines2.push({ style:x.style, desc:x.desc, color:x.color, size:x.size, qty:q, price:x.price, ppb:x.ppb, wh:x.wh });
+  });
+  if(!lines2.length){ alert('⚠ 교체할 아이템을 체크하고 수량을 입력하세요.'); return; }
+  const reason = String((document.getElementById('rp-reason')||{}).value||'').trim();
+  let n = 1; while(savedCache.some(s=>s.base===base+'R'+(n>1?n:''))) n++;
+  const sfx = 'R' + (n>1?n:'');
+  const base2 = base + sfx;
+  const by = (SESS&&SESS.email)||'';
+  const meta2 = {...rec.meta, po: String((rec.meta&&rec.meta.po)||'') + sfx, date: todayStr(),
+    _replaceOf: { base: base, po: String((rec.meta&&rec.meta.po)||''), reason: reason, at: new Date().toISOString(), by } };
+  delete meta2._pcAuto; delete meta2._printed; delete meta2._hold; delete meta2._holdOk; delete meta2._modified; delete meta2._from; delete meta2.futureShip;
+  const rec2 = { base: base2, meta: meta2, lines: lines2, whs: [...new Set(lines2.map(l=>l.wh||'SC'))],
+    savedAt: new Date().toISOString(), pl:{}, inv:{}, history:[{t:new Date().toISOString(), by, e:'Replace of '+base + (reason?' — '+reason:'')}] };
+  if(!await upsertRec(rec2)){ alert('⚠ 교체 오더 저장 실패'); return; }
+  savedCache.unshift(rec2);
+  const m = document.getElementById('modal-replace'); if(m) m.remove();
+  renderSaved();
+  showToast('🔁 교체 오더 생성: PO ' + meta2.po + ' — ' + lines2.length + '개 라인 (무상 · 인보이스 없음)');
+  logHist(base, 'Replace order created → ' + base2 + (reason?' ('+reason+')':''));
+  await invSyncOnSave(rec2);   // 교체분 재고 차감
+}
 async function delSaved(base){
   if(!confirm(t('a_delete',{b:base}) + '\n\n(휴지통으로 이동 — 30일 안에 복구 가능)')) return;
   const rec = savedCache.find(s=>s.base===base);
@@ -2062,7 +2134,7 @@ async function delSaved(base){
     const pcl = rec && rec.meta && rec.meta._pcAuto && rec.meta._pcAuto.lines;
     if(pcl && Object.keys(pcl).some(k=>pcl[k]>0) && confirm('🧺 이 오더로 PC Room에서 자동 차감된 자투리 수량도 복구할까요?')){
       if(!pcLoaded){
-        const r4 = await sbFetch('/rest/v1/pr_pcroom?select=k,style,color,qty,sizes,wh,updated_at,updated_by');
+        const r4 = await sbFetch('/rest/v1/pr_pcroom?select=k,style,color,qty,bqty,bnote,sizes,wh,updated_at,updated_by');
         if(r4.ok){ pcStore = await r4.json(); pcLoaded = true; }
       }
       for(const key of Object.keys(pcl)){
@@ -2845,7 +2917,7 @@ async function invSyncOnSave(rec){
     let pcN = 0;
     if(keys.size){
       if(!pcLoaded){
-        const r3 = await sbFetch('/rest/v1/pr_pcroom?select=k,style,color,qty,sizes,wh,updated_at,updated_by');
+        const r3 = await sbFetch('/rest/v1/pr_pcroom?select=k,style,color,qty,bqty,bnote,sizes,wh,updated_at,updated_by');
         if(r3.ok){ pcStore = await r3.json(); pcLoaded = true; }
       }
       for(const key of keys){
@@ -2922,7 +2994,7 @@ async function printSavedPRWh(base, wh){
         const looseL = (rec.lines||[]).filter(L=>((String(L.wh||'SC').trim().toUpperCase()||'SC')===wh) && boxCalc(L).loose>0);
         if(looseL.length){
           if(!pcLoaded){
-            const r3 = await sbFetch('/rest/v1/pr_pcroom?select=k,style,color,qty,sizes,wh,updated_at,updated_by');
+            const r3 = await sbFetch('/rest/v1/pr_pcroom?select=k,style,color,qty,bqty,bnote,sizes,wh,updated_at,updated_by');
             if(r3.ok){ pcStore = await r3.json(); pcLoaded = true; }
           }
           let cnt = 0;
@@ -3078,6 +3150,8 @@ async function openPLWh(base, wh){
   if(rec && (rec.whs||[]).includes(wh)){ plWh = wh; renderPL(); }
 }
 async function openInvoiceWh(base, wh){
+  const rec0 = getSaved().find(s=>s.base===base);
+  if(rec0 && recIsReplace(rec0)){ showToast('🔁 교체(R) 오더는 무상 — 인보이스를 만들 수 없습니다'); return; }
   await openPL(base);
   const rec = getSaved().find(s=>s.base===base);
   if(rec && (rec.whs||[]).includes(wh)) plWh = wh;
@@ -3085,6 +3159,8 @@ async function openInvoiceWh(base, wh){
   renderPL();
 }
 async function openInvoice(base){
+  const rec0 = getSaved().find(s=>s.base===base);
+  if(rec0 && recIsReplace(rec0)){ showToast('🔁 교체(R) 오더는 무상 — 인보이스를 만들 수 없습니다'); return; }
   await openPL(base);
   const rec = getSaved().find(s=>s.base===base);
   if(rec && rec.pl){
@@ -4914,7 +4990,7 @@ async function loadPcRoom(){
   if(!stLoaded) stFetch().then(()=>{ if($('pc-body') && typeof renderPcRoom==='function') renderPcRoom(); });
   if(typeof skuLoaded!=='undefined' && !skuLoaded && typeof skuFetch==='function') skuFetch().then(()=>{ if($('pc-body') && typeof renderPcRoom==='function') renderPcRoom(); });
   try{
-    const r = await sbFetch('/rest/v1/pr_pcroom?select=k,style,color,qty,sizes,wh,updated_at,updated_by&order=style.asc,color.asc');
+    const r = await sbFetch('/rest/v1/pr_pcroom?select=k,style,color,qty,bqty,bnote,sizes,wh,updated_at,updated_by&order=style.asc,color.asc');
     if(r.ok){ pcStore = await r.json(); pcLoaded = true; }
   }catch(e){ console.warn('loadPcRoom', e); }
   try{
@@ -5009,7 +5085,20 @@ function pcApplyLine(base, li, mode){
   } else {
     const loose = boxCalc(L).loose;
     if(!loose){ showToast('⚠ 이 라인은 풀박스만 — PC Room에서 준비할 수량이 없습니다'); return; }
-    pcCellChange(k, size, '=' + (old - loose), null, poName + ' 출고 (partial ' + loose + ')');
+    if(mode !== 'dedA' && mode !== 'dedB' && pcB(row, size) > 0){ pcDedGradeAsk(base, li); return; }
+    if(mode === 'dedB'){
+      row.bqty = row.bqty || {};
+      const oldB = pcB(row, size);
+      const nB = oldB - loose;
+      if(nB === 0) delete row.bqty[size]; else row.bqty[size] = nB;
+      pcSaveRow(row);
+      pcLogMove(row, size, 0, old, '[B급 −' + loose + ' → ' + nB + '] ' + poName + ' 출고 (partial)');
+      const bb = $('pcb-' + cssId(k) + '-' + cssId(size));
+      if(bb){ bb.textContent = nB > 0 ? 'B' + nB : 'b'; bb.style.color = nB > 0 ? '#b45309' : '#dde2e8'; }
+      showToast('🅱 ' + row.style + ' ' + row.color + ' ' + size + ' B급: ' + oldB + ' → ' + nB + ' (' + poName + ')');
+    } else {
+      pcCellChange(k, size, '=' + (old - loose), null, poName + ' 출고 (partial ' + loose + ')');
+    }
   }
   const inp = document.querySelector(`[data-pc="${cssId(k)}-${cssId(size)}"]`);
   if(inp){ inp.value = (row.qty||{})[size] || ''; inp.style.background = '#fef9c3'; setTimeout(()=>inp.style.background='', 1500); }
@@ -5022,6 +5111,96 @@ function pcApplyLine(base, li, mode){
 }
 function cssId(s){ return String(s).replace(/[^a-zA-Z0-9]/g,'_'); }
 function pcRowTotal(row){ return Object.values(row.qty||{}).reduce((a,v)=>a+(Number(v)||0),0); }
+// ═══ 🅱 B급 재고 (리턴 — 하자 있지만 사용 가능) ═══
+function pcB(row, size){ return Number(((row&&row.bqty)||{})[size])||0; }
+function pcBRowTotal(row){ return Object.values((row&&row.bqty)||{}).reduce((a,v)=>a+(Number(v)||0),0); }
+function pcBBadge(row, k, s2){
+  const b = pcB(row, s2);
+  const memo = (row&&row.bnote) ? ' — ' + String(row.bnote) : '';
+  return `<div id="pcb-${cssId(k)}-${cssId(s2)}" onclick="pcBEdit('${esc(k)}','${s2}')" title="B급(하자·사용가능) 재고${memo} — 클릭해서 수정" style="cursor:pointer;font-size:8.5px;line-height:1.1;height:10px;font-weight:800;color:${b>0?'#b45309':'#dde2e8'};">${b>0?'B'+b:'b'}</div>`;
+}
+function pcBEdit(k, size){
+  let row = pcStore.find(r=>r.k===k);
+  const parts = String(k).split('|');
+  if(!row){ row = { k, style: parts[0], color: parts[1], wh: parts[2]==='CA'?'CA':'SC', qty:{}, bqty:{}, sizes: pcSizesFor(parts[0]) }; pcStore.push(row); }
+  const a = Number((row.qty||{})[size])||0, b = pcB(row, size);
+  const ex = document.getElementById('modal-pcb'); if(ex) ex.remove();
+  const div = document.createElement('div');
+  div.id = 'modal-pcb';
+  div.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,.55);z-index:9999;display:flex;align-items:center;justify-content:center;';
+  div.innerHTML = `<div style="background:#fff;border-radius:12px;width:440px;max-width:94vw;overflow:hidden;box-shadow:0 20px 60px rgba(0,0,0,.35);">
+    <div style="background:#b45309;color:#fff;padding:10px 16px;font-weight:800;font-size:13px;display:flex;align-items:center;">🅱 B급 재고 — [${esc(pcWhOf(row))}] ${esc(row.style)} ${esc(row.color)} ${esc(size)}
+      <button class="btn btn-sm" style="margin-left:auto;background:transparent;color:#fde68a;border-color:#d97706;" onclick="document.getElementById('modal-pcb').remove()">✕</button></div>
+    <div style="padding:14px 16px;">
+      <div style="font-size:12px;margin-bottom:10px;background:#f8fafc;border:1px solid var(--border);border-radius:8px;padding:8px 12px;">
+        정상(A) <b style="font-family:Consolas,monospace;">${a}</b> 장 · B급 <b style="font-family:Consolas,monospace;color:#b45309;">${b}</b> 장 · 합계 <b style="font-family:Consolas,monospace;">${a+b}</b> 장</div>
+      <div class="ff"><label>B급 수량 (<b>+5</b>=추가 · <b>-3</b>=차감 · 숫자만=그 값으로)</label>
+        <input class="fi" id="pcb-qty" placeholder="예: +5" style="font-weight:700;" onkeydown="if(event.key==='Enter')pcBSave('${esc(k)}','${esc(size)}')"></div>
+      <label style="display:flex;align-items:center;gap:6px;font-size:11.5px;margin:8px 0;cursor:pointer;color:#374151;">
+        <input type="checkbox" id="pcb-shift" style="width:14px;height:14px;accent-color:#b45309;">
+        A급과 연동 — B를 늘린 만큼 A에서 빼기 (검수 재분류할 때) · 체크 안 하면 B만 바뀜 (리턴 입고/출고)</label>
+      <div class="ff"><label>하자 메모 (이 칼라 공통)</label>
+        <input class="fi" id="pcb-note" value="${esc(row.bnote||'')}" placeholder="예: yellow spot, 오염 세탁됨"></div>
+      <div style="display:flex;gap:8px;justify-content:flex-end;margin-top:12px;">
+        <button class="btn btn-sm" onclick="document.getElementById('modal-pcb').remove()">취소</button>
+        <button class="btn btn-sm btn-primary" onclick="pcBSave('${esc(k)}','${esc(size)}')">저장</button>
+      </div>
+    </div></div>`;
+  document.body.appendChild(div);
+  initModalDrag(div);
+  setTimeout(()=>{ const el = document.getElementById('pcb-qty'); if(el) el.focus(); }, 50);
+}
+function pcBSave(k, size){
+  const row = pcStore.find(r=>r.k===k); if(!row) return;
+  row.bqty = row.bqty || {};
+  const old = pcB(row, size);
+  const s2 = String((document.getElementById('pcb-qty')||{}).value||'').trim();
+  let n = old;
+  if(/^\+\d+$/.test(s2)) n = old + parseInt(s2.slice(1));
+  else if(/^-\d+$/.test(s2)) n = old - parseInt(s2.slice(1));
+  else if(/^=?-?\d+$/.test(s2)) n = parseInt(s2.replace('=',''));
+  const note = String((document.getElementById('pcb-note')||{}).value||'').trim();
+  const shift = !!((document.getElementById('pcb-shift')||{}).checked);
+  const delta = n - old;
+  if(n <= 0) delete row.bqty[size]; else row.bqty[size] = n;
+  row.bnote = note;
+  if(shift && delta){
+    const a0 = Number((row.qty||{})[size])||0;
+    row.qty = row.qty || {};
+    const a1 = a0 - delta;
+    if(a1 === 0) delete row.qty[size]; else row.qty[size] = a1;
+    pcLogMove(row, size, -delta, a1, '[A↔B 재분류]' + (note?' '+note:''));
+  }
+  pcSaveRow(row);
+  if(delta) pcLogMove(row, size, 0, Number((row.qty||{})[size])||0, '[B급 ' + (delta>0?'+':'') + delta + ' → ' + n + ']' + (note?' '+note:''));
+  const m = document.getElementById('modal-pcb'); if(m) m.remove();
+  renderPcRoom();
+  showToast('🅱 ' + row.style + ' ' + row.color + ' ' + size + ' B급: ' + old + ' → ' + n + (shift&&delta ? ' (A ' + (delta>0?'−':'+') + Math.abs(delta) + ')' : ''));
+}
+function pcDedGradeAsk(base, li){
+  const rec = savedCache.find(s=>s.base===base); if(!rec) return;
+  const L = (rec.lines||[])[li]; if(!L) return;
+  const k = pcKey(L.style, L.color, String(L.wh||'').toUpperCase());
+  const row = pcStore.find(r=>r.k===k); if(!row) return;
+  const size = String(L.size||'').toUpperCase();
+  const a = Number((row.qty||{})[size])||0, b = pcB(row, size);
+  const need = boxCalc(L).loose;
+  const ex = document.getElementById('modal-pcded'); if(ex) ex.remove();
+  const div = document.createElement('div');
+  div.id = 'modal-pcded';
+  div.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,.55);z-index:9999;display:flex;align-items:center;justify-content:center;';
+  div.innerHTML = `<div style="background:#fff;border-radius:12px;width:420px;max-width:94vw;overflow:hidden;box-shadow:0 20px 60px rgba(0,0,0,.35);">
+    <div style="background:#0f2a4a;color:#fff;padding:10px 16px;font-weight:800;font-size:13px;">어디서 차감할까요? — ${esc(String(L.style||''))} ${esc(String(L.color||''))} ${esc(size)} × ${need}</div>
+    <div style="padding:14px 16px;">
+      ${row.bnote ? `<div style="font-size:11px;color:#b45309;background:#fffbeb;border:1px solid #fde68a;border-radius:6px;padding:6px 10px;margin-bottom:10px;">🅱 하자 메모: ${esc(row.bnote)}</div>` : ''}
+      <div style="display:flex;flex-direction:column;gap:8px;">
+        <button class="btn" style="justify-content:space-between;display:flex;padding:10px 14px;font-weight:800;" onclick="document.getElementById('modal-pcded').remove();pcApplyLine('${esc(base)}',${li},'dedA')">✅ 정상(A)에서 차감 <span style="font-family:Consolas,monospace;">재고 ${a}</span></button>
+        <button class="btn" style="justify-content:space-between;display:flex;padding:10px 14px;font-weight:800;color:#b45309;border-color:#fcd34d;background:#fffbeb;" onclick="document.getElementById('modal-pcded').remove();pcApplyLine('${esc(base)}',${li},'dedB')">🅱 B급에서 차감 <span style="font-family:Consolas,monospace;">B ${b}</span></button>
+        <button class="btn btn-sm" onclick="document.getElementById('modal-pcded').remove()">취소</button>
+      </div>
+    </div></div>`;
+  document.body.appendChild(div);
+}
 function pcStyleTotal(style){ return pcStore.filter(r=>String(r.style)===String(style)).reduce((a,r)=>a+pcRowTotal(r),0); }
 function pcGrandTotal(){ return pcStore.reduce((a,r)=>a+pcRowTotal(r),0); }
 function pcSizesFor(style){
@@ -5074,8 +5253,8 @@ function renderPcRoom(){
           return `<tr${wi===0?' style="border-top:2px solid #dbe4f0;"':''}>
           ${wi===0?`<td class="tl" rowspan="3" style="font-weight:700;white-space:nowrap;vertical-align:top;padding-top:7px;">${esc(col)}</td>`:''}
           <td style="font-weight:800;font-size:10px;color:${whCol};">${w}</td>
-          ${sizes.map(s2=>{ const v = (r.qty||{})[s2]; return `<td style="padding:2px 2px 0;vertical-align:top;"><input class="num" data-pc="${cssId(k)}-${cssId(s2)}" value="${v!=null?v:''}" onchange="pcCellChange('${esc(k)}','${s2}',this.value,this)" style="width:52px;text-align:center;${v<0?'color:#dc2626;font-weight:800;':''}${virtual?'background:#fafbfd;':''}">${pcMoveBadge(r, s2, 'pcm-'+cssId(k)+'-'+cssId(s2))}</td>`; }).join('')}
-          <td style="font-family:Consolas,monospace;font-weight:800;" id="pcrt-${cssId(k)}">${pcRowTotal(r)||''}</td>
+          ${sizes.map(s2=>{ const v = (r.qty||{})[s2]; return `<td style="padding:2px 2px 0;vertical-align:top;"><input class="num" data-pc="${cssId(k)}-${cssId(s2)}" value="${v!=null?v:''}" onchange="pcCellChange('${esc(k)}','${s2}',this.value,this)" style="width:52px;text-align:center;${v<0?'color:#dc2626;font-weight:800;':''}${virtual?'background:#fafbfd;':''}"><div style="display:flex;gap:4px;justify-content:center;">${pcBBadge(r, k, s2)}${pcMoveBadge(r, s2, 'pcm-'+cssId(k)+'-'+cssId(s2))}</div></td>`; }).join('')}
+          <td style="font-family:Consolas,monospace;font-weight:800;white-space:nowrap;"><span id="pcrt-${cssId(k)}">${pcRowTotal(r)||''}</span>${pcBRowTotal(r)?`<span style="font-size:9px;color:#b45309;font-weight:800;"> +B${pcBRowTotal(r)}</span>`:''}</td>
           <td class="tl" style="white-space:nowrap;">${stBadge('PC', sty, col, w==='CA'?'CA':'')}</td>
           <td style="white-space:nowrap;"><button class="btn btn-sm" style="border:none;padding:0 5px;" onclick="pcHistory('${esc(String(sty))}','${esc(col)}','${w}')" title="[${w}] 이 칼라의 변동 내역 (원장)">📜</button>${virtual?'':`<button class="btn btn-sm" style="border:none;color:#b91c1c;padding:0 6px;" oncontextmenu="return false;" onclick="pcDelRow('${esc(k)}')" title="[${w}] 이 칼라 행 삭제">✕</button>`}</td>
         </tr>`;}).join('') + (()=>{
@@ -5106,7 +5285,7 @@ function renderPcRoom(){
             <div style="flex:1;min-width:0;"><b>${esc(String(L.style||''))}</b> ${esc(String(L.color||''))} <b>${esc(size)}</b> × ${need}
               <span class="muted">(오더 ${Number(L.qty)||0}${bc.full ? ' = 풀박스 ' + bc.full + ' + ' + need : ''}) [${esc(L.wh||'')}]</span><br>
               ${isSC
-                ? `<span id="pchave-${li}" style="color:${inPc==null?'#94a3b8':(have < need ? '#dc2626' : '#166534')};font-weight:700;">[${whL2}] PC재고: ${inPc==null?'없음':have}</span>${need ? '' : ' <span class="muted">풀박스만 — PC 준비 없음</span>'}`
+                ? `<span id="pchave-${li}" style="color:${inPc==null?'#94a3b8':(have < need ? '#dc2626' : '#166534')};font-weight:700;">[${whL2}] PC재고: ${inPc==null?'없음':have}</span>${inPc&&pcB(inPc,size)?` <span style="color:#b45309;font-weight:800;font-size:10px;">+B${pcB(inPc,size)}</span>`:''}${need ? '' : ' <span class="muted">풀박스만 — PC 준비 없음</span>'}`
                 : `<span style="color:#94a3b8;font-weight:700;">SC/CA 재고 아님 — 차감/추가 불가</span>`}</div>
             ${isSC && inPc && need ? `<button class="btn btn-sm" id="pcapply-${li}" style="flex-shrink:0;font-size:10px;padding:2px 7px;background:#fff;color:#7c3aed;border-color:#c4b5fd;" onclick="pcApplyLine('${esc(pickRec.base)}',${li})" title="이 라인의 Partial 수량(${need})만큼 PC Room에서 차감">− 차감 ${need}</button>` : ''}
             ${isSC && inPc ? `<button class="btn btn-sm" id="pcadd-${li}" style="flex-shrink:0;font-size:10px;padding:2px 7px;background:#fff;color:#166534;border-color:#86efac;" onclick="pcApplyLine('${esc(pickRec.base)}',${li},'add')" title="박스 1개 오픈 — 박스입수(${ppb}장)만큼 PC Room에 추가">＋${ppb}</button>` : ''}
@@ -5353,7 +5532,7 @@ async function skuRenameColor(style, oldC){
     const r1 = await sbFetch('/rest/v1/pr_boxes?style=eq.'+encodeURIComponent(style)+'&color=eq.'+encodeURIComponent(oldC), {method:'PATCH', headers:{Prefer:'return=minimal'}, body:JSON.stringify({color:nc})});
     if(!r1.ok) throw new Error('boxes HTTP '+r1.status);
     // 2) PC Room (SC/CA 각각)
-    if(!pcLoaded){ try{ const r0 = await sbFetch('/rest/v1/pr_pcroom?select=k,style,color,qty,sizes,wh,updated_at,updated_by'); if(r0.ok){ pcStore = await r0.json(); pcLoaded = true; } }catch(e){} }
+    if(!pcLoaded){ try{ const r0 = await sbFetch('/rest/v1/pr_pcroom?select=k,style,color,qty,bqty,bnote,sizes,wh,updated_at,updated_by'); if(r0.ok){ pcStore = await r0.json(); pcLoaded = true; } }catch(e){} }
     for(const w of ['SC','CA']){
       const kOld = pcKey(style, oldC, w), kNew = pcKey(style, nc, w);
       const rowOld = pcStore.find(x=>x.k===kOld);
@@ -5835,7 +6014,7 @@ async function bxPullSave(){
     const locLabel = Object.keys(locs2).map(l=>l+(locs2[l]>1?' ×'+locs2[l]:'')).join(', ');
     try{
       if(!pcLoaded){
-        const r0 = await sbFetch('/rest/v1/pr_pcroom?select=k,style,color,qty,sizes,wh,updated_at,updated_by');
+        const r0 = await sbFetch('/rest/v1/pr_pcroom?select=k,style,color,qty,bqty,bnote,sizes,wh,updated_at,updated_by');
         if(r0.ok){ pcStore = await r0.json(); pcLoaded = true; }
       }
       // 선택 박스를 실제 칼라(변형)별로 나눠서 각 PC Room 행에 입고
@@ -6208,6 +6387,150 @@ async function bxRestore(id){
   showToast('↩ 복원됨 — 재고로 돌아왔어요');
   const m = document.getElementById('modal-bxhist'); if(m) m.remove();
   loadBoxRoom();
+}
+// ═══ 🔍 재고조사 시트 — style(+color)로 location/bin별 수량 조회·인쇄·엑셀 ═══
+let _bxAuditRows = [], _bxAuditTitle = '';
+async function bxAuditOpen(){
+  if(!bxLoaded) await bxFetchStore();
+  await skuFetch();
+  const ex = document.getElementById('modal-bxaudit'); if(ex) ex.remove();
+  const div = document.createElement('div');
+  div.id = 'modal-bxaudit';
+  div.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,.55);z-index:9999;display:flex;align-items:center;justify-content:center;';
+  div.innerHTML = `<div style="background:#fff;border-radius:12px;width:980px;max-width:96vw;max-height:92vh;display:flex;flex-direction:column;overflow:hidden;box-shadow:0 20px 60px rgba(0,0,0,.35);">
+    <div style="background:#0f2a4a;color:#fff;padding:11px 16px;font-weight:800;font-size:13.5px;display:flex;align-items:center;gap:10px;">🔍 재고조사 시트
+      <span style="font-size:11px;font-weight:600;color:#cbd5e1;">Style + Color를 넣으면 location별 박스/수량이 나옵니다 — 인쇄해서 현장 실사에 쓰세요</span>
+      <button class="btn btn-sm" style="margin-left:auto;background:transparent;color:#cbd5e1;border-color:#475569;" onclick="document.getElementById('modal-bxaudit').remove()">✕</button>
+    </div>
+    <div style="display:flex;gap:8px;align-items:flex-end;padding:12px 16px;border-bottom:1px solid var(--border);flex-wrap:wrap;">
+      <div class="ff" style="margin:0;"><label>Style</label><input class="fi" id="bxa-style" list="bxa-styles" placeholder="예: 1368" style="width:120px;font-weight:700;" oninput="bxAuditColors()" onkeydown="if(event.key==='Enter')bxAuditRun()"><datalist id="bxa-styles">${skuStyles().map(s=>`<option value="${esc(s)}">`).join('')}</datalist></div>
+      <div class="ff" style="margin:0;"><label>Color (비우면 전체)</label><input class="fi" id="bxa-color" list="bxa-colors" placeholder="예: BLACK" style="width:180px;text-transform:uppercase;" onkeydown="if(event.key==='Enter')bxAuditRun()"><datalist id="bxa-colors"></datalist></div>
+      <div class="ff" style="margin:0;"><label>창고</label><select class="fi" id="bxa-wh" style="width:90px;"><option value="">SC+CA</option><option value="SC">SC만</option><option value="CA">CA만</option></select></div>
+      <button class="btn btn-sm btn-primary" style="height:34px;" onclick="bxAuditRun()">조회</button>
+      <span style="flex:1;"></span>
+      <button class="btn btn-sm" id="bxa-xl" style="display:none;color:#166534;border-color:#86efac;" onclick="bxAuditExcel()">⬇ Excel</button>
+      <button class="btn btn-sm" id="bxa-pr" style="display:none;background:#16a34a;color:#fff;border-color:#16a34a;font-weight:800;" onclick="bxAuditPrint()">🖨 인쇄</button>
+    </div>
+    <div id="bxa-out" style="flex:1;overflow-y:auto;padding:12px 16px;"><div class="muted">Style을 입력하고 조회를 누르세요</div></div>
+  </div>`;
+  document.body.appendChild(div);
+  initModalDrag(div);
+  setTimeout(()=>{ const el = document.getElementById('bxa-style'); if(el) el.focus(); }, 50);
+}
+function bxAuditColors(){
+  const s = String((document.getElementById('bxa-style')||{}).value||'').trim();
+  const dl = document.getElementById('bxa-colors'); if(!dl) return;
+  dl.innerHTML = [...new Set(skuColors(s).map(c=>bxBaseColor(c)))].sort().map(c=>`<option value="${esc(c)}">`).join('');
+}
+function bxAuditRun(){
+  const style = String((document.getElementById('bxa-style')||{}).value||'').trim();
+  const colorQ = bxBaseColor(String((document.getElementById('bxa-color')||{}).value||'').trim());
+  const whQ = String((document.getElementById('bxa-wh')||{}).value||'');
+  const out = document.getElementById('bxa-out'); if(!out) return;
+  if(!style){ out.innerHTML = '<div class="muted">Style을 입력하세요</div>'; return; }
+  const sizeOrder = ['2T','3T','4T','5T','XXS','XS','S','M','L','XL','2XL','3XL','4XL','5XL','6XL'];
+  const boxes = bxStore.filter(b=> b.status==='IN' && String(b.style)===style && b.wh!=='TRANSIT'
+    && (!whQ || b.wh===whQ)
+    && (!colorQ || bxBaseColor(b.color)===colorQ));
+  if(!boxes.length){ out.innerHTML = '<div class="muted">⚠ 해당 재고가 없습니다 — ' + esc(style) + (colorQ?' / '+esc(colorQ):'') + '</div>'; _bxAuditRows=[]; const x1=document.getElementById('bxa-xl'), p1=document.getElementById('bxa-pr'); if(x1)x1.style.display='none'; if(p1)p1.style.display='none'; return; }
+  const g = {};
+  boxes.forEach(b=>{
+    const vr = bxVariantLabel(b.color, b.style);
+    const k = [b.wh, b.loc||'(없음)', bxBaseColor(b.color), vr, b.size, b.pcs].join('|');
+    if(!g[k]) g[k] = { wh: b.wh, loc: b.loc||'(없음)', color: bxBaseColor(b.color), vr: vr, size: b.size, ppb: b.pcs, n: 0 };
+    g[k].n++;
+  });
+  _bxAuditRows = Object.values(g).sort((a,b)=>
+    a.wh.localeCompare(b.wh) || a.loc.localeCompare(b.loc, undefined, {numeric:true}) ||
+    a.color.localeCompare(b.color) || a.vr.localeCompare(b.vr) ||
+    ((sizeOrder.indexOf(a.size)<0?99:sizeOrder.indexOf(a.size)) - (sizeOrder.indexOf(b.size)<0?99:sizeOrder.indexOf(b.size))) || String(a.size).localeCompare(String(b.size)));
+  _bxAuditTitle = style + (colorQ ? ' ' + colorQ : ' 전체 칼라') + (whQ ? ' · ' + whQ : '');
+  const whs = [...new Set(_bxAuditRows.map(r=>r.wh))];
+  let html = '';
+  whs.forEach(w=>{
+    const rows = _bxAuditRows.filter(r=>r.wh===w);
+    const totB = rows.reduce((a,r)=>a+r.n,0), totP = rows.reduce((a,r)=>a+r.n*r.ppb,0);
+    const nLocs = new Set(rows.map(r=>r.loc)).size;
+    html += `<div style="margin-bottom:16px;">
+      <div style="font-weight:800;font-size:13px;color:#0f2a4a;margin-bottom:6px;"><span class="chip chip-${w}">${w}</span> location ${nLocs}곳 · ${totB.toLocaleString()}박스 · ${totP.toLocaleString()} pcs</div>
+      <table class="etbl" style="width:100%;">
+        <thead><tr><th style="width:90px;">Location</th><th class="tl">Color</th><th style="width:70px;">구분</th><th style="width:55px;">Size</th><th style="width:50px;">입수</th><th style="width:55px;">박스</th><th style="width:75px;">Pcs</th><th style="width:70px;background:#fffbeb;">실사 박스</th><th style="width:110px;background:#fffbeb;">비고</th></tr></thead>
+        <tbody>${rows.map((r,i)=>{
+          const first = i===0 || rows[i-1].loc!==r.loc;
+          return `<tr>
+            <td style="font-family:Consolas,monospace;font-weight:800;${first?'':'color:#c8cdd4;'}">${esc(r.loc)}</td>
+            <td class="tl">${esc(r.color)}</td>
+            <td style="font-size:10.5px;color:var(--text2);">${r.vr==='Tubular'?'':esc(r.vr)}</td>
+            <td>${esc(r.size)}</td>
+            <td>${r.ppb}</td>
+            <td style="font-weight:800;">${r.n}</td>
+            <td style="font-family:Consolas,monospace;">${(r.n*r.ppb).toLocaleString()}</td>
+            <td style="background:#fffbeb;"></td><td style="background:#fffbeb;"></td>
+          </tr>`;}).join('')}</tbody>
+        <tfoot><tr><td colspan="5" class="tl" style="font-weight:800;">${w} TOTAL</td><td style="font-weight:800;">${totB}</td><td style="font-family:Consolas,monospace;font-weight:800;">${totP.toLocaleString()}</td><td colspan="2" style="background:#fffbeb;"></td></tr></tfoot>
+      </table>
+    </div>`;
+  });
+  out.innerHTML = html;
+  const xb = document.getElementById('bxa-xl'), pb = document.getElementById('bxa-pr');
+  if(xb) xb.style.display = ''; if(pb) pb.style.display = '';
+}
+function bxAuditPrint(){
+  if(!_bxAuditRows.length) return;
+  const dateStr = new Date().toLocaleDateString('en-US') + ' ' + new Date().toLocaleTimeString('en-US',{hour:'2-digit',minute:'2-digit'});
+  const whs = [...new Set(_bxAuditRows.map(r=>r.wh))];
+  let body = '';
+  whs.forEach(w=>{
+    const rows = _bxAuditRows.filter(r=>r.wh===w);
+    const totB = rows.reduce((a,r)=>a+r.n,0), totP = rows.reduce((a,r)=>a+r.n*r.ppb,0);
+    body += `<h3 style="margin:16px 0 6px;">[${w}] location ${new Set(rows.map(r=>r.loc)).size}곳 · ${totB.toLocaleString()} boxes · ${totP.toLocaleString()} pcs</h3>
+    <table><thead><tr><th>Location</th><th style="text-align:left;">Color</th><th>구분</th><th>Size</th><th>입수</th><th>박스</th><th>Pcs</th><th style="width:60px;">실사 박스</th><th style="width:100px;">비고</th></tr></thead>
+    <tbody>${rows.map(r=>`<tr><td style="font-weight:700;">${esc(r.loc)}</td><td style="text-align:left;">${esc(r.color)}</td><td style="font-size:10px;">${r.vr==='Tubular'?'':esc(r.vr)}</td><td>${esc(r.size)}</td><td>${r.ppb}</td><td style="font-weight:700;">${r.n}</td><td>${(r.n*r.ppb).toLocaleString()}</td><td></td><td></td></tr>`).join('')}</tbody>
+    <tfoot><tr><td colspan="5" style="text-align:right;font-weight:800;">${w} TOTAL</td><td style="font-weight:800;">${totB}</td><td style="font-weight:800;">${totP.toLocaleString()}</td><td></td><td></td></tr></tfoot></table>`;
+  });
+  const doc = `<!DOCTYPE html><html><head><meta charset="utf-8"><title>Stock Count — ${esc(_bxAuditTitle)}</title>
+    <style>
+      body{font-family:'Malgun Gothic',Arial,sans-serif;font-size:11px;margin:24px;color:#111;}
+      h2{margin:0 0 2px;} .sub{color:#555;font-size:10.5px;margin-bottom:8px;}
+      table{border-collapse:collapse;width:100%;margin-bottom:4px;}
+      th,td{border:1px solid #999;padding:4px 6px;text-align:center;}
+      th{background:#eef1f5;font-size:10px;}
+      h3{font-size:12px;}
+      .sign{margin-top:22px;display:flex;gap:40px;font-size:11px;}
+      .sign span{border-top:1px solid #333;padding-top:4px;width:180px;text-align:center;}
+      @media print{ body{margin:10mm;} }
+    </style></head><body>
+    <h2>📋 재고조사 (Stock Count) — ${esc(_bxAuditTitle)}</h2>
+    <div class="sub">출력: ${dateStr} · 시스템 수량 기준 — 실사 박스 수를 적고 차이 나면 비고에 메모하세요</div>
+    ${body}
+    <div class="sign"><span>실사자 (Counted by)</span><span>확인자 (Verified by)</span><span>날짜 (Date)</span></div>
+    <script>window.onload=function(){window.print();};<\/script></body></html>`;
+  const win = window.open('', '_blank');
+  if(!win){ showToast('⚠ 팝업이 차단됐습니다 — 팝업 허용 후 다시 시도하세요'); return; }
+  win.document.write(doc); win.document.close();
+}
+async function bxAuditExcel(){
+  if(!_bxAuditRows.length) return;
+  showToast('📥 엑셀 만드는 중...');
+  try{
+    await loadXlsxLib();
+    const aoa = [['재고조사 (Stock Count) — ' + _bxAuditTitle], ['출력: ' + new Date().toLocaleString()], [],
+      ['창고','Location','Color','구분','Size','입수','박스','Pcs','실사 박스','비고']];
+    _bxAuditRows.forEach(r=>aoa.push([r.wh, r.loc, r.color, r.vr==='Tubular'?'':r.vr, r.size, r.ppb, r.n, r.n*r.ppb, '', '']));
+    const whs = [...new Set(_bxAuditRows.map(r=>r.wh))];
+    aoa.push([]);
+    whs.forEach(w=>{
+      const rows = _bxAuditRows.filter(r=>r.wh===w);
+      aoa.push([w + ' TOTAL','','','','','', rows.reduce((a,r)=>a+r.n,0), rows.reduce((a,r)=>a+r.n*r.ppb,0),'','']);
+    });
+    const ws = XLSX.utils.aoa_to_sheet(aoa);
+    ws['!cols'] = [{wch:6},{wch:12},{wch:20},{wch:10},{wch:7},{wch:6},{wch:7},{wch:9},{wch:9},{wch:16}];
+    const wb = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(wb, ws, 'StockCount');
+    const fname = 'StockCount_' + _bxAuditTitle.replace(/[^A-Za-z0-9가-힣._-]+/g,'_') + '_' + todayStr() + '.xlsx';
+    XLSX.writeFile(wb, fname);
+    showToast('✅ ' + fname + ' 다운로드');
+  }catch(e){ console.warn('bxAuditExcel', e); showToast('⚠ 엑셀 생성에 실패했습니다'); }
 }
 async function bxExport(){
   await loadXlsxLib();
@@ -8537,11 +8860,14 @@ function renderDash(){
     </div>`;
 }
 
+function recIsReplace(s){ return !!(s && s.meta && s.meta._replaceOf); }
 function recStatus(s){
   const whs = (s.whs||[]).filter(w=>w!=='BO' && w!=='NA');
   if(!whs.length) return { label: t('st_bo'), color:'#b91c1c', bg:'#fee2e2' };
   const plDone = whs.filter(w=>s.pl && s.pl[w] && s.pl[w].savedAt).length;
-  const invDone = whs.filter(w=>s.inv && s.inv[w] && s.inv[w].printed).length;
+  const invDone = recIsReplace(s)
+    ? whs.filter(w=>s.pl && s.pl[w] && s.pl[w]._completed).length   // 🔁 교체 오더: 인보이스 없음 — PL Complete가 완료
+    : whs.filter(w=>s.inv && s.inv[w] && s.inv[w].printed).length;
   const n = whs.length;
   const hasBO = (s.whs||[]).includes('BO');
   if(invDone >= n) return hasBO
@@ -8563,6 +8889,7 @@ function whStatus(s, w){
   const invPr = s.inv && s.inv[w] && s.inv[w].printed;
   if(invPr) return { label: t('st_complete'), color:'#166534', bg:'#dcfce7' };
   const plDone = plSaved && s.pl[w]._completed;
+  if(recIsReplace(s) && plDone) return { label: '🔁 ' + t('st_complete'), color:'#166534', bg:'#dcfce7' };
   if(plDone && plFutureDate(s, w)) return { label: '📅 Ready to Ship', color:'#b45309', bg:'#fef3c7' };
   if(plDone) return { label: t('st_packed'), color:'#0e7490', bg:'#cffafe' };
   if(plSaved) return { label: '📦 PL Saved', color:'#0369a1', bg:'#e0f2fe' };
@@ -8589,7 +8916,7 @@ function updateBatchBar(){
 }
 async function printBatchInvoices(){
   const pairs = [...document.querySelectorAll('.bship-cb:checked')].map(c=>({base:c.dataset.base, wh:c.dataset.wh}))
-    .filter(p=>{ const r = savedCache.find(s=>s.base===p.base); return r && r.pl && r.pl[p.wh] && r.pl[p.wh].savedAt; });
+    .filter(p=>{ const r = savedCache.find(s=>s.base===p.base); return r && !recIsReplace(r) && r.pl && r.pl[p.wh] && r.pl[p.wh].savedAt; });
   if(!pairs.length){ showToast('🧾 인쇄할 인보이스 없음 — 출고(PL 저장)된 오더를 선택하세요'); return; }
   const docs = []; const touched = {};
   for(const p of pairs){
@@ -8872,6 +9199,7 @@ function renderSaved(){
       <span style="background:#111;color:#fff;font-weight:400;font-size:12.5px;padding:2px 10px;border-radius:5px;">${esc(s.meta.cust||'')}</span>
       <span style="background:#111;color:#fff;font-family:Consolas,monospace;font-weight:400;font-size:12px;padding:2px 10px;border-radius:5px;">PO ${esc(s.meta.po||'')}</span>
       ${s.meta && s.meta._from ? `<span title="Created from ${esc(s.meta._from.base)} (${esc(s.meta._from.src||'')})" style="background:#f5f3ff;color:#6d28d9;border:1px solid #ddd6fe;font-size:10.5px;font-weight:800;padding:2px 8px;border-radius:20px;white-space:nowrap;cursor:pointer;" onclick="openOrderSummary('${esc(s.meta._from.base)}')">↩ ${esc(s.meta._from.src||'')} of ${esc(s.meta._from.base)}</span>` : ''}
+      ${recIsReplace(s) ? `<span title="하자 교체 (무상 · 인보이스 없음)${s.meta._replaceOf.reason?' — '+esc(s.meta._replaceOf.reason):''}" style="background:#fff1f2;color:#be123c;border:1.5px solid #fda4af;font-size:10.5px;font-weight:900;padding:2px 9px;border-radius:20px;white-space:nowrap;cursor:pointer;" onclick="openOrderSummary('${esc(s.meta._replaceOf.base)}')">🔁 REPLACE of PO ${esc(s.meta._replaceOf.po)}</span>` : ''}
       <span style="font-weight:700;">${tot.toLocaleString()} pcs</span>
       <span style="color:var(--ok);">$${amt.toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2})}</span>
       ${whs.map(w=>`<span class="chip chip-${w}">${w}</span>`).join('')}
@@ -8886,6 +9214,7 @@ function renderSaved(){
       <button class="btn btn-sm" onclick="viewSavedPO('${esc(s.base)}')">📄 PO</button>
       <button class="btn btn-sm" onclick="openHistory('${esc(s.base)}')" title="변경 기록">🕘</button>
       <button class="btn btn-sm" style="color:#7c3aed;" onclick="splitOrderOpen('${esc(s.base)}')" title="아이템 일부를 별도 오더(-S)로 분리 — 급한 건 따로 진행 (재고 차감도 자동 이관)">✂ Split</button>
+      ${!recIsReplace(s) && (s.whs||[]).some(w=>s.pl && s.pl[w] && s.pl[w].savedAt) ? `<button class="btn btn-sm" style="color:#be123c;border-color:#fda4af;" onclick="replaceOrderOpen('${esc(s.base)}')" title="출고분 중 하자 교체 — PO#R 무상 오더 생성 (인보이스 없음)">🔁 Replace</button>` : ''}
       <button class="btn btn-sm" onclick="loadSaved('${esc(s.base)}')">${t('open_edit')}</button>
       <button class="btn btn-sm" style="color:var(--bad);" onclick="delSaved('${esc(s.base)}')">${t('del')}</button>
       </div>
@@ -8903,7 +9232,8 @@ function renderSaved(){
         ${(w==='BO'||w==='NA') ? `<button class="btn btn-sm" style="background:#f5f3ff;color:#6d28d9;border-color:#c4b5fd;font-weight:700;" onclick="processFromWh('${esc(s.base)}','${w}','SC')" title="재고 입고 — 별도 건(-${w==='BO'?'B':'N'})으로 분리해 SC에서 출고 진행">⚙ Process from SC</button><button class="btn btn-sm" style="background:#fff7ed;color:#c2410c;border-color:#fed7aa;font-weight:700;" onclick="processFromWh('${esc(s.base)}','${w}','CA')" title="재고 입고 — 별도 건(-${w==='BO'?'B':'N'})으로 분리해 CA에서 출고 진행">⚙ Process from CA</button>` : ''}
         ${w!=='BO' && w!=='NA' ? `<button class="btn btn-sm" style="background:${mp.label?'#16a34a':'#7c3aed'};color:#fff;border-color:${mp.label?'#16a34a':'#7c3aed'};" onclick="docBtnClick('${esc(s.base)}','${w}','label')" oncontextmenu="return docBtnMenu(event,'${esc(s.base)}','${w}','label')" title="우클릭: 완료(초록) 표시 ${mp.label?'해제':'전환'}">🏷 Box Label${pby(mp.label)}</button>
         <button class="btn btn-sm" style="${(s.pl && s.pl[w] && s.pl[w]._completed)?'background:#16a34a;border-color:#16a34a;':(plSaved?'background:#0e7490;border-color:#0e7490;':'background:#f59e0b;border-color:#f59e0b;')}color:#fff;" onclick="openPLWh('${esc(s.base)}','${w}')" oncontextmenu="return plBtnMenu(event,'${esc(s.base)}','${w}')" title="${plSaved && !(s.pl[w]&&s.pl[w]._completed)?'저장됨 — Complete 전 (이멜 미발송) · ':''}우클릭: Complete 표시/해제 (이멜 없이)">📦 Packing List</button>
-        ${plSaved ? `<button class="btn btn-sm" style="${invPr?'background:#16a34a;border-color:#16a34a;':'background:#dc2626;border-color:#dc2626;'}color:#fff;" onclick="docBtnClick('${esc(s.base)}','${w}','inv')" oncontextmenu="return docBtnMenu(event,'${esc(s.base)}','${w}','inv')" title="우클릭: 완료(초록) 표시 ${invPr?'해제':'전환'}">🧾 Invoice</button>${invPr ? `<button class="btn btn-sm" style="background:#065f46;color:#fff;border-color:#065f46;" onclick="payFromRow('${esc(s.base)}','${w}')" title="입금 기록 (전액/부분)">💰 Payment</button><button class="btn btn-sm" style="background:#7c2d12;color:#fff;border-color:#7c2d12;" onclick="memoFromRow('${esc(s.base)}','${w}')" title="Credit Memo (리턴) — MAS200 파일 첨부 가능">📝 Credit Memo</button>` : ''}` : ''}
+        ${plSaved && recIsReplace(s) ? `<span style="padding:3px 10px;border-radius:20px;font-size:10.5px;font-weight:800;background:#fff1f2;color:#be123c;border:1px solid #fda4af;white-space:nowrap;" title="하자 교체 오더 — 인보이스 발행 안 함">🔁 무상 교체 — Invoice 없음</span>` : ''}
+        ${plSaved && !recIsReplace(s) ? `<button class="btn btn-sm" style="${invPr?'background:#16a34a;border-color:#16a34a;':'background:#dc2626;border-color:#dc2626;'}color:#fff;" onclick="docBtnClick('${esc(s.base)}','${w}','inv')" oncontextmenu="return docBtnMenu(event,'${esc(s.base)}','${w}','inv')" title="우클릭: 완료(초록) 표시 ${invPr?'해제':'전환'}">🧾 Invoice</button>${invPr ? `<button class="btn btn-sm" style="background:#065f46;color:#fff;border-color:#065f46;" onclick="payFromRow('${esc(s.base)}','${w}')" title="입금 기록 (전액/부분)">💰 Payment</button><button class="btn btn-sm" style="background:#7c2d12;color:#fff;border-color:#7c2d12;" onclick="memoFromRow('${esc(s.base)}','${w}')" title="Credit Memo (리턴) — MAS200 파일 첨부 가능">📝 Credit Memo</button>` : ''}` : ''}
         ${(()=>{ const iv0 = s.inv && s.inv[w]; const pd = iv0 && iv0.paid; if(!pd) return '';
           const rt = refundTotals(pd);
           const dupOpen = (iv0.dupPays||[]).some(d=>refundTotals(d).remain > 0.005);
