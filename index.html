@@ -136,7 +136,7 @@ main{max-width:1100px;margin:0 auto;padding:16px;}
     <button class="btn btn-sm" onclick="doLogout()" style="padding:2px 8px;font-size:10px;" data-i18n="logout">로그아웃</button>
   </span>
   <select id="lang-sel" onchange="setLang(this.value)" style="font-size:11px;padding:3px 6px;border-radius:5px;border:none;background:#1d3f66;color:#fff;"><option value="ko">한국어</option><option value="en">English</option><option value="es">Español</option></select>
-  <span style="font-size:10px;color:#9fb8d4;">v291 🚚</span>
+  <span style="font-size:10px;color:#9fb8d4;">v292 🚚</span>
 </div>
 <script type="text/javascript" src="https://js.authorize.net/v1/Accept.js" charset="utf-8"></script>
 <div id="po-viewer" style="display:none;position:fixed;top:0;right:0;width:44%;height:100vh;background:#fff;border-left:2px solid var(--border);z-index:60;box-shadow:-6px 0 20px rgba(0,0,0,.15);">
@@ -6005,417 +6005,791 @@ async function bxExport(){
 }
 // ═══ 🇭🇹 Haiti 입고: 인보이스 업로드 → 리뷰 → 입고 예정 → 도착 시 location 지정 → SC 재고 확정 ═══
 const HI_SZ = ['2T','3T','4T','5T','XXS','XS','S','M','L','XL','2XL','3XL','4XL','5XL','6XL'];
-// ═══════════════ 🚚 SC → CA Transfer (배치 담기 → In Transit → CA 도착 location 지정) ═══════════════
-let trCart = [];         // 편집중 배치 라인: [{style,color,size,pcs,ids:[],locs:{LOC:n}}]
+// ═══════════════ 🚚 SC → CA Transfer — IMS Shipment Builder 이식 (박스 단위) ═══════════════
+// Draft 에 담는 순간 박스가 SC 에서 예약(wh=TRANSIT)되고, Draft 삭제 시 복원됩니다.
+// Post 는 상태만 In Transit 으로 — CA 도착 처리에서 bin 지정하면 CA 재고로 들어갑니다.
+let _shipId = null, _shipNo = null, _shipMeta = {}, _shipPallets = [];
+let _trFilter = 'all';
 function trChunk(ids){ const out=[]; for(let i=0;i<ids.length;i+=80) out.push(ids.slice(i,i+80)); return out; }
 async function trPatchBoxes(ids, body){ for(const ch of trChunk(ids)) await bxPatch(ch, body); }
+function trGenShipNo(){
+  const d = new Date(); const p2 = n=>String(n).padStart(2,'0');
+  return 'SC-CA-' + String(d.getFullYear()).slice(2) + p2(d.getMonth()+1) + p2(d.getDate()) + '-' + p2(d.getHours()) + p2(d.getMinutes());
+}
 async function trGet(id){ try{ const r = await sbFetch('/rest/v1/pr_transfers?id=eq.'+id+'&select=*'); if(r.ok) return (await r.json())[0]; }catch(e){} return null; }
-async function trSaveLines(id, lines){ try{ await sbFetch('/rest/v1/pr_transfers?id=eq.'+id, {method:'PATCH', headers:{Prefer:'return=minimal'}, body:JSON.stringify({lines})}); }catch(e){} }
+async function trPatchRec(id, body){ try{ await sbFetch('/rest/v1/pr_transfers?id=eq.'+id, {method:'PATCH', headers:{Prefer:'return=minimal'}, body:JSON.stringify(body)}); }catch(e){} }
+function trLinesFlat(){ return _shipPallets.reduce((a,p)=>a.concat(p.lines.map(l=>({...l, pallet:p.label}))),[]); }
+async function trSaveDraftLines(){ if(_shipId) await trPatchRec(_shipId, {lines: trLinesFlat()}); }
+function trLineBoxes(l){ return l.is_manual ? (Number(l.boxes)||0) : (l.ids||[]).length; }
+function trLinePcs(l){ return trLineBoxes(l) * (Number(l.ppb)||Number(l.pcs)||0); }
+function trStatusChip(s){
+  const m = { LOADING:{label:'Draft',c:'#92400e',b:'#fef3c7'}, TRANSIT:{label:'In Transit',c:'#b45309',b:'#fef3c7'}, RECEIVED:{label:'Received',c:'#15803d',b:'#dcfce7'} }[s] || {label:s,c:'#475467',b:'#f2f4f7'};
+  return `<span style="padding:2px 10px;border-radius:20px;font-size:10.5px;font-weight:700;background:${m.b};color:${m.c};border:1px solid ${m.c}33;">${m.label}</span>`;
+}
+// ── Transfer 목록 (IMS Transfers 화면) ──
 async function trOpen(){
-  ['modal-tr','modal-trd','modal-trr'].forEach(x=>{ const e=document.getElementById(x); if(e) e.remove(); });
+  ['modal-tr','modal-trb','modal-trr','modal-scv','modal-trpl','modal-trv'].forEach(x=>{ const e=document.getElementById(x); if(e) e.remove(); });
   let rows = [];
   try{
-    const r = await sbFetch('/rest/v1/pr_transfers?select=id,ref,status,lines,created_at,departed_at,received_at&order=created_at.desc&limit=40');
+    const r = await sbFetch('/rest/v1/pr_transfers?select=id,ref,status,lines,meta,created_at,departed_at,received_at&order=created_at.desc&limit=60');
     if(r.ok) rows = await r.json();
   }catch(e){}
-  const secs = [['LOADING','🧰 준비중 (박스 담는 중)'],['TRANSIT','🚚 In Transit (이동중)'],['RECEIVED','✓ 최근 도착 완료']];
-  const row = x=>{
-    const nb = (x.lines||[]).reduce((a,l)=>a+((l.ids||[]).length),0);
-    const np = (x.lines||[]).reduce((a,l)=>a+((l.ids||[]).length)*(Number(l.pcs)||0),0);
-    return `<div style="display:flex;align-items:center;gap:10px;padding:8px 10px;border-bottom:1px solid var(--border);font-size:12px;">
-      <span style="font-weight:800;min-width:120px;">${esc(x.ref||'(무제)')}</span>
-      <span class="muted">${String(x.created_at||'').slice(0,10)} · ${(x.lines||[]).length}품목 · ${nb}박스 · ${np.toLocaleString()} pcs</span>
-      <span style="margin-left:auto;display:flex;gap:6px;align-items:center;">
-        ${x.status==='LOADING' ? `<button class="btn btn-sm btn-primary" style="background:#b45309;border-color:#b45309;" onclick="trDetail('${x.id}')">🧰 담기 계속</button><button class="btn btn-sm" style="color:#b91c1c;" onclick="trDelete('${x.id}')">✕</button>` : ''}
-        ${x.status==='TRANSIT' ? `<span style="padding:2px 10px;border-radius:20px;font-size:10.5px;font-weight:800;background:#fef3c7;color:#92400e;">🚚 ${String(x.departed_at||'').slice(0,10)} 출발</span><button class="btn btn-sm" style="font-size:10px;" onclick="trDoc('${x.id}','pl')" title="Packing List">🖨 PL</button><button class="btn btn-sm" style="font-size:10px;" onclick="trDoc('${x.id}','bol')" title="Bill of Lading">🖨 BOL</button><button class="btn btn-sm btn-primary" style="background:#166534;border-color:#166534;" onclick="trReceiveModal('${x.id}')">📦 CA 도착 처리</button><button class="btn btn-sm" style="font-size:10px;" onclick="trCancel('${x.id}')" title="출발 취소 — 박스 SC 복귀">↩</button>` : ''}
-        ${x.status==='RECEIVED' ? `<span style="padding:2px 10px;border-radius:20px;font-size:10.5px;font-weight:800;background:#f0fdf4;color:#166534;">✓ 도착 ${String(x.received_at||'').slice(0,10)}</span><button class="btn btn-sm" style="font-size:10px;" onclick="trDoc('${x.id}','pl')" title="Packing List">🖨 PL</button>` : ''}
-      </span></div>`;
-  };
+  window._trRows = rows;
   const div = document.createElement('div');
   div.id = 'modal-tr';
-  div.style.cssText = 'position:fixed;inset:0;background:rgba(15,23,42,.55);z-index:99;display:flex;align-items:center;justify-content:center;padding:20px;';
+  div.style.cssText = 'position:fixed;inset:0;background:rgba(15,23,42,.55);z-index:99;display:flex;align-items:center;justify-content:center;padding:16px;';
   div.onclick = e=>{ if(e.target===div) div.remove(); };
-  div.innerHTML = `<div style="background:#fff;border-radius:12px;max-width:720px;width:100%;max-height:85vh;display:flex;flex-direction:column;overflow:hidden;">
-    <div style="background:#b45309;color:#fff;padding:10px 16px;font-weight:800;">🚚 SC → CA Transfer
-      <div style="font-weight:400;font-size:11px;opacity:.85;">배치 만들기 → 박스 담기 → 출발(In Transit·SC에서 빠짐) → CA 도착하면 location 지정해서 CA 입고</div></div>
-    <div style="overflow-y:auto;padding:10px 16px;flex:1;">
-      ${secs.map(([st,label])=>{
-        const list = rows.filter(x=>x.status===st).slice(0, st==='RECEIVED'?6:99);
-        if(!list.length) return '';
-        return `<div style="font-weight:800;font-size:12px;margin:8px 0 4px;">${label} (${list.length})</div>` + list.map(row).join('');
-      }).join('') || '<div class="muted" style="padding:10px;font-size:12px;">Transfer 없음 — 새로 만들어 보세요</div>'}
+  div.innerHTML = `<div style="background:#fff;border-radius:12px;max-width:960px;width:100%;max-height:90vh;display:flex;flex-direction:column;overflow:hidden;">
+    <div style="background:#7b1fa2;color:#fff;padding:10px 16px;font-weight:800;display:flex;align-items:center;">🔁 Transfers <span style="font-weight:400;font-size:11px;opacity:.85;margin-left:10px;">SC → CA 내부 이동</span>
+      <button class="btn btn-sm" style="margin-left:auto;background:transparent;color:#e9d5ff;border-color:#a78bfa;" onclick="document.getElementById('modal-tr').remove()">✕</button></div>
+    <div style="padding:8px 16px;border-bottom:1px solid var(--border);display:flex;gap:6px;align-items:center;">
+      ${[['all','전체'],['LOADING','Draft'],['TRANSIT','In Transit'],['RECEIVED','Received']].map(([v,lb])=>`<button class="btn btn-sm tr-flt" data-f="${v}" style="${_trFilter===v?'background:#7b1fa2;color:#fff;border-color:#7b1fa2;':''}" onclick="_trFilter='${v}';trRenderList()">${lb}</button>`).join('')}
+      <span id="tr-count" class="muted" style="font-size:11px;margin-left:6px;"></span>
+      <button class="btn btn-sm btn-primary" style="margin-left:auto;background:#7b1fa2;border-color:#7b1fa2;" onclick="trBuilderOpen()">+ New Transfer</button>
     </div>
-    <div style="padding:10px 16px;border-top:1px solid var(--border);display:flex;gap:8px;align-items:center;">
-      <input class="fi" id="tr-newref" placeholder="🚚 트럭 번호 / 이름 (예: TRUCK 8/12)" style="flex:1;max-width:280px;font-size:12px;padding:6px 10px;" onkeydown="if(event.key==='Enter')trNew()">
-      <button class="btn btn-primary" style="background:#b45309;border-color:#b45309;" onclick="trNew()">＋ 만들기</button>
-      <button class="btn" style="margin-left:auto;" onclick="document.getElementById('modal-tr').remove()">닫기</button>
-    </div></div>`;
+    <div id="tr-list" style="overflow-y:auto;padding:8px 16px;flex:1;"></div>
+    </div>`;
   document.body.appendChild(div);
+  trRenderList();
 }
-async function trNew(){
-  const d = new Date();
-  const p2 = n=>String(n).padStart(2,'0');
-  let ref = String((document.getElementById('tr-newref')||{}).value||'').trim();
-  if(!ref) ref = 'SC-CA-' + String(d.getFullYear()).slice(2) + p2(d.getMonth()+1) + p2(d.getDate()) + '-' + p2(d.getHours()) + p2(d.getMinutes());
-  let rec = null;
-  try{
-    const r = await sbFetch('/rest/v1/pr_transfers', {method:'POST', headers:{Prefer:'return=representation'}, body:JSON.stringify([{ref, status:'LOADING', lines:[], meta:{ship_date: d.toISOString().slice(0,10)}, created_by:(SESS&&SESS.email)||''}])});
-    if(r.ok) rec = (await r.json())[0];
-  }catch(e){}
-  if(!rec){ showToast('⚠ 생성 실패'); return; }
-  trDetail(rec.id);
+function trRenderList(){
+  const el = document.getElementById('tr-list'); if(!el) return;
+  document.querySelectorAll('.tr-flt').forEach(b=>{ b.style.cssText = b.dataset.f===_trFilter ? 'background:#7b1fa2;color:#fff;border-color:#7b1fa2;' : ''; });
+  let rows = window._trRows || [];
+  if(_trFilter!=='all') rows = rows.filter(r=>r.status===_trFilter);
+  const cnt = document.getElementById('tr-count'); if(cnt) cnt.textContent = rows.length + '건';
+  if(!rows.length){ el.innerHTML = '<div class="muted" style="padding:20px;text-align:center;font-size:12px;">Transfer 없음 — "+ New Transfer" 로 생성하세요</div>'; return; }
+  const fmtD = d=>d ? String(d).slice(0,10) : '—';
+  el.innerHTML = `<table class="etbl" style="font-size:12px;">
+    <thead><tr><th class="tl">Shipment #</th><th>경로</th><th>상태</th><th>라인</th><th>박스</th><th>총 수량</th><th class="tl">트럭</th><th>출발일</th><th>도착일</th><th>작업</th></tr></thead>
+    <tbody>${rows.map(r=>{
+      const lines = Array.isArray(r.lines)?r.lines:[];
+      const nb = lines.reduce((a,l)=>a+trLineBoxes(l),0);
+      const np = lines.reduce((a,l)=>a+trLinePcs(l),0);
+      const M = r.meta||{};
+      let act = '';
+      if(r.status==='LOADING') act = `<button class="btn btn-sm" onclick="trBuilderOpen('${r.id}')">✏️ 편집</button>`;
+      else if(r.status==='TRANSIT') act = `<button class="btn btn-sm btn-primary" style="background:#0f766e;border-color:#0f766e;" onclick="trRecvOpen('${r.id}')">📦 CA 도착 처리</button> <button class="btn btn-sm" style="font-size:10px;" onclick="trCancelTransit('${r.id}')" title="출발 취소 — Draft 로 되돌리고 박스는 예약 유지">↩</button>`;
+      else act = `<span style="font-size:10px;color:#15803d;font-weight:800;">✓ 완료</span>`;
+      return `<tr>
+      <td class="tl"><span style="font-family:Consolas,monospace;font-weight:700;color:#7b1fa2;text-decoration:underline;cursor:pointer;" onclick="${r.status==='LOADING'?`trBuilderOpen('${r.id}')`:`trView('${r.id}')`}">${esc(r.ref||'(번호없음)')}</span></td>
+      <td style="font-weight:600;white-space:nowrap;">SC → CA</td>
+      <td>${trStatusChip(r.status)}</td>
+      <td style="font-family:Consolas,monospace;text-align:center;">${lines.length}</td>
+      <td style="font-family:Consolas,monospace;text-align:center;">${nb}</td>
+      <td style="font-family:Consolas,monospace;font-weight:700;text-align:right;">${np.toLocaleString()}</td>
+      <td class="tl" style="font-size:11px;">${M.truck?('🚛 '+esc(M.truck)):'—'}${M.carrier?`<div style="font-size:10px;color:var(--text2);">${esc(M.carrier)}</div>`:''}</td>
+      <td style="font-size:11px;color:var(--text2);white-space:nowrap;">${fmtD(M.ship_date||r.departed_at)}</td>
+      <td style="font-size:11px;color:var(--text2);white-space:nowrap;">${fmtD(r.received_at)}</td>
+      <td style="white-space:nowrap;">${act}</td>
+    </tr>`;}).join('')}</tbody></table>`;
 }
-async function trMetaSave(key, val){
-  if(!window._trId) return;
-  window._trMeta = window._trMeta || {};
-  window._trMeta[key] = String(val||'').trim();
-  try{ await sbFetch('/rest/v1/pr_transfers?id=eq.'+window._trId, {method:'PATCH', headers:{Prefer:'return=minimal'}, body:JSON.stringify({meta: window._trMeta})}); }catch(e){}
-}
-async function trDelete(id){
-  if(!confirm('이 Transfer 배치를 삭제할까요? (담긴 박스는 그대로 SC에 남습니다)')) return;
-  try{ await sbFetch('/rest/v1/pr_transfers?id=eq.'+id, {method:'DELETE', headers:{Prefer:'return=minimal'}}); }catch(e){}
-  trOpen();
-}
-async function trDetail(id){
-  const rec = await trGet(id); if(!rec){ showToast('⚠ 불러오기 실패'); return; }
+// ── Shipment Builder ──
+async function trBuilderOpen(existingId){
+  ['modal-tr','modal-trb'].forEach(x=>{ const e=document.getElementById(x); if(e) e.remove(); });
   if(!bxLoaded) await bxFetchStore();
   if(!skuLoaded) await skuFetch();
-  window._trId = id; window._trRef = rec.ref;
-  window._trMeta = (rec.meta && typeof rec.meta==='object') ? rec.meta : {};
-  trCart = Array.isArray(rec.lines) ? rec.lines : [];
-  trCart.forEach(l=>{ if(!l.pallet) l.pallet = 1; });
-  window._trPal = 1;
-  window._trPalMax = Math.max(1, ...trCart.map(l=>Number(l.pallet)||1));
-  ['modal-tr','modal-trd'].forEach(x=>{ const e=document.getElementById(x); if(e) e.remove(); });
-  const M = window._trMeta;
-  const mf = (label, key, w, type, ph)=>`<div><div style="font-size:9.5px;font-weight:800;color:var(--text2);">${label}</div><input class="fi" type="${type||'text'}" value="${esc(M[key]||'')}" placeholder="${ph||''}" style="width:${w}px;font-size:11.5px;padding:4px 7px;" onchange="trMetaSave('${key}', this.value)"></div>`;
+  _shipId = null; _shipNo = null; _shipMeta = {}; _shipPallets = [];
+  if(existingId){
+    const rec = await trGet(existingId);
+    if(!rec){ showToast('⚠ Shipment 을 찾을 수 없습니다'); return; }
+    _shipId = rec.id; _shipNo = rec.ref;
+    _shipMeta = (rec.meta && typeof rec.meta==='object') ? rec.meta : {};
+    const palletMap = {};
+    (Array.isArray(rec.lines)?rec.lines:[]).forEach(l=>{
+      const lbl = l.pallet || 'Pallet 1';
+      if(!palletMap[lbl]){ palletMap[lbl] = { id:'p_'+Math.random().toString(36).slice(2,9), label:lbl, lines:[] }; _shipPallets.push(palletMap[lbl]); }
+      palletMap[lbl].lines.push({...l});
+    });
+    _shipPallets.forEach((p,i)=>p.label='Pallet '+(i+1));
+  }
+  if(_shipPallets.length===0) _shipPallets.push({ id:'p_'+Math.random().toString(36).slice(2,9), label:'Pallet 1', lines:[] });
+  const today = new Date().toISOString().slice(0,10);
   const div = document.createElement('div');
-  div.id = 'modal-trd';
-  div.style.cssText = 'position:fixed;inset:0;background:rgba(15,23,42,.55);z-index:99;display:flex;align-items:center;justify-content:center;padding:14px;';
-  div.innerHTML = `<div style="background:#fff;border-radius:12px;max-width:940px;width:100%;max-height:94vh;display:flex;flex-direction:column;overflow:hidden;">
-    <div style="background:#b45309;color:#fff;padding:10px 16px;font-weight:800;display:flex;align-items:center;gap:8px;flex-wrap:wrap;">🚚
-      <input class="fi" id="trd-ref" value="${esc(rec.ref||'')}" style="width:190px;font-size:13px;font-weight:800;padding:4px 8px;border:none;border-radius:6px;" onchange="trRefSave(this.value)" title="Shipment # — 바로 수정 가능">
-      <span>— Shipment Builder (Draft)</span>
-      <div style="font-weight:400;font-size:11px;opacity:.85;flex-basis:100%;">파렛을 골라 박스를 담으세요 → 🖨 Packing List·BOL 뽑아서 기사 사인 → 트럭 나가면 [🚚 트럭 출발]</div></div>
-    <div style="padding:8px 16px;border-bottom:1px solid var(--border);display:flex;gap:10px;flex-wrap:wrap;background:#fffbf5;">
-      ${mf('TRUCK #','truck',90)}${mf('CARRIER','carrier',130)}${mf('DRIVER','driver',110)}${mf('PHONE','phone',110)}${mf('SEAL #','seal',90)}${mf('SHIP DATE','ship_date',120,'date')}${mf('ETA','eta',120,'date')}${mf('MEMO','memo',180,'text')}
-    </div>
-    <div style="overflow-y:auto;padding:10px 16px;flex:1;">
-      <div style="display:flex;gap:6px;align-items:center;flex-wrap:wrap;margin-bottom:8px;" id="trd-pals"></div>
-      <div style="display:flex;gap:8px;align-items:end;flex-wrap:wrap;margin-bottom:8px;">
-        <div><div style="font-size:10px;font-weight:800;color:var(--text2);">STYLE</div><input class="fi" id="trd-style" list="trd-dl-style" style="width:90px;font-weight:700;" oninput="trdStyleChanged()"></div>
-        <div><div style="font-size:10px;font-weight:800;color:var(--text2);">COLOR (비워도 됨)</div><input class="fi" id="trd-color" list="trd-dl-color" style="width:170px;text-transform:uppercase;"></div>
-        <div><div style="font-size:10px;font-weight:800;color:var(--text2);">SIZE (비워도 됨)</div><input class="fi" id="trd-size" list="trd-dl-size" style="width:64px;text-transform:uppercase;"></div>
-        <button class="btn btn-sm btn-primary" onclick="trdQuery()">🔍 SC 재고 조회</button>
-        <span class="muted" style="font-size:10.5px;">담으면 지금 선택된 파렛에 들어가요</span>
+  div.id = 'modal-trb';
+  div.style.cssText = 'position:fixed;inset:0;background:rgba(15,23,42,.55);z-index:99;display:flex;align-items:center;justify-content:center;padding:10px;';
+  div.innerHTML = `<div style="background:#fff;border-radius:12px;max-width:1200px;width:98vw;max-height:96vh;display:flex;flex-direction:column;overflow:hidden;">
+    <div style="background:#7b1fa2;color:#fff;padding:10px 16px;font-weight:800;display:flex;align-items:center;">🚛 SC → CA Shipment Builder
+      <button class="btn btn-sm" style="margin-left:auto;background:transparent;color:#e9d5ff;border-color:#a78bfa;" onclick="trBuilderClose()">✕</button></div>
+    <div style="padding:12px 16px;overflow-y:auto;flex:1;">
+      <div style="background:#fef3f9;border:1px solid #d8b4fe;border-radius:8px;padding:12px;margin-bottom:12px;">
+        <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:10px;font-size:12px;">
+          <div><label style="font-size:10px;color:var(--text2);">Shipment #</label><input class="fi" id="ship-no" value="${esc(_shipNo||trGenShipNo())}" style="width:100%;font-family:Consolas,monospace;font-weight:700;"></div>
+          <div><label style="font-size:10px;color:var(--text2);">출발일 *</label><input class="fi" id="ship-date" type="date" value="${esc(_shipMeta.ship_date||today)}" style="width:100%;"></div>
+          <div><label style="font-size:10px;color:var(--text2);">ETA</label><input class="fi" id="ship-eta" type="date" value="${esc(_shipMeta.eta||'')}" style="width:100%;"></div>
+          <div><label style="font-size:10px;color:var(--text2);">Seal #</label><input class="fi" id="ship-seal" value="${esc(_shipMeta.seal||'')}" placeholder="SEAL12345" style="width:100%;font-family:Consolas,monospace;"></div>
+          <div><label style="font-size:10px;color:var(--text2);">Carrier</label><input class="fi" id="ship-carrier" value="${esc(_shipMeta.carrier||'')}" placeholder="OCS / GAU / 기타" style="width:100%;"></div>
+          <div><label style="font-size:10px;color:var(--text2);">Driver</label><input class="fi" id="ship-driver" value="${esc(_shipMeta.driver||'')}" placeholder="John Doe" style="width:100%;"></div>
+          <div><label style="font-size:10px;color:var(--text2);">Phone</label><input class="fi" id="ship-phone" value="${esc(_shipMeta.phone||'')}" placeholder="(555) 555-1234" style="width:100%;"></div>
+          <div><label style="font-size:10px;color:var(--text2);">Truck #</label><input class="fi" id="ship-truck" value="${esc(_shipMeta.truck||'')}" placeholder="123" style="width:100%;"></div>
+        </div>
+        <div style="margin-top:8px;"><label style="font-size:10px;color:var(--text2);">메모</label><input class="fi" id="ship-notes" value="${esc(_shipMeta.notes||'')}" placeholder="기타 사항" style="width:100%;"></div>
       </div>
-      <datalist id="trd-dl-style">${skuStyles().map(s=>'<option value="'+esc(s)+'">').join('')}</datalist>
-      <datalist id="trd-dl-color"></datalist>
-      <datalist id="trd-dl-size">${['XS','S','M','L','XL','2XL','3XL','4XL','5XL','XXS','2T','3T','4T','5T'].map(s=>'<option value="'+s+'">').join('')}</datalist>
-      <div id="trd-pick"></div>
-      <div style="font-weight:800;font-size:12px;margin:12px 0 4px;">📦 파렛 구성</div>
-      <div id="trd-cart"></div>
+      <div style="display:flex;gap:10px;margin-bottom:12px;flex-wrap:wrap;align-items:center;">
+        <button class="btn" style="background:#1565c0;color:#fff;border-color:#1565c0;" onclick="trScOpen()">📦 SC Inventory 에서 선택</button>
+        <button class="btn" onclick="trManualLine()">+ 수동 라인 추가</button>
+        <button class="btn" onclick="trAddPallet()">📍 + Pallet 추가</button>
+        <span style="margin-left:auto;font-size:11px;color:var(--text2);">📦 <b id="ship-pallet-count">0</b> 파렛 · <b id="ship-line-count">0</b> 라인 · <b id="ship-box-count">0</b> 박스 · <b id="ship-pcs-count">0</b> pcs</span>
+      </div>
+      <div id="ship-pallets" style="display:flex;flex-direction:column;gap:10px;"></div>
     </div>
-    <div style="padding:10px 16px;border-top:1px solid var(--border);display:flex;gap:8px;justify-content:flex-end;align-items:center;flex-wrap:wrap;">
-      <span id="trd-sum" class="muted" style="margin-right:auto;font-size:11px;"></span>
-      <button class="btn" onclick="document.getElementById('modal-trd').remove();trOpen();">닫기 (Draft 유지)</button>
-      <button class="btn btn-sm" onclick="trDoc('${id}','pl')" title="Packing List 미리보기/인쇄">🖨 Packing List</button>
-      <button class="btn btn-sm" onclick="trDoc('${id}','bol')" title="Bill of Lading 미리보기/인쇄">🖨 BOL</button>
-      <button class="btn btn-primary" style="background:#b45309;border-color:#b45309;" onclick="trDepart()" title="트럭이 실제로 나갈 때 누르세요 — SC 재고에서 빠지고 In Transit">🚚 트럭 출발 — In Transit</button>
+    <div style="padding:12px 16px;border-top:1px solid var(--border);display:flex;gap:8px;justify-content:flex-end;background:#fff;flex-wrap:wrap;">
+      <button class="btn" style="background:#f5f5f5;" onclick="trBuilderClose()">📝 닫기 (Draft 유지)</button>
+      <button class="btn" style="background:#fee2e2;color:#c62828;border-color:#fecaca;" onclick="trCancelDraft()">🗑 Draft 삭제 (재고 복원)</button>
+      <button class="btn" style="background:#0f4c8a;color:#fff;border-color:#0f4c8a;" onclick="trPL()">🖨 Packing List 미리보기/인쇄</button>
+      <button class="btn" style="background:#334155;color:#fff;border-color:#334155;" onclick="trBOL()">🖨 BOL</button>
+      <button class="btn btn-primary" style="background:#7b1fa2;border-color:#7b1fa2;" onclick="trPost()">✅ Post — Shipment 시작</button>
     </div></div>`;
   document.body.appendChild(div);
-  trdRenderPals();
-  trdRenderCart();
+  trRenderPallets();
 }
-function trdRenderPals(){
-  const el = $('trd-pals'); if(!el) return;
-  const max = window._trPalMax || 1;
-  let h = '<span style="font-size:11px;font-weight:800;color:var(--text2);margin-right:2px;">파렛:</span>';
-  for(let p=1;p<=max;p++){
-    const act = p === window._trPal;
-    const cnt = trCart.filter(l=>(Number(l.pallet)||1)===p).reduce((a,l)=>a+(l.ids||[]).length,0);
-    h += `<button class="btn btn-sm" style="font-weight:800;${act?'background:#b45309;color:#fff;border-color:#b45309;':''}" onclick="trdPalSel(${p})">📦 P${p}${cnt?' ('+cnt+')':''}</button>`;
+function trCaptureInfo(){
+  const v = id=>String((document.getElementById(id)||{}).value||'').trim();
+  _shipNo = v('ship-no') || _shipNo || trGenShipNo();
+  _shipMeta = { ship_date:v('ship-date'), eta:v('ship-eta'), seal:v('ship-seal'), carrier:v('ship-carrier'), driver:v('ship-driver'), phone:v('ship-phone'), truck:v('ship-truck'), notes:v('ship-notes') };
+}
+async function _trEnsureRow(){
+  if(_shipId) return _shipId;
+  trCaptureInfo();
+  try{
+    const r = await sbFetch('/rest/v1/pr_transfers', {method:'POST', headers:{Prefer:'return=representation'}, body:JSON.stringify([{ref:_shipNo, status:'LOADING', lines:[], meta:_shipMeta, created_by:(SESS&&SESS.email)||''}])});
+    if(r.ok){ const rec = (await r.json())[0]; _shipId = rec.id; return _shipId; }
+  }catch(e){}
+  showToast('⚠ Shipment 생성 실패'); return null;
+}
+async function trBuilderClose(){
+  trCaptureInfo();
+  if(_shipId){
+    await trPatchRec(_shipId, {ref:_shipNo, meta:_shipMeta, lines:trLinesFlat()});
+    showToast('💾 '+_shipNo+' Draft 저장됨 — 나중에 이어서 작업 가능');
   }
-  h += `<button class="btn btn-sm" onclick="trdPalAdd()" title="파렛 추가">＋ 파렛</button>`;
-  el.innerHTML = h;
+  const m = document.getElementById('modal-trb'); if(m) m.remove();
+  _shipId = null; _shipNo = null; _shipMeta = {}; _shipPallets = [];
+  await bxFetchStore();
+  if($('bx-body')) renderBoxRoom();
+  trOpen();
 }
-function trdPalSel(p){ window._trPal = p; trdRenderPals(); }
-function trdPalAdd(){ window._trPalMax = (window._trPalMax||1) + 1; window._trPal = window._trPalMax; trdRenderPals(); }
-async function trRefSave(v){
-  const ref = String(v||'').trim(); if(!ref || !window._trId) return;
-  window._trRef = ref;
-  try{ await sbFetch('/rest/v1/pr_transfers?id=eq.'+window._trId, {method:'PATCH', headers:{Prefer:'return=minimal'}, body:JSON.stringify({ref})}); showToast('✏️ 이름 저장: '+ref); }catch(e){}
+function trAddPallet(){
+  _shipPallets.push({ id:'p_'+Math.random().toString(36).slice(2,9), label:'Pallet '+(_shipPallets.length+1), lines:[] });
+  trRenderPallets();
 }
-function trdStyleChanged(){
-  const st = String(($('trd-style')||{}).value||'').trim();
-  const dl = document.getElementById('trd-dl-color'); if(!dl) return;
-  const cols = [...new Set(skuColors(st).map(c=>bxBaseColor(c)))].sort();
-  dl.innerHTML = cols.map(c=>'<option value="'+esc(c)+'">').join('');
+async function trDelPallet(pid){
+  const p = _shipPallets.find(x=>x.id===pid); if(!p) return;
+  if(p.lines.length && !confirm(p.label+' 의 라인 '+p.lines.length+'개를 모두 삭제하고 SC 재고를 복원할까요?')) return;
+  for(let li=p.lines.length-1;li>=0;li--) await _trRemoveLine(pid, li, true);
+  _shipPallets = _shipPallets.filter(x=>x.id!==pid);
+  _shipPallets.forEach((x,i)=>x.label='Pallet '+(i+1));
+  await trSaveDraftLines();
+  trRenderPallets();
 }
-function trdCartIds(){ const s = new Set(); trCart.forEach(l=>(l.ids||[]).forEach(id=>s.add(id))); return s; }
-function trdQuery(){
-  const st = String(($('trd-style')||{}).value||'').trim();
-  const col = String(($('trd-color')||{}).value||'').trim();
-  const sz = String(($('trd-size')||{}).value||'').trim().toUpperCase();
-  const el = $('trd-pick'); if(!el) return;
-  if(!st){ el.innerHTML = '<div class="muted" style="font-size:11.5px;padding:6px;">Style을 입력하고 조회하세요 (Color/Size는 비워도 됨 — 전체가 나옵니다)</div>'; return; }
-  const inCart = trdCartIds();
-  const stU = st.toUpperCase();
-  const bc = col ? bxBaseColor(col) : '';
-  const pool = bxStore.filter(b=>
-    bxWh(b)==='SC'
-    && String(b.style).trim().toUpperCase()===stU
-    && (!bc || bxBaseColor(b.color)===bc)
-    && (!sz || String(b.size).trim().toUpperCase()===sz)
-    && !inCart.has(b.id));
-  if(!pool.length){ el.innerHTML = '<div class="muted" style="font-size:11.5px;padding:6px;">SC 재고 없음 (또는 전부 이미 담김)</div>'; return; }
-  const sizeOrder = ['2T','3T','4T','5T','XXS','XS','S','M','L','XL','2XL','3XL','4XL','5XL','6XL'];
+async function _trAddLine(pid, line){
+  const shipId = await _trEnsureRow(); if(!shipId) return false;
+  if(!line.is_manual && (line.ids||[]).length){
+    try{ await trPatchBoxes(line.ids, {wh:'TRANSIT'}); }
+    catch(e){ showToast('⚠ 재고 예약 실패'); return false; }
+    const idSet = new Set(line.ids);
+    bxStore.forEach(b=>{ if(idSet.has(b.id)) b.wh = 'TRANSIT'; });
+  }
+  const p = _shipPallets.find(x=>x.id===pid); if(!p) return false;
+  p.lines.push(line);
+  await trSaveDraftLines();
+  return true;
+}
+async function _trRemoveLine(pid, li, silent){
+  const p = _shipPallets.find(x=>x.id===pid); if(!p) return false;
+  const l = p.lines[li]; if(!l) return false;
+  if(!l.is_manual && (l.ids||[]).length){
+    if(!silent && !confirm('라인 삭제하고 SC 재고를 복원할까요?\n'+(l.bin||'?')+' / '+l.style+' '+l.color+' '+l.size+' / '+trLineBoxes(l)+'박스')) return false;
+    try{ await trPatchBoxes(l.ids, {wh:'SC'}); }
+    catch(e){ showToast('⚠ 복원 실패'); return false; }
+    const idSet = new Set(l.ids);
+    bxStore.forEach(b=>{ if(idSet.has(b.id)) b.wh = 'SC'; });
+  }
+  p.lines.splice(li,1);
+  await trSaveDraftLines();
+  return true;
+}
+async function trDelLine(pid, li){
+  const ok = await _trRemoveLine(pid, li, false);
+  if(ok) trRenderPallets();
+}
+async function trCancelDraft(){
+  const n = _shipPallets.reduce((s,p)=>s+p.lines.length,0);
+  if(!_shipId && !n){ const m = document.getElementById('modal-trb'); if(m) m.remove(); trOpen(); return; }
+  if(!confirm('이 Draft Shipment 을 완전 취소하시겠습니까?\n\n라인 '+n+'개 모두 삭제 + SC 재고 복원됩니다.')) return;
+  for(let pi=_shipPallets.length-1;pi>=0;pi--){
+    const p = _shipPallets[pi];
+    for(let li=p.lines.length-1;li>=0;li--) await _trRemoveLine(p.id, li, true);
+  }
+  if(_shipId){ try{ await sbFetch('/rest/v1/pr_transfers?id=eq.'+_shipId, {method:'DELETE', headers:{Prefer:'return=minimal'}}); }catch(e){} }
+  _shipId = null; _shipNo = null; _shipMeta = {}; _shipPallets = [];
+  showToast('🗑 Draft 취소 완료');
+  const m = document.getElementById('modal-trb'); if(m) m.remove();
+  await bxFetchStore();
+  if($('bx-body')) renderBoxRoom();
+  trOpen();
+}
+function trManualLine(pid){
+  const p = pid ? _shipPallets.find(x=>x.id===pid) : _shipPallets[_shipPallets.length-1];
+  if(!p) return;
+  p.lines.push({ is_manual:true, style:'', color:'', size:'', bin:'', boxes:0, ppb:72, ids:[] });
+  trRenderPallets();
+}
+function trManualEdit(pid, li, field, val){
+  const p = _shipPallets.find(x=>x.id===pid); if(!p || !p.lines[li]) return;
+  p.lines[li][field] = (field==='boxes'||field==='ppb') ? (parseInt(val)||0) : String(val).trim().toUpperCase();
+  trSaveDraftLines();
+  trSummary();
+}
+function trRenderPallets(){
+  const el = document.getElementById('ship-pallets'); if(!el) return;
+  el.innerHTML = _shipPallets.map(p=>{
+    const pB = p.lines.reduce((s,l)=>s+trLineBoxes(l),0);
+    const pP = p.lines.reduce((s,l)=>s+trLinePcs(l),0);
+    const rows = p.lines.length===0
+      ? '<tr><td colspan="9" style="padding:14px;text-align:center;color:var(--text2);font-size:11.5px;">라인 없음 — SC Inventory 또는 수동 라인 추가</td></tr>'
+      : p.lines.map((l,li)=>{
+        const vl = bxVariantLabel(l.color, l.style);
+        const vTag = (!l.is_manual && vl!==bxDefaultVariant(l.style)) ? ` <span style="font-size:9px;font-weight:800;color:#7c3aed;">${esc(vl)}</span>` : '';
+        if(l.is_manual){
+          return `<tr style="background:#fef3c7;">
+          <td style="padding:4px 6px;"><input class="fi" value="${esc(l.style||'')}" placeholder="Style" onchange="trManualEdit('${p.id}',${li},'style',this.value)" style="width:64px;font-size:11px;padding:3px 5px;"></td>
+          <td style="padding:4px 6px;"><input class="fi" value="${esc(l.color||'')}" placeholder="Color" onchange="trManualEdit('${p.id}',${li},'color',this.value)" style="width:130px;font-size:11px;padding:3px 5px;text-transform:uppercase;"></td>
+          <td style="padding:4px 6px;"><input class="fi" value="${esc(l.size||'')}" placeholder="Size" onchange="trManualEdit('${p.id}',${li},'size',this.value)" style="width:48px;font-size:11px;padding:3px 5px;text-transform:uppercase;text-align:center;"></td>
+          <td style="text-align:center;color:#92400e;font-size:10px;font-weight:800;">수동</td>
+          <td style="padding:4px 6px;text-align:center;"><input class="fi" type="number" min="0" value="${Number(l.boxes)||0}" onchange="trManualEdit('${p.id}',${li},'boxes',this.value)" style="width:56px;font-size:11px;padding:3px 5px;text-align:center;font-weight:800;"></td>
+          <td style="padding:4px 6px;text-align:center;"><input class="fi" type="number" min="1" value="${Number(l.ppb)||72}" onchange="trManualEdit('${p.id}',${li},'ppb',this.value)" style="width:52px;font-size:11px;padding:3px 5px;text-align:center;"></td>
+          <td style="text-align:right;font-family:Consolas,monospace;font-weight:700;">${trLinePcs(l).toLocaleString()}</td>
+          <td></td>
+          <td style="text-align:center;"><button onclick="trDelLine('${p.id}',${li})" style="border:none;background:none;color:#e53935;cursor:pointer;font-weight:800;">✕</button></td>
+          </tr>`;
+        }
+        return `<tr>
+        <td style="font-family:Consolas,monospace;font-weight:700;font-size:11px;padding:5px 8px;">#${esc(l.style)}</td>
+        <td style="font-size:11px;padding:5px 8px;">${esc(bxBaseColor(l.color))}${vTag}</td>
+        <td style="text-align:center;font-size:11px;">${esc(l.size)}</td>
+        <td style="text-align:center;"><span style="background:#dbeafe;color:#1e40af;padding:2px 8px;border-radius:8px;font-weight:700;font-family:Consolas,monospace;font-size:11px;">${esc(l.bin||'?')}</span></td>
+        <td style="text-align:center;font-family:Consolas,monospace;font-weight:800;">${trLineBoxes(l)}</td>
+        <td style="text-align:center;font-size:11px;color:var(--text2);">${Number(l.ppb)||'—'}</td>
+        <td style="text-align:right;font-family:Consolas,monospace;font-weight:700;">${trLinePcs(l).toLocaleString()}</td>
+        <td></td>
+        <td style="text-align:center;"><button onclick="trDelLine('${p.id}',${li})" style="border:none;background:none;color:#e53935;cursor:pointer;font-weight:800;" title="삭제 + SC 복원">✕</button></td>
+        </tr>`;
+      }).join('');
+    return `<div style="border:2px solid #d8b4fe;border-radius:8px;background:#fff;">
+      <div style="background:#f3e8ff;padding:8px 14px;display:flex;align-items:center;gap:10px;border-radius:6px 6px 0 0;flex-wrap:wrap;">
+        <span style="font-weight:700;color:#7b1fa2;">📦 ${esc(p.label)}</span>
+        <span style="color:var(--text2);font-size:11px;">${p.lines.length} 라인 · <b>${pB}</b> 박스 · <b>${pP.toLocaleString()}</b> pcs</span>
+        <button class="btn btn-sm" style="margin-left:auto;background:#1565c0;color:#fff;border-color:#1565c0;" onclick="trScOpen('${p.id}')">+ SC Inventory</button>
+        <button class="btn btn-sm" onclick="trManualLine('${p.id}')">+ 수동</button>
+        <button class="btn btn-sm" style="background:#fee2e2;color:#c62828;border-color:#fecaca;" onclick="trDelPallet('${p.id}')">✕ 파렛 삭제</button>
+      </div>
+      <div style="overflow-x:auto;">
+      <table class="etbl" style="font-size:12px;">
+        <thead><tr style="background:#fce7f3;"><th class="tl">Style</th><th class="tl">Color</th><th>Size</th><th>SC Bin</th><th>박스</th><th>pcs/box</th><th>Pcs</th><th></th><th style="width:30px;"></th></tr></thead>
+        <tbody>${rows}</tbody>
+      </table></div></div>`;
+  }).join('');
+  trSummary();
+}
+function trSummary(){
+  const set = (id,v)=>{ const e=document.getElementById(id); if(e) e.textContent = v; };
+  set('ship-pallet-count', _shipPallets.length);
+  set('ship-line-count', _shipPallets.reduce((s,p)=>s+p.lines.length,0));
+  set('ship-box-count', _shipPallets.reduce((s,p)=>s+p.lines.reduce((ss,l)=>ss+trLineBoxes(l),0),0));
+  set('ship-pcs-count', _shipPallets.reduce((s,p)=>s+p.lines.reduce((ss,l)=>ss+trLinePcs(l),0),0).toLocaleString());
+}
+// ── SC Inventory Selector (bin 그룹) ──
+let _scvCache = [], _scvSel = {}, _scvTarget = null;
+async function trScOpen(pid){
+  _scvTarget = pid || (_shipPallets[_shipPallets.length-1]||{}).id;
+  if(!_scvTarget){ trAddPallet(); _scvTarget = _shipPallets[_shipPallets.length-1].id; }
+  if(!bxLoaded) await bxFetchStore();
+  // SC 박스를 (loc, style, full color, size) 그룹으로
   const gm = {};
-  pool.forEach(b=>{
-    const k = String(b.color).toUpperCase()+'@'+String(b.size).trim().toUpperCase()+'@'+String(b.loc||'?').toUpperCase();
-    if(!gm[k]) gm[k] = {col:String(b.color).toUpperCase(), size:String(b.size).trim().toUpperCase(), loc:String(b.loc||'?').toUpperCase(), boxes:[], oldest:b.in_at};
+  bxStore.filter(b=>bxWh(b)==='SC').forEach(b=>{
+    const loc = String(b.loc||'?').toUpperCase();
+    const k = loc+'|'+String(b.style)+'|'+String(b.color).toUpperCase()+'|'+String(b.size).toUpperCase();
+    if(!gm[k]) gm[k] = { key:k, loc, style:String(b.style), color:String(b.color).toUpperCase(), size:String(b.size).toUpperCase(), ppb:Number(b.pcs)||0, boxes:[] };
     gm[k].boxes.push(b);
   });
-  let groups = Object.values(gm).sort((a,b)=>
-    bxBaseColor(a.col).localeCompare(bxBaseColor(b.col))
-    || a.col.localeCompare(b.col)
-    || ((sizeOrder.indexOf(a.size)<0?99:sizeOrder.indexOf(a.size)) - (sizeOrder.indexOf(b.size)<0?99:sizeOrder.indexOf(b.size)))
-    || String(a.oldest).localeCompare(String(b.oldest)));
-  let capped = 0;
-  if(groups.length > 400){ capped = groups.length - 400; groups = groups.slice(0, 400); }
-  window._trdGroups = groups;
-  el.innerHTML = `<div class="muted" style="font-size:10.5px;margin:2px 0 4px;">${pool.length}박스 · ${groups.length}줄${capped?' (표시 제한 — '+capped+'줄 더 있음, Color/Size로 좁혀주세요)':''}</div>
-    <table class="etbl" style="font-size:12px;">
-    <thead><tr><th class="tl">Color</th><th class="tl">구분</th><th>Size</th><th class="tl">📍 Location</th><th>재고</th><th>입고일</th><th>담기</th></tr></thead>
-    <tbody>${groups.map((g,gi)=>{ const vl = bxVariantLabel(g.col, st); const vc = vl==='Tubular' ? '#64748b' : (/US/.test(vl) ? '#c2410c' : '#7c3aed');
-      return `<tr>
-      <td class="tl" style="font-weight:700;white-space:nowrap;">${esc(bxBaseColor(g.col))}</td>
-      <td class="tl"><span style="font-size:10px;font-weight:800;color:${vc};background:#f8fafc;padding:1px 7px;border-radius:10px;white-space:nowrap;">${esc(vl)}</span></td>
-      <td style="font-weight:800;">${esc(g.size)}</td>
-      <td class="tl" style="font-weight:800;color:#1d4ed8;">${esc(g.loc)}</td>
-      <td style="font-family:Consolas,monospace;font-weight:800;">${g.boxes.length}</td>
-      <td style="font-size:11px;color:var(--text2);">${g.oldest?String(g.oldest).slice(0,10):''}</td>
-      <td><input class="fi trd-take" data-gi="${gi}" type="number" min="0" max="${g.boxes.length}" value="0" style="width:60px;font-weight:800;"></td>
-    </tr>`;}).join('')}</tbody></table>
-    <button class="btn btn-sm btn-primary" style="margin-top:6px;background:#b45309;border-color:#b45309;" onclick="trdAdd()">🧰 담기</button>`;
-}
-async function trdAdd(){
-  const groups = window._trdGroups || [];
-  let added = 0;
-  document.querySelectorAll('.trd-take').forEach(inp=>{
-    const g = groups[Number(inp.dataset.gi)]; if(!g) return;
-    const n = Math.min(parseInt(inp.value)||0, g.boxes.length); if(n<1) return;
-    const take = g.boxes.slice(0, n);   // 오래된 것부터
-    const pal = window._trPal || 1;
-    const key = String(take[0].style)+'|'+g.col+'|'+String(take[0].size).toUpperCase()+'|'+pal;
-    let line = trCart.find(l=>String(l.style)+'|'+String(l.color).toUpperCase()+'|'+String(l.size).toUpperCase()+'|'+(Number(l.pallet)||1)===key);
-    if(!line){ line = { style:String(take[0].style), color:g.col, size:String(take[0].size).toUpperCase(), pcs:Number(take[0].pcs)||0, pallet:pal, ids:[], locs:{} }; trCart.push(line); }
-    take.forEach(b=>{ line.ids.push(b.id); });
-    line.locs[g.loc] = (line.locs[g.loc]||0) + n;
-    added += n;
-  });
-  if(!added){ showToast('⚠ 담을 수량을 입력하세요'); return; }
-  await trSaveLines(window._trId, trCart);
-  showToast('🧰 P'+(window._trPal||1)+'에 +'+added+'박스 담김');
-  trdRenderPals();
-  trdRenderCart();
-  trdQuery();
-}
-function trdRenderCart(){
-  const el = $('trd-cart'); if(!el) return;
-  if(!trCart.length){ el.innerHTML = '<div class="muted" style="font-size:11.5px;padding:6px;">아직 담긴 박스 없음 — 위에서 조회해서 담으세요</div>'; const s0=$('trd-sum'); if(s0) s0.textContent=''; return; }
-  const maxP = window._trPalMax || 1;
-  const palOpts = (cur)=>{ let o=''; for(let p=1;p<=maxP;p++) o += `<option value="${p}"${p===cur?' selected':''}>P${p}</option>`; return o; };
-  const pals = [...new Set(trCart.map(l=>Number(l.pallet)||1))].sort((a,b)=>a-b);
-  el.innerHTML = pals.map(p=>{
-    const lines = trCart.map((l,i)=>({l,i})).filter(x=>(Number(x.l.pallet)||1)===p);
-    const nb = lines.reduce((a,x)=>a+(x.l.ids||[]).length,0);
-    const np = lines.reduce((a,x)=>a+(x.l.ids||[]).length*(Number(x.l.pcs)||0),0);
-    return `<div style="border:1px solid #fcd34d;border-radius:8px;margin-bottom:8px;overflow:hidden;">
-      <div style="background:#fffbeb;padding:5px 10px;font-size:11.5px;font-weight:800;color:#92400e;">📦 Pallet ${p} <span style="font-weight:400;color:#b45309;">— ${lines.length}라인 · ${nb}박스 · ${np.toLocaleString()} pcs</span></div>
-      <table class="etbl" style="font-size:12px;">
-        <thead><tr><th class="tl">Style</th><th class="tl">Color</th><th>Size</th><th>박스</th><th>pcs</th><th class="tl">From 📍</th><th>파렛</th><th></th></tr></thead>
-        <tbody>${lines.map(x=>{ const l = x.l; const vl = bxVariantLabel(l.color, l.style);
-          return `<tr>
-          <td class="tl" style="font-weight:800;">${esc(l.style)}</td>
-          <td class="tl">${esc(bxBaseColor(l.color))}${vl!==bxDefaultVariant(l.style)?` <span style="font-size:9px;font-weight:800;color:#7c3aed;">${esc(vl)}</span>`:''}</td>
-          <td style="font-weight:800;">${esc(l.size)}</td>
-          <td style="font-family:Consolas,monospace;font-weight:800;">${(l.ids||[]).length}</td>
-          <td style="font-family:Consolas,monospace;color:var(--text2);">${((l.ids||[]).length*(Number(l.pcs)||0)).toLocaleString()}</td>
-          <td class="tl" style="font-size:10.5px;color:#1d4ed8;">${Object.keys(l.locs||{}).map(L=>L+((l.locs[L]>1)?' ×'+l.locs[L]:'')).join(', ')}</td>
-          <td><select class="fi" style="padding:2px 4px;font-size:11px;" onchange="trdPalMove(${x.i}, this.value)" title="다른 파렛으로 이동">${palOpts(p)}</select></td>
-          <td><button class="btn btn-sm" style="border:none;color:#b91c1c;" onclick="trdRemove(${x.i})" title="이 품목 빼기">✕</button></td>
-        </tr>`;}).join('')}</tbody></table></div>`;
-  }).join('');
-  const nb = trCart.reduce((a,l)=>a+(l.ids||[]).length,0);
-  const np = trCart.reduce((a,l)=>a+(l.ids||[]).length*(Number(l.pcs)||0),0);
-  const s = $('trd-sum'); if(s) s.textContent = pals.length+'파렛 · '+trCart.length+'품목 · '+nb+'박스 · '+np.toLocaleString()+' pcs';
-}
-async function trdPalMove(i, p){
-  if(!trCart[i]) return;
-  trCart[i].pallet = Number(p)||1;
-  await trSaveLines(window._trId, trCart);
-  trdRenderPals(); trdRenderCart();
-}
-async function trdRemove(i){
-  trCart.splice(i,1);
-  await trSaveLines(window._trId, trCart);
-  trdRenderPals(); trdRenderCart(); trdQuery();
-}
-// ── 🖨 Packing List / Bill of Lading (영어 · 기사 사인란) ──
-async function trDoc(id, kind){
-  const rec = await trGet(id); if(!rec){ showToast('⚠ 불러오기 실패'); return; }
-  const M = (rec.meta && typeof rec.meta==='object') ? rec.meta : {};
-  const lines = Array.isArray(rec.lines) ? rec.lines : [];
-  lines.forEach(l=>{ if(!l.pallet) l.pallet = 1; });
-  const pals = [...new Set(lines.map(l=>Number(l.pallet)||1))].sort((a,b)=>a-b);
-  const totB = lines.reduce((a,l)=>a+(l.ids||[]).length,0);
-  const totP = lines.reduce((a,l)=>a+(l.ids||[]).length*(Number(l.pcs)||0),0);
-  const dt = M.ship_date || String(rec.created_at||'').slice(0,10);
-  const info = `<table style="width:100%;border-collapse:collapse;font-size:11px;margin:10px 0;">
-    <tr>
-      <td style="border:1px solid #333;padding:5px 8px;"><b>SHIPMENT #</b><br>${esc(rec.ref||'')}</td>
-      <td style="border:1px solid #333;padding:5px 8px;"><b>SHIP DATE</b><br>${esc(dt)}</td>
-      <td style="border:1px solid #333;padding:5px 8px;"><b>ETA</b><br>${esc(M.eta||'—')}</td>
-      <td style="border:1px solid #333;padding:5px 8px;"><b>TRUCK #</b><br>${esc(M.truck||'—')}</td>
-      <td style="border:1px solid #333;padding:5px 8px;"><b>SEAL #</b><br>${esc(M.seal||'—')}</td>
-    </tr>
-    <tr>
-      <td style="border:1px solid #333;padding:5px 8px;" colspan="2"><b>CARRIER</b><br>${esc(M.carrier||'—')}</td>
-      <td style="border:1px solid #333;padding:5px 8px;" colspan="2"><b>DRIVER</b><br>${esc(M.driver||'—')}${M.phone?' · '+esc(M.phone):''}</td>
-      <td style="border:1px solid #333;padding:5px 8px;"><b>PALLETS</b><br>${pals.length}</td>
-    </tr></table>`;
-  const fromTo = `<table style="width:100%;border-collapse:collapse;font-size:11px;margin:6px 0;">
-    <tr>
-      <td style="border:1px solid #333;padding:6px 8px;width:50%;"><b>SHIP FROM (SHIPPER)</b><br>Pacific Sports — SC Warehouse<br>Sumter, SC</td>
-      <td style="border:1px solid #333;padding:6px 8px;"><b>SHIP TO (CONSIGNEE)</b><br>Pacific Sports — CA Warehouse<br>Eastvale, CA</td>
-    </tr></table>`;
-  let body = '';
-  if(kind==='pl'){
-    body = pals.map(p=>{
-      const pls = lines.filter(l=>(Number(l.pallet)||1)===p);
-      const nb = pls.reduce((a,l)=>a+(l.ids||[]).length,0);
-      const np = pls.reduce((a,l)=>a+(l.ids||[]).length*(Number(l.pcs)||0),0);
-      return `<div style="margin-top:12px;font-weight:800;font-size:12px;background:#eee;padding:4px 8px;border:1px solid #333;border-bottom:none;">PALLET ${p} — ${pls.length} lines · ${nb} boxes · ${np.toLocaleString()} pcs</div>
-      <table style="width:100%;border-collapse:collapse;font-size:11px;">
-        <tr style="background:#f5f5f5;"><th style="border:1px solid #333;padding:4px 8px;text-align:left;">STYLE</th><th style="border:1px solid #333;padding:4px 8px;text-align:left;">COLOR</th><th style="border:1px solid #333;padding:4px 8px;">SIZE</th><th style="border:1px solid #333;padding:4px 8px;">BOXES</th><th style="border:1px solid #333;padding:4px 8px;">PCS/BOX</th><th style="border:1px solid #333;padding:4px 8px;">TOTAL PCS</th></tr>
-        ${pls.map(l=>{ const vl = bxVariantLabel(l.color, l.style); const vTag = vl!==bxDefaultVariant(l.style) ? ' ('+vl+')' : '';
-          return `<tr><td style="border:1px solid #333;padding:4px 8px;font-weight:700;">${esc(l.style)}</td><td style="border:1px solid #333;padding:4px 8px;">${esc(bxBaseColor(l.color))}${esc(vTag)}</td><td style="border:1px solid #333;padding:4px 8px;text-align:center;">${esc(l.size)}</td><td style="border:1px solid #333;padding:4px 8px;text-align:center;">${(l.ids||[]).length}</td><td style="border:1px solid #333;padding:4px 8px;text-align:center;">${Number(l.pcs)||''}</td><td style="border:1px solid #333;padding:4px 8px;text-align:right;">${((l.ids||[]).length*(Number(l.pcs)||0)).toLocaleString()}</td></tr>`;}).join('')}
-      </table>`;
-    }).join('')
-    + `<table style="width:100%;border-collapse:collapse;font-size:12px;margin-top:12px;"><tr style="background:#333;color:#fff;font-weight:800;"><td style="padding:6px 10px;">TOTAL</td><td style="padding:6px 10px;text-align:center;">${pals.length} PALLETS</td><td style="padding:6px 10px;text-align:center;">${totB} BOXES</td><td style="padding:6px 10px;text-align:right;">${totP.toLocaleString()} PCS</td></tr></table>`;
-  }else{
-    body = `<table style="width:100%;border-collapse:collapse;font-size:12px;margin-top:10px;">
-      <tr style="background:#f5f5f5;"><th style="border:1px solid #333;padding:5px 8px;">HANDLING UNITS</th><th style="border:1px solid #333;padding:5px 8px;">PACKAGE TYPE</th><th style="border:1px solid #333;padding:5px 8px;text-align:left;">COMMODITY DESCRIPTION</th><th style="border:1px solid #333;padding:5px 8px;">TOTAL PCS</th><th style="border:1px solid #333;padding:5px 8px;">WEIGHT</th></tr>
-      <tr><td style="border:1px solid #333;padding:8px;text-align:center;font-weight:800;">${pals.length} PALLETS</td><td style="border:1px solid #333;padding:8px;text-align:center;">${totB} CARTONS</td><td style="border:1px solid #333;padding:8px;">WEARING APPAREL (T-SHIRTS / KNIT GARMENTS)</td><td style="border:1px solid #333;padding:8px;text-align:center;">${totP.toLocaleString()}</td><td style="border:1px solid #333;padding:8px;"></td></tr>
-    </table>
-    <div style="font-size:10px;margin-top:8px;color:#333;">NOTE: This is a non-negotiable straight bill of lading. Carrier acknowledges receipt of the above property in apparent good order. Freight terms: Prepaid unless noted.</div>`;
-  }
-  const sig = `<table style="width:100%;border-collapse:collapse;font-size:11px;margin-top:26px;">
-    <tr>
-      <td style="width:33%;padding:0 10px;"><div style="border-top:1px solid #333;padding-top:4px;"><b>SHIPPER SIGNATURE</b> / DATE</div></td>
-      <td style="width:33%;padding:0 10px;"><div style="border-top:1px solid #333;padding-top:4px;"><b>DRIVER SIGNATURE</b> / DATE</div></td>
-      <td style="width:33%;padding:0 10px;"><div style="border-top:1px solid #333;padding-top:4px;"><b>RECEIVER SIGNATURE</b> / DATE</div></td>
-    </tr></table>`;
-  const title = kind==='pl' ? 'PACKING LIST' : 'STRAIGHT BILL OF LADING';
-  const w = window.open('', '_blank');
-  w.document.write(`<html><head><title>${title} — ${esc(rec.ref||'')}</title></head>
-  <body style="font-family:Arial,Helvetica,sans-serif;color:#111;margin:26px;">
-    <div style="display:flex;justify-content:space-between;align-items:baseline;border-bottom:3px solid #111;padding-bottom:6px;">
-      <div style="font-size:20px;font-weight:800;">PACIFIC SPORTS</div>
-      <div style="font-size:17px;font-weight:800;">${title}</div>
-    </div>
-    ${fromTo}${info}${body}${sig}
-    <div style="font-size:9px;color:#777;margin-top:18px;">Printed ${new Date().toLocaleString('en-US')}${(SESS&&SESS.email)?' by '+esc(SESS.email):''}</div>
-    <script>window.print();<\/script>
-  </body></html>`);
-  w.document.close();
-}
-async function trDepart(){
-  if(!trCart.length){ alert('⚠ 담긴 박스가 없어요.'); return; }
-  if(!bxLoaded) await bxFetchStore();
-  const validSC = new Set(bxStore.filter(b=>bxWh(b)==='SC').map(b=>b.id));
-  let dropped = 0;
-  trCart.forEach(l=>{ const ok = (l.ids||[]).filter(id=>validSC.has(id)); dropped += (l.ids||[]).length - ok.length; l.ids = ok; });
-  trCart = trCart.filter(l=>(l.ids||[]).length);
-  if(dropped) showToast('⚠ '+dropped+'박스는 이미 출고/이동돼서 제외했어요');
-  const ids = trCart.reduce((a,l)=>a.concat(l.ids),[]);
-  if(!ids.length){ alert('⚠ 담긴 박스가 모두 무효화됐어요.'); await trSaveLines(window._trId, trCart); trdRenderCart(); return; }
-  if(!confirm('🚚 '+window._trRef+' — '+ids.length+'박스 출발할까요?\nSC 재고에서 빠지고 In Transit 상태가 됩니다.')) return;
-  try{
-    await trPatchBoxes(ids, {wh:'TRANSIT'});
-    await sbFetch('/rest/v1/pr_transfers?id=eq.'+window._trId, {method:'PATCH', headers:{Prefer:'return=minimal'}, body:JSON.stringify({status:'TRANSIT', lines:trCart, departed_at:new Date().toISOString(), departed_by:(SESS&&SESS.email)||''})});
-  }catch(e){ showToast('⚠ 출발 처리 실패 — 인터넷 확인'); return; }
-  await bxFetchStore();
-  if($('bx-body')) renderBoxRoom();
-  const m = document.getElementById('modal-trd'); if(m) m.remove();
-  showToast('🚚 출발! '+ids.length+'박스 In Transit');
-  trOpen();
-}
-async function trCancel(id){
-  const rec = await trGet(id); if(!rec) return;
-  const ids = (rec.lines||[]).reduce((a,l)=>a.concat(l.ids||[]),[]);
-  if(!confirm('↩ '+rec.ref+' 출발을 취소하고 '+ids.length+'박스를 SC로 복귀시킬까요?')) return;
-  try{
-    await trPatchBoxes(ids, {wh:'SC'});
-    await sbFetch('/rest/v1/pr_transfers?id=eq.'+id, {method:'PATCH', headers:{Prefer:'return=minimal'}, body:JSON.stringify({status:'LOADING', departed_at:null, departed_by:null})});
-  }catch(e){ showToast('⚠ 취소 실패'); return; }
-  await bxFetchStore();
-  if($('bx-body')) renderBoxRoom();
-  showToast('↩ SC 복귀 완료');
-  trOpen();
-}
-async function trReceiveModal(id){
-  const rec = await trGet(id); if(!rec){ showToast('⚠ 불러오기 실패'); return; }
-  if(!bxLoaded) await bxFetchStore();
-  ['modal-tr','modal-trr'].forEach(x=>{ const e=document.getElementById(x); if(e) e.remove(); });
-  const dlLoc = [...new Set(bxStore.filter(b=>bxWh(b)==='CA').map(b=>String(b.loc||'').toUpperCase()).filter(Boolean))].sort();
+  _scvCache = Object.values(gm);
+  _scvCache.forEach(g=>g.boxes.sort((a,b)=>String(a.in_at||'').localeCompare(String(b.in_at||''))));
+  _scvCache.sort((a,b)=>a.loc.localeCompare(b.loc, undefined, {numeric:true}) || a.style.localeCompare(b.style) || a.color.localeCompare(b.color));
+  _scvSel = {};
+  const ex = document.getElementById('modal-scv'); if(ex) ex.remove();
   const div = document.createElement('div');
-  div.id = 'modal-trr';
-  div.style.cssText = 'position:fixed;inset:0;background:rgba(15,23,42,.55);z-index:99;display:flex;align-items:center;justify-content:center;padding:14px;';
-  div.innerHTML = `<div style="background:#fff;border-radius:12px;max-width:760px;width:100%;max-height:92vh;display:flex;flex-direction:column;overflow:hidden;">
-    <div style="background:#166534;color:#fff;padding:10px 16px;font-weight:800;">📦 CA 도착 · ${esc(rec.ref||'')}
-      <div style="font-weight:400;font-size:11px;opacity:.85;">품목별로 CA location(bin)을 지정하고 확정하면 CA 재고로 들어갑니다</div></div>
-    <div style="overflow-y:auto;padding:10px 16px;flex:1;">
-      <table class="etbl" style="font-size:12px;">
-        <thead><tr><th>파렛</th><th class="tl">Style</th><th class="tl">Color</th><th>Size</th><th>박스</th><th>📍 CA Location</th></tr></thead>
-        <tbody>${(rec.lines||[]).map((l,i)=>{ const vl = bxVariantLabel(l.color, l.style);
-          return `<tr>
-          <td style="font-weight:800;color:#92400e;">P${Number(l.pallet)||1}</td>
-          <td class="tl" style="font-weight:800;">${esc(l.style)}</td>
-          <td class="tl">${esc(bxBaseColor(l.color))}${vl!==bxDefaultVariant(l.style)?` <span style="font-size:9px;font-weight:800;color:#7c3aed;">${esc(vl)}</span>`:''}</td>
-          <td style="font-weight:800;">${esc(l.size)}</td>
-          <td style="font-family:Consolas,monospace;font-weight:800;">${(l.ids||[]).length}</td>
-          <td><input class="fi trr-loc" data-i="${i}" list="trr-dl-loc" style="width:110px;text-transform:uppercase;" placeholder="예: N12B"></td>
-        </tr>`;}).join('')}</tbody></table>
-      <datalist id="trr-dl-loc">${dlLoc.map(L=>'<option value="'+esc(L)+'">').join('')}</datalist>
-      <div class="muted" style="font-size:10.5px;margin-top:6px;">location을 비워두면 빈칸(미지정)으로 입고돼요 — 나중에 Full Box에서 location 클릭으로 지정 가능</div>
+  div.id = 'modal-scv';
+  div.style.cssText = 'position:fixed;inset:0;background:rgba(15,23,42,.6);z-index:110;display:flex;align-items:center;justify-content:center;padding:10px;';
+  div.innerHTML = `<div style="background:#fff;border-radius:12px;max-width:1150px;width:98vw;max-height:96vh;display:flex;flex-direction:column;overflow:hidden;">
+    <div style="background:#1565c0;color:#fff;padding:10px 16px;font-weight:800;display:flex;align-items:center;">📦 SC Inventory 선택
+      <button class="btn btn-sm" style="margin-left:auto;background:transparent;color:#bfdbfe;border-color:#60a5fa;" onclick="document.getElementById('modal-scv').remove()">✕</button></div>
+    <div style="padding:10px 16px;border-bottom:1px solid var(--border);background:#fff8e1;display:flex;align-items:center;gap:10px;flex-wrap:wrap;font-size:12px;">
+      <span style="font-weight:700;color:#7c2d12;">선택된 <b id="scv-count">0</b>개 라인 · <b id="scv-boxes">0</b> 박스 · <b id="scv-pcs">0</b> pcs</span>
+      <span style="color:var(--text2);">|</span>
+      <button class="btn btn-sm" onclick="trScAll(true)">전체 체크</button>
+      <button class="btn btn-sm" onclick="trScAll(false)">전체 해제</button>
+      <span style="color:var(--text2);">|</span>
+      <input class="fi" id="scv-bin-f" placeholder="Bin 필터 (예: 1A)" oninput="trScRender()" style="width:110px;font-size:11px;padding:4px 8px;">
+      <input class="fi" id="scv-style-f" placeholder="Style/Color 검색" oninput="trScRender()" style="width:180px;font-size:11px;padding:4px 8px;">
+      <button class="btn btn-sm btn-primary" style="background:#7b1fa2;border-color:#7b1fa2;margin-left:auto;" onclick="trScAdd()">→ Shipment 에 추가</button>
     </div>
+    <div id="scv-body" style="overflow-y:auto;flex:1;padding:8px 16px;"></div>
+    </div>`;
+  document.body.appendChild(div);
+  trScRender();
+}
+function trScRender(){
+  const el = document.getElementById('scv-body'); if(!el) return;
+  const binF = String((document.getElementById('scv-bin-f')||{}).value||'').trim().toUpperCase();
+  const styF = String((document.getElementById('scv-style-f')||{}).value||'').trim().toLowerCase();
+  const filtered = _scvCache.filter(g=>{
+    if(!g.boxes.length) return false;
+    if(binF && !g.loc.includes(binF)) return false;
+    if(styF && !((g.style+' '+g.color+' '+g.size).toLowerCase().includes(styF))) return false;
+    return true;
+  });
+  // loc 별 그룹
+  const locs = {}; const order = [];
+  filtered.forEach(g=>{ if(!locs[g.loc]){ locs[g.loc] = []; order.push(g.loc); } locs[g.loc].push(g); });
+  el.innerHTML = order.map(loc=>{
+    const gs = locs[loc];
+    const totB = gs.reduce((s,g)=>s+g.boxes.length,0);
+    const totP = gs.reduce((s,g)=>s+g.boxes.length*(g.ppb||0),0);
+    const allChecked = gs.every(g=>_scvSel[g.key]);
+    return `<table class="etbl" style="font-size:12px;margin-bottom:2px;">
+      <tbody>
+      <tr style="background:linear-gradient(90deg,#dbeafe,#e0f2fe);border-top:2px solid #1e40af;">
+        <td style="width:34px;text-align:center;padding:5px;"><input type="checkbox" ${allChecked?'checked':''} onchange="trScBin('${esc(loc)}', this.checked)" style="width:17px;height:17px;accent-color:#1e40af;cursor:pointer;"></td>
+        <td colspan="8" style="padding:5px 10px;font-size:12.5px;color:#1e40af;font-weight:800;">📍 <span style="font-family:Consolas,monospace;background:#fff;padding:1px 10px;border-radius:6px;border:1px solid #93c5fd;">${esc(loc)}</span>
+          <span style="margin-left:10px;color:var(--text2);font-weight:600;font-size:11px;">${gs.length} 라인 · ${totB} 박스 · ${totP.toLocaleString()} pcs</span>
+          <span style="margin-left:8px;font-size:10px;color:var(--text2);font-weight:400;">(체크 → Bin 통째 선택)</span></td>
+      </tr>
+      ${gs.map(g=>{
+        const sel = _scvSel[g.key];
+        const take = sel ? sel.take : g.boxes.length;
+        const vl = bxVariantLabel(g.color, g.style);
+        const vc = vl==='Tubular' ? '#64748b' : (/US/.test(vl) ? '#c2410c' : '#7c3aed');
+        return `<tr style="background:${sel?'#dcfce7':''};">
+        <td style="width:34px;text-align:center;padding-left:20px;"><input type="checkbox" ${sel?'checked':''} onchange="trScLine('${esc(g.key)}', this.checked)" style="width:15px;height:15px;accent-color:#10b981;cursor:pointer;"></td>
+        <td style="font-family:Consolas,monospace;font-weight:700;font-size:11px;">#${esc(g.style)}</td>
+        <td style="font-size:11px;">${esc(bxBaseColor(g.color))} <span style="font-size:9px;font-weight:800;color:${vc};">${vl!==bxDefaultVariant(g.style)?esc(vl):''}</span></td>
+        <td style="text-align:center;font-size:11px;">${esc(g.size)}</td>
+        <td style="text-align:right;font-weight:700;">${(g.boxes.length*(g.ppb||0)).toLocaleString()} <span style="font-size:9px;color:var(--text2);">pcs</span></td>
+        <td style="text-align:center;font-size:11px;color:var(--text2);">${g.ppb||'—'}</td>
+        <td style="text-align:center;font-family:Consolas,monospace;font-weight:700;">${g.boxes.length} 박스</td>
+        <td style="text-align:right;background:#fffde7;padding:3px 6px;">${sel
+          ? `<input class="fi" type="number" min="1" max="${g.boxes.length}" value="${take}" onchange="trScQty('${esc(g.key)}', this.value)" style="width:56px;font-size:11px;padding:3px 5px;text-align:center;font-weight:800;"> <button onclick="trScMax('${esc(g.key)}')" style="border:none;background:#bbf7d0;color:#15803d;cursor:pointer;font-size:9px;font-weight:700;padding:2px 5px;border-radius:3px;">전체</button>`
+          : '<span style="font-size:10px;color:var(--text2);">체크하면 수량 지정</span>'}</td>
+        <td style="width:10px;"></td>
+        </tr>`;
+      }).join('')}
+      </tbody></table>`;
+  }).join('') || '<div class="muted" style="padding:24px;text-align:center;font-size:12px;">조건에 맞는 SC 재고가 없습니다.</div>';
+  trScSummary();
+}
+function trScLine(key, on){
+  const g = _scvCache.find(x=>x.key===key); if(!g) return;
+  if(on) _scvSel[key] = { take: g.boxes.length, g };
+  else delete _scvSel[key];
+  trScRender();
+}
+function trScQty(key, val){
+  const s = _scvSel[key]; if(!s) return;
+  let n = parseInt(val)||0;
+  if(n<1) n = 1;
+  if(n>s.g.boxes.length) n = s.g.boxes.length;
+  s.take = n;
+  trScSummary();
+}
+function trScMax(key){ const s = _scvSel[key]; if(s){ s.take = s.g.boxes.length; trScRender(); } }
+function trScBin(loc, on){
+  _scvCache.filter(g=>g.loc===loc && g.boxes.length).forEach(g=>{
+    if(on) _scvSel[g.key] = { take: g.boxes.length, g };
+    else delete _scvSel[g.key];
+  });
+  trScRender();
+}
+function trScAll(on){
+  const binF = String((document.getElementById('scv-bin-f')||{}).value||'').trim().toUpperCase();
+  const styF = String((document.getElementById('scv-style-f')||{}).value||'').trim().toLowerCase();
+  _scvCache.filter(g=>{
+    if(!g.boxes.length) return false;
+    if(binF && !g.loc.includes(binF)) return false;
+    if(styF && !((g.style+' '+g.color+' '+g.size).toLowerCase().includes(styF))) return false;
+    return true;
+  }).forEach(g=>{ if(on) _scvSel[g.key] = { take:g.boxes.length, g }; else delete _scvSel[g.key]; });
+  trScRender();
+}
+function trScSummary(){
+  const es = Object.values(_scvSel);
+  const set = (id,v)=>{ const e=document.getElementById(id); if(e) e.textContent = v; };
+  set('scv-count', es.length);
+  set('scv-boxes', es.reduce((s,e)=>s+e.take,0));
+  set('scv-pcs', es.reduce((s,e)=>s+e.take*(e.g.ppb||0),0).toLocaleString());
+}
+async function trScAdd(){
+  const es = Object.values(_scvSel).filter(e=>e.take>0);
+  if(!es.length){ showToast('⚠ 선택된 라인이 없습니다'); return; }
+  const m = document.getElementById('modal-scv'); if(m) m.remove();
+  showToast('💾 '+es.length+' 라인 추가 중...');
+  let ok = 0;
+  for(const e of es){
+    const g = e.g;
+    const take = g.boxes.slice(0, e.take);   // 오래된 박스부터
+    const done = await _trAddLine(_scvTarget, {
+      is_manual:false, style:g.style, color:g.color, size:g.size,
+      bin:g.loc, ppb:g.ppb, ids:take.map(b=>b.id)
+    });
+    if(done) ok++;
+  }
+  showToast('✅ '+ok+'/'+es.length+' 라인 추가됨 (SC에서 예약됨)');
+  trRenderPallets();
+  if($('bx-body')) renderBoxRoom();
+}
+// ── Packing List (IMS 양식) ──
+function trPLHtml(){
+  trCaptureInfo();
+  const calcBoxes = l=>trLineBoxes(l);
+  const totalPallets = _shipPallets.filter(p=>p.lines.length).length || _shipPallets.length;
+  const totalLines = _shipPallets.reduce((s,p)=>s+p.lines.length,0);
+  const totalPcs = _shipPallets.reduce((s,p)=>s+p.lines.reduce((ss,l)=>ss+trLinePcs(l),0),0);
+  const totalBoxes = _shipPallets.reduce((s,p)=>s+p.lines.reduce((ss,l)=>ss+calcBoxes(l),0),0);
+  const palletsHtml = _shipPallets.map(p=>{
+    if(!p.lines.length) return '';
+    const pPcs = p.lines.reduce((s,l)=>s+trLinePcs(l),0);
+    const pBox = p.lines.reduce((s,l)=>s+calcBoxes(l),0);
+    return `<div style="margin-bottom:18px;page-break-inside:avoid;">
+      <div style="background:#f3e8ff;padding:8px 12px;border:1px solid #d8b4fe;border-radius:4px;margin-bottom:6px;font-weight:700;color:#7b1fa2;font-size:14px;">📦 ${esc(p.label)} — ${p.lines.length} lines · ${pPcs.toLocaleString()} pcs · ${pBox.toLocaleString()} boxes</div>
+      <table style="width:100%;border-collapse:collapse;font-size:11px;">
+        <thead><tr style="background:#f3f4f6;">
+          <th style="padding:6px 8px;text-align:left;border:1px solid #ccc;">Style</th>
+          <th style="padding:6px 8px;text-align:left;border:1px solid #ccc;">Color</th>
+          <th style="padding:6px 8px;text-align:center;border:1px solid #ccc;">Size</th>
+          <th style="padding:6px 8px;text-align:center;border:1px solid #ccc;">SC Bin</th>
+          <th style="padding:6px 8px;text-align:right;border:1px solid #ccc;">Qty (pcs)</th>
+          <th style="padding:6px 8px;text-align:right;border:1px solid #ccc;">pcs/box</th>
+          <th style="padding:6px 8px;text-align:right;border:1px solid #ccc;">Boxes</th>
+        </tr></thead>
+        <tbody>${p.lines.map(l=>{
+          const vl = bxVariantLabel(l.color, l.style);
+          const vTag = (!l.is_manual && vl!==bxDefaultVariant(l.style)) ? ' ('+vl+')' : '';
+          return `<tr>
+          <td style="padding:5px 8px;border:1px solid #ccc;font-weight:700;">${esc(l.style)}</td>
+          <td style="padding:5px 8px;border:1px solid #ccc;">${esc(bxBaseColor(l.color))}${esc(vTag)}</td>
+          <td style="padding:5px 8px;border:1px solid #ccc;text-align:center;">${esc(l.size)}</td>
+          <td style="padding:5px 8px;border:1px solid #ccc;text-align:center;">${esc(l.bin||'—')}</td>
+          <td style="padding:5px 8px;border:1px solid #ccc;text-align:right;font-weight:700;">${trLinePcs(l).toLocaleString()}</td>
+          <td style="padding:5px 8px;border:1px solid #ccc;text-align:right;color:#6b7280;">${Number(l.ppb)||''}</td>
+          <td style="padding:5px 8px;border:1px solid #ccc;text-align:right;font-weight:700;">${calcBoxes(l).toLocaleString()}</td>
+          </tr>`;}).join('')}
+        </tbody></table></div>`;
+  }).join('');
+  return `<div style="background:#fff;padding:30px;font-family:Arial,sans-serif;max-width:8.5in;margin:0 auto;color:#000;">
+    <div style="text-align:center;margin-bottom:20px;border-bottom:2px solid #000;padding-bottom:10px;">
+      <h1 style="margin:0;font-size:22px;">PACKING LIST</h1>
+      <div style="font-size:12px;margin-top:4px;color:#666;">SC → CA Internal Transfer · Pacific Sports</div>
+    </div>
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:30px;margin-bottom:18px;font-size:12px;">
+      <div>
+        <div style="font-weight:700;border-bottom:1px solid #ccc;margin-bottom:6px;padding-bottom:2px;">SHIPMENT INFO</div>
+        <div><b>Shipment #:</b> ${esc(_shipNo||'—')}</div>
+        <div><b>Ship Date:</b> ${esc(_shipMeta.ship_date||'—')}</div>
+        <div><b>ETA:</b> ${esc(_shipMeta.eta||'—')}</div>
+        <div><b>Seal #:</b> ${esc(_shipMeta.seal||'—')}</div>
+      </div>
+      <div>
+        <div style="font-weight:700;border-bottom:1px solid #ccc;margin-bottom:6px;padding-bottom:2px;">CARRIER / DRIVER</div>
+        <div><b>Carrier:</b> ${esc(_shipMeta.carrier||'—')}</div>
+        <div><b>Driver:</b> ${esc(_shipMeta.driver||'—')}</div>
+        <div><b>Phone:</b> ${esc(_shipMeta.phone||'—')}</div>
+        <div><b>Truck #:</b> ${esc(_shipMeta.truck||'—')}</div>
+      </div>
+    </div>
+    <div style="background:#fef3f9;border:1px solid #d8b4fe;border-radius:4px;padding:8px 14px;margin-bottom:14px;font-size:12px;display:flex;justify-content:space-around;">
+      <div><b>Pallets:</b> ${totalPallets}</div>
+      <div><b>Lines:</b> ${totalLines}</div>
+      <div><b>Total Pcs:</b> ${totalPcs.toLocaleString()}</div>
+      <div><b>Total Boxes:</b> ${totalBoxes.toLocaleString()}</div>
+    </div>
+    ${_shipMeta.notes ? `<div style="background:#fffde7;border:1px solid #fbc02d;padding:6px 10px;font-size:11px;margin-bottom:14px;"><b>Notes:</b> ${esc(_shipMeta.notes)}</div>` : ''}
+    ${palletsHtml}
+    <div style="margin-top:40px;display:grid;grid-template-columns:1fr 1fr;gap:30px;font-size:12px;page-break-inside:avoid;">
+      <div><div style="border-bottom:1px solid #000;height:50px;"></div><div style="margin-top:4px;">Shipper Signature & Date</div></div>
+      <div><div style="border-bottom:1px solid #000;height:50px;"></div><div style="margin-top:4px;">Driver Signature & Date</div></div>
+    </div>
+    <div style="margin-top:30px;display:grid;grid-template-columns:1fr 1fr;gap:30px;font-size:12px;page-break-inside:avoid;">
+      <div><div style="border-bottom:1px solid #000;height:50px;"></div><div style="margin-top:4px;">CA Receiver Signature & Date</div></div>
+      <div></div>
+    </div>
+  </div>`;
+}
+function trPL(){
+  if(_shipPallets.every(p=>!p.lines.length)){ alert('라인이 없습니다.'); return; }
+  const ex = document.getElementById('modal-trpl'); if(ex) ex.remove();
+  const div = document.createElement('div');
+  div.id = 'modal-trpl';
+  div.style.cssText = 'position:fixed;inset:0;background:rgba(15,23,42,.6);z-index:120;display:flex;align-items:center;justify-content:center;padding:12px;';
+  div.onclick = e=>{ if(e.target===div) div.remove(); };
+  div.innerHTML = `<div style="background:#fff;border-radius:12px;max-width:880px;width:96vw;max-height:96vh;display:flex;flex-direction:column;overflow:hidden;">
+    <div style="background:#0f4c8a;color:#fff;padding:10px 16px;font-weight:800;">📋 Packing List 미리보기
+      <button class="btn btn-sm" style="float:right;background:transparent;color:#bfdbfe;border-color:#60a5fa;" onclick="document.getElementById('modal-trpl').remove()">✕</button></div>
+    <div id="trpl-content" style="padding:16px;overflow-y:auto;flex:1;background:#f5f5f5;">${trPLHtml()}</div>
     <div style="padding:10px 16px;border-top:1px solid var(--border);display:flex;gap:8px;justify-content:flex-end;">
-      <button class="btn" onclick="document.getElementById('modal-trr').remove();trOpen();">취소</button>
-      <button class="btn btn-primary" style="background:#166534;border-color:#166534;" onclick="trReceiveDo('${rec.id}')">✅ CA 재고로 확정 입고</button>
+      <button class="btn" onclick="document.getElementById('modal-trpl').remove()">닫기</button>
+      <button class="btn btn-primary" style="background:#0f4c8a;border-color:#0f4c8a;" onclick="trPrintEl('trpl-content')">🖨 인쇄</button>
     </div></div>`;
   document.body.appendChild(div);
 }
-async function trReceiveDo(id){
+function trPrintEl(elId){
+  const content = (document.getElementById(elId)||{}).innerHTML || '';
+  const w = window.open('', '_blank');
+  w.document.write('<html><head><title>Print</title></head><body style="margin:0;">'+content+'<scr'+'ipt>window.print();</scr'+'ipt></body></html>');
+  w.document.close();
+}
+function trBOL(){
+  trCaptureInfo();
+  const lines = trLinesFlat();
+  if(!lines.length){ alert('라인이 없습니다.'); return; }
+  const totB = lines.reduce((s,l)=>s+trLineBoxes(l),0);
+  const totP = lines.reduce((s,l)=>s+trLinePcs(l),0);
+  const nPal = _shipPallets.filter(p=>p.lines.length).length;
+  const html = `<div style="background:#fff;padding:30px;font-family:Arial,sans-serif;max-width:8.5in;margin:0 auto;color:#000;">
+    <div style="display:flex;justify-content:space-between;align-items:baseline;border-bottom:3px solid #111;padding-bottom:6px;margin-bottom:12px;">
+      <div style="font-size:20px;font-weight:800;">PACIFIC SPORTS</div>
+      <div style="font-size:16px;font-weight:800;">STRAIGHT BILL OF LADING</div>
+    </div>
+    <table style="width:100%;border-collapse:collapse;font-size:11px;margin-bottom:10px;">
+      <tr><td style="border:1px solid #333;padding:6px 8px;width:50%;"><b>SHIP FROM (SHIPPER)</b><br>Pacific Sports — SC Warehouse<br>Sumter, SC</td>
+      <td style="border:1px solid #333;padding:6px 8px;"><b>SHIP TO (CONSIGNEE)</b><br>Pacific Sports — CA Warehouse<br>Eastvale, CA</td></tr></table>
+    <table style="width:100%;border-collapse:collapse;font-size:11px;margin-bottom:10px;"><tr>
+      <td style="border:1px solid #333;padding:5px 8px;"><b>SHIPMENT #</b><br>${esc(_shipNo||'')}</td>
+      <td style="border:1px solid #333;padding:5px 8px;"><b>SHIP DATE</b><br>${esc(_shipMeta.ship_date||'—')}</td>
+      <td style="border:1px solid #333;padding:5px 8px;"><b>CARRIER</b><br>${esc(_shipMeta.carrier||'—')}</td>
+      <td style="border:1px solid #333;padding:5px 8px;"><b>TRUCK #</b><br>${esc(_shipMeta.truck||'—')}</td>
+      <td style="border:1px solid #333;padding:5px 8px;"><b>SEAL #</b><br>${esc(_shipMeta.seal||'—')}</td>
+    </tr></table>
+    <table style="width:100%;border-collapse:collapse;font-size:12px;">
+      <tr style="background:#f5f5f5;"><th style="border:1px solid #333;padding:5px 8px;">HANDLING UNITS</th><th style="border:1px solid #333;padding:5px 8px;">PACKAGE TYPE</th><th style="border:1px solid #333;padding:5px 8px;text-align:left;">COMMODITY DESCRIPTION</th><th style="border:1px solid #333;padding:5px 8px;">TOTAL PCS</th><th style="border:1px solid #333;padding:5px 8px;">WEIGHT</th></tr>
+      <tr><td style="border:1px solid #333;padding:8px;text-align:center;font-weight:800;">${nPal} PALLETS</td><td style="border:1px solid #333;padding:8px;text-align:center;">${totB} CARTONS</td><td style="border:1px solid #333;padding:8px;">WEARING APPAREL (T-SHIRTS / KNIT GARMENTS)</td><td style="border:1px solid #333;padding:8px;text-align:center;">${totP.toLocaleString()}</td><td style="border:1px solid #333;padding:8px;"></td></tr>
+    </table>
+    <div style="font-size:10px;margin-top:8px;color:#333;">NOTE: This is a non-negotiable straight bill of lading. Carrier acknowledges receipt of the above property in apparent good order. Freight terms: Prepaid unless noted.</div>
+    <div style="margin-top:36px;display:grid;grid-template-columns:1fr 1fr 1fr;gap:20px;font-size:11px;">
+      <div><div style="border-bottom:1px solid #000;height:44px;"></div><div style="margin-top:4px;"><b>SHIPPER SIGNATURE</b> / DATE</div></div>
+      <div><div style="border-bottom:1px solid #000;height:44px;"></div><div style="margin-top:4px;"><b>DRIVER SIGNATURE</b> / DATE</div></div>
+      <div><div style="border-bottom:1px solid #000;height:44px;"></div><div style="margin-top:4px;"><b>RECEIVER SIGNATURE</b> / DATE</div></div>
+    </div>
+  </div>`;
+  const w = window.open('', '_blank');
+  w.document.write('<html><head><title>BOL — '+esc(_shipNo||'')+'</title></head><body style="margin:0;">'+html+'<scr'+'ipt>window.print();</scr'+'ipt></body></html>');
+  w.document.close();
+}
+// ── Post (트럭 출발) ──
+async function trPost(){
+  trCaptureInfo();
+  if(!_shipMeta.ship_date){ alert('출발일은 필수입니다.'); return; }
+  if(_shipPallets.every(p=>!p.lines.length)){ alert('라인이 없습니다.'); return; }
+  if(!_shipId){ alert('먼저 라인을 추가해주세요 (라인 추가 시 Draft 가 저장됩니다).'); return; }
+  const nL = _shipPallets.reduce((s,p)=>s+p.lines.length,0);
+  const nP = _shipPallets.filter(p=>p.lines.length).length;
+  if(!confirm('이 Shipment 을 출발 처리하시겠습니까?\n\n'+nP+'개 Pallet, '+nL+' 라인이 In Transit 상태로 변경됩니다.\n\n(SC 재고는 이미 Draft 시점에 예약(차감)되어 있습니다.)')) return;
+  await trPatchRec(_shipId, { ref:_shipNo, status:'TRANSIT', meta:_shipMeta, lines:trLinesFlat(), departed_at:new Date().toISOString(), departed_by:(SESS&&SESS.email)||'' });
+  const m = document.getElementById('modal-trb'); if(m) m.remove();
+  _shipId = null; _shipNo = null; _shipMeta = {}; _shipPallets = [];
+  showToast('✅ Shipment 출발 — In Transit');
+  if($('bx-body')) renderBoxRoom();
+  trOpen();
+}
+async function trCancelTransit(id){
   const rec = await trGet(id); if(!rec) return;
-  const locs = {};
-  document.querySelectorAll('.trr-loc').forEach(inp=>{ locs[Number(inp.dataset.i)] = String(inp.value||'').trim().toUpperCase(); });
-  const totB = (rec.lines||[]).reduce((a,l)=>a+(l.ids||[]).length,0);
-  if(!confirm('✅ '+rec.ref+' — '+totB+'박스를 CA 재고로 입고할까요?')) return;
-  try{
-    for(let i=0;i<(rec.lines||[]).length;i++){
-      const l = rec.lines[i];
-      await trPatchBoxes(l.ids||[], {wh:'CA', loc: locs[i]||''});
+  if(!confirm('↩ '+rec.ref+' 출발을 취소하고 Draft 로 되돌릴까요? (박스 예약은 유지)')) return;
+  await trPatchRec(id, {status:'LOADING', departed_at:null, departed_by:null});
+  trOpen();
+}
+// ── 보기 (In Transit / Received) ──
+async function trView(id){
+  const rec = await trGet(id); if(!rec) return;
+  const M = rec.meta||{};
+  const lines = Array.isArray(rec.lines)?rec.lines:[];
+  const palletMap = {};
+  lines.forEach(l=>{ const lbl = l.pallet||'Pallet 1'; (palletMap[lbl] = palletMap[lbl]||[]).push(l); });
+  const totP = lines.reduce((s,l)=>s+trLinePcs(l),0);
+  const ex = document.getElementById('modal-trv'); if(ex) ex.remove();
+  const div = document.createElement('div');
+  div.id = 'modal-trv';
+  div.style.cssText = 'position:fixed;inset:0;background:rgba(15,23,42,.6);z-index:115;display:flex;align-items:center;justify-content:center;padding:12px;';
+  div.onclick = e=>{ if(e.target===div) div.remove(); };
+  div.innerHTML = `<div style="background:#fff;border-radius:12px;max-width:820px;width:94vw;max-height:92vh;display:flex;flex-direction:column;overflow:hidden;">
+    <div style="background:#0f2a4a;color:#fff;padding:10px 16px;font-weight:800;">🚛 ${esc(rec.ref||'')} <span style="font-size:11px;font-weight:400;opacity:.8;">— SC → CA</span>
+      <button class="btn btn-sm" style="float:right;background:transparent;color:#cbd5e1;border-color:#475569;" onclick="document.getElementById('modal-trv').remove()">✕</button></div>
+    <div style="padding:14px 18px;overflow-y:auto;flex:1;">
+      <div style="display:flex;gap:16px;flex-wrap:wrap;margin-bottom:12px;font-size:12px;">
+        <div><span class="muted">상태</span><br>${trStatusChip(rec.status)}</div>
+        <div><span class="muted">트럭 #</span><br><b>${esc(M.truck||'—')}</b></div>
+        <div><span class="muted">Carrier</span><br><b>${esc(M.carrier||'—')}</b></div>
+        <div><span class="muted">Driver</span><br><b>${esc(M.driver||'—')}</b></div>
+        <div><span class="muted">Seal #</span><br><b>${esc(M.seal||'—')}</b></div>
+        <div><span class="muted">출발일</span><br><b>${esc(M.ship_date||'—')}</b></div>
+        <div><span class="muted">ETA</span><br><b>${esc(M.eta||'—')}</b></div>
+        ${rec.received_at?`<div><span class="muted">도착일</span><br><b>${String(rec.received_at).slice(0,10)}</b></div>`:''}
+      </div>
+      <div style="font-size:12px;font-weight:700;color:var(--text2);margin-bottom:8px;">총 ${lines.length} 라인 · ${totP.toLocaleString()} pcs</div>
+      ${Object.keys(palletMap).map(lbl=>{
+        const pls = palletMap[lbl];
+        const pPcs = pls.reduce((s,l)=>s+trLinePcs(l),0);
+        return `<div style="border:1px solid var(--border);border-radius:6px;margin-bottom:10px;overflow:hidden;">
+        <div style="background:#f3eefc;padding:7px 12px;font-weight:700;color:#6d28d9;font-size:12.5px;">📦 ${esc(lbl)} <span style="font-weight:400;color:var(--text2);font-size:11px;">· ${pls.length} 라인 · ${pPcs.toLocaleString()} pcs</span></div>
+        <table class="etbl" style="font-size:12px;">
+          <thead><tr><th class="tl">Style</th><th class="tl">Color</th><th>Size</th><th>SC Bin</th><th>박스</th><th>Qty</th>${rec.status==='RECEIVED'?'<th>CA Bin</th>':''}</tr></thead>
+          <tbody>${pls.map(l=>`<tr>
+            <td class="tl" style="font-weight:700;">${esc(l.style)}</td>
+            <td class="tl">${esc(bxBaseColor(l.color))}</td>
+            <td style="text-align:center;">${esc(l.size)}</td>
+            <td style="text-align:center;"><span style="background:#e8f0fb;color:#1a56a0;padding:1px 8px;border-radius:8px;font-size:10.5px;font-weight:700;">${esc(l.bin||'?')}</span></td>
+            <td style="text-align:center;font-family:Consolas,monospace;font-weight:700;">${trLineBoxes(l)}</td>
+            <td style="text-align:right;font-family:Consolas,monospace;font-weight:700;">${trLinePcs(l).toLocaleString()}</td>
+            ${rec.status==='RECEIVED'?`<td style="text-align:center;">${l.ca_bin?`<span style="background:#dcfce7;color:#15803d;padding:1px 8px;border-radius:8px;font-size:10.5px;font-weight:700;">${esc(l.ca_bin)}</span>`:'—'}</td>`:''}
+          </tr>`).join('')}</tbody></table></div>`;
+      }).join('') || '<div class="muted">라인 없음</div>'}
+    </div>
+    <div style="padding:10px 16px;border-top:1px solid var(--border);display:flex;gap:8px;justify-content:flex-end;">
+      ${rec.status==='TRANSIT'?`<button class="btn btn-sm btn-primary" style="background:#0f766e;border-color:#0f766e;" onclick="document.getElementById('modal-trv').remove();trRecvOpen('${rec.id}')">📦 CA 도착 처리</button>`:''}
+      <button class="btn" onclick="document.getElementById('modal-trv').remove()">닫기</button>
+    </div></div>`;
+  document.body.appendChild(div);
+}
+// ── CA Receive (통째로 / 해체) ──
+let _trRecvRec = null, _trRecvPallets = [];
+async function trRecvOpen(id){
+  const rec = await trGet(id); if(!rec){ showToast('⚠ 불러오기 실패'); return; }
+  if(!bxLoaded) await bxFetchStore();
+  _trRecvRec = rec;
+  const lines = Array.isArray(rec.lines)?rec.lines:[];
+  const palletMap = {};
+  lines.forEach(l=>{ const lbl = l.pallet||'Pallet 1'; if(!palletMap[lbl]) palletMap[lbl] = { label:lbl, mode:'whole', bin:'', lines:[] }; palletMap[lbl].lines.push({...l, ca_bin:''}); });
+  _trRecvPallets = Object.values(palletMap);
+  ['modal-tr','modal-trr'].forEach(x=>{ const e=document.getElementById(x); if(e) e.remove(); });
+  const totP = lines.reduce((s,l)=>s+trLinePcs(l),0);
+  const totB = lines.reduce((s,l)=>s+trLineBoxes(l),0);
+  const M = rec.meta||{};
+  const caLocs = [...new Set(bxStore.filter(b=>bxWh(b)==='CA').map(b=>String(b.loc||'').toUpperCase()).filter(Boolean))].sort();
+  const div = document.createElement('div');
+  div.id = 'modal-trr';
+  div.style.cssText = 'position:fixed;inset:0;background:rgba(15,23,42,.6);z-index:110;display:flex;align-items:center;justify-content:center;padding:10px;';
+  div.innerHTML = `<div style="background:#fff;border-radius:12px;max-width:1100px;width:98vw;max-height:96vh;display:flex;flex-direction:column;overflow:hidden;">
+    <div style="background:#0f766e;color:#fff;padding:10px 16px;font-weight:800;">📦 CA 도착 처리
+      <button class="btn btn-sm" style="float:right;background:transparent;color:#99f6e4;border-color:#2dd4bf;" onclick="document.getElementById('modal-trr').remove();trOpen();">✕</button></div>
+    <div style="padding:12px 16px;overflow-y:auto;flex:1;">
+      <div style="margin-bottom:10px;padding:10px 14px;background:#ecfdf5;border-radius:8px;font-size:12px;display:flex;gap:16px;flex-wrap:wrap;align-items:center;">
+        <div><b>Shipment:</b> ${esc(rec.ref||'')}</div>
+        <div><b>Ship Date:</b> ${esc(M.ship_date||'—')}</div>
+        <div><b>ETA:</b> ${esc(M.eta||'—')}</div>
+        <div><b>Seal:</b> ${esc(M.seal||'—')}</div>
+        <div style="margin-left:auto;font-size:11px;background:#fff;padding:3px 10px;border-radius:10px;border:1px solid #a7f3d0;">📦 <b>${_trRecvPallets.length}</b> 파렛 · <b>${lines.length}</b> 라인 · <b>${totP.toLocaleString()}</b> pcs · <b>${totB}</b> 박스</div>
+      </div>
+      <datalist id="trr-ca-bins">${caLocs.map(L=>'<option value="'+esc(L)+'">').join('')}</datalist>
+      <div id="trr-pallets" style="display:flex;flex-direction:column;gap:12px;"></div>
+    </div>
+    <div style="padding:12px 16px;border-top:1px solid var(--border);display:flex;gap:8px;justify-content:flex-end;">
+      <button class="btn" onclick="document.getElementById('modal-trr').remove();trOpen();">취소</button>
+      <button class="btn btn-primary" style="background:#0f766e;border-color:#0f766e;" onclick="trRecvPost()">✅ Post — CA 입고</button>
+    </div></div>`;
+  document.body.appendChild(div);
+  trRecvRender();
+}
+function trRecvRender(){
+  const el = document.getElementById('trr-pallets'); if(!el) return;
+  el.innerHTML = _trRecvPallets.map((p,pi)=>{
+    const pPcs = p.lines.reduce((s,l)=>s+trLinePcs(l),0);
+    const isWhole = p.mode==='whole';
+    let body;
+    if(isWhole){
+      body = `<div style="padding:12px;background:#ecfdf5;border:1px solid #6ee7b7;border-radius:6px;display:flex;align-items:center;gap:12px;flex-wrap:wrap;">
+        <span style="color:#047857;font-weight:700;">📍 통째로 입고할 bin:</span>
+        <input class="fi" list="trr-ca-bins" value="${esc(p.bin||'')}" placeholder="bin code (CA)" onchange="trRecvWholeBin(${pi}, this.value)" style="width:170px;font-family:Consolas,monospace;font-weight:700;text-transform:uppercase;">
+        <span style="color:var(--text2);font-size:11px;">${p.lines.length} 라인 · ${pPcs.toLocaleString()} pcs 가 한 bin 으로</span></div>
+      <table class="etbl" style="font-size:11.5px;margin-top:6px;">
+        <thead><tr><th class="tl">Style</th><th class="tl">Color/Size</th><th>SC Bin</th><th>박스</th><th>Qty</th></tr></thead>
+        <tbody>${p.lines.map(l=>`<tr>
+          <td class="tl" style="font-weight:700;font-family:Consolas,monospace;">${esc(l.style)}</td>
+          <td class="tl">${esc(bxBaseColor(l.color))} / ${esc(l.size)}</td>
+          <td style="text-align:center;font-size:10.5px;">${esc(l.bin||'?')}</td>
+          <td style="text-align:center;font-family:Consolas,monospace;font-weight:700;">${trLineBoxes(l)}</td>
+          <td style="text-align:right;font-family:Consolas,monospace;font-weight:700;">${trLinePcs(l).toLocaleString()}</td>
+        </tr>`).join('')}</tbody></table>`;
+    }else{
+      body = `<div style="background:#fef3c7;border:1px solid #fbbf24;padding:6px 10px;border-radius:4px;font-size:11px;color:#92400e;margin-bottom:6px;">🔧 해체 모드 — 각 라인을 다른 bin 에 배치</div>
+      <table class="etbl" style="font-size:11.5px;">
+        <thead><tr><th class="tl">Style</th><th class="tl">Color</th><th>Size</th><th>박스</th><th>Qty</th><th style="background:#fef3c7;">CA Bin</th></tr></thead>
+        <tbody>${p.lines.map((l,li)=>`<tr>
+          <td class="tl" style="font-weight:700;font-family:Consolas,monospace;">${esc(l.style)}</td>
+          <td class="tl">${esc(bxBaseColor(l.color))}</td>
+          <td style="text-align:center;">${esc(l.size)}</td>
+          <td style="text-align:center;font-family:Consolas,monospace;font-weight:700;">${trLineBoxes(l)}</td>
+          <td style="text-align:right;font-family:Consolas,monospace;font-weight:700;">${trLinePcs(l).toLocaleString()}</td>
+          <td style="background:#fffde7;"><input class="fi" list="trr-ca-bins" value="${esc(l.ca_bin||'')}" placeholder="bin" onchange="trRecvLineBin(${pi},${li},this.value)" style="width:110px;font-size:11px;padding:3px 6px;font-family:Consolas,monospace;font-weight:700;text-transform:uppercase;"></td>
+        </tr>`).join('')}</tbody></table>`;
     }
-    await sbFetch('/rest/v1/pr_transfers?id=eq.'+id, {method:'PATCH', headers:{Prefer:'return=minimal'}, body:JSON.stringify({status:'RECEIVED', received_at:new Date().toISOString(), received_by:(SESS&&SESS.email)||''})});
-  }catch(e){ showToast('⚠ 입고 실패 — 인터넷 확인 후 다시 시도'); return; }
+    return `<div style="border:2px solid #6ee7b7;border-radius:8px;background:#fff;">
+      <div style="background:#d1fae5;padding:8px 14px;display:flex;align-items:center;gap:10px;border-radius:6px 6px 0 0;">
+        <span style="font-weight:700;color:#047857;">📦 ${esc(p.label)}</span>
+        <span style="color:var(--text2);font-size:11px;">${p.lines.length} 라인 · <b>${pPcs.toLocaleString()}</b> pcs</span>
+        <div style="margin-left:auto;display:flex;gap:6px;">
+          <button class="btn btn-sm" style="${isWhole?'background:#0f766e;color:#fff;border-color:#0f766e;':''}" onclick="trRecvMode(${pi},'whole')">📦 통째로</button>
+          <button class="btn btn-sm" style="${!isWhole?'background:#0f766e;color:#fff;border-color:#0f766e;':''}" onclick="trRecvMode(${pi},'split')">🔧 해체</button>
+        </div></div>
+      <div style="padding:10px 14px;">${body}</div></div>`;
+  }).join('');
+}
+function trRecvMode(pi, m){ _trRecvPallets[pi].mode = m; trRecvRender(); }
+function trRecvWholeBin(pi, v){ _trRecvPallets[pi].bin = String(v||'').trim().toUpperCase(); }
+function trRecvLineBin(pi, li, v){ _trRecvPallets[pi].lines[li].ca_bin = String(v||'').trim().toUpperCase(); }
+async function trRecvPost(){
+  const errors = [];
+  _trRecvPallets.forEach(p=>{
+    if(p.mode==='whole'){ if(!p.bin) errors.push(p.label+': bin 미입력'); }
+    else p.lines.forEach((l,li)=>{ if(!l.ca_bin) errors.push(p.label+' 라인 '+(li+1)+': bin 미입력'); });
+  });
+  if(errors.length){ alert('다음 라인들이 bin 미입력입니다:\n\n'+errors.slice(0,6).join('\n')); return; }
+  const totLines = _trRecvPallets.reduce((s,p)=>s+p.lines.length,0);
+  if(!confirm(_trRecvPallets.length+'개 Pallet, '+totLines+' 라인을 CA 입고 처리하시겠습니까?')) return;
+  let ok = 0; const errs = [];
+  const manualNew = [];
+  for(const p of _trRecvPallets){
+    for(const l of p.lines){
+      const bin = p.mode==='whole' ? p.bin : l.ca_bin;
+      try{
+        if(l.is_manual){
+          const by = (SESS&&SESS.email)||'';
+          for(let j=0;j<(Number(l.boxes)||0);j++) manualNew.push({style:l.style, color:l.color, size:l.size, pcs:Number(l.ppb)||72, loc:bin, wh:'CA', status:'IN', in_by:by, note:'transfer '+(_trRecvRec.ref||'')});
+        }else if((l.ids||[]).length){
+          await trPatchBoxes(l.ids, {wh:'CA', loc:bin});
+        }
+        l.ca_bin = bin;
+        ok++;
+      }catch(e){ errs.push(l.style+'/'+l.color+'/'+l.size+': '+String(e.message||'').slice(0,60)); }
+    }
+  }
+  if(manualNew.length){
+    try{
+      if(!skuLoaded) await skuFetch();
+      if(await skuConfirmRegister(skuGateRows(manualNew))) await bxInsert(manualNew);
+      else errs.push('수동 라인 '+manualNew.length+'박스 미입고 (SKU 미등록)');
+    }catch(e){ errs.push('수동 라인 입고 실패'); }
+  }
+  // ca_bin 을 lines 에 반영해 저장
+  const savedLines = [];
+  _trRecvPallets.forEach(p=>p.lines.forEach(l=>savedLines.push({...l, pallet:p.label})));
+  await trPatchRec(_trRecvRec.id, { status:'RECEIVED', lines:savedLines, received_at:new Date().toISOString(), received_by:(SESS&&SESS.email)||'' });
   await bxFetchStore();
   if($('bx-body')) renderBoxRoom();
   const m = document.getElementById('modal-trr'); if(m) m.remove();
-  showToast('✅ '+rec.ref+' CA 입고 완료 — '+totB+'박스');
+  let msg = '✅ '+ok+' 라인 CA 입고 완료';
+  if(errs.length) msg += '\n\n❌ 오류 '+errs.length+':\n'+errs.slice(0,5).join('\n');
+  alert(msg);
   trOpen();
 }
+
 function hiStyleFrom(desc){
   const m = String(desc||'').match(/-\s*(\d{3,5})\s*S?\s*-/);
   return m ? m[1] : '';
