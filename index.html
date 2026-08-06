@@ -136,7 +136,7 @@ main{max-width:1100px;margin:0 auto;padding:16px;}
     <button class="btn btn-sm" onclick="doLogout()" style="padding:2px 8px;font-size:10px;" data-i18n="logout">로그아웃</button>
   </span>
   <select id="lang-sel" onchange="setLang(this.value)" style="font-size:11px;padding:3px 6px;border-radius:5px;border:none;background:#1d3f66;color:#fff;"><option value="ko">한국어</option><option value="en">English</option><option value="es">Español</option></select>
-  <span style="font-size:10px;color:#9fb8d4;">v293 🚚</span>
+  <span style="font-size:10px;color:#9fb8d4;">v294 🚚</span>
 </div>
 <script type="text/javascript" src="https://js.authorize.net/v1/Accept.js" charset="utf-8"></script>
 <div id="po-viewer" style="display:none;position:fixed;top:0;right:0;width:44%;height:100vh;background:#fff;border-left:2px solid var(--border);z-index:60;box-shadow:-6px 0 20px rgba(0,0,0,.15);">
@@ -4411,6 +4411,68 @@ function invDocData(){
   const iv = invDrafts[plWh] || {};
   return {...d, lines: Array.isArray(iv.lines) ? iv.lines : d.lines, freight: Number(iv.freight)||0, invNo: iv.invNo||'', termType: iv.termType||'', termDays: iv.termDays||0};
 }
+async function downloadInvExcel(){
+  const rec = savedCache.find(s=>s.base===plBase); if(!rec){ showToast('⚠ 오더를 찾을 수 없습니다'); return; }
+  try{ if(typeof plFieldsToDraft==='function') plFieldsToDraft(); }catch(e){}
+  const d = invDocData();
+  const meta = rec.meta || {};
+  const lines = (Array.isArray(d.lines) ? d.lines : (rec.lines||[]).filter(l=>l.wh===plWh)).filter(l=>(l.qty||0)>0);
+  lines.forEach(l=>{ const m = STYLE_MASTER[String(l.style||'').trim()]; if(m && m[0] && !l.descManual) l.desc = m[0]; });
+  const num = plNum(rec.base, plWh);
+  const dateStr = (d.date ? new Date(d.date+'T00:00:00') : new Date()).toLocaleDateString('en-US');
+  const totQ = lines.reduce((a,l)=>a+(l.qty||0),0);
+  const totAmt = lines.reduce((a,l)=>a+(l.qty||0)*(l.price||0),0);
+  const freight = Number(d.freight)||0;
+  const ti = termInfo(d);
+  let dueStr = '';
+  if(ti){ const base0 = new Date((d.date||todayStr())+'T00:00:00'); const due = new Date(base0); due.setDate(due.getDate()+ti.days); dueStr = ti.days===0 ? 'Due on Receipt' : due.toLocaleDateString('en-US'); }
+  const trks = (d.trackings||(d.tracking?[d.tracking]:[])).filter(Boolean).join(', ');
+  showToast('📥 엑셀 만드는 중...');
+  try{
+    await loadXlsxLib();
+    const aoa = [
+      ['PEACE TEXTILE AMERICA, INC. d.b.a Pacific Sports'],
+      [String(WH_ADDR[plWh]||'').replace(/\n/g,' ')],
+      [],
+      ['INVOICE'],
+      ['Invoice No.', d.invNo||'DRAFT'],
+      ['Reference No.', num],
+      ['Serial No.', d.serial||''],
+      ['Date', dateStr]
+    ];
+    if(ti){ aoa.push(['Terms', ti.label]); aoa.push(['Due Date', dueStr]); }
+    aoa.push(['Customer', meta.cust||'']);
+    aoa.push(['PO Number', meta.po||'']);
+    aoa.push(['Bill To', String(recAddr(meta,'bill')||'').replace(/\n/g,' ')]);
+    aoa.push(['Ship To', String(recAddr(meta,'ship')||'').replace(/\n/g,' ')]);
+    aoa.push(['Via', (d.via||'') + (d.method?' — '+d.method:'') + ((d.via==='LTL'&&d.freightCo)?' — '+d.freightCo:'')]);
+    if(trks) aoa.push(['Tracking #', trks]);
+    aoa.push([]);
+    const hdrRow = aoa.length;
+    aoa.push(['Style#','Item','Color','Size','Qty','Unit Price','Amount']);
+    lines.forEach(l=>aoa.push([l.style||'', l.desc||'', l.color||'', l.size||'', l.qty||0, Number(l.price)||0, (l.qty||0)*(Number(l.price)||0)]));
+    aoa.push(['Subtotal — '+lines.length+' lines','','','',totQ,'',totAmt]);
+    if(freight>0) aoa.push(['Shipping / Freight','','','','','',freight]);
+    aoa.push(['INVOICE TOTAL','','','','','',totAmt+freight]);
+    if(d.note) { aoa.push([]); aoa.push(['Note', d.note]); }
+    const ws = XLSX.utils.aoa_to_sheet(aoa);
+    ws['!cols'] = [{wch:12},{wch:34},{wch:20},{wch:8},{wch:10},{wch:12},{wch:14}];
+    const range = XLSX.utils.decode_range(ws['!ref']);
+    for(let R=hdrRow+1; R<=range.e.r; R++){
+      for(const C of [5,6]){
+        const cell = ws[XLSX.utils.encode_cell({r:R,c:C})];
+        if(cell && typeof cell.v==='number') cell.z = '$#,##0.00';
+      }
+      const qc = ws[XLSX.utils.encode_cell({r:R,c:4})];
+      if(qc && typeof qc.v==='number') qc.z = '#,##0';
+    }
+    const wb = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(wb, ws, 'Invoice');
+    const fname = 'INV_' + String(d.invNo||num).replace(/[^A-Za-z0-9._-]/g,'_') + '.xlsx';
+    XLSX.writeFile(wb, fname);
+    showToast('✅ ' + fname + ' 다운로드');
+  }catch(e){ console.warn('downloadInvExcel', e); showToast('⚠ 엑셀 생성에 실패했습니다'); }
+}
 function syncInvDraft(){
   // 인보이스를 아직 손대지 않았으면 PL 수정본을 그대로 따라감
   const iv = invDrafts[plWh];
@@ -4496,7 +4558,7 @@ function renderPL(){
           ? `<button class="btn btn-sm" style="background:#fff;color:#7c3aed;border-color:#c4b5fd;margin-right:auto;" onclick="viewSavedPO(plBase)" title="거래처에서 받은 원본 PO를 옆에 띄워 인보이스와 비교">📄 Customer PO</button>
              <input class="fi" id="inv-email" value="${esc((plDrafts[plWh]&&plDrafts[plWh].custEmail)||((rec.meta&&rec.meta.custEmail)||'')||custEmailFor(rec.meta&&rec.meta.cust)||'')}" placeholder="거래처 이멜 (쉼표로 여러명)" style="width:230px;font-size:11.5px;padding:5px 8px;">
              <button class="btn btn-sm" style="background:#0e7490;color:#fff;border-color:#0e7490;font-weight:800;" onclick="sendInvoiceEmail()" title="입력한 이멜로 Invoice PDF 발송">📧 Send Invoice</button>
-             <button class="btn btn-sm btn-primary" onclick="saveInvStage()">${t('save_inv')}</button><button class="btn btn-sm" id="invpdf-btn" onclick="downloadPLPdf('invoice')">${t('inv_pdf')}</button><button class="btn btn-sm" onclick="printStageDoc('invoice')">🖨 Invoice</button>`
+             <button class="btn btn-sm btn-primary" onclick="saveInvStage()">${t('save_inv')}</button><button class="btn btn-sm" id="invpdf-btn" onclick="downloadPLPdf('invoice')">${t('inv_pdf')}</button><button class="btn btn-sm" style="color:#166534;border-color:#86efac;" onclick="downloadInvExcel()" title="인보이스를 엑셀 파일로 다운로드">⬇ Excel</button><button class="btn btn-sm" onclick="printStageDoc('invoice')">🖨 Invoice</button>`
           : `<label style="display:flex;align-items:center;gap:5px;font-size:11.5px;font-weight:700;color:#0e7490;margin-right:auto;cursor:pointer;"><input type="checkbox" id="plf-sendpl" ${(plDrafts[plWh]&&plDrafts[plWh].sendPl)?'checked':''} onchange="if(plDrafts[plWh])plDrafts[plWh].sendPl=this.checked" style="width:14px;height:14px;accent-color:#0e7490;cursor:pointer;"> ${t('sendpl_cb')}</label>${plInfo(rec,plWh).savedAt ? `<button class="btn btn-sm" style="background:#0e7490;color:#fff;border-color:#0e7490;" onclick="resendPL()" title="Customer Email 칸의 주소로 Packing List를 다시 발송">📧 Resend PL</button><button class="btn btn-sm" style="background:#fff;color:#b91c1c;border-color:#fca5a5;" onclick="unshipPL()" title="이 창고의 Packing List/Invoice 기록을 삭제하고 출고 전 상태로 되돌립니다">↩ 출고 취소</button>` : ''}<button class="btn btn-sm" style="background:#7c3aed;color:#fff;border-color:#7c3aed;" onclick="document.getElementById('pl-scan-file').click()" title="핸드폰으로 서명된 BOL/Packing List 사진을 찍으면 자동으로 PDF로 변환해 이 오더에 첨부됩니다">📷 Scan</button><input type="file" id="pl-scan-file" accept="image/*,application/pdf" capture="environment" multiple style="display:none;" onchange="plScanUpload(this)"><button class="btn btn-sm" style="background:#374151;color:#fff;border-color:#374151;" onclick="openBOL()" title="Bill of Lading — 창에서 수정·저장 후 인쇄">🚛 BOL</button><button class="btn btn-sm btn-primary" onclick="savePL()">${t('save_pl')}</button>${(()=>{ const dd = plInfo(rec,plWh); return dd.savedAt && !dd._completed ? `<button class="btn btn-sm" style="background:#16a34a;color:#fff;border-color:#16a34a;font-weight:800;" onclick="completePL()" title="수정 끝났을 때 누르세요 — 초록 처리 + 거래처 이멜 발송">✅ Complete</button>` : (dd._completed ? `<span style="align-self:center;padding:3px 10px;border-radius:20px;font-size:10.5px;font-weight:800;background:#dcfce7;color:#166534;white-space:nowrap;">✅ Completed ${new Date(dd._completed).toLocaleDateString()}</span>` : ''); })()}<button class="btn btn-sm" id="plpdf-btn" onclick="downloadPLPdf('packing')">${t('pl_pdf')}</button><button class="btn btn-sm" onclick="printStageDoc('packing')">🖨</button>`}
         <button class="btn btn-sm" onclick="closePL()">${t('close')}</button>
       </div>
