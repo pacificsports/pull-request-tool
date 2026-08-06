@@ -137,7 +137,7 @@ main{max-width:1100px;margin:0 auto;padding:16px;}
     <button class="btn btn-sm" onclick="doLogout()" style="padding:2px 8px;font-size:10px;" data-i18n="logout">Log out</button>
   </span>
   <select id="lang-sel" onchange="setLang(this.value)" style="font-size:11px;padding:3px 6px;border-radius:5px;border:none;background:#1d3f66;color:#fff;"><option value="ko">한국어</option><option value="en">English</option><option value="es">Español</option></select>
-  <span style="font-size:10px;color:#9fb8d4;">v306 🚚</span>
+  <span style="font-size:10px;color:#9fb8d4;">v308 🚚</span>
 </div>
 <script type="text/javascript" src="https://js.authorize.net/v1/Accept.js" charset="utf-8"></script>
 <div id="po-viewer" style="display:none;position:fixed;top:0;right:0;width:44%;height:100vh;background:#fff;border-left:2px solid var(--border);z-index:60;box-shadow:-6px 0 20px rgba(0,0,0,.15);">
@@ -366,6 +366,7 @@ main{max-width:1100px;margin:0 auto;padding:16px;}
       <button class="btn btn-sm" onclick="detToggleAll('bx-body',true)" title="Expand all styles">▾ Expand</button>
       <button class="btn btn-sm" onclick="detToggleAll('bx-body',false)" title="Collapse all styles">▸ Collapse</button>
       <button class="btn btn-sm" id="bx-viewbtn" onclick="bxToggleView()" title="Toggle grid (size columns) ↔ detail (location chips)">📍 Detail view</button>
+      <button class="btn btn-sm" id="bx-locbtn" onclick="bxToggleLocView()" title="Group inventory by location bin — H* bins are 3rd party (Hodge)">🗺 By Location</button>
       <label style="display:none;align-items:center;gap:4px;font-size:11px;color:var(--text2);cursor:pointer;white-space:nowrap;" id="bx-showall-wrap"><input type="checkbox" id="bx-showall" onchange="renderBoxRoom()" style="accent-color:#0f2a4a;">All SKUs</label>
       <button class="btn btn-sm" onclick="skuManager()" style="background:#7c3aed;color:#fff;border-color:#7c3aed;" title="SKU master — add/rename/merge">🎨 SKU</button>
       <button class="btn btn-sm btn-primary" onclick="bxAddBoxes()">＋ Add Boxes</button>
@@ -2857,11 +2858,19 @@ function attOpenData(name, type, dataStr){
     }
   }catch(e){ alert('Cannot open file: ' + (e.message||e)); }
 }
-function openAttachPdf(base, wh, i){
-  const rec = savedCache.find(s=>s.base===base);
-  const att = (((rec||{}).pl||{})[wh] ? (rec.pl[wh].files||[]).concat(rec.pl[wh].scans||[]) : []);
-  const s2 = att[i];
-  if(!s2) return;
+async function openAttachPdf(base, wh, i){
+  let rec = savedCache.find(s=>s.base===base);
+  let att = (((rec||{}).pl||{})[wh] ? (rec.pl[wh].files||[]).concat(rec.pl[wh].scans||[]) : []);
+  let s2 = att[i];
+  // lite 캐시라 파일 데이터가 비어있으면 → DB에서 원본 행을 다시 불러온다
+  if(!s2 || !((s2.b64||s2.data)||'').length){
+    showToast('📄 Loading file...');
+    await refreshRec(base);
+    rec = savedCache.find(s=>s.base===base);
+    att = (((rec||{}).pl||{})[wh] ? (rec.pl[wh].files||[]).concat(rec.pl[wh].scans||[]) : []);
+    s2 = att[i];
+  }
+  if(!s2){ showToast('⚠ File not found'); return; }
   attOpenData(s2.name, 'application/pdf', s2.b64||s2.data);
 }
 async function plScanDel(i){
@@ -3337,8 +3346,18 @@ function plAttachDel(i){
   if(plDrafts[plWh] && plDrafts[plWh].files) plDrafts[plWh].files.splice(i,1);
   renderPL();
 }
-function plAttachView(i){
-  const f = ((plDrafts[plWh]||{}).files||[])[i]; if(!f || !f.data) return;
+async function plAttachView(i){
+  let f = ((plDrafts[plWh]||{}).files||[])[i]; if(!f) return;
+  // lite 캐시로 열린 경우 파일 데이터가 비어있을 수 있음 → DB에서 다시 불러와 채운다
+  if(!f.data){
+    showToast('📄 Loading file...');
+    await refreshRec(plBase);
+    const rec = savedCache.find(s=>s.base===plBase);
+    const full = ((((rec||{}).pl||{})[plWh]||{}).files||[]);
+    const m = full.find(x=>x.name===f.name && x.data) || full[i];
+    if(m && m.data){ f.data = m.data; f.type = f.type||m.type; }
+  }
+  if(!f.data){ showToast('⚠ File data not found — please re-attach'); return; }
   attOpenData(f.name, f.type, f.data);
 }
 async function saveInvStage(){
@@ -3372,6 +3391,13 @@ async function _savePLInner(rec){
   plFieldsToDraft();
   rec.pl = rec.pl || {};
   const _prevPl = rec.pl[plWh] || {};
+  // 드래프트 첨부에 데이터가 비어있으면 (lite 캐시로 열렸던 경우) 기존 저장본에서 복구 — 데이터 유실 방지
+  try{
+    const _freshF = (((rec.pl||{})[plWh]||{}).files||[]);
+    ((plDrafts[plWh]||{}).files||[]).forEach(df=>{
+      if(df && !df.data){ const m = _freshF.find(x=>x && x.name===df.name && x.data); if(m){ df.data = m.data; df.type = df.type||m.type; } }
+    });
+  }catch(e){}
   rec.pl[plWh] = { ...plDrafts[plWh], savedAt: new Date().toISOString() };
   if(_prevPl.scans && _prevPl.scans.length) rec.pl[plWh].scans = _prevPl.scans;
   if(_prevPl._completed) rec.pl[plWh]._completed = _prevPl._completed;
@@ -3431,6 +3457,14 @@ const STAFF_EMAILS = [
   'yeonchoi@peacepacificsports.com'
 ];
 async function sendBatchPLEmail(recs, wh, toEmail){
+  // lite 캐시 rec은 첨부 데이터가 비어있음 → 발송 전 원본으로 교체
+  for(let i=0;i<recs.length;i++){
+    const rc = recs[i];
+    if(rc._lite || (((rc.pl||{})[wh]||{}).files||[]).some(f=>!f.data)){
+      await refreshRec(rc.base);
+      recs[i] = savedCache.find(s=>s.base===rc.base) || rc;
+    }
+  }
   const atts = [];
   const pureBlobs = [];   // PL 본문만 (첨부 제외)
   const uniqFiles = [];   // 중복 제거한 첨부 (같은 BOL이 오더마다 복사돼 있어도 한 번만)
@@ -3727,6 +3761,11 @@ function blobToB64(blob){
   return new Promise((res,rej)=>{ const r=new FileReader(); r.onload=()=>res(String(r.result).split(',')[1]); r.onerror=()=>rej(new Error('Encoding failed')); r.readAsDataURL(blob); });
 }
 async function sendPLEmailFor(rec, wh, toEmail){
+  // lite 캐시(첨부 데이터 없음)로 발송되는 것 방지 — 항상 원본 데이터로 발송
+  if(rec._lite || (((rec.pl||{})[wh]||{}).files||[]).some(f=>!f.data)){
+    await refreshRec(rec.base);
+    rec = savedCache.find(s=>s.base===rec.base) || rec;
+  }
   const d = (rec.pl && rec.pl[wh]) || {};
   const num = plNum(rec.base, wh);
   const meta = rec.meta || {};
@@ -6115,10 +6154,11 @@ function bxOpenPicker(L, lwh, po, onDone, mode, needOverride){
     if(!gm[gk]){ gm[gk] = {loc:Lc, col, boxes:[], oldest:b.in_at}; groups.push(gm[gk]); }
     gm[gk].boxes.push(b);
   });
-  groups.sort((a,b)=> (a.col===wantCol?0:1) - (b.col===wantCol?0:1) || String(a.oldest||'').localeCompare(String(b.oldest||'')));
-  // 주문 변형과 일치하는 그룹부터, 오래된 것부터 자동 배정
+  // 🏭 H* (3rd Party/Hodge) bin 은 같은 변형 안에서 맨 뒤로 — 직접 출고 불가, 회수 필요
+  groups.sort((a,b)=> (a.col===wantCol?0:1) - (b.col===wantCol?0:1) || (trIs3PLoc(a.loc)?1:0) - (trIs3PLoc(b.loc)?1:0) || String(a.oldest||'').localeCompare(String(b.oldest||'')));
+  // 주문 변형과 일치하는 그룹부터, 자체 bin 우선·오래된 것부터 자동 배정 (H*는 자동 배정 제외)
   let remaining = Math.min(need, avail.length);
-  groups.forEach(g=>{ g.take = (g.col===wantCol) ? Math.min(g.boxes.length, remaining) : 0; remaining -= g.take; });
+  groups.forEach(g=>{ g.take = (g.col===wantCol && !trIs3PLoc(g.loc)) ? Math.min(g.boxes.length, remaining) : 0; remaining -= g.take; });
   bxPullCtx = {lwh, need, groups, po, mode: mode||'deduct', onDone: onDone||null, sku:{style:st, color:bxColorFor(L), size:String(L.size||'').trim().toUpperCase()}, label:'['+lwh+'] '+st+' '+bxColorFor(L)+' '+String(L.size).toUpperCase()};
   const ex = document.getElementById('modal-bxpull'); if(ex) ex.remove();
   const div = document.createElement('div');
@@ -6132,7 +6172,7 @@ function bxOpenPicker(L, lwh, po, onDone, mode, needOverride){
       <table class="etbl" style="font-size:12px;">
         <thead><tr><th class="tl">📍 Location</th><th class="tl">Type</th><th>Stock</th><th>Received (oldest)</th><th>Take</th></tr></thead>
         <tbody>${groups.map((g,gi)=>{ const vl = bxVariantLabel(g.col, st); const vc = vl==='Tubular' ? '#64748b' : (/US/.test(vl) ? '#c2410c' : '#7c3aed'); return `<tr>
-          <td class="tl" style="font-weight:800;color:#1d4ed8;">${esc(g.loc)}</td>
+          <td class="tl" style="font-weight:800;color:${trIs3PLoc(g.loc)?'#b45309':'#1d4ed8'};">${trIs3PLoc(g.loc)?'🏭 ':''}${esc(g.loc)}${trIs3PLoc(g.loc)?'<div style="font-size:9px;font-weight:600;color:#b45309;">3rd Party — recall via Transfer first</div>':''}</td>
           <td class="tl"><span style="font-size:10px;font-weight:800;color:${vc};background:${vl==='Tubular'?'#f1f5f9':(/US/.test(vl)?'#fff7ed':'#f5f3ff')};padding:1px 7px;border-radius:10px;white-space:nowrap;">${esc(vl)}</span></td>
           <td style="font-family:Consolas,monospace;">${g.boxes.length}</td>
           <td style="font-size:11px;color:var(--text2);">${g.oldest?String(g.oldest).slice(0,10):''}</td>
@@ -6404,9 +6444,124 @@ function bxGridStyle(sty, colGroups){
     </table>
     </div></details>`;
 }
+// ═══ 🗺 By Location view — bin 별 재고 (H* = 3rd Party/Hodge) ═══
+function bxToggleLocView(){
+  window._bxLocMode = !window._bxLocMode;
+  const b = $('bx-locbtn'); if(b) b.style.cssText = window._bxLocMode ? 'background:#0f2a4a;color:#fff;border-color:#0f2a4a;' : '';
+  renderBoxRoom();
+}
+function bxLocSetWh(w){ window._bxLocWh = w; renderBoxRoom(); }
+function bxLocSetFilter(f){ window._bxLocFilter = f; renderBoxRoom(); }
+function bxRenderByLoc(el, q){
+  const wh = window._bxLocWh || 'SC';
+  const flt = window._bxLocFilter || 'all';
+  const allWh = bxStore.filter(b=>bxWh(b)===wh);
+  const p3All = allWh.filter(b=>trIs3PLoc(b.loc));
+  const pcsOf = arr=>arr.reduce((s2,b)=>s2+(Number(b.pcs)||0),0);
+  const byLoc = {};
+  allWh.forEach(b=>{
+    const loc = String(b.loc||'?').toUpperCase();
+    if(flt==='3p' && !trIs3PLoc(loc)) return;
+    if(flt==='own' && trIs3PLoc(loc)) return;
+    if(q && !(loc.toLowerCase().includes(q) || String(b.style).toLowerCase().includes(q) || String(b.color).toLowerCase().includes(q))) return;
+    (byLoc[loc] = byLoc[loc] || []).push(b);
+  });
+  const locs = Object.keys(byLoc).sort((a,b)=>a.localeCompare(b, undefined, {numeric:true}));
+  const chip = (id,lbl,on,fn)=>`<button class="btn btn-sm" style="${on?'background:#0f2a4a;color:#fff;border-color:#0f2a4a;':''}" onclick="${fn}">${lbl}</button>`;
+  const head = `<div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-bottom:10px;">
+    ${chip('','SC', wh==='SC', "bxLocSetWh('SC')")}${chip('','CA', wh==='CA', "bxLocSetWh('CA')")}
+    <span style="color:var(--border);">|</span>
+    ${chip('','All', flt==='all', "bxLocSetFilter('all')")}
+    ${chip('','🏭 3rd Party (H*)', flt==='3p', "bxLocSetFilter('3p')")}
+    ${chip('','Own bins', flt==='own', "bxLocSetFilter('own')")}
+    <button class="btn btn-sm" style="margin-left:auto;" onclick="bxLocViewExcel()">⬇ Excel</button>
+    <span style="font-size:11px;color:var(--text2);">
+      🏭 3rd Party: <b>${p3All.length.toLocaleString()}</b> boxes / <b>${pcsOf(p3All).toLocaleString()}</b> pcs ·
+      Own: <b>${(allWh.length-p3All.length).toLocaleString()}</b> boxes / <b>${(pcsOf(allWh)-pcsOf(p3All)).toLocaleString()}</b> pcs ·
+      Bins shown: <b>${locs.length}</b></span>
+  </div>`;
+  if(!locs.length){ el.innerHTML = head + '<div class="muted" style="padding:14px;">No bins match</div>'; return; }
+  el.innerHTML = head + locs.map(loc=>{
+    const boxes = byLoc[loc];
+    const gm = {};
+    boxes.forEach(b=>{
+      const k = String(b.style)+'|'+String(b.color).toUpperCase()+'|'+String(b.size).toUpperCase()+'|'+(Number(b.pcs)||0);
+      if(!gm[k]) gm[k] = { style:String(b.style), color:String(b.color).toUpperCase(), size:String(b.size).toUpperCase(), ppb:Number(b.pcs)||0, n:0 };
+      gm[k].n++;
+    });
+    const rows = Object.values(gm).sort((a,b)=>a.style.localeCompare(b.style)||a.color.localeCompare(b.color)||a.size.localeCompare(b.size));
+    const is3p = trIs3PLoc(loc);
+    return `<details style="margin-bottom:8px;border:1px solid ${is3p?'#fbbf24':'var(--border)'};border-radius:8px;${is3p?'background:#fffbeb;':''}">
+      <summary style="cursor:pointer;padding:7px 12px;font-weight:800;color:#0f2a4a;display:flex;align-items:center;gap:8px;">
+        <span style="font-family:Consolas,monospace;font-size:13px;">${is3p?'🏭 ':'📍 '}${esc(loc)}</span>
+        <span class="muted" style="font-weight:400;font-size:11px;">${rows.length} SKU-size line(s)</span>
+        <span style="margin-left:auto;font-family:Consolas,monospace;font-size:12px;"><b>${boxes.length}</b> boxes · ${pcsOf(boxes).toLocaleString()} pcs</span>
+        <button class="btn btn-sm" style="border:none;padding:0 4px;" onclick="event.preventDefault();bxLocPrintBin('${wh}','${esc(loc)}')" title="Print this bin's contents">🖨</button>
+      </summary>
+      <div style="padding:4px 12px 10px;">
+      <table class="etbl" style="font-size:11.5px;">
+        <thead><tr><th class="tl">Style</th><th class="tl">Color</th><th>Size</th><th>Pcs/Box</th><th>Boxes</th><th>Total Pcs</th><th></th></tr></thead>
+        <tbody>${rows.map(r=>`<tr>
+          <td class="tl" style="font-weight:700;font-family:Consolas,monospace;">${esc(r.style)}</td>
+          <td class="tl">${esc(r.color)}</td>
+          <td style="text-align:center;">${esc(r.size)}</td>
+          <td style="text-align:center;font-family:Consolas,monospace;">${r.ppb||''}</td>
+          <td style="text-align:center;font-family:Consolas,monospace;font-weight:800;">${r.n}</td>
+          <td style="text-align:right;font-family:Consolas,monospace;font-weight:700;">${(r.n*r.ppb).toLocaleString()}</td>
+          <td style="white-space:nowrap;"><button class="btn btn-sm" style="border:none;padding:0 5px;" onclick="bxLocModal('${esc(r.style)}','${esc(r.color)}','${esc(r.size)}','${wh}','${esc(loc)}')" title="Adjust / move / ship">⚙</button></td>
+        </tr>`).join('')}</tbody></table></div></details>`;
+  }).join('');
+}
+async function bxLocViewExcel(){
+  const wh = window._bxLocWh || 'SC';
+  const flt = window._bxLocFilter || 'all';
+  await loadXlsxLib();
+  const rows = [['Location','3rd Party','Style','Color','Size','Pcs/Box','Boxes','Total Pcs']];
+  const gm = {};
+  bxStore.filter(b=>bxWh(b)===wh).forEach(b=>{
+    const loc = String(b.loc||'?').toUpperCase();
+    if(flt==='3p' && !trIs3PLoc(loc)) return;
+    if(flt==='own' && trIs3PLoc(loc)) return;
+    const k = loc+'|'+String(b.style)+'|'+String(b.color).toUpperCase()+'|'+String(b.size).toUpperCase()+'|'+(Number(b.pcs)||0);
+    if(!gm[k]) gm[k] = { loc, style:String(b.style), color:String(b.color).toUpperCase(), size:String(b.size).toUpperCase(), ppb:Number(b.pcs)||0, n:0 };
+    gm[k].n++;
+  });
+  Object.values(gm).sort((a,b)=>a.loc.localeCompare(b.loc, undefined, {numeric:true})||a.style.localeCompare(b.style)||a.color.localeCompare(b.color)).forEach(g=>{
+    rows.push([g.loc, trIs3PLoc(g.loc)?'Y':'', g.style, g.color, g.size, g.ppb, g.n, g.n*g.ppb]);
+  });
+  const wb = XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet(rows), 'By Location');
+  XLSX.writeFile(wb, 'inventory-by-location-'+wh+'-'+new Date().toISOString().slice(0,10)+'.xlsx');
+}
+function bxLocPrintBin(wh, loc){
+  const boxes = bxStore.filter(b=>bxWh(b)===wh && String(b.loc||'').toUpperCase()===String(loc).toUpperCase());
+  const gm = {};
+  boxes.forEach(b=>{
+    const k = String(b.style)+'|'+String(b.color).toUpperCase()+'|'+String(b.size).toUpperCase()+'|'+(Number(b.pcs)||0);
+    if(!gm[k]) gm[k] = { style:String(b.style), color:String(b.color).toUpperCase(), size:String(b.size).toUpperCase(), ppb:Number(b.pcs)||0, n:0 };
+    gm[k].n++;
+  });
+  const rows = Object.values(gm).sort((a,b)=>a.style.localeCompare(b.style)||a.color.localeCompare(b.color));
+  const tot = boxes.reduce((s2,b)=>s2+(Number(b.pcs)||0),0);
+  const w = window.open('', '_blank');
+  if(!w){ showToast('⚠ Popup blocked'); return; }
+  w.document.write(`<html><head><title>${esc(loc)}</title><style>
+    body{font-family:Helvetica,Arial,sans-serif;font-size:13px;padding:24px;}
+    h2{margin:0 0 4px;} table{border-collapse:collapse;width:100%;margin-top:12px;}
+    th,td{border:1px solid #999;padding:5px 10px;font-size:12px;} th{background:#eee;}
+    td.n{text-align:center;font-family:Consolas,monospace;} td.r{text-align:right;font-family:Consolas,monospace;}
+  </style></head><body>
+    <h2>${trIs3PLoc(loc)?'🏭':'📍'} ${esc(loc)} <span style="font-size:13px;font-weight:400;">(${wh}${trIs3PLoc(loc)?' · 3rd Party/Hodge':''})</span></h2>
+    <div>${boxes.length} boxes · ${tot.toLocaleString()} pcs · ${new Date().toLocaleString()}</div>
+    <table><tr><th>Style</th><th>Color</th><th>Size</th><th>Pcs/Box</th><th>Boxes</th><th>Total</th><th style="width:80px;">Check</th></tr>
+    ${rows.map(r=>`<tr><td><b>${esc(r.style)}</b></td><td>${esc(r.color)}</td><td class="n">${esc(r.size)}</td><td class="n">${r.ppb}</td><td class="n"><b>${r.n}</b></td><td class="r">${(r.n*r.ppb).toLocaleString()}</td><td></td></tr>`).join('')}
+    </table><script>window.print();<\/script></body></html>`);
+  w.document.close();
+}
 function renderBoxRoom(){
   const el = $('bx-body'); if(!el) return;
   const q = (($('bx-search')||{}).value||'').trim().toLowerCase();
+  if(window._bxLocMode){ bxRenderByLoc(el, q); return; }
   const gridMode = window._bxView !== 'detail';
   const groups = {};   // style → color → [boxes] (SC·CA 함께 · In Transit 제외)
   bxStore.forEach(b=>{
@@ -6725,13 +6880,42 @@ const HI_SZ = ['2T','3T','4T','5T','XXS','XS','S','M','L','XL','2XL','3XL','4XL'
 // ═══════════════ 🚚 SC → CA Transfer — IMS Shipment Builder 이식 (박스 단위) ═══════════════
 // Draft 에 담는 순간 박스가 SC 에서 예약(wh=TRANSIT)되고, Draft 삭제 시 복원됩니다.
 // Post 는 상태만 In Transit 으로 — CA 도착 처리에서 bin 지정하면 CA 재고로 들어갑니다.
-let _shipId = null, _shipNo = null, _shipMeta = {}, _shipPallets = [];
+let _shipId = null, _shipNo = null, _shipMeta = {}, _shipPallets = [], _shipRoute = 'SC2CA';
 let _trFilter = 'all';
 function trChunk(ids){ const out=[]; for(let i=0;i<ids.length;i+=80) out.push(ids.slice(i,i+80)); return out; }
 async function trPatchBoxes(ids, body){ for(const ch of trChunk(ids)) await bxPatch(ch, body); }
-function trGenShipNo(){
+// ── 노선 (Route) ── SC↔CA 외에 3rd Party(Hodge, H* bin) 노선 지원
+const TR_ROUTES = {
+  SC2CA: { label:'SC → CA',        short:'SC→CA', from:'SC', dest:'CA', color:'#7b1fa2' },
+  H2SC:  { label:'3rd Party → SC', short:'3P→SC', from:'3P', dest:'SC', color:'#b45309' },
+  H2CA:  { label:'3rd Party → CA', short:'3P→CA', from:'3P', dest:'CA', color:'#0e7490' },
+  SC2H:  { label:'SC → 3rd Party', short:'SC→3P', from:'SC', dest:'3P', color:'#374151' }
+};
+function trRoute(rec){ const r = ((rec&&rec.meta)||{}).route; return TR_ROUTES[r] ? r : 'SC2CA'; }
+function trIs3PLoc(loc){ return String(loc||'').toUpperCase().startsWith('H'); }
+function trGenShipNo(route){
   const d = new Date(); const p2 = n=>String(n).padStart(2,'0');
-  return 'SC-CA-' + String(d.getFullYear()).slice(2) + p2(d.getMonth()+1) + p2(d.getDate()) + '-' + p2(d.getHours()) + p2(d.getMinutes());
+  const pre = { SC2CA:'SC-CA-', H2SC:'3P-SC-', H2CA:'3P-CA-', SC2H:'SC-3P-' }[route||'SC2CA'] || 'SC-CA-';
+  return pre + String(d.getFullYear()).slice(2) + p2(d.getMonth()+1) + p2(d.getDate()) + '-' + p2(d.getHours()) + p2(d.getMinutes());
+}
+// 새 Transfer — 노선 선택
+function trNewOpen(){
+  const ex = document.getElementById('modal-trnew'); if(ex) ex.remove();
+  const div = document.createElement('div');
+  div.id = 'modal-trnew';
+  div.style.cssText = 'position:fixed;inset:0;background:rgba(15,23,42,.55);z-index:120;display:flex;align-items:center;justify-content:center;padding:10px;';
+  const card = (k)=>{ const R = TR_ROUTES[k]; return `<button class="btn" style="display:flex;flex-direction:column;align-items:flex-start;gap:4px;padding:14px 16px;border:2px solid ${R.color};border-radius:10px;min-width:210px;" onclick="document.getElementById('modal-trnew').remove();trBuilderOpen(null,'${k}')">
+    <span style="font-weight:800;color:${R.color};font-size:14px;">${k==='H2SC'||k==='H2CA'?'🏭 ':''}${R.label}</span>
+    <span style="font-size:10.5px;color:var(--text2);text-align:left;">${
+      k==='SC2CA' ? 'Internal transfer to CA warehouse' :
+      k==='H2SC'  ? 'Recall pallets from Hodge (H* bins) to our SC warehouse' :
+      k==='H2CA'  ? 'Ship Hodge (H*) stock to CA warehouse' :
+                    'Send SC stock to Hodge storage (assign new H bin)'}</span></button>`; };
+  div.innerHTML = `<div style="background:#fff;border-radius:12px;padding:18px 20px;max-width:520px;">
+    <div style="font-weight:800;color:#0f2a4a;margin-bottom:12px;font-size:14px;">🚚 New Transfer — choose route
+      <button class="btn btn-sm" style="float:right;" onclick="document.getElementById('modal-trnew').remove()">✕</button></div>
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;">${card('SC2CA')}${card('H2SC')}${card('H2CA')}${card('SC2H')}</div></div>`;
+  document.body.appendChild(div);
 }
 async function trGet(id){ try{ const r = await sbFetch('/rest/v1/pr_transfers?id=eq.'+id+'&select=*'); if(r.ok) return (await r.json())[0]; }catch(e){} return null; }
 async function trPatchRec(id, body){ try{ await sbFetch('/rest/v1/pr_transfers?id=eq.'+id, {method:'PATCH', headers:{Prefer:'return=minimal'}, body:JSON.stringify(body)}); }catch(e){} }
@@ -6757,12 +6941,12 @@ async function trOpen(){
   div.style.cssText = 'position:fixed;inset:0;background:rgba(15,23,42,.55);z-index:99;display:flex;align-items:center;justify-content:center;padding:16px;';
   div.onclick = e=>{ if(e.target===div) div.remove(); };
   div.innerHTML = `<div style="background:#fff;border-radius:12px;max-width:960px;width:100%;max-height:90vh;display:flex;flex-direction:column;overflow:hidden;">
-    <div style="background:#7b1fa2;color:#fff;padding:10px 16px;font-weight:800;display:flex;align-items:center;">🔁 Transfers <span style="font-weight:400;font-size:11px;opacity:.85;margin-left:10px;">SC → CA internal transfer</span>
+    <div style="background:#7b1fa2;color:#fff;padding:10px 16px;font-weight:800;display:flex;align-items:center;">🔁 Transfers <span style="font-weight:400;font-size:11px;opacity:.85;margin-left:10px;">SC ↔ CA ↔ 3rd Party (Hodge H*)</span>
       <button class="btn btn-sm" style="margin-left:auto;background:transparent;color:#e9d5ff;border-color:#a78bfa;" onclick="document.getElementById('modal-tr').remove()">✕</button></div>
     <div style="padding:8px 16px;border-bottom:1px solid var(--border);display:flex;gap:6px;align-items:center;">
       ${[['all','All'],['LOADING','Draft'],['TRANSIT','In Transit'],['RECEIVED','Received']].map(([v,lb])=>`<button class="btn btn-sm tr-flt" data-f="${v}" style="${_trFilter===v?'background:#7b1fa2;color:#fff;border-color:#7b1fa2;':''}" onclick="_trFilter='${v}';trRenderList()">${lb}</button>`).join('')}
       <span id="tr-count" class="muted" style="font-size:11px;margin-left:6px;"></span>
-      <button class="btn btn-sm btn-primary" style="margin-left:auto;background:#7b1fa2;border-color:#7b1fa2;" onclick="trBuilderOpen()">+ New Transfer</button>
+      <button class="btn btn-sm btn-primary" style="margin-left:auto;background:#7b1fa2;border-color:#7b1fa2;" onclick="trNewOpen()">+ New Transfer</button>
     </div>
     <div id="tr-list" style="overflow-y:auto;padding:8px 16px;flex:1;"></div>
     </div>`;
@@ -6786,11 +6970,11 @@ function trRenderList(){
       const M = r.meta||{};
       let act = '';
       if(r.status==='LOADING') act = `<button class="btn btn-sm" onclick="trBuilderOpen('${r.id}')">✏️ Edit</button>`;
-      else if(r.status==='TRANSIT') act = `<button class="btn btn-sm btn-primary" style="background:#0f766e;border-color:#0f766e;" onclick="trRecvOpen('${r.id}')">📦 CA Arrival</button> <button class="btn btn-sm" style="font-size:10px;" onclick="trCancelTransit('${r.id}')" title="Cancel departure — back to Draft, boxes stay reserved">↩</button>`;
+      else if(r.status==='TRANSIT') act = `<button class="btn btn-sm btn-primary" style="background:#0f766e;border-color:#0f766e;" onclick="trRecvOpen('${r.id}')">📦 Receive (${TR_ROUTES[trRoute(r)].dest==='3P'?'Hodge':TR_ROUTES[trRoute(r)].dest})</button> <button class="btn btn-sm" style="font-size:10px;" onclick="trCancelTransit('${r.id}')" title="Cancel departure — back to Draft, boxes stay reserved">↩</button>`;
       else act = `<span style="font-size:10px;color:#15803d;font-weight:800;">✓ Done</span>`;
       return `<tr>
       <td class="tl"><span style="font-family:Consolas,monospace;font-weight:700;color:#7b1fa2;text-decoration:underline;cursor:pointer;" onclick="${r.status==='LOADING'?`trBuilderOpen('${r.id}')`:`trView('${r.id}')`}">${esc(r.ref||'(no number)')}</span></td>
-      <td style="font-weight:600;white-space:nowrap;">SC → CA</td>
+      <td style="font-weight:600;white-space:nowrap;color:${TR_ROUTES[trRoute(r)].color};">${trRoute(r)!=='SC2CA'?'🏭 ':''}${TR_ROUTES[trRoute(r)].short}</td>
       <td>${trStatusChip(r.status)}</td>
       <td style="font-family:Consolas,monospace;text-align:center;">${lines.length}</td>
       <td style="font-family:Consolas,monospace;text-align:center;">${nb}</td>
@@ -6802,16 +6986,18 @@ function trRenderList(){
     </tr>`;}).join('')}</tbody></table>`;
 }
 // ── Shipment Builder ──
-async function trBuilderOpen(existingId){
+async function trBuilderOpen(existingId, route){
   ['modal-tr','modal-trb'].forEach(x=>{ const e=document.getElementById(x); if(e) e.remove(); });
   if(!bxLoaded) await bxFetchStore();
   if(!skuLoaded) await skuFetch();
   _shipId = null; _shipNo = null; _shipMeta = {}; _shipPallets = [];
+  _shipRoute = TR_ROUTES[route] ? route : 'SC2CA';
   if(existingId){
     const rec = await trGet(existingId);
     if(!rec){ showToast('⚠ Shipment not found'); return; }
     _shipId = rec.id; _shipNo = rec.ref;
     _shipMeta = (rec.meta && typeof rec.meta==='object') ? rec.meta : {};
+    _shipRoute = trRoute(rec);
     const palletMap = {};
     (Array.isArray(rec.lines)?rec.lines:[]).forEach(l=>{
       const lbl = l.pallet || 'Pallet 1';
@@ -6826,12 +7012,12 @@ async function trBuilderOpen(existingId){
   div.id = 'modal-trb';
   div.style.cssText = 'position:fixed;inset:0;background:rgba(15,23,42,.55);z-index:99;display:flex;align-items:center;justify-content:center;padding:10px;';
   div.innerHTML = `<div style="background:#fff;border-radius:12px;max-width:1200px;width:98vw;max-height:96vh;display:flex;flex-direction:column;overflow:hidden;">
-    <div style="background:#7b1fa2;color:#fff;padding:10px 16px;font-weight:800;display:flex;align-items:center;">🚛 SC → CA Shipment Builder
+    <div style="background:${TR_ROUTES[_shipRoute].color};color:#fff;padding:10px 16px;font-weight:800;display:flex;align-items:center;">🚛 ${TR_ROUTES[_shipRoute].label} Shipment Builder
       <button class="btn btn-sm" style="margin-left:auto;background:transparent;color:#e9d5ff;border-color:#a78bfa;" onclick="trBuilderClose()">✕</button></div>
     <div style="padding:12px 16px;overflow-y:auto;flex:1;">
       <div style="background:#fef3f9;border:1px solid #d8b4fe;border-radius:8px;padding:12px;margin-bottom:12px;">
         <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:10px;font-size:12px;">
-          <div><label style="font-size:10px;color:var(--text2);">Shipment #</label><input class="fi" id="ship-no" value="${esc(_shipNo||trGenShipNo())}" style="width:100%;font-family:Consolas,monospace;font-weight:700;"></div>
+          <div><label style="font-size:10px;color:var(--text2);">Shipment #</label><input class="fi" id="ship-no" value="${esc(_shipNo||trGenShipNo(_shipRoute))}" style="width:100%;font-family:Consolas,monospace;font-weight:700;"></div>
           <div><label style="font-size:10px;color:var(--text2);">Depart date *</label><input class="fi" id="ship-date" type="date" value="${esc(_shipMeta.ship_date||today)}" style="width:100%;"></div>
           <div><label style="font-size:10px;color:var(--text2);">ETA</label><input class="fi" id="ship-eta" type="date" value="${esc(_shipMeta.eta||'')}" style="width:100%;"></div>
           <div><label style="font-size:10px;color:var(--text2);">Seal #</label><input class="fi" id="ship-seal" value="${esc(_shipMeta.seal||'')}" placeholder="SEAL12345" style="width:100%;font-family:Consolas,monospace;"></div>
@@ -6843,7 +7029,7 @@ async function trBuilderOpen(existingId){
         <div style="margin-top:8px;"><label style="font-size:10px;color:var(--text2);">Notes</label><input class="fi" id="ship-notes" value="${esc(_shipMeta.notes||'')}" placeholder="other notes" style="width:100%;"></div>
       </div>
       <div style="display:flex;gap:10px;margin-bottom:12px;flex-wrap:wrap;align-items:center;">
-        <button class="btn" style="background:#1565c0;color:#fff;border-color:#1565c0;" onclick="trScOpen()">📦 Pick from SC Inventory</button>
+        <button class="btn" style="background:#1565c0;color:#fff;border-color:#1565c0;" onclick="trScOpen()">${(_shipRoute==='H2SC'||_shipRoute==='H2CA')?'🏭 Pick from 3rd Party (H*)':'📦 Pick from SC Inventory'}</button>
         <button class="btn" onclick="trManualLine()">+ Add manual line</button>
         <button class="btn" onclick="trAddPallet()">📍 + Add Pallet</button>
         <span style="margin-left:auto;font-size:11px;color:var(--text2);">📦 <b id="ship-pallet-count">0</b> pallet(s) · <b id="ship-line-count">0</b> line(s) · <b id="ship-box-count">0</b> box(es) · <b id="ship-pcs-count">0</b> pcs</span>
@@ -6862,8 +7048,8 @@ async function trBuilderOpen(existingId){
 }
 function trCaptureInfo(){
   const v = id=>String((document.getElementById(id)||{}).value||'').trim();
-  _shipNo = v('ship-no') || _shipNo || trGenShipNo();
-  _shipMeta = { ship_date:v('ship-date'), eta:v('ship-eta'), seal:v('ship-seal'), carrier:v('ship-carrier'), driver:v('ship-driver'), phone:v('ship-phone'), truck:v('ship-truck'), notes:v('ship-notes') };
+  _shipNo = v('ship-no') || _shipNo || trGenShipNo(_shipRoute);
+  _shipMeta = { route:_shipRoute, ship_date:v('ship-date'), eta:v('ship-eta'), seal:v('ship-seal'), carrier:v('ship-carrier'), driver:v('ship-driver'), phone:v('ship-phone'), truck:v('ship-truck'), notes:v('ship-notes') };
 }
 async function _trEnsureRow(){
   if(_shipId) return _shipId;
@@ -7024,7 +7210,8 @@ async function trScOpen(pid){
   if(!bxLoaded) await bxFetchStore();
   // SC 박스를 (loc, style, full color, size) 그룹으로
   const gm = {};
-  bxStore.filter(b=>bxWh(b)==='SC').forEach(b=>{
+  const _src3P = (_shipRoute==='H2SC'||_shipRoute==='H2CA');
+  bxStore.filter(b=>bxWh(b)==='SC' && trIs3PLoc(b.loc)===_src3P).forEach(b=>{
     const loc = String(b.loc||'?').toUpperCase();
     const k = loc+'|'+String(b.style)+'|'+String(b.color).toUpperCase()+'|'+String(b.size).toUpperCase();
     if(!gm[k]) gm[k] = { key:k, loc, style:String(b.style), color:String(b.color).toUpperCase(), size:String(b.size).toUpperCase(), ppb:Number(b.pcs)||0, boxes:[] };
@@ -7039,7 +7226,7 @@ async function trScOpen(pid){
   div.id = 'modal-scv';
   div.style.cssText = 'position:fixed;inset:0;background:rgba(15,23,42,.6);z-index:110;display:flex;align-items:center;justify-content:center;padding:10px;';
   div.innerHTML = `<div style="background:#fff;border-radius:12px;max-width:1150px;width:98vw;max-height:96vh;display:flex;flex-direction:column;overflow:hidden;">
-    <div style="background:#1565c0;color:#fff;padding:10px 16px;font-weight:800;display:flex;align-items:center;">📦 Pick SC Inventory
+    <div style="background:#1565c0;color:#fff;padding:10px 16px;font-weight:800;display:flex;align-items:center;">${(_shipRoute==='H2SC'||_shipRoute==='H2CA')?'🏭 Pick 3rd Party (H*) Inventory':'📦 Pick SC Inventory'}
       <button class="btn btn-sm" style="margin-left:auto;background:transparent;color:#bfdbfe;border-color:#60a5fa;" onclick="document.getElementById('modal-scv').remove()">✕</button></div>
     <div style="padding:10px 16px;border-bottom:1px solid var(--border);background:#fff8e1;display:flex;align-items:center;gap:10px;flex-wrap:wrap;font-size:12px;">
       <span style="font-weight:700;color:#7c2d12;">Selected <b id="scv-count">0</b> line(s) · <b id="scv-boxes">0</b> box(es) · <b id="scv-pcs">0</b> pcs</span>
@@ -7383,18 +7570,25 @@ async function trRecvOpen(id){
   _trRecvRec = rec;
   const lines = Array.isArray(rec.lines)?rec.lines:[];
   const palletMap = {};
-  lines.forEach(l=>{ const lbl = l.pallet||'Pallet 1'; if(!palletMap[lbl]) palletMap[lbl] = { label:lbl, mode:'whole', bin:'', lines:[] }; palletMap[lbl].lines.push({...l, ca_bin:''}); });
+  const _rvRoute = trRoute(rec), _rvDest = TR_ROUTES[_rvRoute].dest;
+  window._trRecvRoute = _rvRoute;
+  lines.forEach(l=>{ const lbl = l.pallet||'Pallet 1'; if(!palletMap[lbl]) palletMap[lbl] = { label:lbl, mode:'whole', bin:'', act:'sc', lines:[] }; palletMap[lbl].lines.push({...l, ca_bin:'', act:'sc', dmg_note:''}); });
   _trRecvPallets = Object.values(palletMap);
   ['modal-tr','modal-trr'].forEach(x=>{ const e=document.getElementById(x); if(e) e.remove(); });
   const totP = lines.reduce((s,l)=>s+trLinePcs(l),0);
   const totB = lines.reduce((s,l)=>s+trLineBoxes(l),0);
   const M = rec.meta||{};
-  const caLocs = [...new Set(bxStore.filter(b=>bxWh(b)==='CA').map(b=>String(b.loc||'').toUpperCase()).filter(Boolean))].sort();
+  const caLocs = [...new Set(bxStore.filter(b=>{
+    if(_rvDest==='CA') return bxWh(b)==='CA';
+    if(_rvDest==='3P') return bxWh(b)==='SC' && trIs3PLoc(b.loc);
+    return bxWh(b)==='SC' && !trIs3PLoc(b.loc);   // SC 자체 bin
+  }).map(b=>String(b.loc||'').toUpperCase()).filter(Boolean))].sort();
+  const hLocs = [...new Set(bxStore.filter(b=>bxWh(b)==='SC' && trIs3PLoc(b.loc)).map(b=>String(b.loc||'').toUpperCase()))].sort();
   const div = document.createElement('div');
   div.id = 'modal-trr';
   div.style.cssText = 'position:fixed;inset:0;background:rgba(15,23,42,.6);z-index:110;display:flex;align-items:center;justify-content:center;padding:10px;';
   div.innerHTML = `<div style="background:#fff;border-radius:12px;max-width:1100px;width:98vw;max-height:96vh;display:flex;flex-direction:column;overflow:hidden;">
-    <div style="background:#0f766e;color:#fff;padding:10px 16px;font-weight:800;">📦 CA Arrival
+    <div style="background:#0f766e;color:#fff;padding:10px 16px;font-weight:800;">📦 ${_rvDest==='CA'?'CA Arrival':(_rvDest==='3P'?'Hodge Arrival (assign new H bin)':'SC Arrival — Recall from 3rd Party')}${_rvRoute!=='SC2CA'?' · '+TR_ROUTES[_rvRoute].label:''}
       <button class="btn btn-sm" style="float:right;background:transparent;color:#99f6e4;border-color:#2dd4bf;" onclick="document.getElementById('modal-trr').remove();trOpen();">✕</button></div>
     <div style="padding:12px 16px;overflow-y:auto;flex:1;">
       <div style="margin-bottom:10px;padding:10px 14px;background:#ecfdf5;border-radius:8px;font-size:12px;display:flex;gap:16px;flex-wrap:wrap;align-items:center;">
@@ -7405,11 +7599,12 @@ async function trRecvOpen(id){
         <div style="margin-left:auto;font-size:11px;background:#fff;padding:3px 10px;border-radius:10px;border:1px solid #a7f3d0;">📦 <b>${_trRecvPallets.length}</b> pallet(s) · <b>${lines.length}</b> line(s) · <b>${totP.toLocaleString()}</b> pcs · <b>${totB}</b> box(es)</div>
       </div>
       <datalist id="trr-ca-bins">${caLocs.map(L=>'<option value="'+esc(L)+'">').join('')}</datalist>
+      <datalist id="trr-h-bins">${hLocs.map(L=>'<option value="'+esc(L)+'">').join('')}</datalist>
       <div id="trr-pallets" style="display:flex;flex-direction:column;gap:12px;"></div>
     </div>
     <div style="padding:12px 16px;border-top:1px solid var(--border);display:flex;gap:8px;justify-content:flex-end;">
       <button class="btn" onclick="document.getElementById('modal-trr').remove();trOpen();">Cancel</button>
-      <button class="btn btn-primary" style="background:#0f766e;border-color:#0f766e;" onclick="trRecvPost()">✅ Post — Receive to CA</button>
+      <button class="btn btn-primary" style="background:#0f766e;border-color:#0f766e;" onclick="trRecvPost()">✅ Post — Receive${_rvDest==='CA'?' to CA':(_rvDest==='3P'?' at Hodge':' to SC')}</button>
     </div></div>`;
   document.body.appendChild(div);
   trRecvRender();
@@ -7420,13 +7615,19 @@ function trRecvRender(){
     const pPcs = p.lines.reduce((s,l)=>s+trLinePcs(l),0);
     const isWhole = p.mode==='whole';
     let body;
+    const _rt = window._trRecvRoute || 'SC2CA';
+    const _isRecall = _rt==='H2SC';
+    const _destLbl = TR_ROUTES[_rt].dest==='CA' ? 'CA' : (TR_ROUTES[_rt].dest==='3P' ? 'new H bin (Hodge)' : 'SC');
     if(isWhole){
       body = `<div style="padding:12px;background:#ecfdf5;border:1px solid #6ee7b7;border-radius:6px;display:flex;align-items:center;gap:12px;flex-wrap:wrap;">
-        <span style="color:#047857;font-weight:700;">📍 Receive whole pallet to bin:</span>
-        <input class="fi" list="trr-ca-bins" value="${esc(p.bin||'')}" placeholder="bin code (CA)" onchange="trRecvWholeBin(${pi}, this.value)" style="width:170px;font-family:Consolas,monospace;font-weight:700;text-transform:uppercase;">
+        ${_isRecall ? `<select class="fi" onchange="trRecvWholeAct(${pi}, this.value)" style="font-weight:700;font-size:11.5px;">
+          <option value="sc" ${p.act!=='ret'?'selected':''}>📍 Receive whole pallet to SC bin</option>
+          <option value="ret" ${p.act==='ret'?'selected':''}>↩ Return whole pallet to Hodge (new H bin)</option>
+        </select>` : `<span style="color:#047857;font-weight:700;">📍 Receive whole pallet to bin:</span>`}
+        <input class="fi" list="${(_isRecall&&p.act==='ret')||TR_ROUTES[_rt].dest==='3P'?'trr-h-bins':'trr-ca-bins'}" value="${esc(p.bin||'')}" placeholder="${(_isRecall&&p.act==='ret')||TR_ROUTES[_rt].dest==='3P'?'H bin (e.g. H2999)':'bin code ('+_destLbl+')'}" onchange="trRecvWholeBin(${pi}, this.value)" style="width:170px;font-family:Consolas,monospace;font-weight:700;text-transform:uppercase;">
         <span style="color:var(--text2);font-size:11px;">${p.lines.length} line(s) · ${pPcs.toLocaleString()} pcs into one bin</span></div>
       <table class="etbl" style="font-size:11.5px;margin-top:6px;">
-        <thead><tr><th class="tl">Style</th><th class="tl">Color/Size</th><th>SC Bin</th><th>Boxes</th><th>Qty</th></tr></thead>
+        <thead><tr><th class="tl">Style</th><th class="tl">Color/Size</th><th>From Bin</th><th>Boxes</th><th>Qty</th></tr></thead>
         <tbody>${p.lines.map(l=>`<tr>
           <td class="tl" style="font-weight:700;font-family:Consolas,monospace;">${esc(l.style)}</td>
           <td class="tl">${esc(bxBaseColor(l.color))} / ${esc(l.size)}</td>
@@ -7435,16 +7636,23 @@ function trRecvRender(){
           <td style="text-align:right;font-family:Consolas,monospace;font-weight:700;">${trLinePcs(l).toLocaleString()}</td>
         </tr>`).join('')}</tbody></table>`;
     }else{
-      body = `<div style="background:#fef3c7;border:1px solid #fbbf24;padding:6px 10px;border-radius:4px;font-size:11px;color:#92400e;margin-bottom:6px;">🔧 Break-down mode — place each line in a different bin</div>
+      body = `<div style="background:#fef3c7;border:1px solid #fbbf24;padding:6px 10px;border-radius:4px;font-size:11px;color:#92400e;margin-bottom:6px;">🔧 Break-down mode — ${_isRecall?'choose an action per line (SC bin / return to Hodge / damage claim)':'place each line in a different bin'}</div>
       <table class="etbl" style="font-size:11.5px;">
-        <thead><tr><th class="tl">Style</th><th class="tl">Color</th><th>Size</th><th>Boxes</th><th>Qty</th><th style="background:#fef3c7;">CA Bin</th></tr></thead>
+        <thead><tr><th class="tl">Style</th><th class="tl">Color</th><th>Size</th><th>Boxes</th><th>Qty</th>${_isRecall?'<th style="background:#fef3c7;">Action</th>':''}<th style="background:#fef3c7;">${_isRecall?'Bin / Claim note':(TR_ROUTES[_rt].dest==='3P'?'New H Bin':_destLbl+' Bin')}</th></tr></thead>
         <tbody>${p.lines.map((l,li)=>`<tr>
           <td class="tl" style="font-weight:700;font-family:Consolas,monospace;">${esc(l.style)}</td>
           <td class="tl">${esc(bxBaseColor(l.color))}</td>
           <td style="text-align:center;">${esc(l.size)}</td>
           <td style="text-align:center;font-family:Consolas,monospace;font-weight:700;">${trLineBoxes(l)}</td>
           <td style="text-align:right;font-family:Consolas,monospace;font-weight:700;">${trLinePcs(l).toLocaleString()}</td>
-          <td style="background:#fffde7;"><input class="fi" list="trr-ca-bins" value="${esc(l.ca_bin||'')}" placeholder="bin" onchange="trRecvLineBin(${pi},${li},this.value)" style="width:110px;font-size:11px;padding:3px 6px;font-family:Consolas,monospace;font-weight:700;text-transform:uppercase;"></td>
+          ${_isRecall?`<td style="background:#fffde7;"><select class="fi" style="font-size:10.5px;padding:2px 4px;" onchange="trRecvLineAct(${pi},${li},this.value)">
+            <option value="sc" ${l.act==='sc'?'selected':''}>📍 SC bin</option>
+            <option value="ret" ${l.act==='ret'?'selected':''}>↩ Return to Hodge</option>
+            <option value="dmg" ${l.act==='dmg'?'selected':''}>🗑 Damage claim</option>
+          </select></td>`:''}
+          <td style="background:#fffde7;">${_isRecall&&l.act==='dmg'
+            ? `<input class="fi" value="${esc(l.dmg_note||'')}" placeholder="claim note (damage reason)" onchange="trRecvLineNote(${pi},${li},this.value)" style="width:190px;font-size:11px;padding:3px 6px;">`
+            : `<input class="fi" list="${(_isRecall&&l.act==='ret')||TR_ROUTES[_rt].dest==='3P'?'trr-h-bins':'trr-ca-bins'}" value="${esc(l.ca_bin||'')}" placeholder="${(_isRecall&&l.act==='ret')||TR_ROUTES[_rt].dest==='3P'?'H bin':'bin'}" onchange="trRecvLineBin(${pi},${li},this.value)" style="width:110px;font-size:11px;padding:3px 6px;font-family:Consolas,monospace;font-weight:700;text-transform:uppercase;">`}</td>
         </tr>`).join('')}</tbody></table>`;
     }
     return `<div style="border:2px solid #6ee7b7;border-radius:8px;background:#fff;">
@@ -7459,30 +7667,52 @@ function trRecvRender(){
   }).join('');
 }
 function trRecvMode(pi, m){ _trRecvPallets[pi].mode = m; trRecvRender(); }
+function trRecvWholeAct(pi, v){ _trRecvPallets[pi].act = v; trRecvRender(); }
+function trRecvLineAct(pi, li, v){ _trRecvPallets[pi].lines[li].act = v; trRecvRender(); }
+function trRecvLineNote(pi, li, v){ _trRecvPallets[pi].lines[li].dmg_note = String(v||'').trim(); }
 function trRecvWholeBin(pi, v){ _trRecvPallets[pi].bin = String(v||'').trim().toUpperCase(); }
 function trRecvLineBin(pi, li, v){ _trRecvPallets[pi].lines[li].ca_bin = String(v||'').trim().toUpperCase(); }
 async function trRecvPost(){
+  const route = trRoute(_trRecvRec), dest = TR_ROUTES[route].dest;
+  const isRecall = route==='H2SC';
   const errors = [];
   _trRecvPallets.forEach(p=>{
-    if(p.mode==='whole'){ if(!p.bin) errors.push(p.label+': bin missing'); }
-    else p.lines.forEach((l,li)=>{ if(!l.ca_bin) errors.push(p.label+' line '+(li+1)+': bin missing'); });
+    if(p.mode==='whole'){
+      if(!p.bin) errors.push(p.label+': bin missing');
+      else if(dest==='3P' || (isRecall && p.act==='ret')){ if(!trIs3PLoc(p.bin)) errors.push(p.label+': Hodge bin must start with H'); }
+      else if(isRecall && p.act!=='ret' && trIs3PLoc(p.bin)) errors.push(p.label+': SC bin should not start with H (H* = Hodge). Use "Return to Hodge" instead.');
+    }
+    else p.lines.forEach((l,li)=>{
+      const act = isRecall ? (l.act||'sc') : 'sc';
+      if(act==='dmg') return;   // damage line needs no bin
+      if(!l.ca_bin) errors.push(p.label+' line '+(li+1)+': bin missing');
+      else if(dest==='3P' || (isRecall && act==='ret')){ if(!trIs3PLoc(l.ca_bin)) errors.push(p.label+' line '+(li+1)+': Hodge bin must start with H'); }
+      else if(isRecall && act==='sc' && trIs3PLoc(l.ca_bin)) errors.push(p.label+' line '+(li+1)+': SC bin should not start with H — use "Return to Hodge"');
+    });
   });
-  if(errors.length){ alert('These lines are missing a bin:\n\n'+errors.slice(0,6).join('\n')); return; }
+  if(errors.length){ alert('Please fix these lines:\n\n'+errors.slice(0,6).join('\n')); return; }
   const totLines = _trRecvPallets.reduce((s,p)=>s+p.lines.length,0);
-  if(!confirm('Receive '+_trRecvPallets.length+' pallet(s), '+totLines+' line(s) to CA?')) return;
+  const dmgN = isRecall ? _trRecvPallets.reduce((s,p)=>s+(p.mode==='whole'?0:p.lines.filter(l=>l.act==='dmg').length),0) : 0;
+  if(!confirm('Receive '+_trRecvPallets.length+' pallet(s), '+totLines+' line(s)'+(dest==='CA'?' to CA':(dest==='3P'?' at Hodge':' to SC'))+'?'+(dmgN?'\n\n⚠ '+dmgN+' damage line(s) will be REMOVED from stock (claim).':''))) return;
   let ok = 0; const errs = [];
   const manualNew = [];
+  const destWh = dest==='CA' ? 'CA' : 'SC';
   for(const p of _trRecvPallets){
     for(const l of p.lines){
+      const act = (isRecall && p.mode!=='whole') ? (l.act||'sc') : (isRecall && p.mode==='whole' ? (p.act==='ret'?'ret':'sc') : 'sc');
       const bin = p.mode==='whole' ? p.bin : l.ca_bin;
       try{
-        if(l.is_manual){
+        if(act==='dmg'){
+          if((l.ids||[]).length) await trPatchBoxes(l.ids, {wh:'SC', status:'OUT', out_at:new Date().toISOString(), out_by:(SESS&&SESS.email)||'', out_po:'3P DAMAGE CLAIM'+(l.dmg_note?(' — '+l.dmg_note):'')});
+          l.ca_bin = '(DAMAGE CLAIM)';
+        }else if(l.is_manual){
           const by = (SESS&&SESS.email)||'';
-          for(let j=0;j<(Number(l.boxes)||0);j++) manualNew.push({style:l.style, color:l.color, size:l.size, pcs:Number(l.ppb)||72, loc:bin, wh:'CA', status:'IN', in_by:by, note:'transfer '+(_trRecvRec.ref||'')});
+          for(let j=0;j<(Number(l.boxes)||0);j++) manualNew.push({style:l.style, color:l.color, size:l.size, pcs:Number(l.ppb)||72, loc:bin, wh:destWh, status:'IN', in_by:by, note:'transfer '+(_trRecvRec.ref||'')});
+          l.ca_bin = bin;
         }else if((l.ids||[]).length){
-          await trPatchBoxes(l.ids, {wh:'CA', loc:bin});
+          await trPatchBoxes(l.ids, {wh:destWh, loc:bin});
+          l.ca_bin = bin;
         }
-        l.ca_bin = bin;
         ok++;
       }catch(e){ errs.push(l.style+'/'+l.color+'/'+l.size+': '+String(e.message||'').slice(0,60)); }
     }
@@ -7501,7 +7731,7 @@ async function trRecvPost(){
   await bxFetchStore();
   if($('bx-body')) renderBoxRoom();
   const m = document.getElementById('modal-trr'); if(m) m.remove();
-  let msg = '✅ '+ok+' line(s) received to CA';
+  let msg = '✅ '+ok+' line(s) received'+(dest==='CA'?' to CA':(dest==='3P'?' at Hodge':' to SC'));
   if(errs.length) msg += '\n\n❌ '+errs.length+' error(s):\n'+errs.slice(0,5).join('\n');
   alert(msg);
   trOpen();
