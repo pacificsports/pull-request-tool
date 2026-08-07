@@ -137,7 +137,7 @@ main{max-width:1100px;margin:0 auto;padding:16px;}
     <button class="btn btn-sm" onclick="doLogout()" style="padding:2px 8px;font-size:10px;" data-i18n="logout">Log out</button>
   </span>
   <select id="lang-sel" onchange="setLang(this.value)" style="font-size:11px;padding:3px 6px;border-radius:5px;border:none;background:#1d3f66;color:#fff;"><option value="ko">한국어</option><option value="en">English</option><option value="es">Español</option></select>
-  <span style="font-size:10px;color:#9fb8d4;">v313 🚚</span>
+  <span style="font-size:10px;color:#9fb8d4;">v314 🚚</span>
 </div>
 <script type="text/javascript" src="https://js.authorize.net/v1/Accept.js" charset="utf-8"></script>
 <div id="po-viewer" style="display:none;position:fixed;top:0;right:0;width:44%;height:100vh;background:#fff;border-left:2px solid var(--border);z-index:60;box-shadow:-6px 0 20px rgba(0,0,0,.15);">
@@ -7307,6 +7307,7 @@ async function trBuilderOpen(existingId, route){
     <div style="padding:12px 16px;border-top:1px solid var(--border);display:flex;gap:8px;justify-content:flex-end;background:#fff;flex-wrap:wrap;">
       <button class="btn" style="background:#f5f5f5;" onclick="trBuilderClose()">📝 Close (keep Draft)</button>
       <button class="btn" style="background:#fee2e2;color:#c62828;border-color:#fecaca;" onclick="trCancelDraft()">🗑 Delete Draft (restore stock)</button>
+      ${(_shipRoute==='H2SC'||_shipRoute==='H2CA')?'<button class="btn" style="background:#b45309;color:#fff;border-color:#b45309;" onclick="trPickupReq()">🖨 Pickup Request</button>':''}
       <button class="btn" style="background:#0f4c8a;color:#fff;border-color:#0f4c8a;" onclick="trPL()">🖨 Packing List Preview/Print</button>
       <button class="btn" style="background:#334155;color:#fff;border-color:#334155;" onclick="trBOL()">🖨 BOL</button>
       <button class="btn btn-primary" style="background:#7b1fa2;border-color:#7b1fa2;" onclick="trPost()">✅ Post — Start Shipment</button>
@@ -7619,15 +7620,81 @@ async function trScAdd(){
   trRenderPallets();
   if($('bx-body')) renderBoxRoom();
 }
+// ── 3rd Party 문서 (Pickup Request / 주소) ──
+function trPartyInfo(route){
+  const A = { SC:'Pacific Sports — SC Warehouse<br>Sumter, SC', CA:'Pacific Sports — CA Warehouse<br>Eastvale, CA', '3P':'Hodge Warehouse (3rd Party Storage)<br>Sumter, SC' };
+  const R = TR_ROUTES[route]||TR_ROUTES.SC2CA;
+  return { from:A[R.from]||A.SC, to:A[R.dest]||A.CA };
+}
+function trRecDocData(rec){
+  const pallets = []; const pm = {};
+  (Array.isArray(rec.lines)?rec.lines:[]).forEach(l=>{ const lbl = l.pallet||'Pallet 1'; if(!pm[lbl]){ pm[lbl]={label:lbl, lines:[]}; pallets.push(pm[lbl]); } pm[lbl].lines.push({...l}); });
+  return { no:rec.ref, meta:(rec.meta&&typeof rec.meta==='object')?rec.meta:{}, pallets, route:trRoute(rec) };
+}
+async function trViewDoc(id, kind){
+  const rec = await trGet(id); if(!rec){ showToast('⚠ Load failed'); return; }
+  const D = trRecDocData(rec);
+  if(kind==='pl') trPL(D); else if(kind==='bol') trBOL(D); else trPickupReq(D);
+}
+function trPickupReq(D){
+  if(!D){ trCaptureInfo(); D = {no:_shipNo, meta:_shipMeta, pallets:_shipPallets, route:_shipRoute}; }
+  const lines = (D.pallets||[]).reduce((a,p)=>a.concat(p.lines),[]);
+  if(!lines.length){ alert('No lines.'); return; }
+  const M = D.meta||{};
+  const dest = (TR_ROUTES[D.route]||{}).dest||'SC';
+  const destName = dest==='CA' ? 'Pacific Sports — CA Warehouse, Eastvale, CA' : 'Pacific Sports — SC Warehouse, Sumter, SC';
+  const byBin = {};
+  lines.forEach(l=>{ const b = String(l.bin||'?').toUpperCase(); (byBin[b]=byBin[b]||[]).push(l); });
+  const bins = Object.keys(byBin).sort();
+  const totB = lines.reduce((s,l)=>s+trLineBoxes(l),0);
+  const totP = lines.reduce((s,l)=>s+trLinePcs(l),0);
+  const rows = bins.map(b=>{
+    const ls = byBin[b];
+    const bB = ls.reduce((s,l)=>s+trLineBoxes(l),0), bP = ls.reduce((s,l)=>s+trLinePcs(l),0);
+    return '<tr style="background:#f3f4f6;"><td colspan="6" style="border:1px solid #333;padding:5px 8px;font-weight:800;">📍 '+esc(b)+' <span style="font-weight:400;color:#555;">— '+ls.length+' line(s) · '+bB+' boxes · '+bP.toLocaleString()+' pcs</span></td></tr>'
+      + ls.map(l=>'<tr><td style="border:1px solid #333;padding:4px 8px;"></td>'
+        +'<td style="border:1px solid #333;padding:4px 8px;font-weight:700;">'+esc(l.style)+'</td>'
+        +'<td style="border:1px solid #333;padding:4px 8px;">'+esc(bxBaseColor(l.color))+'</td>'
+        +'<td style="border:1px solid #333;padding:4px 8px;text-align:center;">'+esc(l.size)+'</td>'
+        +'<td style="border:1px solid #333;padding:4px 8px;text-align:right;font-weight:700;">'+trLineBoxes(l)+'</td>'
+        +'<td style="border:1px solid #333;padding:4px 8px;text-align:right;">'+trLinePcs(l).toLocaleString()+'</td></tr>').join('');
+  }).join('');
+  const html = '<div style="background:#fff;padding:30px;font-family:Arial,sans-serif;max-width:8.5in;margin:0 auto;color:#000;">'
+    +'<div style="display:flex;justify-content:space-between;align-items:baseline;border-bottom:3px solid #111;padding-bottom:6px;margin-bottom:12px;">'
+    +'<div style="font-size:20px;font-weight:800;">PACIFIC SPORTS</div>'
+    +'<div style="font-size:16px;font-weight:800;">PALLET PICKUP REQUEST</div></div>'
+    +'<table style="width:100%;border-collapse:collapse;font-size:11px;margin-bottom:10px;">'
+    +'<tr><td style="border:1px solid #333;padding:6px 8px;width:50%;"><b>TO (3RD PARTY WAREHOUSE)</b><br>Hodge Warehouse<br>Sumter, SC</td>'
+    +'<td style="border:1px solid #333;padding:6px 8px;"><b>DELIVER TO</b><br>'+esc(destName)+'</td></tr></table>'
+    +'<table style="width:100%;border-collapse:collapse;font-size:11px;margin-bottom:12px;"><tr>'
+    +'<td style="border:1px solid #333;padding:5px 8px;"><b>REQUEST #</b><br>'+esc(D.no||'')+'</td>'
+    +'<td style="border:1px solid #333;padding:5px 8px;"><b>REQUEST DATE</b><br>'+new Date().toISOString().slice(0,10)+'</td>'
+    +'<td style="border:1px solid #333;padding:5px 8px;"><b>NEEDED BY</b><br>'+esc(M.ship_date||'ASAP')+'</td>'
+    +'<td style="border:1px solid #333;padding:5px 8px;"><b>LOCATIONS</b><br>'+bins.length+'</td>'
+    +'<td style="border:1px solid #333;padding:5px 8px;"><b>TOTAL</b><br>'+totB+' boxes · '+totP.toLocaleString()+' pcs</td></tr></table>'
+    +'<table style="width:100%;border-collapse:collapse;font-size:11px;">'
+    +'<tr style="background:#e5e7eb;"><th style="border:1px solid #333;padding:5px 8px;width:90px;">LOCATION</th><th style="border:1px solid #333;padding:5px 8px;">STYLE</th><th style="border:1px solid #333;padding:5px 8px;">COLOR</th><th style="border:1px solid #333;padding:5px 8px;">SIZE</th><th style="border:1px solid #333;padding:5px 8px;">BOXES</th><th style="border:1px solid #333;padding:5px 8px;">PCS</th></tr>'
+    +rows
+    +'<tr style="background:#f9fafb;"><td colspan="4" style="border:1px solid #333;padding:6px 8px;text-align:right;font-weight:800;">TOTAL</td><td style="border:1px solid #333;padding:6px 8px;text-align:right;font-weight:800;">'+totB+'</td><td style="border:1px solid #333;padding:6px 8px;text-align:right;font-weight:800;">'+totP.toLocaleString()+'</td></tr></table>'
+    +(M.notes?'<div style="background:#fffde7;border:1px solid #fbc02d;padding:6px 10px;font-size:11px;margin-top:10px;"><b>Notes:</b> '+esc(M.notes)+'</div>':'')
+    +'<div style="font-size:10.5px;margin-top:10px;color:#333;">Please pull the pallets/locations listed above and deliver them to the address shown. Partial pallets: pull the listed box counts only.</div>'
+    +'<div style="margin-top:36px;display:grid;grid-template-columns:1fr 1fr;gap:30px;font-size:11px;">'
+    +'<div><div style="border-bottom:1px solid #000;height:44px;"></div><div style="margin-top:4px;"><b>REQUESTED BY (PACIFIC SPORTS)</b> / DATE</div></div>'
+    +'<div><div style="border-bottom:1px solid #000;height:44px;"></div><div style="margin-top:4px;"><b>ACKNOWLEDGED BY (HODGE)</b> / DATE</div></div></div></div>';
+  const w = window.open('', '_blank');
+  w.document.write('<html><head><title>Pickup Request — '+esc(D.no||'')+'</title></head><body style="margin:0;">'+html+'<scr'+'ipt>window.print();</scr'+'ipt></body></html>');
+  w.document.close();
+}
 // ── Packing List (IMS 양식) ──
-function trPLHtml(){
-  trCaptureInfo();
+function trPLHtml(D){
+  if(!D){ trCaptureInfo(); D = {no:_shipNo, meta:_shipMeta, pallets:_shipPallets, route:_shipRoute}; }
+  const _P = D.pallets||[], _M = D.meta||{}, _R = TR_ROUTES[D.route]||TR_ROUTES.SC2CA;
   const calcBoxes = l=>trLineBoxes(l);
-  const totalPallets = _shipPallets.filter(p=>p.lines.length).length || _shipPallets.length;
-  const totalLines = _shipPallets.reduce((s,p)=>s+p.lines.length,0);
-  const totalPcs = _shipPallets.reduce((s,p)=>s+p.lines.reduce((ss,l)=>ss+trLinePcs(l),0),0);
-  const totalBoxes = _shipPallets.reduce((s,p)=>s+p.lines.reduce((ss,l)=>ss+calcBoxes(l),0),0);
-  const palletsHtml = _shipPallets.map(p=>{
+  const totalPallets = _P.filter(p=>p.lines.length).length || _P.length;
+  const totalLines = _P.reduce((s,p)=>s+p.lines.length,0);
+  const totalPcs = _P.reduce((s,p)=>s+p.lines.reduce((ss,l)=>ss+trLinePcs(l),0),0);
+  const totalBoxes = _P.reduce((s,p)=>s+p.lines.reduce((ss,l)=>ss+calcBoxes(l),0),0);
+  const palletsHtml = _P.map(p=>{
     if(!p.lines.length) return '';
     const pPcs = p.lines.reduce((s,l)=>s+trLinePcs(l),0);
     const pBox = p.lines.reduce((s,l)=>s+calcBoxes(l),0);
@@ -7638,7 +7705,7 @@ function trPLHtml(){
           <th style="padding:6px 8px;text-align:left;border:1px solid #ccc;">Style</th>
           <th style="padding:6px 8px;text-align:left;border:1px solid #ccc;">Color</th>
           <th style="padding:6px 8px;text-align:center;border:1px solid #ccc;">Size</th>
-          <th style="padding:6px 8px;text-align:center;border:1px solid #ccc;">SC Bin</th>
+          <th style="padding:6px 8px;text-align:center;border:1px solid #ccc;">From Bin</th>
           <th style="padding:6px 8px;text-align:right;border:1px solid #ccc;">Qty (pcs)</th>
           <th style="padding:6px 8px;text-align:right;border:1px solid #ccc;">pcs/box</th>
           <th style="padding:6px 8px;text-align:right;border:1px solid #ccc;">Boxes</th>
@@ -7660,22 +7727,22 @@ function trPLHtml(){
   return `<div style="background:#fff;padding:30px;font-family:Arial,sans-serif;max-width:8.5in;margin:0 auto;color:#000;">
     <div style="text-align:center;margin-bottom:20px;border-bottom:2px solid #000;padding-bottom:10px;">
       <h1 style="margin:0;font-size:22px;">PACKING LIST</h1>
-      <div style="font-size:12px;margin-top:4px;color:#666;">SC → CA Internal Transfer · Pacific Sports</div>
+      <div style="font-size:12px;margin-top:4px;color:#666;">${_R.label} Transfer · Pacific Sports</div>
     </div>
     <div style="display:grid;grid-template-columns:1fr 1fr;gap:30px;margin-bottom:18px;font-size:12px;">
       <div>
         <div style="font-weight:700;border-bottom:1px solid #ccc;margin-bottom:6px;padding-bottom:2px;">SHIPMENT INFO</div>
-        <div><b>Shipment #:</b> ${esc(_shipNo||'—')}</div>
-        <div><b>Ship Date:</b> ${esc(_shipMeta.ship_date||'—')}</div>
-        <div><b>ETA:</b> ${esc(_shipMeta.eta||'—')}</div>
-        <div><b>Seal #:</b> ${esc(_shipMeta.seal||'—')}</div>
+        <div><b>Shipment #:</b> ${esc(D.no||'—')}</div>
+        <div><b>Ship Date:</b> ${esc(_M.ship_date||'—')}</div>
+        <div><b>ETA:</b> ${esc(_M.eta||'—')}</div>
+        <div><b>Seal #:</b> ${esc(_M.seal||'—')}</div>
       </div>
       <div>
         <div style="font-weight:700;border-bottom:1px solid #ccc;margin-bottom:6px;padding-bottom:2px;">CARRIER / DRIVER</div>
-        <div><b>Carrier:</b> ${esc(_shipMeta.carrier||'—')}</div>
-        <div><b>Driver:</b> ${esc(_shipMeta.driver||'—')}</div>
-        <div><b>Phone:</b> ${esc(_shipMeta.phone||'—')}</div>
-        <div><b>Truck #:</b> ${esc(_shipMeta.truck||'—')}</div>
+        <div><b>Carrier:</b> ${esc(_M.carrier||'—')}</div>
+        <div><b>Driver:</b> ${esc(_M.driver||'—')}</div>
+        <div><b>Phone:</b> ${esc(_M.phone||'—')}</div>
+        <div><b>Truck #:</b> ${esc(_M.truck||'—')}</div>
       </div>
     </div>
     <div style="background:#fef3f9;border:1px solid #d8b4fe;border-radius:4px;padding:8px 14px;margin-bottom:14px;font-size:12px;display:flex;justify-content:space-around;">
@@ -7684,20 +7751,21 @@ function trPLHtml(){
       <div><b>Total Pcs:</b> ${totalPcs.toLocaleString()}</div>
       <div><b>Total Boxes:</b> ${totalBoxes.toLocaleString()}</div>
     </div>
-    ${_shipMeta.notes ? `<div style="background:#fffde7;border:1px solid #fbc02d;padding:6px 10px;font-size:11px;margin-bottom:14px;"><b>Notes:</b> ${esc(_shipMeta.notes)}</div>` : ''}
+    ${_M.notes ? `<div style="background:#fffde7;border:1px solid #fbc02d;padding:6px 10px;font-size:11px;margin-bottom:14px;"><b>Notes:</b> ${esc(_M.notes)}</div>` : ''}
     ${palletsHtml}
     <div style="margin-top:40px;display:grid;grid-template-columns:1fr 1fr;gap:30px;font-size:12px;page-break-inside:avoid;">
       <div><div style="border-bottom:1px solid #000;height:50px;"></div><div style="margin-top:4px;">Shipper Signature & Date</div></div>
       <div><div style="border-bottom:1px solid #000;height:50px;"></div><div style="margin-top:4px;">Driver Signature & Date</div></div>
     </div>
     <div style="margin-top:30px;display:grid;grid-template-columns:1fr 1fr;gap:30px;font-size:12px;page-break-inside:avoid;">
-      <div><div style="border-bottom:1px solid #000;height:50px;"></div><div style="margin-top:4px;">CA Receiver Signature & Date</div></div>
+      <div><div style="border-bottom:1px solid #000;height:50px;"></div><div style="margin-top:4px;">${_R.dest==='3P'?'Hodge':_R.dest} Receiver Signature & Date</div></div>
       <div></div>
     </div>
   </div>`;
 }
-function trPL(){
-  if(_shipPallets.every(p=>!p.lines.length)){ alert('No lines.'); return; }
+function trPL(D){
+  const _P0 = D ? (D.pallets||[]) : _shipPallets;
+  if(_P0.every(p=>!p.lines.length)){ alert('No lines.'); return; }
   const ex = document.getElementById('modal-trpl'); if(ex) ex.remove();
   const div = document.createElement('div');
   div.id = 'modal-trpl';
@@ -7706,7 +7774,7 @@ function trPL(){
   div.innerHTML = `<div style="background:#fff;border-radius:12px;max-width:880px;width:96vw;max-height:96vh;display:flex;flex-direction:column;overflow:hidden;">
     <div style="background:#0f4c8a;color:#fff;padding:10px 16px;font-weight:800;">📋 Packing List Preview
       <button class="btn btn-sm" style="float:right;background:transparent;color:#bfdbfe;border-color:#60a5fa;" onclick="document.getElementById('modal-trpl').remove()">✕</button></div>
-    <div id="trpl-content" style="padding:16px;overflow-y:auto;flex:1;background:#f5f5f5;">${trPLHtml()}</div>
+    <div id="trpl-content" style="padding:16px;overflow-y:auto;flex:1;background:#f5f5f5;">${trPLHtml(D)}</div>
     <div style="padding:10px 16px;border-top:1px solid var(--border);display:flex;gap:8px;justify-content:flex-end;">
       <button class="btn" onclick="document.getElementById('modal-trpl').remove()">Close</button>
       <button class="btn btn-primary" style="background:#0f4c8a;border-color:#0f4c8a;" onclick="trPrintEl('trpl-content')">🖨 Print</button>
@@ -7719,27 +7787,28 @@ function trPrintEl(elId){
   w.document.write('<html><head><title>Print</title></head><body style="margin:0;">'+content+'<scr'+'ipt>window.print();</scr'+'ipt></body></html>');
   w.document.close();
 }
-function trBOL(){
-  trCaptureInfo();
-  const lines = trLinesFlat();
+function trBOL(D){
+  if(!D){ trCaptureInfo(); D = {no:_shipNo, meta:_shipMeta, pallets:_shipPallets, route:_shipRoute}; }
+  const M = D.meta||{}, PT = trPartyInfo(D.route);
+  const lines = (D.pallets||[]).reduce((a,p)=>a.concat(p.lines),[]);
   if(!lines.length){ alert('No lines.'); return; }
   const totB = lines.reduce((s,l)=>s+trLineBoxes(l),0);
   const totP = lines.reduce((s,l)=>s+trLinePcs(l),0);
-  const nPal = _shipPallets.filter(p=>p.lines.length).length;
+  const nPal = D.pallets.filter(p=>p.lines.length).length;
   const html = `<div style="background:#fff;padding:30px;font-family:Arial,sans-serif;max-width:8.5in;margin:0 auto;color:#000;">
     <div style="display:flex;justify-content:space-between;align-items:baseline;border-bottom:3px solid #111;padding-bottom:6px;margin-bottom:12px;">
       <div style="font-size:20px;font-weight:800;">PACIFIC SPORTS</div>
       <div style="font-size:16px;font-weight:800;">STRAIGHT BILL OF LADING</div>
     </div>
     <table style="width:100%;border-collapse:collapse;font-size:11px;margin-bottom:10px;">
-      <tr><td style="border:1px solid #333;padding:6px 8px;width:50%;"><b>SHIP FROM (SHIPPER)</b><br>Pacific Sports — SC Warehouse<br>Sumter, SC</td>
-      <td style="border:1px solid #333;padding:6px 8px;"><b>SHIP TO (CONSIGNEE)</b><br>Pacific Sports — CA Warehouse<br>Eastvale, CA</td></tr></table>
+      <tr><td style="border:1px solid #333;padding:6px 8px;width:50%;"><b>SHIP FROM (SHIPPER)</b><br>${PT.from}</td>
+      <td style="border:1px solid #333;padding:6px 8px;"><b>SHIP TO (CONSIGNEE)</b><br>${PT.to}</td></tr></table>
     <table style="width:100%;border-collapse:collapse;font-size:11px;margin-bottom:10px;"><tr>
-      <td style="border:1px solid #333;padding:5px 8px;"><b>SHIPMENT #</b><br>${esc(_shipNo||'')}</td>
-      <td style="border:1px solid #333;padding:5px 8px;"><b>SHIP DATE</b><br>${esc(_shipMeta.ship_date||'—')}</td>
-      <td style="border:1px solid #333;padding:5px 8px;"><b>CARRIER</b><br>${esc(_shipMeta.carrier||'—')}</td>
-      <td style="border:1px solid #333;padding:5px 8px;"><b>TRUCK #</b><br>${esc(_shipMeta.truck||'—')}</td>
-      <td style="border:1px solid #333;padding:5px 8px;"><b>SEAL #</b><br>${esc(_shipMeta.seal||'—')}</td>
+      <td style="border:1px solid #333;padding:5px 8px;"><b>SHIPMENT #</b><br>${esc(D.no||'')}</td>
+      <td style="border:1px solid #333;padding:5px 8px;"><b>SHIP DATE</b><br>${esc(M.ship_date||'—')}</td>
+      <td style="border:1px solid #333;padding:5px 8px;"><b>CARRIER</b><br>${esc(M.carrier||'—')}</td>
+      <td style="border:1px solid #333;padding:5px 8px;"><b>TRUCK #</b><br>${esc(M.truck||'—')}</td>
+      <td style="border:1px solid #333;padding:5px 8px;"><b>SEAL #</b><br>${esc(M.seal||'—')}</td>
     </tr></table>
     <table style="width:100%;border-collapse:collapse;font-size:12px;">
       <tr style="background:#f5f5f5;"><th style="border:1px solid #333;padding:5px 8px;">HANDLING UNITS</th><th style="border:1px solid #333;padding:5px 8px;">PACKAGE TYPE</th><th style="border:1px solid #333;padding:5px 8px;text-align:left;">COMMODITY DESCRIPTION</th><th style="border:1px solid #333;padding:5px 8px;">TOTAL PCS</th><th style="border:1px solid #333;padding:5px 8px;">WEIGHT</th></tr>
@@ -7753,7 +7822,7 @@ function trBOL(){
     </div>
   </div>`;
   const w = window.open('', '_blank');
-  w.document.write('<html><head><title>BOL — '+esc(_shipNo||'')+'</title></head><body style="margin:0;">'+html+'<scr'+'ipt>window.print();</scr'+'ipt></body></html>');
+  w.document.write('<html><head><title>BOL — '+esc(D.no||'')+'</title></head><body style="margin:0;">'+html+'<scr'+'ipt>window.print();</scr'+'ipt></body></html>');
   w.document.close();
 }
 // ── Post (트럭 출발) ──
@@ -7782,6 +7851,7 @@ async function trCancelTransit(id){
 async function trView(id){
   const rec = await trGet(id); if(!rec) return;
   const M = rec.meta||{};
+  const R = TR_ROUTES[trRoute(rec)];
   const lines = Array.isArray(rec.lines)?rec.lines:[];
   const palletMap = {};
   lines.forEach(l=>{ const lbl = l.pallet||'Pallet 1'; (palletMap[lbl] = palletMap[lbl]||[]).push(l); });
@@ -7792,7 +7862,7 @@ async function trView(id){
   div.style.cssText = 'position:fixed;inset:0;background:rgba(15,23,42,.6);z-index:115;display:flex;align-items:center;justify-content:center;padding:12px;';
   div.onclick = e=>{ if(e.target===div) div.remove(); };
   div.innerHTML = `<div style="background:#fff;border-radius:12px;max-width:820px;width:94vw;max-height:92vh;display:flex;flex-direction:column;overflow:hidden;">
-    <div style="background:#0f2a4a;color:#fff;padding:10px 16px;font-weight:800;">🚛 ${esc(rec.ref||'')} <span style="font-size:11px;font-weight:400;opacity:.8;">— SC → CA</span>
+    <div style="background:#0f2a4a;color:#fff;padding:10px 16px;font-weight:800;">🚛 ${esc(rec.ref||'')} <span style="font-size:11px;font-weight:400;opacity:.8;">— ${esc(R.label)}</span>
       <button class="btn btn-sm" style="float:right;background:transparent;color:#cbd5e1;border-color:#475569;" onclick="document.getElementById('modal-trv').remove()">✕</button></div>
     <div style="padding:14px 18px;overflow-y:auto;flex:1;">
       <div style="display:flex;gap:16px;flex-wrap:wrap;margin-bottom:12px;font-size:12px;">
@@ -7812,7 +7882,7 @@ async function trView(id){
         return `<div style="border:1px solid var(--border);border-radius:6px;margin-bottom:10px;overflow:hidden;">
         <div style="background:#f3eefc;padding:7px 12px;font-weight:700;color:#6d28d9;font-size:12.5px;">📦 ${esc(lbl)} <span style="font-weight:400;color:var(--text2);font-size:11px;">· ${pls.length} line(s) · ${pPcs.toLocaleString()} pcs</span></div>
         <table class="etbl" style="font-size:12px;">
-          <thead><tr><th class="tl">Style</th><th class="tl">Color</th><th>Size</th><th>SC Bin</th><th>Boxes</th><th>Qty</th>${rec.status==='RECEIVED'?'<th>CA Bin</th>':''}</tr></thead>
+          <thead><tr><th class="tl">Style</th><th class="tl">Color</th><th>Size</th><th>From Bin</th><th>Boxes</th><th>Qty</th>${rec.status==='RECEIVED'?'<th>To Bin</th>':''}</tr></thead>
           <tbody>${pls.map(l=>`<tr>
             <td class="tl" style="font-weight:700;">${esc(l.style)}</td>
             <td class="tl">${esc(bxBaseColor(l.color))}</td>
@@ -7825,7 +7895,10 @@ async function trView(id){
       }).join('') || '<div class="muted">No lines</div>'}
     </div>
     <div style="padding:10px 16px;border-top:1px solid var(--border);display:flex;gap:8px;justify-content:flex-end;">
-      ${rec.status==='TRANSIT'?`<button class="btn btn-sm btn-primary" style="background:#0f766e;border-color:#0f766e;" onclick="document.getElementById('modal-trv').remove();trRecvOpen('${rec.id}')">📦 CA Arrival</button>`:''}
+      ${R.from==='3P'?`<button class="btn btn-sm" style="background:#b45309;color:#fff;border-color:#b45309;" onclick="trViewDoc('${rec.id}','pickup')">🖨 Pickup Request</button>`:''}
+      <button class="btn btn-sm" onclick="trViewDoc('${rec.id}','pl')">🖨 Packing List</button>
+      <button class="btn btn-sm" onclick="trViewDoc('${rec.id}','bol')">🖨 BOL</button>
+      ${rec.status==='TRANSIT'?`<button class="btn btn-sm btn-primary" style="background:#0f766e;border-color:#0f766e;" onclick="document.getElementById('modal-trv').remove();trRecvOpen('${rec.id}')">📦 ${R.dest==='CA'?'CA Arrival':(R.dest==='3P'?'Hodge Arrival':'SC Arrival')}</button>`:''}
       <button class="btn" onclick="document.getElementById('modal-trv').remove()">Close</button>
     </div></div>`;
   document.body.appendChild(div);
@@ -7840,8 +7913,9 @@ async function trRecvOpen(id){
   const palletMap = {};
   const _rvRoute = trRoute(rec), _rvDest = TR_ROUTES[_rvRoute].dest;
   window._trRecvRoute = _rvRoute;
-  lines.forEach(l=>{ const lbl = l.pallet||'Pallet 1'; if(!palletMap[lbl]) palletMap[lbl] = { label:lbl, mode:'whole', bin:'', act:'sc', lines:[] }; palletMap[lbl].lines.push({...l, ca_bin:'', act:'sc', dmg_note:''}); });
+  lines.forEach(l=>{ const lbl = l.pallet||'Pallet 1'; if(!palletMap[lbl]) palletMap[lbl] = { label:lbl, mode:'whole', bin:'', act:'sc', lines:[] }; palletMap[lbl].lines.push({...l, ca_bin:(_rvDest==='3P'&&l.ret_bin)?String(l.ret_bin).toUpperCase():'', act:'sc', dmg_note:''}); });
   _trRecvPallets = Object.values(palletMap);
+  if(_rvDest==='3P') _trRecvPallets.forEach(p=>{ const bs=[...new Set(p.lines.map(l=>l.ca_bin).filter(Boolean))]; if(bs.length===1) p.bin=bs[0]; });
   ['modal-tr','modal-trr'].forEach(x=>{ const e=document.getElementById(x); if(e) e.remove(); });
   const totP = lines.reduce((s,l)=>s+trLinePcs(l),0);
   const totB = lines.reduce((s,l)=>s+trLineBoxes(l),0);
@@ -7890,7 +7964,7 @@ function trRecvRender(){
       body = `<div style="padding:12px;background:#ecfdf5;border:1px solid #6ee7b7;border-radius:6px;display:flex;align-items:center;gap:12px;flex-wrap:wrap;">
         ${_isRecall ? `<select class="fi" onchange="trRecvWholeAct(${pi}, this.value)" style="font-weight:700;font-size:11.5px;">
           <option value="sc" ${p.act!=='ret'?'selected':''}>📍 Receive whole pallet to SC bin</option>
-          <option value="ret" ${p.act==='ret'?'selected':''}>↩ Return whole pallet to Hodge (new H bin)</option>
+          <option value="ret" ${p.act==='ret'?'selected':''}>↩ Return whole pallet to Hodge (→ return truck list)</option>
         </select>` : `<span style="color:#047857;font-weight:700;">📍 Receive whole pallet to bin:</span>`}
         <input class="fi" list="${(_isRecall&&p.act==='ret')||TR_ROUTES[_rt].dest==='3P'?'trr-h-bins':'trr-ca-bins'}" value="${esc(p.bin||'')}" placeholder="${(_isRecall&&p.act==='ret')||TR_ROUTES[_rt].dest==='3P'?'H bin (e.g. H2999)':'bin code ('+_destLbl+')'}" onchange="trRecvWholeBin(${pi}, this.value)" style="width:170px;font-family:Consolas,monospace;font-weight:700;text-transform:uppercase;">
         <span style="color:var(--text2);font-size:11px;">${p.lines.length} line(s) · ${pPcs.toLocaleString()} pcs into one bin</span></div>
@@ -7963,7 +8037,7 @@ async function trRecvPost(){
   const dmgN = isRecall ? _trRecvPallets.reduce((s,p)=>s+(p.mode==='whole'?0:p.lines.filter(l=>l.act==='dmg').length),0) : 0;
   if(!confirm('Receive '+_trRecvPallets.length+' pallet(s), '+totLines+' line(s)'+(dest==='CA'?' to CA':(dest==='3P'?' at Hodge':' to SC'))+'?'+(dmgN?'\n\n⚠ '+dmgN+' damage line(s) will be REMOVED from stock (claim).':''))) return;
   let ok = 0; const errs = [];
-  const manualNew = [];
+  const manualNew = []; const retLines = [];
   const destWh = dest==='CA' ? 'CA' : 'SC';
   for(const p of _trRecvPallets){
     for(const l of p.lines){
@@ -7973,6 +8047,9 @@ async function trRecvPost(){
         if(act==='dmg'){
           if((l.ids||[]).length) await trPatchBoxes(l.ids, {wh:'SC', status:'OUT', out_at:new Date().toISOString(), out_by:(SESS&&SESS.email)||'', out_po:'3P DAMAGE CLAIM'+(l.dmg_note?(' — '+l.dmg_note):'')});
           l.ca_bin = '(DAMAGE CLAIM)';
+        }else if(act==='ret'){
+          retLines.push({ is_manual:!!l.is_manual, style:l.style, color:l.color, size:l.size, bin:l.bin, ppb:l.ppb, pcs:l.pcs, boxes:l.boxes, ids:(l.ids||[]), pallet:'Pallet 1', ret_bin:bin });
+          l.ca_bin = '(RETURN)';
         }else if(l.is_manual){
           const by = (SESS&&SESS.email)||'';
           for(let j=0;j<(Number(l.boxes)||0);j++) manualNew.push({style:l.style, color:l.color, size:l.size, pcs:Number(l.ppb)||72, loc:bin, wh:destWh, status:'IN', in_by:by, note:'transfer '+(_trRecvRec.ref||'')});
@@ -7992,6 +8069,15 @@ async function trRecvPost(){
       else errs.push('Manual lines: '+manualNew.length+' box(es) not received (SKU unregistered)');
     }catch(e){ errs.push('Manual line receive failed'); }
   }
+  let retRef = '';
+  if(retLines.length){
+    retRef = trGenShipNo('SC2H');
+    try{
+      const rr = await sbFetch('/rest/v1/pr_transfers', {method:'POST', headers:{Prefer:'return=minimal'}, body:JSON.stringify([{ref:retRef, status:'LOADING', lines:retLines, meta:{route:'SC2H', notes:'Return to Hodge — from '+(_trRecvRec.ref||'')}, created_by:(SESS&&SESS.email)||''}])});
+      if(!rr.ok) throw new Error('insert failed');
+      _trRecvPallets.forEach(p=>p.lines.forEach(l=>{ if(l.ca_bin==='(RETURN)') l.ca_bin = '(RET → '+retRef+')'; }));
+    }catch(e){ errs.push('Return truck draft creation failed — return lines stay In Transit'); retRef=''; }
+  }
   // ca_bin 을 lines 에 반영해 저장
   const savedLines = [];
   _trRecvPallets.forEach(p=>p.lines.forEach(l=>savedLines.push({...l, pallet:p.label})));
@@ -8000,6 +8086,7 @@ async function trRecvPost(){
   if($('bx-body')) renderBoxRoom();
   const m = document.getElementById('modal-trr'); if(m) m.remove();
   let msg = '✅ '+ok+' line(s) received'+(dest==='CA'?' to CA':(dest==='3P'?' at Hodge':' to SC'));
+  if(retRef) msg += '\n\n↩ '+retLines.length+' return line(s) → Return truck draft '+retRef+' (see Transfer list — print PL/BOL there, then Post when the truck is set)';
   if(errs.length) msg += '\n\n❌ '+errs.length+' error(s):\n'+errs.slice(0,5).join('\n');
   alert(msg);
   trOpen();
