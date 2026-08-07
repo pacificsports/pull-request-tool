@@ -137,7 +137,7 @@ main{max-width:1100px;margin:0 auto;padding:16px;}
     <button class="btn btn-sm" onclick="doLogout()" style="padding:2px 8px;font-size:10px;" data-i18n="logout">Log out</button>
   </span>
   <select id="lang-sel" onchange="setLang(this.value)" style="font-size:11px;padding:3px 6px;border-radius:5px;border:none;background:#1d3f66;color:#fff;"><option value="ko">한국어</option><option value="en">English</option><option value="es">Español</option></select>
-  <span style="font-size:10px;color:#9fb8d4;">v308 🚚</span>
+  <span style="font-size:10px;color:#9fb8d4;">v309 🚚</span>
 </div>
 <script type="text/javascript" src="https://js.authorize.net/v1/Accept.js" charset="utf-8"></script>
 <div id="po-viewer" style="display:none;position:fixed;top:0;right:0;width:44%;height:100vh;background:#fff;border-left:2px solid var(--border);z-index:60;box-shadow:-6px 0 20px rgba(0,0,0,.15);">
@@ -3504,7 +3504,7 @@ async function sendBatchPLEmail(recs, wh, toEmail){
       <td style="padding:5px 14px 5px 0;font-weight:700;">${esc((rec.meta&&rec.meta.po)||'')}</td>
       <td style="padding:5px 14px 5px 0;font-family:Consolas,monospace;">${esc(plNum(rec.base, wh))}</td>
       <td style="padding:5px 14px 5px 0;">${tot.toLocaleString()} pcs</td>
-      <td style="padding:5px 0;">${esc(trk||'—')}</td>
+      <td style="padding:5px 0;">${trk ? plTrackLinksHtml(d.trackings, d.via) : '—'}</td>
     </tr>`;
   }).join('');
   const d0 = ((recs[0]||{}).pl||{})[wh] || {};
@@ -3760,6 +3760,23 @@ function custEmailFor(cust){
 function blobToB64(blob){
   return new Promise((res,rej)=>{ const r=new FileReader(); r.onload=()=>res(String(r.result).split(',')[1]); r.onerror=()=>rej(new Error('Encoding failed')); r.readAsDataURL(blob); });
 }
+// 📦 tracking 번호 → 운송사 조회 링크 (Via 힌트 우선, 없으면 번호 패턴)
+function plTrackUrl(no, via){
+  const n = String(no||'').replace(/\s+/g,'');
+  if(!n) return null;
+  const v = String(via||'').toUpperCase();
+  if(v.includes('UPS') || /^1Z/i.test(n)) return 'https://www.ups.com/track?tracknum='+encodeURIComponent(n);
+  if(v.includes('FEDEX')) return 'https://www.fedex.com/fedextrack/?trknbr='+encodeURIComponent(n);
+  if(v.includes('USPS') || /^(9[2345])\d{18,24}$/.test(n)) return 'https://tools.usps.com/go/TrackConfirmAction?tLabels='+encodeURIComponent(n);
+  if(/^\d{12}$|^\d{15}$|^\d{20,22}$/.test(n)) return 'https://www.fedex.com/fedextrack/?trknbr='+encodeURIComponent(n);
+  return 'https://www.google.com/search?q='+encodeURIComponent(n+' tracking');
+}
+function plTrackLinksHtml(trackings, via){
+  return (trackings||[]).filter(Boolean).map(t=>{
+    const u = plTrackUrl(t, via);
+    return u ? '<a href="'+u+'" target="_blank" style="color:#1d4ed8;font-weight:700;text-decoration:underline;">'+esc(t)+'</a>' : esc(t);
+  }).join(', ');
+}
 async function sendPLEmailFor(rec, wh, toEmail){
   // lite 캐시(첨부 데이터 없음)로 발송되는 것 방지 — 항상 원본 데이터로 발송
   if(rec._lite || (((rec.pl||{})[wh]||{}).files||[]).some(f=>!f.data)){
@@ -3783,7 +3800,7 @@ async function sendPLEmailFor(rec, wh, toEmail){
       ${row('Packing List #', esc(num))}
       ${row('Ship Date', esc(d.date ? new Date(d.date+'T00:00:00').toLocaleDateString('en-US') : ''))}
       ${d.via ? row('Via', esc(d.via + (d.method ? ' ' + d.method : '') + (d.freightCo && d.via==='LTL' ? ' — ' + d.freightCo : ''))) : ''}
-      ${trk ? row('Tracking #', esc(trk)) : ''}
+      ${trk ? row('Tracking #', plTrackLinksHtml(d.trackings, d.via)) : ''}
       ${row('Total', tot.toLocaleString() + ' pcs')}
     </table>
     <p style="margin-top:16px;">Thank you,<br><b>Pacific Sports</b></p>
