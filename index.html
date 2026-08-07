@@ -137,7 +137,7 @@ main{max-width:1100px;margin:0 auto;padding:16px;}
     <button class="btn btn-sm" onclick="doLogout()" style="padding:2px 8px;font-size:10px;" data-i18n="logout">Log out</button>
   </span>
   <select id="lang-sel" onchange="setLang(this.value)" style="font-size:11px;padding:3px 6px;border-radius:5px;border:none;background:#1d3f66;color:#fff;"><option value="ko">한국어</option><option value="en">English</option><option value="es">Español</option></select>
-  <span style="font-size:10px;color:#9fb8d4;">v315 🚚</span>
+  <span style="font-size:10px;color:#9fb8d4;">v316 🚚</span>
 </div>
 <script type="text/javascript" src="https://js.authorize.net/v1/Accept.js" charset="utf-8"></script>
 <div id="po-viewer" style="display:none;position:fixed;top:0;right:0;width:44%;height:100vh;background:#fff;border-left:2px solid var(--border);z-index:60;box-shadow:-6px 0 20px rgba(0,0,0,.15);">
@@ -7513,6 +7513,41 @@ async function trScOpen(pid){
   document.body.appendChild(div);
   trScRender();
 }
+function trScRowHtml(g){
+  const sel = _scvSel[g.key];
+  const take = sel ? sel.take : g.boxes.length;
+  const vl = bxVariantLabel(g.color, g.style);
+  const vc = vl==='Tubular' ? '#64748b' : (/US/.test(vl) ? '#c2410c' : '#7c3aed');
+  return `<tr id="scvr-${encodeURIComponent(g.key)}" style="background:${sel?'#dcfce7':''};">
+    <td style="width:34px;text-align:center;padding-left:20px;"><input type="checkbox" ${sel?'checked':''} onchange="trScLine('${esc(g.key)}', this.checked)" style="width:15px;height:15px;accent-color:#10b981;cursor:pointer;"></td>
+    <td style="font-family:Consolas,monospace;font-weight:700;font-size:11px;">#${esc(g.style)}</td>
+    <td style="font-size:11px;">${esc(bxBaseColor(g.color))} <span style="font-size:9px;font-weight:800;color:${vc};">${vl!==bxDefaultVariant(g.style)?esc(vl):''}</span></td>
+    <td style="text-align:center;font-size:11px;">${esc(g.size)}</td>
+    <td style="text-align:right;font-weight:700;">${(g.boxes.length*(g.ppb||0)).toLocaleString()} <span style="font-size:9px;color:var(--text2);">pcs</span></td>
+    <td style="text-align:center;font-size:11px;color:var(--text2);">${g.ppb||'—'}</td>
+    <td style="text-align:center;font-family:Consolas,monospace;font-weight:700;">${g.boxes.length} box(es)</td>
+    <td style="text-align:right;background:#fffde7;padding:3px 6px;">${sel
+      ? `<input class="fi" type="number" min="1" max="${g.boxes.length}" value="${take}" onchange="trScQty('${esc(g.key)}', this.value)" style="width:56px;font-size:11px;padding:3px 5px;text-align:center;font-weight:800;"> <button onclick="trScMax('${esc(g.key)}')" style="border:none;background:#bbf7d0;color:#15803d;cursor:pointer;font-size:9px;font-weight:700;padding:2px 5px;border-radius:3px;">All</button>`
+      : '<span style="font-size:10px;color:var(--text2);">check to set qty</span>'}</td>
+    <td style="width:10px;"></td>
+    </tr>`;
+}
+function trScBinHtml(loc, gs){
+  const totB = gs.reduce((s,g)=>s+g.boxes.length,0);
+  const totP = gs.reduce((s,g)=>s+g.boxes.length*(g.ppb||0),0);
+  const allChecked = gs.every(g=>_scvSel[g.key]);
+  return `<table class="etbl" style="font-size:12px;margin-bottom:2px;">
+    <tbody>
+    <tr style="background:linear-gradient(90deg,#dbeafe,#e0f2fe);border-top:2px solid #1e40af;">
+      <td style="width:34px;text-align:center;padding:5px;"><input type="checkbox" id="scvb-${encodeURIComponent(loc)}" ${allChecked?'checked':''} onchange="trScBin('${esc(loc)}', this.checked)" style="width:17px;height:17px;accent-color:#1e40af;cursor:pointer;"></td>
+      <td colspan="8" style="padding:5px 10px;font-size:12.5px;color:#1e40af;font-weight:800;">📍 <span style="font-family:Consolas,monospace;background:#fff;padding:1px 10px;border-radius:6px;border:1px solid #93c5fd;">${esc(loc)}</span>
+        <span style="margin-left:10px;color:var(--text2);font-weight:600;font-size:11px;">${gs.length} line(s) · ${totB} box(es) · ${totP.toLocaleString()} pcs</span>
+        <span style="margin-left:8px;font-size:10px;color:var(--text2);font-weight:400;">(check to select the whole bin)</span></td>
+    </tr>
+    ${gs.map(g=>trScRowHtml(g)).join('')}
+    </tbody></table>`;
+}
+let _scvTok = 0;
 function trScRender(){
   const el = document.getElementById('scv-body'); if(!el) return;
   const binF = String((document.getElementById('scv-bin-f')||{}).value||'').trim().toUpperCase();
@@ -7523,52 +7558,49 @@ function trScRender(){
     if(styF && !bxSearchMatch(styF, g.style, g.color, g.size)) return false;
     return true;
   });
-  // loc 별 그룹
   const locs = {}; const order = [];
   filtered.forEach(g=>{ if(!locs[g.loc]){ locs[g.loc] = []; order.push(g.loc); } locs[g.loc].push(g); });
-  const shown = order.slice(0, _scvLimit);
-  const hidden = order.length - shown.length;
-  el.innerHTML = shown.map(loc=>{
-    const gs = locs[loc];
-    const totB = gs.reduce((s,g)=>s+g.boxes.length,0);
-    const totP = gs.reduce((s,g)=>s+g.boxes.length*(g.ppb||0),0);
-    const allChecked = gs.every(g=>_scvSel[g.key]);
-    return `<table class="etbl" style="font-size:12px;margin-bottom:2px;">
-      <tbody>
-      <tr style="background:linear-gradient(90deg,#dbeafe,#e0f2fe);border-top:2px solid #1e40af;">
-        <td style="width:34px;text-align:center;padding:5px;"><input type="checkbox" ${allChecked?'checked':''} onchange="trScBin('${esc(loc)}', this.checked)" style="width:17px;height:17px;accent-color:#1e40af;cursor:pointer;"></td>
-        <td colspan="8" style="padding:5px 10px;font-size:12.5px;color:#1e40af;font-weight:800;">📍 <span style="font-family:Consolas,monospace;background:#fff;padding:1px 10px;border-radius:6px;border:1px solid #93c5fd;">${esc(loc)}</span>
-          <span style="margin-left:10px;color:var(--text2);font-weight:600;font-size:11px;">${gs.length} line(s) · ${totB} box(es) · ${totP.toLocaleString()} pcs</span>
-          <span style="margin-left:8px;font-size:10px;color:var(--text2);font-weight:400;">(check to select the whole bin)</span></td>
-      </tr>
-      ${gs.map(g=>{
-        const sel = _scvSel[g.key];
-        const take = sel ? sel.take : g.boxes.length;
-        const vl = bxVariantLabel(g.color, g.style);
-        const vc = vl==='Tubular' ? '#64748b' : (/US/.test(vl) ? '#c2410c' : '#7c3aed');
-        return `<tr style="background:${sel?'#dcfce7':''};">
-        <td style="width:34px;text-align:center;padding-left:20px;"><input type="checkbox" ${sel?'checked':''} onchange="trScLine('${esc(g.key)}', this.checked)" style="width:15px;height:15px;accent-color:#10b981;cursor:pointer;"></td>
-        <td style="font-family:Consolas,monospace;font-weight:700;font-size:11px;">#${esc(g.style)}</td>
-        <td style="font-size:11px;">${esc(bxBaseColor(g.color))} <span style="font-size:9px;font-weight:800;color:${vc};">${vl!==bxDefaultVariant(g.style)?esc(vl):''}</span></td>
-        <td style="text-align:center;font-size:11px;">${esc(g.size)}</td>
-        <td style="text-align:right;font-weight:700;">${(g.boxes.length*(g.ppb||0)).toLocaleString()} <span style="font-size:9px;color:var(--text2);">pcs</span></td>
-        <td style="text-align:center;font-size:11px;color:var(--text2);">${g.ppb||'—'}</td>
-        <td style="text-align:center;font-family:Consolas,monospace;font-weight:700;">${g.boxes.length} box(es)</td>
-        <td style="text-align:right;background:#fffde7;padding:3px 6px;">${sel
-          ? `<input class="fi" type="number" min="1" max="${g.boxes.length}" value="${take}" onchange="trScQty('${esc(g.key)}', this.value)" style="width:56px;font-size:11px;padding:3px 5px;text-align:center;font-weight:800;"> <button onclick="trScMax('${esc(g.key)}')" style="border:none;background:#bbf7d0;color:#15803d;cursor:pointer;font-size:9px;font-weight:700;padding:2px 5px;border-radius:3px;">All</button>`
-          : '<span style="font-size:10px;color:var(--text2);">check to set qty</span>'}</td>
-        <td style="width:10px;"></td>
-        </tr>`;
-      }).join('')}
-      </tbody></table>`;
-  }).join('') + (hidden>0 ? `<div style="text-align:center;padding:12px;"><button class="btn" style="background:#dbeafe;color:#1e40af;border-color:#93c5fd;font-weight:700;" onclick="_scvLimit+=60;trScRender()">⬇ Show 60 more bins (${hidden} hidden — use the filters to narrow down)</button></div>` : '') || '<div class="muted" style="padding:24px;text-align:center;font-size:12px;">No SC stock matches the filters.</div>';
+  const tok = ++_scvTok;
+  const CH = 60;
+  if(!order.length){ el.innerHTML = '<div class="muted" style="padding:24px;text-align:center;font-size:12px;">No SC stock matches the filters.</div>'; trScSummary(); return; }
+  el.innerHTML = order.slice(0,CH).map(loc=>trScBinHtml(loc, locs[loc])).join('');
+  if(order.length > CH){
+    const p = document.createElement('div');
+    p.id = 'scv-progress';
+    p.style.cssText = 'text-align:center;padding:10px;color:#1e40af;font-size:11px;font-weight:700;';
+    p.textContent = '⏳ Loading bins... '+CH+' / '+order.length;
+    el.appendChild(p);
+    let i = CH;
+    const step = ()=>{
+      if(tok !== _scvTok) return;
+      const elNow = document.getElementById('scv-body'); if(!elNow) return;
+      const pr = document.getElementById('scv-progress');
+      if(i >= order.length){ if(pr) pr.remove(); return; }
+      const chunk = document.createElement('div');
+      chunk.innerHTML = order.slice(i, i+CH).map(loc=>trScBinHtml(loc, locs[loc])).join('');
+      while(chunk.firstChild) elNow.insertBefore(chunk.firstChild, pr||null);
+      i += CH;
+      if(pr) pr.textContent = '⏳ Loading bins... '+Math.min(i,order.length)+' / '+order.length;
+      setTimeout(step, 0);
+    };
+    setTimeout(step, 0);
+  }
   trScSummary();
+}
+function trScUpdRow(key){
+  const g = _scvCache.find(x=>x.key===key); if(!g) return;
+  const row = document.getElementById('scvr-'+encodeURIComponent(key));
+  if(row) row.outerHTML = trScRowHtml(g);
+}
+function trScSyncBin(loc){
+  const hb = document.getElementById('scvb-'+encodeURIComponent(loc));
+  if(hb) hb.checked = _scvCache.filter(g=>g.loc===loc && g.boxes.length).every(g=>!!_scvSel[g.key]);
 }
 function trScLine(key, on){
   const g = _scvCache.find(x=>x.key===key); if(!g) return;
   if(on) _scvSel[key] = { take: g.boxes.length, g };
   else delete _scvSel[key];
-  trScRender();
+  trScUpdRow(key); trScSyncBin(g.loc); trScSummary();
 }
 function trScQty(key, val){
   const s = _scvSel[key]; if(!s) return;
@@ -7578,13 +7610,14 @@ function trScQty(key, val){
   s.take = n;
   trScSummary();
 }
-function trScMax(key){ const s = _scvSel[key]; if(s){ s.take = s.g.boxes.length; trScRender(); } }
+function trScMax(key){ const s = _scvSel[key]; if(s){ s.take = s.g.boxes.length; trScUpdRow(key); trScSummary(); } }
 function trScBin(loc, on){
   _scvCache.filter(g=>g.loc===loc && g.boxes.length).forEach(g=>{
     if(on) _scvSel[g.key] = { take: g.boxes.length, g };
     else delete _scvSel[g.key];
+    trScUpdRow(g.key);
   });
-  trScRender();
+  trScSyncBin(loc); trScSummary();
 }
 function trScAll(on){
   const binF = String((document.getElementById('scv-bin-f')||{}).value||'').trim().toUpperCase();
@@ -7592,7 +7625,7 @@ function trScAll(on){
   _scvCache.filter(g=>{
     if(!g.boxes.length) return false;
     if(binF && !g.loc.includes(binF)) return false;
-    if(styF && !((g.style+' '+g.color+' '+g.size).toLowerCase().includes(styF))) return false;
+    if(styF && !bxSearchMatch(styF, g.style, g.color, g.size)) return false;
     return true;
   }).forEach(g=>{ if(on) _scvSel[g.key] = { take:g.boxes.length, g }; else delete _scvSel[g.key]; });
   trScRender();
