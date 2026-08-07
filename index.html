@@ -137,7 +137,7 @@ main{max-width:1100px;margin:0 auto;padding:16px;}
     <button class="btn btn-sm" onclick="doLogout()" style="padding:2px 8px;font-size:10px;" data-i18n="logout">Log out</button>
   </span>
   <select id="lang-sel" onchange="setLang(this.value)" style="font-size:11px;padding:3px 6px;border-radius:5px;border:none;background:#1d3f66;color:#fff;"><option value="ko">한국어</option><option value="en">English</option><option value="es">Español</option></select>
-  <span style="font-size:10px;color:#9fb8d4;">v320 🚚</span>
+  <span style="font-size:10px;color:#9fb8d4;">v322 🚚</span>
 </div>
 <script type="text/javascript" src="https://js.authorize.net/v1/Accept.js" charset="utf-8"></script>
 <div id="po-viewer" style="display:none;position:fixed;top:0;right:0;width:44%;height:100vh;background:#fff;border-left:2px solid var(--border);z-index:60;box-shadow:-6px 0 20px rgba(0,0,0,.15);">
@@ -6515,7 +6515,7 @@ function bxRptBar(){
     + '<button class="btn btn-sm" style="background:transparent;color:#ccfbf1;border-color:#5eead4;" onclick="bxRptClear()">✕ Clear</button>';
 }
 const BX_SIZE_ORDER = ['2T','3T','4T','5T','XXS','XS','S','M','L','XL','2XL','3XL','4XL','5XL','6XL'];
-function bxRptOpen(){
+async function bxRptOpen(){
   const keys = Object.keys(window._bxRptSel);
   if(!keys.length){ showToast('⚠ Nothing selected'); return; }
   const rows = keys.map(k=>{
@@ -6525,7 +6525,24 @@ function bxRptOpen(){
     boxes.forEach(b=>{ const sz = String(b.size).toUpperCase(); bySize[sz] = (bySize[sz]||0) + (Number(b.pcs)||0); });
     return { s, c, w, bySize };
   }).sort((a,b)=>a.s.localeCompare(b.s) || a.c.localeCompare(b.c) || a.w.localeCompare(b.w));
-  const allSizes = [...new Set(rows.flatMap(r=>Object.keys(r.bySize)))].sort((a,b)=>{ const ia=BX_SIZE_ORDER.indexOf(a), ib=BX_SIZE_ORDER.indexOf(b); return (ia<0?99:ia)-(ib<0?99:ib) || a.localeCompare(b); });
+  // 🚢 Incoming: Haiti 인보이스 (pr_inbound PENDING) — SC로 들어오는 물량
+  let incLines = [];
+  try{
+    const ri = await sbFetch('/rest/v1/pr_inbound?status=eq.PENDING&select=lines');
+    if(ri.ok) (await ri.json()).forEach(x=>{ (Array.isArray(x.lines)?x.lines:[]).forEach(l=>incLines.push(l)); });
+  }catch(e){}
+  rows.forEach(r=>{
+    r.inc = {};
+    if(r.w==='CA') return;   // Haiti incoming arrives at SC
+    incLines.forEach(l=>{
+      if(String(l.style)!==r.s) return;
+      if(bxBaseColor(String(l.color).toUpperCase())!==r.c) return;
+      const sz = String(l.size).toUpperCase();
+      r.inc[sz] = (r.inc[sz]||0) + (Number(l.boxes)||0)*(Number(l.pcs)||0);
+    });
+  });
+  const baseSz = ['XS','S','M','L','XL','2XL','3XL','4XL','5XL'];
+  const allSizes = [...new Set([...baseSz, ...rows.flatMap(r=>Object.keys(r.bySize).concat(Object.keys(r.inc||{})))])].sort((a,b)=>{ const ia=BX_SIZE_ORDER.indexOf(a), ib=BX_SIZE_ORDER.indexOf(b); return (ia<0?99:ia)-(ib<0?99:ib) || a.localeCompare(b); });
   window._bxRptRows = rows; window._bxRptSizes = allSizes;
   const anyWh = rows.some(r=>r.w!=='TOTAL');
   const ex = document.getElementById('modal-bxrpt'); if(ex) ex.remove();
@@ -6551,7 +6568,19 @@ function bxRptOpen(){
           <td><button class="btn btn-sm" style="border:none;padding:0 4px;color:#c62828;" title="Remove this line" onclick="bxRptDropRow(${ri})">✕</button></td>
         </tr>`).join('')}</tbody>
       </table>
-      <div style="font-size:10.5px;color:var(--text2);margin-top:8px;">Numbers are prefilled from current stock (PCS). Adjust freely — this report does NOT change your inventory.</div>
+      <div style="font-weight:800;color:#0e7490;margin:14px 0 6px;font-size:12.5px;">🚢 Incoming — shipped from factory (Haiti), editable · qty in PCS</div>
+      <table class="etbl" style="font-size:12px;">
+        <thead><tr><th class="tl">Style</th><th class="tl">Color</th>${anyWh?'<th>WH</th>':''}${allSizes.map(z=>'<th>'+esc(z)+'</th>').join('')}<th>Total</th></tr></thead>
+        <tbody>${rows.map((r,ri)=>`<tr>
+          <td class="tl" style="font-weight:800;font-family:Consolas,monospace;">${esc(r.s)}</td>
+          <td class="tl" style="font-weight:700;">${esc(r.c)}</td>
+          ${anyWh?`<td style="text-align:center;">${r.w==='TOTAL'?'<span style="font-size:10px;color:var(--text2);">All</span>':`<span style="background:${r.w==='CA'?'#9a3412':'#1d4ed8'};color:#fff;border-radius:4px;padding:1px 6px;font-size:10px;font-weight:800;">${r.w}</span>`}</td>`:''}
+          ${allSizes.map((z,zi)=>`<td style="text-align:center;padding:3px;"><input class="fi" id="rpt-n-${ri}-${zi}" type="number" min="0" value="${(r.inc&&r.inc[z]!==undefined)?r.inc[z]:''}" oninput="bxRptIncTot(${ri})" style="width:62px;text-align:center;font-family:Consolas,monospace;font-weight:700;padding:4px 3px;color:#0e7490;${(r.inc&&r.inc[z]!==undefined)?'':'background:#f8fafc;'}"></td>`).join('')}
+          <td style="text-align:center;font-family:Consolas,monospace;font-weight:800;background:#ecfeff;color:#0e7490;" id="rpt-nt-${ri}">${Object.values(r.inc||{}).reduce((a,b)=>a+b,0).toLocaleString()}</td>
+        </tr>`).join('')}</tbody>
+      </table>
+      <div style="display:flex;gap:8px;align-items:center;margin-top:6px;font-size:12px;"><label style="font-size:10.5px;color:var(--text2);white-space:nowrap;">Incoming ETA / note</label><input class="fi" id="rpt-inceta" placeholder="e.g. ETA 08/20 — on the water" style="flex:1;"></div>
+      <div style="font-size:10.5px;color:var(--text2);margin-top:8px;">Numbers are prefilled from current stock / pending Haiti invoices (PCS). Adjust freely — this report does NOT change your inventory. Incoming rows left empty are excluded from the print.</div>
     </div>
     <div style="padding:10px 16px;border-top:1px solid var(--border);display:flex;gap:8px;justify-content:flex-end;">
       <button class="btn" onclick="document.getElementById('modal-bxrpt').remove()">Close</button>
@@ -6573,13 +6602,21 @@ function bxRptRowTot(ri){
   sizes.forEach((z,zi)=>{ const e = document.getElementById('rpt-i-'+ri+'-'+zi); if(e && e.value!=='') t += (parseInt(e.value)||0); });
   const el = document.getElementById('rpt-t-'+ri); if(el) el.textContent = t.toLocaleString();
 }
+function bxRptIncTot(ri){
+  const sizes = window._bxRptSizes||[];
+  let t = 0;
+  sizes.forEach((z,zi)=>{ const e = document.getElementById('rpt-n-'+ri+'-'+zi); if(e && e.value!=='') t += (parseInt(e.value)||0); });
+  const el = document.getElementById('rpt-nt-'+ri); if(el) el.textContent = t.toLocaleString();
+}
 function bxRptData(){
   const rows = window._bxRptRows||[], sizes = window._bxRptSizes||[];
   return rows.map((r,ri)=>{
     const vals = {};
     let tot = 0;
     sizes.forEach((z,zi)=>{ const e = document.getElementById('rpt-i-'+ri+'-'+zi); const v = e && e.value!=='' ? (parseInt(e.value)||0) : null; if(v!==null){ vals[z]=v; tot+=v; } });
-    return { ...r, vals, tot };
+    const incVals = {}; let incTot = 0;
+    sizes.forEach((z,zi)=>{ const e = document.getElementById('rpt-n-'+ri+'-'+zi); const v = e && e.value!=='' ? (parseInt(e.value)||0) : null; if(v!==null){ incVals[z]=v; incTot+=v; } });
+    return { ...r, vals, tot, incVals, incTot };
   });
 }
 function bxRptPrint(){
@@ -6607,6 +6644,23 @@ function bxRptPrint(){
       +'<td style="border:1px solid #333;padding:4px 8px;text-align:right;font-weight:800;">'+r.tot.toLocaleString()+'</td></tr>').join('')
     +'<tr style="background:#f8fafc;"><td colspan="'+(2+(anyWh?1:0)+sizes.length)+'" style="border:1px solid #333;padding:5px 8px;text-align:right;font-weight:800;">GRAND TOTAL (PCS)</td><td style="border:1px solid #333;padding:5px 8px;text-align:right;font-weight:800;">'+gtot.toLocaleString()+'</td></tr>'
     +'</table>'
+    +(function(){
+      const incRows = data.filter(r=>Object.keys(r.incVals||{}).length);
+      if(!incRows.length) return '';
+      const incEta = String((document.getElementById('rpt-inceta')||{}).value||'').trim();
+      return '<div style="font-size:13px;font-weight:800;margin:16px 0 6px;color:#0e7490;">INCOMING — SHIPPED FROM FACTORY, IN TRANSIT'+(incEta?' <span style="font-weight:400;color:#333;">('+esc(incEta)+')</span>':'')+'</div>'
+        +'<table style="width:100%;border-collapse:collapse;font-size:11.5px;">'
+        +'<tr style="background:#ecfeff;"><th style="border:1px solid #333;padding:5px 8px;text-align:left;">STYLE</th><th style="border:1px solid #333;padding:5px 8px;text-align:left;">COLOR</th>'
+        +(anyWh?'<th style="border:1px solid #333;padding:5px 8px;">WH</th>':'')
+        +sizes.map(z=>'<th style="border:1px solid #333;padding:5px 8px;">'+esc(z)+'</th>').join('')
+        +'<th style="border:1px solid #333;padding:5px 8px;">TOTAL</th></tr>'
+        +incRows.map(r=>'<tr><td style="border:1px solid #333;padding:4px 8px;font-weight:700;">'+esc(r.s)+'</td>'
+          +'<td style="border:1px solid #333;padding:4px 8px;">'+esc(r.c)+'</td>'
+          +(anyWh?'<td style="border:1px solid #333;padding:4px 8px;text-align:center;">'+(r.w==='TOTAL'?'':esc(r.w))+'</td>':'')
+          +sizes.map(z=>'<td style="border:1px solid #333;padding:4px 8px;text-align:right;">'+(r.incVals[z]!==undefined?r.incVals[z].toLocaleString():'')+'</td>').join('')
+          +'<td style="border:1px solid #333;padding:4px 8px;text-align:right;font-weight:800;">'+r.incTot.toLocaleString()+'</td></tr>').join('')
+        +'</table>';
+    })()
     +(note?'<div style="background:#fffde7;border:1px solid #fbc02d;padding:6px 10px;font-size:11px;margin-top:10px;"><b>Note:</b> '+esc(note)+'</div>':'')
     +'<div style="font-size:10px;color:#555;margin-top:10px;">Quantities in PCS. Subject to prior sale.</div></div>';
   const w = window.open('', '_blank');
@@ -6621,6 +6675,14 @@ function bxRptCopy(){
   data.forEach(r=>{
     lines.push([r.s, r.c].concat(anyWh?[(r.w==='TOTAL'?'':r.w)]:[]).concat(sizes.map(z=>r.vals[z]!==undefined?r.vals[z]:'' )).concat([r.tot]).join('\t'));
   });
+  const incRows = data.filter(r=>Object.keys(r.incVals||{}).length);
+  if(incRows.length){
+    lines.push('');
+    lines.push('INCOMING (IN TRANSIT FROM FACTORY)');
+    incRows.forEach(r=>{
+      lines.push([r.s, r.c].concat(anyWh?[(r.w==='TOTAL'?'':r.w)]:[]).concat(sizes.map(z=>r.incVals[z]!==undefined?r.incVals[z]:'' )).concat([r.incTot]).join('\t'));
+    });
+  }
   const txt = lines.join('\n');
   (navigator.clipboard && navigator.clipboard.writeText ? navigator.clipboard.writeText(txt) : Promise.reject()).then(
     ()=>showToast('📋 Copied — paste into email or Excel'),
