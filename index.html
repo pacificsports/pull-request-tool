@@ -137,7 +137,7 @@ main{max-width:1100px;margin:0 auto;padding:16px;}
     <button class="btn btn-sm" onclick="doLogout()" style="padding:2px 8px;font-size:10px;" data-i18n="logout">Log out</button>
   </span>
   <select id="lang-sel" onchange="setLang(this.value)" style="font-size:11px;padding:3px 6px;border-radius:5px;border:none;background:#1d3f66;color:#fff;"><option value="ko">한국어</option><option value="en">English</option><option value="es">Español</option></select>
-  <span style="font-size:10px;color:#9fb8d4;">v312 🚚</span>
+  <span style="font-size:10px;color:#9fb8d4;">v313 🚚</span>
 </div>
 <script type="text/javascript" src="https://js.authorize.net/v1/Accept.js" charset="utf-8"></script>
 <div id="po-viewer" style="display:none;position:fixed;top:0;right:0;width:44%;height:100vh;background:#fff;border-left:2px solid var(--border);z-index:60;box-shadow:-6px 0 20px rgba(0,0,0,.15);">
@@ -5458,7 +5458,7 @@ function renderPcRoom(){
       <button class="btn btn-sm" style="margin-top:5px;" onclick="pcAddColor('${esc(String(sty))}')">＋ Color</button>
       </div></details>`;
   }).join('') + `</div>
-    ${pickRec ? `<div style="flex:0 0 280px;position:sticky;top:10px;border:1.5px solid #c4b5fd;border-radius:10px;background:#faf5ff;max-height:80vh;overflow-y:auto;">
+    ${pickRec ? `<div style="flex:0 0 280px;position:sticky;top:10px;z-index:8;border:1.5px solid #c4b5fd;border-radius:10px;background:#faf5ff;max-height:80vh;overflow-y:auto;">
       <div style="background:#7c3aed;color:#fff;padding:8px 12px;border-radius:8px 8px 0 0;font-weight:800;font-size:12px;">📋 ${esc((pickRec.meta&&pickRec.meta.cust)||'')} — PO ${esc((pickRec.meta&&pickRec.meta.po)||'')}</div>
       <div style="padding:8px 10px;">
         ${(pickRec.lines||[]).map((L,li)=>{
@@ -6503,6 +6503,171 @@ function bxLocSelBoxes(wh){
   });
   return out;
 }
+// ── By Location 일괄 작업 모달 — 라인별로 작업 지정 (이동/PC Room/출고/제거) + 작업지시서 프린트 ──
+async function bxLocBulkOpen(){
+  const wh = window._bxLocWh || 'SC';
+  window._blbWh = wh;
+  window._blbLines = [];
+  Object.keys(window._bxLocSel||{}).forEach(k=>{
+    const [loc, style, color, size, ppb] = k.split('||');
+    const boxes = bxStore.filter(b=>bxWh(b)===wh && String(b.loc||'?').toUpperCase()===loc && String(b.style)===style
+      && String(b.color).toUpperCase()===color && String(b.size).toUpperCase()===size && String(Number(b.pcs)||0)===ppb)
+      .sort((a,b)=>String(a.in_at||'').localeCompare(String(b.in_at||'')));
+    if(boxes.length) window._blbLines.push({loc, style, color, size, ppb:Number(ppb)||0, boxes, take:boxes.length, act:'move', bin:'', note:''});
+  });
+  if(!window._blbLines.length){ showToast('⚠ Nothing selected'); return; }
+  const ex = document.getElementById('modal-blb'); if(ex) ex.remove();
+  const bins = [...new Set(bxStore.filter(b=>bxWh(b)===wh).map(b=>String(b.loc||'').toUpperCase()).filter(Boolean))].sort();
+  const div = document.createElement('div');
+  div.id = 'modal-blb';
+  div.style.cssText = 'position:fixed;inset:0;background:rgba(15,23,42,.6);z-index:120;display:flex;align-items:center;justify-content:center;padding:10px;';
+  div.innerHTML = `<div style="background:#fff;border-radius:12px;max-width:1150px;width:98vw;max-height:96vh;display:flex;flex-direction:column;overflow:hidden;">
+    <div style="background:#0f2a4a;color:#fff;padding:10px 16px;font-weight:800;display:flex;align-items:center;">⚙ Work with selected boxes · [${wh}]
+      <button class="btn btn-sm" style="margin-left:auto;background:transparent;color:#cbd5e1;border-color:#64748b;" onclick="document.getElementById('modal-blb').remove()">✕</button></div>
+    <div style="padding:8px 16px;border-bottom:1px solid var(--border);background:#f8fafc;display:flex;gap:8px;align-items:center;flex-wrap:wrap;font-size:12px;">
+      <span style="font-weight:700;color:#0f2a4a;">Set all lines:</span>
+      <select class="fi" id="blb-all-act" style="font-size:11.5px;">
+        <option value="move">📦→ Move to bin</option>
+        <option value="pc">🧺 To PC Room</option>
+        <option value="ship">🚚 Ship (OUT)</option>
+        <option value="remove">🗑 Remove</option>
+      </select>
+      <input class="fi" id="blb-all-bin" list="blb-bins" placeholder="target bin" style="width:120px;font-family:Consolas,monospace;font-weight:700;text-transform:uppercase;font-size:11.5px;">
+      <button class="btn btn-sm" onclick="bxLocBulkSetAll()">Apply to all</button>
+      <span id="blb-sum" style="margin-left:auto;font-weight:800;color:#92400e;"></span>
+    </div>
+    <datalist id="blb-bins">${bins.map(L=>'<option value="'+esc(L)+'">').join('')}</datalist>
+    <div id="blb-body" style="overflow-y:auto;flex:1;padding:8px 16px;"></div>
+    <div style="padding:10px 16px;border-top:1px solid var(--border);display:flex;gap:8px;justify-content:flex-end;flex-wrap:wrap;">
+      <button class="btn" style="background:#334155;color:#fff;border-color:#334155;margin-right:auto;" onclick="bxLocBulkPrint()">🖨 Print Work Order</button>
+      <button class="btn" onclick="document.getElementById('modal-blb').remove()">Cancel</button>
+      <button class="btn btn-primary" style="background:#0f2a4a;border-color:#0f2a4a;" onclick="bxLocBulkExec()">✅ Execute</button>
+    </div></div>`;
+  document.body.appendChild(div);
+  bxLocBulkRender();
+}
+function bxLocBulkSet(i, field, val){
+  const l = (window._blbLines||[])[i]; if(!l) return;
+  if(field==='take'){ l.take = Math.max(0, Math.min(parseInt(val)||0, l.boxes.length)); }
+  else if(field==='act'){ l.act = val; }
+  else if(field==='bin'){ l.bin = String(val||'').trim().toUpperCase(); }
+  else if(field==='note'){ l.note = String(val||'').trim(); }
+  if(field==='act') bxLocBulkRender(); else bxLocBulkSum();
+}
+function bxLocBulkSetAll(){
+  const act = (document.getElementById('blb-all-act')||{}).value || 'move';
+  const bin = String((document.getElementById('blb-all-bin')||{}).value||'').trim().toUpperCase();
+  (window._blbLines||[]).forEach(l=>{ l.act = act; if(act==='move' && bin) l.bin = bin; });
+  bxLocBulkRender();
+}
+function bxLocBulkSum(){
+  const el = document.getElementById('blb-sum'); if(!el) return;
+  const ls = (window._blbLines||[]).filter(l=>l.take>0);
+  const nb = ls.reduce((s2,l)=>s2+l.take,0);
+  const np = ls.reduce((s2,l)=>s2+l.take*l.ppb,0);
+  el.textContent = ls.length+' line(s) · '+nb+' box(es) · '+np.toLocaleString()+' pcs';
+}
+function bxLocBulkRender(){
+  const el = document.getElementById('blb-body'); if(!el) return;
+  const wh = window._blbWh;
+  el.innerHTML = `<table class="etbl" style="font-size:11.5px;">
+    <thead><tr><th class="tl">From</th><th class="tl">Style</th><th class="tl">Color</th><th>Size</th><th>Pcs/Box</th><th>Stock</th><th style="background:#fef3c7;">Take</th><th style="background:#fef3c7;">Action</th><th style="background:#fef3c7;">Target bin / Note</th></tr></thead>
+    <tbody>${(window._blbLines||[]).map((l,i)=>`<tr>
+      <td class="tl" style="font-weight:800;font-family:Consolas,monospace;color:${trIs3PLoc(l.loc, wh)?'#b45309':'#1d4ed8'};">${trIs3PLoc(l.loc, wh)?'🏭 ':''}${esc(l.loc)}</td>
+      <td class="tl" style="font-weight:700;font-family:Consolas,monospace;">${esc(l.style)}</td>
+      <td class="tl">${esc(l.color)}</td>
+      <td style="text-align:center;">${esc(l.size)}</td>
+      <td style="text-align:center;font-family:Consolas,monospace;">${l.ppb||''}</td>
+      <td style="text-align:center;font-family:Consolas,monospace;font-weight:700;">${l.boxes.length}</td>
+      <td style="background:#fffde7;"><input class="fi" type="number" min="0" max="${l.boxes.length}" value="${l.take}" oninput="bxLocBulkSet(${i},'take',this.value)" style="width:56px;font-weight:800;text-align:center;"></td>
+      <td style="background:#fffde7;"><select class="fi" style="font-size:10.5px;padding:2px 4px;" onchange="bxLocBulkSet(${i},'act',this.value)">
+        <option value="move" ${l.act==='move'?'selected':''}>📦→ Move to bin</option>
+        <option value="pc" ${l.act==='pc'?'selected':''}>🧺 To PC Room</option>
+        <option value="ship" ${l.act==='ship'?'selected':''}>🚚 Ship (OUT)</option>
+        <option value="remove" ${l.act==='remove'?'selected':''}>🗑 Remove</option>
+      </select></td>
+      <td style="background:#fffde7;">${
+        l.act==='move' ? `<input class="fi" list="blb-bins" value="${esc(l.bin)}" placeholder="bin" onchange="bxLocBulkSet(${i},'bin',this.value)" style="width:110px;font-size:11px;padding:3px 6px;font-family:Consolas,monospace;font-weight:700;text-transform:uppercase;">`
+        : l.act==='remove' ? `<input class="fi" value="${esc(l.note)}" placeholder="reason" onchange="bxLocBulkSet(${i},'note',this.value)" style="width:160px;font-size:11px;padding:3px 6px;">`
+        : l.act==='pc' ? '<span style="font-size:10px;color:#7c3aed;font-weight:700;">→ PC Room ('+(wh==='CA'?'CA':'SC')+') · print the work order for staff</span>'
+        : '<span style="font-size:10px;color:#64748b;">out of stock (shipped)</span>'
+      }</td>
+    </tr>`).join('')}</tbody></table>`;
+  bxLocBulkSum();
+}
+function bxLocBulkPrint(){
+  const wh = window._blbWh;
+  const ls = (window._blbLines||[]).filter(l=>l.take>0);
+  if(!ls.length){ showToast('⚠ Nothing to print'); return; }
+  const actLbl = l => l.act==='move' ? ('MOVE → '+(l.bin||'?')) : l.act==='pc' ? 'OPEN → PC ROOM' : l.act==='ship' ? 'SHIP OUT' : ('REMOVE'+(l.note?' ('+l.note+')':''));
+  const w = window.open('', '_blank');
+  if(!w){ showToast('⚠ Popup blocked'); return; }
+  w.document.write(`<html><head><title>Box Work Order</title><style>
+    body{font-family:Helvetica,Arial,sans-serif;font-size:13px;padding:24px;}
+    h2{margin:0 0 4px;} table{border-collapse:collapse;width:100%;margin-top:12px;}
+    th,td{border:1px solid #999;padding:6px 10px;font-size:12.5px;} th{background:#eee;}
+    td.n{text-align:center;font-family:Consolas,monospace;font-weight:700;}
+  </style></head><body>
+    <h2>📦 Box Work Order <span style="font-size:13px;font-weight:400;">(${wh} warehouse)</span></h2>
+    <div>${new Date().toLocaleString()} · ${ls.length} line(s) · ${ls.reduce((s2,l)=>s2+l.take,0)} box(es)</div>
+    <table><tr><th>From Bin</th><th>Style</th><th>Color</th><th>Size</th><th>Pcs/Box</th><th>Boxes</th><th>Action</th><th style="width:70px;">Done</th></tr>
+    ${ls.map(l=>`<tr><td class="n">${esc(l.loc)}</td><td><b>${esc(l.style)}</b></td><td>${esc(l.color)}</td><td class="n">${esc(l.size)}</td><td class="n">${l.ppb}</td><td class="n">${l.take}</td><td><b>${esc(actLbl(l))}</b></td><td></td></tr>`).join('')}
+    </table><script>window.print();<\/script></body></html>`);
+  w.document.close();
+}
+async function bxLocBulkExec(){
+  const wh = window._blbWh;
+  const ls = (window._blbLines||[]).filter(l=>l.take>0);
+  if(!ls.length){ showToast('⚠ Nothing to do'); return; }
+  const errs = [];
+  ls.forEach((l,i)=>{ if(l.act==='move' && !l.bin) errs.push('Line '+(i+1)+' ('+l.loc+' '+l.style+'): target bin missing'); });
+  if(errs.length){ alert('Please fix:\n\n'+errs.slice(0,6).join('\n')); return; }
+  const cnt = {move:0, pc:0, ship:0, remove:0};
+  ls.forEach(l=>cnt[l.act]+=l.take);
+  const parts = [];
+  if(cnt.move) parts.push(cnt.move+' move');
+  if(cnt.pc) parts.push(cnt.pc+' → PC Room');
+  if(cnt.ship) parts.push(cnt.ship+' ship');
+  if(cnt.remove) parts.push(cnt.remove+' remove');
+  if(!confirm('Execute now?\n\n'+parts.join(' · ')+'\n\n(Tip: print the Work Order first so staff can physically do it)')) return;
+  const by = (SESS&&SESS.email)||'';
+  let ok = 0; const fails2 = [];
+  for(const l of ls){
+    const sel = l.boxes.slice(0, l.take);
+    const ids = sel.map(b=>b.id);
+    try{
+      if(l.act==='move'){
+        for(const ch of trChunk(ids)) await bxPatch(ch, {loc:l.bin});
+      }else if(l.act==='ship'){
+        for(const ch of trChunk(ids)) await bxPatch(ch, {status:'OUT', out_at:new Date().toISOString(), out_by:by, out_po:'Manual ship (By Location)'});
+      }else if(l.act==='remove'){
+        for(const ch of trChunk(ids)) await bxPatch(ch, {status:'OUT', out_at:new Date().toISOString(), out_by:by, out_po:'Removed — '+(l.note||'adjustment')});
+      }else if(l.act==='pc'){
+        for(const ch of trChunk(ids)) await bxPatch(ch, {status:'OUT', out_at:new Date().toISOString(), out_by:by, out_po:'PC ROOM (By Location)'});
+        const pcWh = wh==='CA' ? 'CA' : 'SC';
+        const add = sel.reduce((a,b)=>a+(Number(b.pcs)||0),0);
+        if(!pcLoaded){
+          const r0 = await sbFetch('/rest/v1/pr_pcroom?select=k,style,color,qty,bqty,bnote,sizes,wh,updated_at,updated_by');
+          if(r0.ok){ pcStore = await r0.json(); pcLoaded = true; }
+        }
+        const k = pcKey(l.style, l.color, pcWh);
+        let row = await pcFetchRowFresh(k) || pcStore.find(r=>r.k===k);
+        if(!row){ row = { k, style: l.style, color: l.color, wh: pcWh, qty: {} }; pcStore.push(row); }
+        row.qty = row.qty || {};
+        row.qty[l.size] = (Number(row.qty[l.size])||0) + add;
+        await pcSaveRow(row);
+        pcLogMove(row, l.size, add, row.qty[l.size], '📦 Box move @'+l.loc+' (By Location)');
+      }
+      ok += l.take;
+    }catch(e){ fails2.push(l.loc+' '+l.style+' '+l.size+': '+String(e.message||'').slice(0,50)); }
+  }
+  window._bxLocSel = {};
+  const m = document.getElementById('modal-blb'); if(m) m.remove();
+  await bxFetchStore();
+  renderBoxRoom();
+  if(fails2.length) alert('✅ '+ok+' box(es) done\n\n❌ Failed:\n'+fails2.slice(0,5).join('\n'));
+  else showToast('✅ '+ok+' box(es) — '+parts.join(' · '));
+}
 async function bxLocBulk(action){
   const wh = window._bxLocWh || 'SC';
   const boxes = bxLocSelBoxes(wh);
@@ -6577,9 +6742,7 @@ function bxRenderByLoc(el, q){
   ${(()=>{ const selN = Object.keys(window._bxLocSel||{}).length; if(!selN) return ''; const sb = bxLocSelBoxes(wh); const sp = sb.reduce((s2,b)=>s2+(Number(b.pcs)||0),0);
     return `<div style="position:sticky;top:32px;z-index:6;display:flex;gap:8px;align-items:center;flex-wrap:wrap;background:#fffbeb;border:1.5px solid #f59e0b;border-radius:8px;padding:8px 12px;margin-bottom:10px;">
       <b style="color:#92400e;">☑ ${selN} line(s) · ${sb.length} box(es) · ${sp.toLocaleString()} pcs</b>
-      <button class="btn btn-sm" style="background:#1d4ed8;color:#fff;border-color:#1d4ed8;" onclick="bxLocBulk('move')">📦→ Move to bin...</button>
-      <button class="btn btn-sm" style="background:#0f766e;color:#fff;border-color:#0f766e;" onclick="bxLocBulk('ship')">🚚 Ship (OUT)</button>
-      <button class="btn btn-sm" style="background:#b91c1c;color:#fff;border-color:#b91c1c;" onclick="bxLocBulk('remove')">🗑 Remove</button>
+      <button class="btn btn-sm" style="background:#0f2a4a;color:#fff;border-color:#0f2a4a;font-weight:800;" onclick="bxLocBulkOpen()">⚙ Work with selected...</button>
       <button class="btn btn-sm" style="margin-left:auto;" onclick="bxLocSelClear()">✕ Clear</button>
     </div>`; })()}`;
   if(!locs.length){ el.innerHTML = head + '<div class="muted" style="padding:14px;">No bins match</div>'; return; }
@@ -6757,7 +6920,7 @@ function renderBoxRoom(){
     </div>
     <div style="display:flex;gap:12px;align-items:flex-start;">
     <div style="flex:1;min-width:0;">${body}</div>
-    ${pickRec ? `<div style="flex:0 0 300px;position:sticky;top:10px;border:1.5px solid #93c5fd;border-radius:10px;background:#eff6ff;max-height:80vh;overflow-y:auto;">
+    ${pickRec ? `<div style="flex:0 0 300px;position:sticky;top:10px;z-index:8;border:1.5px solid #93c5fd;border-radius:10px;background:#eff6ff;max-height:80vh;overflow-y:auto;">
       <div style="background:#1d4ed8;color:#fff;padding:8px 12px;border-radius:8px 8px 0 0;font-weight:800;font-size:12px;">📋 ${esc((pickRec.meta&&pickRec.meta.cust)||'')} — PO ${esc((pickRec.meta&&pickRec.meta.po)||'')}</div>
       <div style="padding:8px 10px;">
         ${(pickRec.lines||[]).map((L,li)=>{
