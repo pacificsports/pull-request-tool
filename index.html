@@ -137,7 +137,7 @@ main{max-width:1100px;margin:0 auto;padding:16px;}
     <button class="btn btn-sm" onclick="doLogout()" style="padding:2px 8px;font-size:10px;" data-i18n="logout">Log out</button>
   </span>
   <select id="lang-sel" onchange="setLang(this.value)" style="font-size:11px;padding:3px 6px;border-radius:5px;border:none;background:#1d3f66;color:#fff;"><option value="ko">한국어</option><option value="en">English</option><option value="es">Español</option></select>
-  <span style="font-size:10px;color:#9fb8d4;">v349 🚚</span>
+  <span style="font-size:10px;color:#9fb8d4;">v351 🚚</span>
 </div>
 <script type="text/javascript" src="https://js.authorize.net/v1/Accept.js" charset="utf-8"></script>
 <div id="po-viewer" style="display:none;position:fixed;top:0;right:0;width:44%;height:100vh;background:#fff;border-left:2px solid var(--border);z-index:60;box-shadow:-6px 0 20px rgba(0,0,0,.15);">
@@ -7263,7 +7263,6 @@ async function bxLocToTransfer(route){
   const bad = boxes.filter(b=>bxWh(b)!==srcWh || !trLocIsKind(b.loc, srcK));
   if(bad.length){ showToast('⚠ '+bad.length+' selected box(es) are not in '+trKindShort(srcK)); return; }
   const pcs = boxes.reduce((s2,b)=>s2+(Number(b.pcs)||0),0);
-  if(!confirm('Create a new '+TR_ROUTES[route].label+' shipment?\n\n'+boxes.length+' box(es) · '+pcs.toLocaleString()+' pcs\n\nThe boxes are reserved (In Transit) right away — you can still edit the draft before posting.')) return;
   const gm = {};
   boxes.forEach(b=>{
     const loc = String(b.loc||'?').toUpperCase();
@@ -7273,10 +7272,10 @@ async function bxLocToTransfer(route){
   });
   const groups = Object.values(gm).sort((a,b)=>a.loc.localeCompare(b.loc, undefined, {numeric:true}) || a.style.localeCompare(b.style) || a.color.localeCompare(b.color) || bxSizeCmp(a.size,b.size));
   window._bxLocSel = {};
-  showToast('🚚 Building shipment — '+groups.length+' line(s)...');
+  showToast('🚚 '+TR_ROUTES[route].label+' — building '+groups.length+' line(s) · '+boxes.length+' box(es) · '+pcs.toLocaleString()+' pcs...');
   await trBuilderOpen(null, route);
   const auto = trSrcAutoPallet(route);
-  let ok = 0;
+  const items = [];
   for(const g of groups){
     let target;
     if(auto){
@@ -7287,9 +7286,9 @@ async function bxLocToTransfer(route){
       if(!_shipPallets.length) _shipPallets.push({ id:'p_'+Math.random().toString(36).slice(2,9), label:'Pallet 1', lines:[] });
       target = _shipPallets[0].id;
     }
-    const done = await _trAddLine(target, { is_manual:false, style:g.style, color:g.color, size:g.size, bin:g.loc, ppb:g.ppb, ids:g.ids });
-    if(done) ok++;
+    items.push({ pid: target, line: { is_manual:false, style:g.style, color:g.color, size:g.size, bin:g.loc, ppb:g.ppb, ids:g.ids } });
   }
+  const ok = await _trAddLinesBulk(items);
   if(auto) _shipPallets = _shipPallets.filter(p=>p.lines.length);
   await trSaveDraftLines();
   trRenderPallets();
@@ -8071,6 +8070,23 @@ async function _trAddLine(pid, line){
   await trSaveDraftLines();
   return true;
 }
+// 여러 line 을 한 번에 처리 — 예약 PATCH 와 draft 저장을 묶어서 왕복을 line 수만큼 하지 않는다
+async function _trAddLinesBulk(items){
+  if(!items.length) return 0;
+  const shipId = await _trEnsureRow(); if(!shipId) return 0;
+  const allIds = [];
+  items.forEach(it=>{ if(!it.line.is_manual) (it.line.ids||[]).forEach(id=>allIds.push(id)); });
+  if(allIds.length){
+    try{ await trPatchBoxes(allIds, {wh:'TRANSIT'}); }
+    catch(e){ showToast('⚠ Stock reservation failed'); return 0; }
+    const idSet = new Set(allIds);
+    bxStore.forEach(b=>{ if(idSet.has(b.id)) b.wh = 'TRANSIT'; });
+  }
+  let ok = 0;
+  items.forEach(it=>{ const p = _shipPallets.find(x=>x.id===it.pid); if(p){ p.lines.push(it.line); ok++; } });
+  await trSaveDraftLines();
+  return ok;
+}
 async function _trRemoveLine(pid, li, silent){
   const p = _shipPallets.find(x=>x.id===pid); if(!p) return false;
   const l = p.lines[li]; if(!l) return false;
@@ -8079,7 +8095,8 @@ async function _trRemoveLine(pid, li, silent){
     try{ await trPatchBoxes(l.ids, {wh: trWhOfKind(trSrcKind(_shipRoute))}); }
     catch(e){ showToast('⚠ Restore failed'); return false; }
     const idSet = new Set(l.ids);
-    bxStore.forEach(b=>{ if(idSet.has(b.id)) b.wh = 'SC'; });
+    const _rw = trWhOfKind(trSrcKind(_shipRoute));
+    bxStore.forEach(b=>{ if(idSet.has(b.id)) b.wh = _rw; });
   }
   p.lines.splice(li,1);
   await trSaveDraftLines();
@@ -8255,16 +8272,19 @@ function trScBinHtml(loc, gs){
     </tbody></table>`;
 }
 let _scvIO = null;
-function trScRender(){
-  const el = document.getElementById('scv-body'); if(!el) return;
+function trScFilt(){
   const binF = String((document.getElementById('scv-bin-f')||{}).value||'').trim().toUpperCase();
   const styF = String((document.getElementById('scv-style-f')||{}).value||'').trim().toLowerCase();
-  const filtered = _scvCache.filter(g=>{
+  return _scvCache.filter(g=>{
     if(!g.boxes.length) return false;
     if(binF && !g.loc.includes(binF)) return false;
     if(styF && !bxSearchMatch(styF, g.style, g.color, g.size)) return false;
     return true;
   });
+}
+function trScRender(){
+  const el = document.getElementById('scv-body'); if(!el) return;
+  const filtered = trScFilt();
   const locs = {}; const order = [];
   filtered.forEach(g=>{ if(!locs[g.loc]){ locs[g.loc] = []; order.push(g.loc); } locs[g.loc].push(g); });
   if(_scvIO){ _scvIO.disconnect(); _scvIO = null; }
@@ -8312,19 +8332,17 @@ function trScBin(loc, on){
   _scvCache.filter(g=>g.loc===loc && g.boxes.length).forEach(g=>{
     if(on) _scvSel[g.key] = { take: g.boxes.length, g };
     else delete _scvSel[g.key];
-    trScUpdRow(g.key);
   });
+  // 보이는 행만, 그리고 한 번에 다시 그린다 (행마다 reflow 하면 느려짐)
+  const vis = trScFilt().filter(g=>g.loc===loc);
+  const hb = document.getElementById('scvb-'+encodeURIComponent(loc));
+  const slot = hb ? hb.closest('.scv-slot') : null;
+  if(slot && vis.length) slot.innerHTML = trScBinHtml(loc, vis);
+  else vis.forEach(g=>trScUpdRow(g.key));
   trScSyncBin(loc); trScSummary();
 }
 function trScAll(on){
-  const binF = String((document.getElementById('scv-bin-f')||{}).value||'').trim().toUpperCase();
-  const styF = String((document.getElementById('scv-style-f')||{}).value||'').trim().toLowerCase();
-  _scvCache.filter(g=>{
-    if(!g.boxes.length) return false;
-    if(binF && !g.loc.includes(binF)) return false;
-    if(styF && !bxSearchMatch(styF, g.style, g.color, g.size)) return false;
-    return true;
-  }).forEach(g=>{ if(on) _scvSel[g.key] = { take:g.boxes.length, g }; else delete _scvSel[g.key]; });
+  trScFilt().forEach(g=>{ if(on) _scvSel[g.key] = { take:g.boxes.length, g }; else delete _scvSel[g.key]; });
   trScRender();
 }
 function trScSummary(){
@@ -8339,8 +8357,8 @@ async function trScAdd(){
   if(!es.length){ showToast('⚠ No lines selected'); return; }
   const m = document.getElementById('modal-scv'); if(m) m.remove();
   showToast('💾 Adding '+es.length+' line(s)...');
-  let ok = 0;
   const _is3Psrc = trSrcAutoPallet(_shipRoute);
+  const items = [];
   for(const e of es){
     const g = e.g;
     let target = _scvTarget;
@@ -8350,16 +8368,16 @@ async function trScAdd(){
       target = p.id;
     }
     const take = g.boxes.slice(0, e.take);   // 오래된 박스부터
-    const done = await _trAddLine(target, {
+    items.push({ pid: target, line: {
       is_manual:false, style:g.style, color:g.color, size:g.size,
       bin:g.loc, ppb:g.ppb, ids:take.map(b=>b.id)
-    });
-    if(done) ok++;
+    }});
   }
-  if(_is3Psrc && _shipPallets.length>1){ _shipPallets = _shipPallets.filter(p=>p.lines.length); await trSaveDraftLines(); }
+  const ok = await _trAddLinesBulk(items);
+  if(_is3Psrc){ const _n0 = _shipPallets.length; _shipPallets = _shipPallets.filter(p=>p.lines.length); if(_shipPallets.length!==_n0) await trSaveDraftLines(); }
   showToast('✅ '+ok+'/'+es.length+' line(s) added (reserved from '+trKindShort(trSrcKind(_shipRoute))+')');
   trRenderPallets();
-  if($('bx-body')) renderBoxRoom();
+  if($('bx-body')) setTimeout(renderBoxRoom, 0);   // 큰 표는 나중에 — 모듈이 먼저 반응하도록
 }
 // ── 3rd Party 문서 (Pickup Request / 주소) ──
 function trPartyInfo(route){
