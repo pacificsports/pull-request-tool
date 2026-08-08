@@ -137,7 +137,7 @@ main{max-width:1100px;margin:0 auto;padding:16px;}
     <button class="btn btn-sm" onclick="doLogout()" style="padding:2px 8px;font-size:10px;" data-i18n="logout">Log out</button>
   </span>
   <select id="lang-sel" onchange="setLang(this.value)" style="font-size:11px;padding:3px 6px;border-radius:5px;border:none;background:#1d3f66;color:#fff;"><option value="ko">한국어</option><option value="en">English</option><option value="es">Español</option></select>
-  <span style="font-size:10px;color:#9fb8d4;">v341 🚚</span>
+  <span style="font-size:10px;color:#9fb8d4;">v342 🚚</span>
 </div>
 <script type="text/javascript" src="https://js.authorize.net/v1/Accept.js" charset="utf-8"></script>
 <div id="po-viewer" style="display:none;position:fixed;top:0;right:0;width:44%;height:100vh;background:#fff;border-left:2px solid var(--border);z-index:60;box-shadow:-6px 0 20px rgba(0,0,0,.15);">
@@ -6143,7 +6143,26 @@ async function bxLocRowSet(style, color, size, wh, loc, val, el){
   }catch(e){ showToast('⚠ Save failed — check your connection'); if(el){ el.disabled=false; el.value=list.length; } return; }
   showToast('✅ '+style+' '+color+' '+size+' @'+loc+': '+list.length+' → '+target+' box(es)');
   await bxFetchStore();
-  renderBoxRoom();
+  if(el && el.isConnected){
+    // 펼친 화면을 닫지 않도록 바뀐 칸만 갱신
+    el.disabled = false; el.style.background = '';
+    const now = bxLocList(style, color, size, wh, loc);
+    const ppb = now.length ? (Number(now[0].pcs)||0) : (parseInt((el.closest('tr').children[6]||{}).textContent)||0);
+    el.value = now.length;
+    const tr = el.closest('tr');
+    if(tr && tr.children[5]) tr.children[5].textContent = (now.length*ppb).toLocaleString();
+    const ss = document.getElementById('bxls-'+cssId(wh+'-'+loc));
+    if(ss){
+      const bs = bxStore.filter(b=>bxWh(b)===wh && String(b.loc||'?').toUpperCase()===String(loc).toUpperCase());
+      ss.innerHTML = '<b>'+bs.length+'</b> boxes · '+bs.reduce((a,b)=>a+(Number(b.pcs)||0),0).toLocaleString()+' pcs';
+    }
+    const hs = document.getElementById('bxl-stats');
+    if(hs) hs.innerHTML = bxLocStatsHtml(wh, document.querySelectorAll('#bx-body details').length);
+    el.style.transition = 'background .4s'; el.style.background = '#dcfce7';
+    setTimeout(()=>{ if(el.isConnected) el.style.background = ''; }, 900);
+  }else{
+    renderBoxRoom();
+  }
 }
 async function bxLocMoveDo(){
   const c = window._blmCtx; if(!c) return;
@@ -7156,6 +7175,23 @@ function bxToggleLocView(){
   renderBoxRoom();
 }
 function bxLocSetWh(w){ window._bxLocWh = w; renderBoxRoom(); }
+// bin 펼침 상태 기억 — 저장 후에도 보던 자리 그대로
+function bxLocOpenTgl(encLoc, open){
+  if(!window._bxLocOpen) window._bxLocOpen = new Set();
+  const loc = decodeURIComponent(encLoc);
+  if(open) window._bxLocOpen.add(loc); else window._bxLocOpen.delete(loc);
+}
+// 상단 합계 줄 (저장 후 그 부분만 다시 씀)
+function bxLocStatsHtml(wh, nBins){
+  const allWh = bxStore.filter(b=>bxWh(b)===wh);
+  const p3All = allWh.filter(b=>bxSpecLoc(b.loc, wh));
+  const pcsOf = arr=>arr.reduce((s2,b)=>s2+(Number(b.pcs)||0),0);
+  const specM = bxSpecMeta(wh==='CA' ? 'LK' : '3P');
+  return (p3All.length
+    ? `${specM.icon} ${specM.name}: <b>${p3All.length.toLocaleString()}</b> boxes / <b>${pcsOf(p3All).toLocaleString()}</b> pcs · Own: <b>${(allWh.length-p3All.length).toLocaleString()}</b> boxes / <b>${(pcsOf(allWh)-pcsOf(p3All)).toLocaleString()}</b> pcs · `
+    : `Total: <b>${allWh.length.toLocaleString()}</b> boxes / <b>${pcsOf(allWh).toLocaleString()}</b> pcs · `)
+    + `Bins shown: <b>${nBins}</b> · <span style="color:#b45309;">✎ type in the Boxes cell to correct a count</span>`;
+}
 // 타일 클릭 → By Location 뷰를 해당 창고/필터로 바로 열기
 function bxOpenLoc(wh, flt){
   window._bxLocMode = true;
@@ -7188,6 +7224,8 @@ function bxRenderByLoc(el, q){
     (byLoc[loc] = byLoc[loc] || []).push(b);
   });
   const locs = Object.keys(byLoc).sort((a,b)=>a.localeCompare(b, undefined, {numeric:true}));
+  if(!window._bxLocOpen) window._bxLocOpen = new Set();
+  if(locs.length===1) window._bxLocOpen.add(locs[0]);   // bin 하나뿐이면 바로 펼쳐서 보여줌
   const chip = (id,lbl,on,fn)=>`<button class="btn btn-sm" style="${on?'background:#0f2a4a;color:#fff;border-color:#0f2a4a;':''}" onclick="${fn}">${lbl}</button>`;
   const head = `<div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-bottom:10px;">
     <button class="btn btn-sm" onclick="bxToggleLocView()" title="Back to the style/color grid">← Grid</button>
@@ -7198,10 +7236,7 @@ function bxRenderByLoc(el, q){
     ${chip('', specM.icon+' '+(specKind==='LK'?'3rd Party (SPECIAL*)':'3rd Party (H*)'), flt==='3p', "bxLocSetFilter('3p')")}
     ${chip('','Own bins', flt==='own', "bxLocSetFilter('own')")}
     <button class="btn btn-sm" style="margin-left:auto;" onclick="bxLocViewExcel()">⬇ Excel</button>
-    <span style="font-size:11px;color:var(--text2);">
-      ${p3All.length ? `${specM.icon} ${specM.name}: <b>${p3All.length.toLocaleString()}</b> boxes / <b>${pcsOf(p3All).toLocaleString()}</b> pcs ·
-      Own: <b>${(allWh.length-p3All.length).toLocaleString()}</b> boxes / <b>${(pcsOf(allWh)-pcsOf(p3All)).toLocaleString()}</b> pcs · ` : `Total: <b>${allWh.length.toLocaleString()}</b> boxes / <b>${pcsOf(allWh).toLocaleString()}</b> pcs · `}
-      Bins shown: <b>${locs.length}</b> · <span style="color:#b45309;">✎ type in the Boxes cell to correct a count</span></span>
+    <span id="bxl-stats" style="font-size:11px;color:var(--text2);">${bxLocStatsHtml(wh, locs.length)}</span>
   </div>
   ${(()=>{ const selN = Object.keys(window._bxLocSel||{}).length; if(!selN) return ''; const sb = bxLocSelBoxes(wh); const sp = sb.reduce((s2,b)=>s2+(Number(b.pcs)||0),0);
     return `<div style="position:sticky;top:32px;z-index:6;display:flex;gap:8px;align-items:center;flex-wrap:wrap;background:#fffbeb;border:1.5px solid #f59e0b;border-radius:8px;padding:8px 12px;margin-bottom:10px;">
@@ -7220,13 +7255,13 @@ function bxRenderByLoc(el, q){
     });
     const rows = Object.values(gm).sort((a,b)=>a.style.localeCompare(b.style)||a.color.localeCompare(b.color)||bxSizeCmp(a.size,b.size));
     const _sk = bxSpecLoc(loc, wh); const _sm = _sk?bxSpecMeta(_sk):null; const is3p = !!_sk;
-    return `<details style="margin-bottom:8px;border:1px solid ${is3p?_sm.bd:'var(--border)'};border-radius:8px;${is3p?'background:'+_sm.bg+';':''}">
+    return `<details ${(window._bxLocOpen&&window._bxLocOpen.has(loc))?'open':''} ontoggle="bxLocOpenTgl('${esc(encodeURIComponent(loc))}', this.open)" style="margin-bottom:8px;border:1px solid ${is3p?_sm.bd:'var(--border)'};border-radius:8px;${is3p?'background:'+_sm.bg+';':''}">
       <summary style="cursor:pointer;padding:7px 12px;font-weight:800;color:#0f2a4a;display:flex;align-items:center;gap:8px;">
         ${(()=>{ const keys = rows.map(r=>bxLocSelKey(loc, r)); const allSel = keys.length && keys.every(k=>window._bxLocSel[k]);
           return `<input type="checkbox" ${allSel?'checked':''} onclick="event.stopPropagation();bxLocSelBin('${esc(encodeURIComponent(loc))}', this.checked, '${esc(encodeURIComponent(keys.join('\u0001')))}')" title="Select whole location" style="width:15px;height:15px;accent-color:#b45309;cursor:pointer;">`; })()}
         <span style="font-family:Consolas,monospace;font-size:13px;">${is3p?_sm.icon+' ':'📍 '}${esc(loc)}</span>
         <span class="muted" style="font-weight:400;font-size:11px;">${rows.length} SKU-size line(s)</span>
-        <span style="margin-left:auto;font-family:Consolas,monospace;font-size:12px;"><b>${boxes.length}</b> boxes · ${pcsOf(boxes).toLocaleString()} pcs</span>
+        <span id="bxls-${cssId(wh+'-'+loc)}" style="margin-left:auto;font-family:Consolas,monospace;font-size:12px;"><b>${boxes.length}</b> boxes · ${pcsOf(boxes).toLocaleString()} pcs</span>
         <span style="font-weight:400;white-space:nowrap;" title="Stock count date for this whole bin">${stBadge('BXBIN', wh, loc)}</span>
         <button class="btn btn-sm" style="border:none;padding:0 4px;" onclick="event.preventDefault();bxLocPrintBin('${wh}','${esc(loc)}')" title="Print this bin's contents">🖨</button>
       </summary>
@@ -7295,7 +7330,7 @@ function bxLocPrintBin(wh, loc){
 function renderBoxRoom(){
   const el = $('bx-body'); if(!el) return;
   const q = (($('bx-search')||{}).value||'').trim().toLowerCase();
-  if(window._bxLocMode){ bxRenderByLoc(el, q); return; }
+  if(window._bxLocMode){ const _sy = window.scrollY; bxRenderByLoc(el, q); window.scrollTo(0, _sy); return; }
   const gridMode = window._bxView !== 'detail';
   const groups = {};   // style → color → [boxes] (SC·CA 함께 · In Transit 제외)
   bxStore.forEach(b=>{
