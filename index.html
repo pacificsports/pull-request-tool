@@ -137,7 +137,7 @@ main{max-width:1100px;margin:0 auto;padding:16px;}
     <button class="btn btn-sm" onclick="doLogout()" style="padding:2px 8px;font-size:10px;" data-i18n="logout">Log out</button>
   </span>
   <select id="lang-sel" onchange="setLang(this.value)" style="font-size:11px;padding:3px 6px;border-radius:5px;border:none;background:#1d3f66;color:#fff;"><option value="ko">한국어</option><option value="en">English</option><option value="es">Español</option></select>
-  <span style="font-size:10px;color:#9fb8d4;">v339 🚚</span>
+  <span style="font-size:10px;color:#9fb8d4;">v341 🚚</span>
 </div>
 <script type="text/javascript" src="https://js.authorize.net/v1/Accept.js" charset="utf-8"></script>
 <div id="po-viewer" style="display:none;position:fixed;top:0;right:0;width:44%;height:100vh;background:#fff;border-left:2px solid var(--border);z-index:60;box-shadow:-6px 0 20px rgba(0,0,0,.15);">
@@ -5832,7 +5832,7 @@ async function stMark(kind, style, color, extra){
   stMap[rec.k] = rec;
   showToast('📅 Stock count marked done: '+style+' '+String(color).toUpperCase()+(extra?' @'+extra:''));
   if(kind==='PC' && typeof renderPcRoom==='function' && $('pc-body')) renderPcRoom();
-  if(kind==='BX' && $('bx-body')) renderBoxRoom();
+  if((kind==='BX'||kind==='BXBIN') && $('bx-body')) renderBoxRoom();
   const lm = document.getElementById('modal-bxloc');
   if(lm && window._blmCtx){ const c = window._blmCtx; bxLocModal(c.style, c.color, c.size, c.wh, c.loc); }
 }
@@ -6122,6 +6122,28 @@ async function bxLocSet(){
   await bxFetchStore();
   renderBoxRoom();
   bxLocModal(c.style, c.color, c.size, c.wh, c.loc);
+}
+// By Location 목록에서 박스 수를 그 자리에서 수정 (실사 결과 반영)
+async function bxLocRowSet(style, color, size, wh, loc, val, el){
+  const list = bxLocList(style, color, size, wh, loc);
+  const target = Math.max(0, parseInt(val)||0);
+  const diff = target - list.length;
+  if(!diff){ if(el) el.value = list.length; return; }
+  if(diff < -list.length){ showToast('⚠ Not that many boxes'); if(el) el.value = list.length; return; }
+  const by = (SESS&&SESS.email)||'';
+  if(el){ el.disabled = true; el.style.background = '#fef9c3'; }
+  try{
+    if(diff > 0){
+      const pcs = list.length ? (Number(list[0].pcs)||72) : autoPpb({style, size});
+      await bxInsert(Array.from({length:diff}, ()=>({style, color, size, pcs, loc, wh, status:'IN', in_by:by, note:'Stock count adjustment'})));
+    }else{
+      const take = list.slice(0, -diff);
+      await bxPatch(take.map(b=>b.id), {status:'OUT', out_at:new Date().toISOString(), out_by:by, out_po:'Stock count adjustment'});
+    }
+  }catch(e){ showToast('⚠ Save failed — check your connection'); if(el){ el.disabled=false; el.value=list.length; } return; }
+  showToast('✅ '+style+' '+color+' '+size+' @'+loc+': '+list.length+' → '+target+' box(es)');
+  await bxFetchStore();
+  renderBoxRoom();
 }
 async function bxLocMoveDo(){
   const c = window._blmCtx; if(!c) return;
@@ -6486,7 +6508,7 @@ function bxGridStyle(sty, colGroups){
       const lbl = expandable
         ? `<span onclick="bxToggleVar('${esc(sty)}','${esc(c)}','${w}')" style="cursor:pointer;user-select:none;" title="Click to expand/collapse${vs.length>1?' by variant (Tubular/Side Seam/US)':''}${sp?(vs.length>1?' and by bin type':' — split out '+(w==='CA'?'SPECIAL* (3rd party warehouse)':'H* (3rd Party/Hodge)')+' stock'):''}">${isExp?'▾':'▸'} ${w}</span>${spBdg}`
         : w;
-      return `<td style="font-weight:800;font-size:11px;color:${whCol};white-space:nowrap;"><input type="checkbox" data-bxr="${encodeURIComponent(bxRptKey(sty,c,w))}" ${window._bxRptSel[bxRptKey(sty,c,w)]?'checked':''} onchange="bxRptTgl('${esc(sty)}','${esc(c)}','${w}',this.checked)" style="width:13px;height:13px;accent-color:#0d9488;vertical-align:-2px;margin-right:5px;cursor:pointer;" title="Add to customer stock report">${lbl}</td>${cells}<td style="font-family:Consolas,monospace;font-weight:800;color:#0f172a;text-align:center;">${rowTot||''}</td>`;
+      return `<td style="font-weight:800;font-size:11px;color:${whCol};white-space:nowrap;text-align:left;padding-left:12px;"><input type="checkbox" data-bxr="${encodeURIComponent(bxRptKey(sty,c,w))}" ${window._bxRptSel[bxRptKey(sty,c,w)]?'checked':''} onchange="bxRptTgl('${esc(sty)}','${esc(c)}','${w}',this.checked)" style="width:13px;height:13px;accent-color:#0d9488;vertical-align:-2px;margin-right:5px;cursor:pointer;" title="Add to customer stock report">${lbl}</td>${cells}<td style="font-family:Consolas,monospace;font-weight:800;color:#0f172a;text-align:center;">${rowTot||''}</td>`;
     };
     // 펼쳐진 특수 bin 서브줄 — SC: 자체 bin vs H*(Hodge) · CA: 자체 bin vs SPECIAL*(거래처 창고)
     const specRows = (w)=>{
@@ -6498,7 +6520,7 @@ function bxGridStyle(sty, colGroups){
           const n = map[c+'|'+w+'|'+sz]||0; t += n;
           return `<td style="text-align:center;padding:1px 3px;">${n?`<span style="display:inline-block;min-width:34px;padding:1px 6px;border-radius:6px;background:${bg};border:1px solid ${bd};font-size:11px;font-weight:800;color:${col};" title="${esc(ttl)} — ${n} box(es)">${n}</span>`:`<span style="color:#e8ecf3;">·</span>`}</td>`;
         }).join('');
-        return `<tr style="background:${bg};"><td style="font-size:9.5px;font-weight:800;color:${col};white-space:nowrap;padding-left:14px;" title="${esc(ttl)}">↳ ${icon} ${esc(name)}</td>${cells}<td style="font-family:Consolas,monospace;font-weight:800;color:${col};text-align:center;font-size:11px;">${t||''}</td><td></td></tr>`;
+        return `<tr style="background:${bg};"><td style="font-size:9.5px;font-weight:800;color:${col};white-space:nowrap;text-align:left;padding-left:24px;" title="${esc(ttl)}">↳ ${icon} ${esc(name)}</td>${cells}<td style="font-family:Consolas,monospace;font-weight:800;color:${col};text-align:center;font-size:11px;">${t||''}</td><td></td></tr>`;
       };
       return line(ownCnt, '📍', w==='CA'?'Our CA bins':'Our SC bins', '#0f2a4a', '#f8fafc', '#dbe4f0', 'Stock in our own '+w+' bins — ready to pick')
            + line(specCnt, m.icon, w==='CA'?'SPECIAL* (3rd Party WH)':'H* (3rd Party/Hodge)', m.color, m.bg, m.bd, m.note);
@@ -6515,7 +6537,7 @@ function bxGridStyle(sty, colGroups){
           const n = varCnt[fc+'|'+w+'|'+sz]||0; vt += n;
           return `<td style="text-align:center;padding:1px 3px;">${n?`<span onclick="bxVarCell('${esc(sty)}','${esc(fc)}','${esc(sz)}','${w}')" style="display:inline-block;min-width:34px;padding:1px 6px;border-radius:6px;background:#fff;border:1px dashed ${vc};font-size:11px;font-weight:700;color:${vc};cursor:pointer;" title="${esc(vl)} ${n} box(es) — click for locations">${n}</span>`:`<span style="color:#e8ecf3;">·</span>`}</td>`;
         }).join('');
-        return `<tr style="background:#fcfcfe;"><td style="font-size:9.5px;font-weight:800;color:${vc};white-space:nowrap;padding-left:14px;">↳ ${esc(vl)}</td>${cells}<td style="font-family:Consolas,monospace;font-weight:800;color:${vc};text-align:center;font-size:11px;">${vt||''}</td><td></td></tr>`;
+        return `<tr style="background:#fcfcfe;"><td style="font-size:9.5px;font-weight:800;color:${vc};white-space:nowrap;text-align:left;padding-left:24px;">↳ ${esc(vl)}</td>${cells}<td style="font-family:Consolas,monospace;font-weight:800;color:${vc};text-align:center;font-size:11px;">${vt||''}</td><td></td></tr>`;
       }).join('');
     };
     const totCells = sizes.map(sz=>{
@@ -6539,7 +6561,7 @@ function bxGridStyle(sty, colGroups){
       ${specRows('CA')}
       ${varRows('CA')}
       <tr style="background:#f1f5f9;">
-        <td style="font-weight:800;font-size:10px;color:#0f2a4a;white-space:nowrap;"><input type="checkbox" data-bxr="${encodeURIComponent(bxRptKey(sty,c,'TOTAL'))}" ${window._bxRptSel[bxRptKey(sty,c,'TOTAL')]?'checked':''} onchange="bxRptTgl('${esc(sty)}','${esc(c)}','TOTAL',this.checked)" style="width:13px;height:13px;accent-color:#0d9488;vertical-align:-2px;margin-right:5px;cursor:pointer;" title="Add to customer stock report">Total</td>
+        <td style="font-weight:800;font-size:10px;color:#0f2a4a;white-space:nowrap;text-align:left;padding-left:12px;"><input type="checkbox" data-bxr="${encodeURIComponent(bxRptKey(sty,c,'TOTAL'))}" ${window._bxRptSel[bxRptKey(sty,c,'TOTAL')]?'checked':''} onchange="bxRptTgl('${esc(sty)}','${esc(c)}','TOTAL',this.checked)" style="width:13px;height:13px;accent-color:#0d9488;vertical-align:-2px;margin-right:5px;cursor:pointer;" title="Add to customer stock report">Total</td>
         ${totCells}
         <td style="font-family:Consolas,monospace;font-weight:800;color:#fff;background:#0f2a4a;text-align:center;">${colTot||''}</td>
         <td></td>
@@ -6552,7 +6574,7 @@ function bxGridStyle(sty, colGroups){
       <span style="float:right;font-family:Consolas,monospace;">${all.length?`${all.length.toLocaleString()} boxes <span style="color:#1d4ed8;">SC ${scN.toLocaleString()}</span>${spTotSC?`<span style="color:#b45309;font-size:10px;"> (🏭 ${spTotSC.toLocaleString()})</span>`:''} · <span style="color:#9a3412;">CA ${caN.toLocaleString()}</span>${spTotCA?`<span style="color:#7c3aed;font-size:10px;"> (🔒 ${spTotCA.toLocaleString()})</span>`:''}`:'<span style="color:#b6bfcc;">no stock</span>'}</span></summary>
     <div style="overflow-x:auto;padding:6px 10px 10px;">
     <table class="etbl" style="font-size:11.5px;">
-      <thead><tr><th class="tl" style="min-width:118px;">Color</th><th>WH</th>${sizes.map(s2=>`<th>${s2}</th>`).join('')}<th>Total</th><th class="tl" style="white-space:nowrap;">Check</th><th style="width:52px;"></th></tr></thead>
+      <thead><tr><th class="tl" style="min-width:118px;">Color</th><th style="text-align:left;padding-left:12px;">WH</th>${sizes.map(s2=>`<th>${s2}</th>`).join('')}<th>Total</th><th class="tl" style="white-space:nowrap;">Check</th><th style="width:52px;"></th></tr></thead>
       ${rows}
     </table>
     </div></details>`;
@@ -7179,7 +7201,7 @@ function bxRenderByLoc(el, q){
     <span style="font-size:11px;color:var(--text2);">
       ${p3All.length ? `${specM.icon} ${specM.name}: <b>${p3All.length.toLocaleString()}</b> boxes / <b>${pcsOf(p3All).toLocaleString()}</b> pcs ·
       Own: <b>${(allWh.length-p3All.length).toLocaleString()}</b> boxes / <b>${(pcsOf(allWh)-pcsOf(p3All)).toLocaleString()}</b> pcs · ` : `Total: <b>${allWh.length.toLocaleString()}</b> boxes / <b>${pcsOf(allWh).toLocaleString()}</b> pcs · `}
-      Bins shown: <b>${locs.length}</b></span>
+      Bins shown: <b>${locs.length}</b> · <span style="color:#b45309;">✎ type in the Boxes cell to correct a count</span></span>
   </div>
   ${(()=>{ const selN = Object.keys(window._bxLocSel||{}).length; if(!selN) return ''; const sb = bxLocSelBoxes(wh); const sp = sb.reduce((s2,b)=>s2+(Number(b.pcs)||0),0);
     return `<div style="position:sticky;top:32px;z-index:6;display:flex;gap:8px;align-items:center;flex-wrap:wrap;background:#fffbeb;border:1.5px solid #f59e0b;border-radius:8px;padding:8px 12px;margin-bottom:10px;">
@@ -7205,19 +7227,21 @@ function bxRenderByLoc(el, q){
         <span style="font-family:Consolas,monospace;font-size:13px;">${is3p?_sm.icon+' ':'📍 '}${esc(loc)}</span>
         <span class="muted" style="font-weight:400;font-size:11px;">${rows.length} SKU-size line(s)</span>
         <span style="margin-left:auto;font-family:Consolas,monospace;font-size:12px;"><b>${boxes.length}</b> boxes · ${pcsOf(boxes).toLocaleString()} pcs</span>
+        <span style="font-weight:400;white-space:nowrap;" title="Stock count date for this whole bin">${stBadge('BXBIN', wh, loc)}</span>
         <button class="btn btn-sm" style="border:none;padding:0 4px;" onclick="event.preventDefault();bxLocPrintBin('${wh}','${esc(loc)}')" title="Print this bin's contents">🖨</button>
       </summary>
       <div style="padding:4px 12px 10px;">
       <table class="etbl" style="font-size:11.5px;">
-        <thead><tr><th></th><th class="tl">Style</th><th class="tl">Color</th><th>Size</th><th>Boxes</th><th>Total Pcs</th><th>Pcs/Box</th><th></th></tr></thead>
+        <thead><tr><th></th><th class="tl">Style</th><th class="tl">Color</th><th>Size</th><th style="background:#b45309;">Boxes ✎</th><th>Total Pcs</th><th>Pcs/Box</th><th class="tl">📅 Counted</th><th></th></tr></thead>
         <tbody>${rows.map(r=>`<tr>
           <td style="width:26px;"><input type="checkbox" ${window._bxLocSel[bxLocSelKey(loc,r)]?'checked':''} onchange="bxLocSelToggle('${esc(encodeURIComponent(bxLocSelKey(loc,r)))}', this.checked)" style="width:14px;height:14px;accent-color:#b45309;cursor:pointer;"></td>
           <td class="tl" style="font-weight:700;font-family:Consolas,monospace;">${esc(r.style)}</td>
           <td class="tl">${esc(r.color)}</td>
           <td style="text-align:center;">${esc(r.size)}</td>
-          <td style="text-align:center;font-family:Consolas,monospace;font-weight:800;">${r.n}</td>
+          <td style="text-align:center;background:#fffbeb;"><input class="fi num" type="number" min="0" value="${r.n}" onchange="bxLocRowSet('${esc(r.style)}','${esc(r.color)}','${esc(r.size)}','${wh}','${esc(loc)}',this.value,this)" onclick="event.stopPropagation();" title="Type the counted box quantity and press Enter — saves right away" style="width:58px;text-align:center;font-weight:800;font-size:12.5px;padding:2px 4px;"></td>
           <td style="text-align:right;font-family:Consolas,monospace;font-weight:700;">${(r.n*r.ppb).toLocaleString()}</td>
           <td style="text-align:center;font-family:Consolas,monospace;color:var(--text2);">${r.ppb||''}</td>
+          <td class="tl" style="white-space:nowrap;">${stBadge('BX', r.style, r.color, wh+'|'+loc)}</td>
           <td style="white-space:nowrap;"><button class="btn btn-sm" style="border:none;padding:0 5px;" onclick="bxLocModal('${esc(r.style)}','${esc(r.color)}','${esc(r.size)}','${wh}','${esc(loc)}')" title="Adjust / move / ship">⚙</button></td>
         </tr>`).join('')}</tbody></table></div></details>`;
   }).join('');
