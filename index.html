@@ -137,7 +137,7 @@ main{max-width:1100px;margin:0 auto;padding:16px;}
     <button class="btn btn-sm" onclick="doLogout()" style="padding:2px 8px;font-size:10px;" data-i18n="logout">Log out</button>
   </span>
   <select id="lang-sel" onchange="setLang(this.value)" style="font-size:11px;padding:3px 6px;border-radius:5px;border:none;background:#1d3f66;color:#fff;"><option value="ko">한국어</option><option value="en">English</option><option value="es">Español</option></select>
-  <span style="font-size:10px;color:#9fb8d4;">v330 🚚</span>
+  <span style="font-size:10px;color:#9fb8d4;">v331 🚚</span>
 </div>
 <script type="text/javascript" src="https://js.authorize.net/v1/Accept.js" charset="utf-8"></script>
 <div id="po-viewer" style="display:none;position:fixed;top:0;right:0;width:44%;height:100vh;background:#fff;border-left:2px solid var(--border);z-index:60;box-shadow:-6px 0 20px rgba(0,0,0,.15);">
@@ -6240,10 +6240,10 @@ function bxOpenPicker(L, lwh, po, onDone, mode, needOverride){
     gm[gk].boxes.push(b);
   });
   // 🏭 H* (3rd Party/Hodge) bin 은 같은 변형 안에서 맨 뒤로 — 직접 출고 불가, 회수 필요
-  groups.sort((a,b)=> (a.col===wantCol?0:1) - (b.col===wantCol?0:1) || (trIs3PLoc(a.loc,lwh)?1:0) - (trIs3PLoc(b.loc,lwh)?1:0) || String(a.oldest||'').localeCompare(String(b.oldest||'')));
+  groups.sort((a,b)=> (a.col===wantCol?0:1) - (b.col===wantCol?0:1) || (bxSpecLoc(a.loc,lwh)?1:0) - (bxSpecLoc(b.loc,lwh)?1:0) || String(a.oldest||'').localeCompare(String(b.oldest||'')));
   // 주문 변형과 일치하는 그룹부터, 자체 bin 우선·오래된 것부터 자동 배정 (H*는 자동 배정 제외)
   let remaining = Math.min(need, avail.length);
-  groups.forEach(g=>{ g.take = (g.col===wantCol && !trIs3PLoc(g.loc,lwh)) ? Math.min(g.boxes.length, remaining) : 0; remaining -= g.take; });
+  groups.forEach(g=>{ g.take = (g.col===wantCol && !bxSpecLoc(g.loc,lwh)) ? Math.min(g.boxes.length, remaining) : 0; remaining -= g.take; });
   bxPullCtx = {lwh, need, groups, po, mode: mode||'deduct', onDone: onDone||null, sku:{style:st, color:bxColorFor(L), size:String(L.size||'').trim().toUpperCase()}, label:'['+lwh+'] '+st+' '+bxColorFor(L)+' '+String(L.size).toUpperCase()};
   const ex = document.getElementById('modal-bxpull'); if(ex) ex.remove();
   const div = document.createElement('div');
@@ -6257,7 +6257,7 @@ function bxOpenPicker(L, lwh, po, onDone, mode, needOverride){
       <table class="etbl" style="font-size:12px;">
         <thead><tr><th class="tl">📍 Location</th><th class="tl">Type</th><th>Stock</th><th>Received (oldest)</th><th>Take</th></tr></thead>
         <tbody>${groups.map((g,gi)=>{ const vl = bxVariantLabel(g.col, st); const vc = vl==='Tubular' ? '#64748b' : (/US/.test(vl) ? '#c2410c' : '#7c3aed'); return `<tr>
-          <td class="tl" style="font-weight:800;color:${trIs3PLoc(g.loc,lwh)?'#b45309':'#1d4ed8'};">${trIs3PLoc(g.loc,lwh)?'🏭 ':''}${esc(g.loc)}${trIs3PLoc(g.loc,lwh)?'<div style="font-size:9px;font-weight:600;color:#b45309;">3rd Party — recall via Transfer first</div>':''}</td>
+          <td class="tl" style="font-weight:800;color:${(()=>{const k=bxSpecLoc(g.loc,lwh); return k?bxSpecMeta(k).color:'#1d4ed8';})()};">${(()=>{const k=bxSpecLoc(g.loc,lwh); const m=k?bxSpecMeta(k):null; return (m?m.icon+' ':'')+esc(g.loc)+(m?'<div style="font-size:9px;font-weight:600;color:'+m.color+';">'+m.note+'</div>':'');})()}</td>
           <td class="tl"><span style="font-size:10px;font-weight:800;color:${vc};background:${vl==='Tubular'?'#f1f5f9':(/US/.test(vl)?'#fff7ed':'#f5f3ff')};padding:1px 7px;border-radius:10px;white-space:nowrap;">${esc(vl)}</span></td>
           <td style="font-family:Consolas,monospace;">${g.boxes.length}</td>
           <td style="font-size:11px;color:var(--text2);">${g.oldest?String(g.oldest).slice(0,10):''}</td>
@@ -7080,6 +7080,7 @@ async function bxLocBulk(action){
       let bin = window.prompt('Move '+ids.length+' box(es) ('+pcs.toLocaleString()+' pcs) to which bin? ['+wh+']', '');
       if(!bin) return; bin = bin.trim().toUpperCase();
       if(wh==='SC' && trIs3PLoc(bin, wh) && !confirm(bin+' starts with H — that is a 3rd Party (Hodge) bin. Move there anyway?')) return;
+      if(wh==='CA' && bxIsLockerLoc(bin, wh) && !confirm(bin+' is a SPECIAL bin — locker stock at the CUSTOMER warehouse. Move there anyway?')) return;
       for(const ch of trChunk(ids)) await bxPatch(ch, {loc:bin});
       showToast('📦→ Moved '+ids.length+' box(es) to '+bin);
     }else if(action==='ship'){
@@ -7107,15 +7108,17 @@ function bxLocSetWh(w){ window._bxLocWh = w; renderBoxRoom(); }
 function bxLocSetFilter(f){ window._bxLocFilter = f; renderBoxRoom(); }
 function bxRenderByLoc(el, q){
   const wh = window._bxLocWh || 'SC';
-  const flt = (wh==='SC') ? (window._bxLocFilter || 'all') : 'all';   // 3rd party(H*) 구분은 SC 전용
+  const flt = window._bxLocFilter || 'all';   // SC=3rd party(H*), CA=Locker(LK*)
+  const specKind = wh==='CA' ? 'LK' : '3P';
+  const specM = bxSpecMeta(specKind);
   const allWh = bxStore.filter(b=>bxWh(b)===wh);
-  const p3All = allWh.filter(b=>trIs3PLoc(b.loc, wh));
+  const p3All = allWh.filter(b=>bxSpecLoc(b.loc, wh));
   const pcsOf = arr=>arr.reduce((s2,b)=>s2+(Number(b.pcs)||0),0);
   const byLoc = {};
   allWh.forEach(b=>{
     const loc = String(b.loc||'?').toUpperCase();
-    if(flt==='3p' && !trIs3PLoc(loc, wh)) return;
-    if(flt==='own' && trIs3PLoc(loc, wh)) return;
+    if(flt==='3p' && !bxSpecLoc(loc, wh)) return;
+    if(flt==='own' && bxSpecLoc(loc, wh)) return;
     if(q){
       // 스마트 검색: "1368 black" / "1368black" / loc 등 — 토큰 전부 일치해야 표시
       const hay = (loc+' '+String(b.style)+' '+String(b.color)+' '+String(b.size)).toLowerCase();
@@ -7129,13 +7132,13 @@ function bxRenderByLoc(el, q){
   const chip = (id,lbl,on,fn)=>`<button class="btn btn-sm" style="${on?'background:#0f2a4a;color:#fff;border-color:#0f2a4a;':''}" onclick="${fn}">${lbl}</button>`;
   const head = `<div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-bottom:10px;">
     ${chip('','SC', wh==='SC', "bxLocSetWh('SC')")}${chip('','CA', wh==='CA', "bxLocSetWh('CA')")}
-    ${wh==='SC' ? `<span style="color:var(--border);">|</span>
+    <span style="color:var(--border);">|</span>
     ${chip('','All', flt==='all', "bxLocSetFilter('all')")}
-    ${chip('','🏭 3rd Party (H*)', flt==='3p', "bxLocSetFilter('3p')")}
-    ${chip('','Own bins', flt==='own', "bxLocSetFilter('own')")}` : ''}
+    ${chip('', specM.icon+' '+(specKind==='LK'?'Special Bin':'3rd Party (H*)'), flt==='3p', "bxLocSetFilter('3p')")}
+    ${chip('','Own bins', flt==='own', "bxLocSetFilter('own')")}
     <button class="btn btn-sm" style="margin-left:auto;" onclick="bxLocViewExcel()">⬇ Excel</button>
     <span style="font-size:11px;color:var(--text2);">
-      ${wh==='SC' ? `🏭 3rd Party: <b>${p3All.length.toLocaleString()}</b> boxes / <b>${pcsOf(p3All).toLocaleString()}</b> pcs ·
+      ${p3All.length ? `${specM.icon} ${specM.name}: <b>${p3All.length.toLocaleString()}</b> boxes / <b>${pcsOf(p3All).toLocaleString()}</b> pcs ·
       Own: <b>${(allWh.length-p3All.length).toLocaleString()}</b> boxes / <b>${(pcsOf(allWh)-pcsOf(p3All)).toLocaleString()}</b> pcs · ` : `Total: <b>${allWh.length.toLocaleString()}</b> boxes / <b>${pcsOf(allWh).toLocaleString()}</b> pcs · `}
       Bins shown: <b>${locs.length}</b></span>
   </div>
@@ -7155,12 +7158,12 @@ function bxRenderByLoc(el, q){
       gm[k].n++;
     });
     const rows = Object.values(gm).sort((a,b)=>a.style.localeCompare(b.style)||a.color.localeCompare(b.color)||a.size.localeCompare(b.size));
-    const is3p = trIs3PLoc(loc, wh);
-    return `<details style="margin-bottom:8px;border:1px solid ${is3p?'#fbbf24':'var(--border)'};border-radius:8px;${is3p?'background:#fffbeb;':''}">
+    const _sk = bxSpecLoc(loc, wh); const _sm = _sk?bxSpecMeta(_sk):null; const is3p = !!_sk;
+    return `<details style="margin-bottom:8px;border:1px solid ${is3p?_sm.bd:'var(--border)'};border-radius:8px;${is3p?'background:'+_sm.bg+';':''}">
       <summary style="cursor:pointer;padding:7px 12px;font-weight:800;color:#0f2a4a;display:flex;align-items:center;gap:8px;">
         ${(()=>{ const keys = rows.map(r=>bxLocSelKey(loc, r)); const allSel = keys.length && keys.every(k=>window._bxLocSel[k]);
           return `<input type="checkbox" ${allSel?'checked':''} onclick="event.stopPropagation();bxLocSelBin('${esc(encodeURIComponent(loc))}', this.checked, '${esc(encodeURIComponent(keys.join('\u0001')))}')" title="Select whole location" style="width:15px;height:15px;accent-color:#b45309;cursor:pointer;">`; })()}
-        <span style="font-family:Consolas,monospace;font-size:13px;">${is3p?'🏭 ':'📍 '}${esc(loc)}</span>
+        <span style="font-family:Consolas,monospace;font-size:13px;">${is3p?_sm.icon+' ':'📍 '}${esc(loc)}</span>
         <span class="muted" style="font-weight:400;font-size:11px;">${rows.length} SKU-size line(s)</span>
         <span style="margin-left:auto;font-family:Consolas,monospace;font-size:12px;"><b>${boxes.length}</b> boxes · ${pcsOf(boxes).toLocaleString()} pcs</span>
         <button class="btn btn-sm" style="border:none;padding:0 4px;" onclick="event.preventDefault();bxLocPrintBin('${wh}','${esc(loc)}')" title="Print this bin's contents">🖨</button>
@@ -7311,7 +7314,11 @@ function renderBoxRoom(){
   el.innerHTML = `<div style="display:flex;gap:10px;margin-bottom:12px;flex-wrap:wrap;align-items:stretch;">
       ${tile('📦 All', bxStore.filter(b=>bxWh(b)!=='TRANSIT'), '#0f2a4a')}
       ${tile('SC Warehouse', bxStore.filter(b=>bxWh(b)==='SC'), '#1d4ed8')}
-      ${tile('CA Warehouse', bxStore.filter(b=>bxWh(b)==='CA'), '#9a3412')}
+      ${tile('CA Warehouse', bxStore.filter(b=>bxWh(b)==='CA' && !bxIsLockerLoc(b.loc,'CA')), '#9a3412')}
+      ${(()=>{ const lk = bxStore.filter(b=>bxWh(b)==='CA' && bxIsLockerLoc(b.loc,'CA')); return lk.length ? `<div title="Stock sitting at the customer warehouse — goes out on their PO only" style="flex:1;min-width:140px;max-width:230px;border:1.5px solid #c4b5fd;border-radius:10px;padding:9px 14px;background:#faf5ff;">
+        <div style="font-size:11px;font-weight:800;color:#7c3aed;">\uD83D\uDD12 Special Bin (Customer WH)</div>
+        <div style="font-size:21px;font-weight:800;color:#5b21b6;font-family:Consolas,monospace;line-height:1.2;">${lk.length.toLocaleString()}<span style="font-size:11px;color:#7c3aed;font-weight:700;"> boxes</span></div>
+        <div style="font-size:11px;color:#7c3aed;font-family:Consolas,monospace;">${lk.reduce((a,b)=>a+(Number(b.pcs)||0),0).toLocaleString()} pcs</div></div>` : ''; })()}
       ${transitList.length ? `<div onclick="trOpen()" style="flex:1;min-width:140px;max-width:230px;border:1.5px solid #fcd34d;border-radius:10px;padding:9px 14px;background:#fffbeb;cursor:pointer;" title="Click to manage transfers">
         <div style="font-size:11px;font-weight:800;color:#b45309;">🚚 In Transit (SC→CA)</div>
         <div style="font-size:21px;font-weight:800;color:#92400e;font-family:Consolas,monospace;line-height:1.2;">${transitList.length.toLocaleString()}<span style="font-size:11px;color:#b45309;font-weight:700;"> boxes</span></div>
@@ -7561,6 +7568,15 @@ const TR_ROUTES = {
 };
 function trRoute(rec){ const r = ((rec&&rec.meta)||{}).route; return TR_ROUTES[r] ? r : 'SC2CA'; }
 function trIs3PLoc(loc, wh){ if(wh!==undefined && String(wh).toUpperCase()!=='SC') return false; return String(loc||'').toUpperCase().startsWith('H'); }
+// 🔒 CA Locker — 거래처 창고에 위탁해둔 재고 (LK* bin, CA 전용). 우리가 직접 못 꺼내고 거래처 PO로만 나감
+function bxIsLockerLoc(loc, wh){ if(wh!==undefined && String(wh).toUpperCase()!=='CA') return false; return String(loc||'').toUpperCase().startsWith('SPECIAL'); }
+// 특수 bin 종류: '' | '3P'(Hodge) | 'LK'(Locker)
+function bxSpecLoc(loc, wh){ if(trIs3PLoc(loc, wh)) return '3P'; if(bxIsLockerLoc(loc, wh)) return 'LK'; return ''; }
+function bxSpecMeta(kind){
+  return kind==='3P' ? {icon:'\uD83C\uDFED', color:'#b45309', bg:'#fffbeb', bd:'#fbbf24', name:'3rd Party (Hodge)', note:'3rd Party — recall via Transfer first'}
+       : kind==='LK' ? {icon:'\uD83D\uDD12', color:'#7c3aed', bg:'#faf5ff', bd:'#c4b5fd', name:'Special Bin (customer WH)', note:'Special Bin — locker stock at the customer warehouse'}
+       : null;
+}
 function trGenShipNo(route){
   const d = new Date(); const p2 = n=>String(n).padStart(2,'0');
   const pre = { SC2CA:'SC-CA-', H2SC:'3P-SC-', H2CA:'3P-CA-', SC2H:'SC-3P-' }[route||'SC2CA'] || 'SC-CA-';
