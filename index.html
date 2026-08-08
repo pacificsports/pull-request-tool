@@ -137,7 +137,7 @@ main{max-width:1100px;margin:0 auto;padding:16px;}
     <button class="btn btn-sm" onclick="doLogout()" style="padding:2px 8px;font-size:10px;" data-i18n="logout">Log out</button>
   </span>
   <select id="lang-sel" onchange="setLang(this.value)" style="font-size:11px;padding:3px 6px;border-radius:5px;border:none;background:#1d3f66;color:#fff;"><option value="ko">한국어</option><option value="en">English</option><option value="es">Español</option></select>
-  <span style="font-size:10px;color:#9fb8d4;">v348 🚚</span>
+  <span style="font-size:10px;color:#9fb8d4;">v349 🚚</span>
 </div>
 <script type="text/javascript" src="https://js.authorize.net/v1/Accept.js" charset="utf-8"></script>
 <div id="po-viewer" style="display:none;position:fixed;top:0;right:0;width:44%;height:100vh;background:#fff;border-left:2px solid var(--border);z-index:60;box-shadow:-6px 0 20px rgba(0,0,0,.15);">
@@ -7254,6 +7254,47 @@ async function bxLocBulkExec(){
   if(fails2.length) alert('✅ '+ok+' box(es) done\n\n❌ Failed:\n'+fails2.slice(0,5).join('\n'));
   else showToast('✅ '+ok+' box(es) — '+parts.join(' · '));
 }
+// 🚚 By Location 에서 고른 박스로 바로 Transfer 초안 만들기
+async function bxLocToTransfer(route){
+  const wh = window._bxLocWh || 'SC';
+  const boxes = bxLocSelBoxes(wh);
+  if(!boxes.length){ showToast('⚠ Nothing selected'); return; }
+  const srcK = trSrcKind(route), srcWh = trWhOfKind(srcK);
+  const bad = boxes.filter(b=>bxWh(b)!==srcWh || !trLocIsKind(b.loc, srcK));
+  if(bad.length){ showToast('⚠ '+bad.length+' selected box(es) are not in '+trKindShort(srcK)); return; }
+  const pcs = boxes.reduce((s2,b)=>s2+(Number(b.pcs)||0),0);
+  if(!confirm('Create a new '+TR_ROUTES[route].label+' shipment?\n\n'+boxes.length+' box(es) · '+pcs.toLocaleString()+' pcs\n\nThe boxes are reserved (In Transit) right away — you can still edit the draft before posting.')) return;
+  const gm = {};
+  boxes.forEach(b=>{
+    const loc = String(b.loc||'?').toUpperCase();
+    const k = loc+'|'+String(b.style)+'|'+String(b.color).toUpperCase()+'|'+String(b.size).toUpperCase()+'|'+(Number(b.pcs)||0);
+    if(!gm[k]) gm[k] = { loc, style:String(b.style), color:String(b.color).toUpperCase(), size:String(b.size).toUpperCase(), ppb:Number(b.pcs)||0, ids:[] };
+    gm[k].ids.push(b.id);
+  });
+  const groups = Object.values(gm).sort((a,b)=>a.loc.localeCompare(b.loc, undefined, {numeric:true}) || a.style.localeCompare(b.style) || a.color.localeCompare(b.color) || bxSizeCmp(a.size,b.size));
+  window._bxLocSel = {};
+  showToast('🚚 Building shipment — '+groups.length+' line(s)...');
+  await trBuilderOpen(null, route);
+  const auto = trSrcAutoPallet(route);
+  let ok = 0;
+  for(const g of groups){
+    let target;
+    if(auto){
+      let p = _shipPallets.find(x=>x.label===g.loc);
+      if(!p){ p = { id:'p_'+Math.random().toString(36).slice(2,9), label:g.loc, lines:[] }; _shipPallets.push(p); }
+      target = p.id;
+    }else{
+      if(!_shipPallets.length) _shipPallets.push({ id:'p_'+Math.random().toString(36).slice(2,9), label:'Pallet 1', lines:[] });
+      target = _shipPallets[0].id;
+    }
+    const done = await _trAddLine(target, { is_manual:false, style:g.style, color:g.color, size:g.size, bin:g.loc, ppb:g.ppb, ids:g.ids });
+    if(done) ok++;
+  }
+  if(auto) _shipPallets = _shipPallets.filter(p=>p.lines.length);
+  await trSaveDraftLines();
+  trRenderPallets();
+  showToast('✅ '+ok+' line(s) → new '+TR_ROUTES[route].label+' draft — set the truck info and Post when ready');
+}
 async function bxLocBulk(action){
   const wh = window._bxLocWh || 'SC';
   const boxes = bxLocSelBoxes(wh);
@@ -7358,6 +7399,12 @@ function bxRenderByLoc(el, q){
     return `<div style="position:sticky;top:32px;z-index:6;display:flex;gap:8px;align-items:center;flex-wrap:wrap;background:#fffbeb;border:1.5px solid #f59e0b;border-radius:8px;padding:8px 12px;margin-bottom:10px;">
       <b style="color:#92400e;">☑ ${selN} line(s) · ${sb.length} box(es) · ${sp.toLocaleString()} pcs</b>
       <button class="btn btn-sm" style="background:#0f2a4a;color:#fff;border-color:#0f2a4a;font-weight:800;" onclick="bxLocBulkOpen()">⚙ Work with selected...</button>
+      ${(()=>{ const allSpec = sb.length && sb.every(b=>bxSpecLoc(b.loc, wh));
+        const allOwn = sb.length && sb.every(b=>!bxSpecLoc(b.loc, wh));
+        const B = (rt,lbl,bg)=>`<button class="btn btn-sm" style="background:${bg};color:#fff;border-color:${bg};font-weight:800;white-space:nowrap;" onclick="bxLocToTransfer('${rt}')" title="Creates a new ${esc(TR_ROUTES[rt].label)} shipment draft with the selected boxes">${lbl}</button>`;
+        if(allSpec) return B(wh==='CA'?'LK2CA':'H2SC', '🚚 Transfer to '+wh, '#0f766e');
+        if(allOwn)  return (wh==='SC' ? B('SC2CA','🚚 Transfer to CA','#7b1fa2') : '') + B(wh==='CA'?'CA2LK':'SC2H', '🏭 Send to 3rd Party', '#b45309');
+        return '<span style="font-size:10.5px;color:#b45309;">select either our own bins or 3rd party bins (not both) to build a transfer</span>'; })()}
       <button class="btn btn-sm" style="margin-left:auto;" onclick="bxLocSelClear()">✕ Clear</button>
     </div>`; })()}`;
   if(!locs.length){ el.innerHTML = head + '<div class="muted" style="padding:14px;">No bins match</div>'; return; }
