@@ -137,7 +137,7 @@ main{max-width:1100px;margin:0 auto;padding:16px;}
     <button class="btn btn-sm" onclick="doLogout()" style="padding:2px 8px;font-size:10px;" data-i18n="logout">Log out</button>
   </span>
   <select id="lang-sel" onchange="setLang(this.value)" style="font-size:11px;padding:3px 6px;border-radius:5px;border:none;background:#1d3f66;color:#fff;"><option value="ko">한국어</option><option value="en">English</option><option value="es">Español</option></select>
-  <span style="font-size:10px;color:#9fb8d4;">v345 🚚</span>
+  <span style="font-size:10px;color:#9fb8d4;">v346 🚚</span>
 </div>
 <script type="text/javascript" src="https://js.authorize.net/v1/Accept.js" charset="utf-8"></script>
 <div id="po-viewer" style="display:none;position:fixed;top:0;right:0;width:44%;height:100vh;background:#fff;border-left:2px solid var(--border);z-index:60;box-shadow:-6px 0 20px rgba(0,0,0,.15);">
@@ -7776,13 +7776,32 @@ let _trFilter = 'all';
 function trChunk(ids){ const out=[]; for(let i=0;i<ids.length;i+=80) out.push(ids.slice(i,i+80)); return out; }
 async function trPatchBoxes(ids, body){ for(const ch of trChunk(ids)) await bxPatch(ch, body); }
 // ── 노선 (Route) ── SC↔CA 외에 3rd Party(Hodge, H* bin) 노선 지원
+// 위치 종류: SC=SC 자체 bin · CA=CA 자체 bin · 3P=SC 3rd party(H*) · LK=CA 3rd party(SPECIAL*)
 const TR_ROUTES = {
-  SC2CA: { label:'SC → CA',        short:'SC→CA', from:'SC', dest:'CA', color:'#7b1fa2' },
-  H2SC:  { label:'3rd Party → SC', short:'3P→SC', from:'3P', dest:'SC', color:'#b45309' },
-  H2CA:  { label:'3rd Party → CA', short:'3P→CA', from:'3P', dest:'CA', color:'#0e7490' },
-  SC2H:  { label:'SC → 3rd Party', short:'SC→3P', from:'SC', dest:'3P', color:'#374151' }
+  SC2CA: { label:'SC → CA',                short:'SC→CA', from:'SC', dest:'CA', color:'#7b1fa2' },
+  SC2H:  { label:'SC → 3rd Party (SC)',    short:'SC→3P', from:'SC', dest:'3P', color:'#374151' },
+  H2SC:  { label:'3rd Party (SC) → SC',    short:'3P→SC', from:'3P', dest:'SC', color:'#b45309' },
+  CA2LK: { label:'CA → 3rd Party (CA)',    short:'CA→3P', from:'CA', dest:'LK', color:'#6d28d9' },
+  LK2CA: { label:'3rd Party (CA) → CA',    short:'3P→CA', from:'LK', dest:'CA', color:'#0e7490' },
+  H2CA:  { label:'3rd Party (SC) → CA',    short:'3P→CA', from:'3P', dest:'CA', color:'#0e7490', legacy:true }
 };
 function trRoute(rec){ const r = ((rec&&rec.meta)||{}).route; return TR_ROUTES[r] ? r : 'SC2CA'; }
+function trSrcKind(route){ return (TR_ROUTES[route]||TR_ROUTES.SC2CA).from; }
+function trDstKind(route){ return (TR_ROUTES[route]||TR_ROUTES.SC2CA).dest; }
+function trIsSpecKind(k){ return k==='3P' || k==='LK'; }
+function trWhOfKind(k){ return (k==='CA'||k==='LK') ? 'CA' : 'SC'; }
+function trKindName(k){ return k==='3P' ? '3rd Party (SC · H*)' : k==='LK' ? '3rd Party (CA · SPECIAL*)' : (k+' warehouse'); }
+function trKindShort(k){ return k==='3P' ? 'Hodge (H*)' : k==='LK' ? '3rd Party CA (SPECIAL*)' : k; }
+function trBinHint(k){ return k==='3P' ? 'H bin (e.g. H2999)' : k==='LK' ? 'SPECIAL bin' : ('bin code ('+k+')'); }
+// bin 이 그 종류에 맞는지
+function trLocIsKind(bin, k){
+  const b = String(bin||'').toUpperCase();
+  if(k==='3P') return trIs3PLoc(b, 'SC');
+  if(k==='LK') return bxIsLockerLoc(b, 'CA');
+  if(k==='SC') return !trIs3PLoc(b, 'SC');
+  return !bxIsLockerLoc(b, 'CA');
+}
+function trSrcIsSpec(route){ return trIsSpecKind(trSrcKind(route)); }
 function trIs3PLoc(loc, wh){ if(wh!==undefined && String(wh).toUpperCase()!=='SC') return false; return String(loc||'').toUpperCase().startsWith('H'); }
 // 🔒 CA Locker — 거래처 창고에 위탁해둔 재고 (LK* bin, CA 전용). 우리가 직접 못 꺼내고 거래처 PO로만 나감
 function bxIsLockerLoc(loc, wh){ if(wh!==undefined && String(wh).toUpperCase()!=='CA') return false; return String(loc||'').toUpperCase().startsWith('SPECIAL'); }
@@ -7795,7 +7814,7 @@ function bxSpecMeta(kind){
 }
 function trGenShipNo(route){
   const d = new Date(); const p2 = n=>String(n).padStart(2,'0');
-  const pre = { SC2CA:'SC-CA-', H2SC:'3P-SC-', H2CA:'3P-CA-', SC2H:'SC-3P-' }[route||'SC2CA'] || 'SC-CA-';
+  const pre = { SC2CA:'SC-CA-', H2SC:'3P-SC-', H2CA:'3P-CA-', SC2H:'SC-3P-', CA2LK:'CA-3P-', LK2CA:'3P-CA-' }[route||'SC2CA'] || 'SC-CA-';
   return pre + String(d.getFullYear()).slice(2) + p2(d.getMonth()+1) + p2(d.getDate()) + '-' + p2(d.getHours()) + p2(d.getMinutes());
 }
 // 새 Transfer — 노선 선택
@@ -7805,16 +7824,18 @@ function trNewOpen(){
   div.id = 'modal-trnew';
   div.style.cssText = 'position:fixed;inset:0;background:rgba(15,23,42,.55);z-index:120;display:flex;align-items:center;justify-content:center;padding:10px;';
   const card = (k)=>{ const R = TR_ROUTES[k]; return `<button class="btn" style="display:flex;flex-direction:column;align-items:flex-start;gap:4px;padding:14px 16px;border:2px solid ${R.color};border-radius:10px;min-width:210px;" onclick="document.getElementById('modal-trnew').remove();trBuilderOpen(null,'${k}')">
-    <span style="font-weight:800;color:${R.color};font-size:14px;">${k==='H2SC'||k==='H2CA'?'🏭 ':''}${R.label}</span>
+    <span style="font-weight:800;color:${R.color};font-size:14px;">${trIsSpecKind(R.from)?'🏭 ':''}${R.label}</span>
     <span style="font-size:10.5px;color:var(--text2);text-align:left;">${
       k==='SC2CA' ? 'Internal transfer to CA warehouse' :
       k==='H2SC'  ? 'Recall pallets from Hodge (H* bins) to our SC warehouse' :
+      k==='CA2LK' ? 'Send CA stock to the 3rd party warehouse (SPECIAL* bin)' :
+      k==='LK2CA' ? 'Recall stock from the 3rd party warehouse back to CA' :
       k==='H2CA'  ? 'Ship Hodge (H*) stock to CA warehouse' :
                     'Send SC stock to Hodge storage (assign new H bin)'}</span></button>`; };
   div.innerHTML = `<div style="background:#fff;border-radius:12px;padding:18px 20px;max-width:520px;">
     <div style="font-weight:800;color:#0f2a4a;margin-bottom:12px;font-size:14px;">🚚 New Transfer — choose route
       <button class="btn btn-sm" style="float:right;" onclick="document.getElementById('modal-trnew').remove()">✕</button></div>
-    <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;">${card('SC2CA')}${card('H2SC')}${card('H2CA')}${card('SC2H')}</div></div>`;
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;">${card('SC2CA')}${card('SC2H')}${card('H2SC')}${card('CA2LK')}${card('LK2CA')}</div></div>`;
   document.body.appendChild(div);
 }
 async function trGet(id){ try{ const r = await sbFetch('/rest/v1/pr_transfers?id=eq.'+id+'&select=*'); if(r.ok) return (await r.json())[0]; }catch(e){} return null; }
@@ -7870,11 +7891,11 @@ function trRenderList(){
       const M = r.meta||{};
       let act = '';
       if(r.status==='LOADING') act = `<button class="btn btn-sm" onclick="trBuilderOpen('${r.id}')">✏️ Edit</button>`;
-      else if(r.status==='TRANSIT') act = `<button class="btn btn-sm btn-primary" style="background:#0f766e;border-color:#0f766e;" onclick="trRecvOpen('${r.id}')">📦 Receive (${TR_ROUTES[trRoute(r)].dest==='3P'?'Hodge':TR_ROUTES[trRoute(r)].dest})</button> <button class="btn btn-sm" style="font-size:10px;" onclick="trCancelTransit('${r.id}')" title="Cancel departure — back to Draft, boxes stay reserved">↩</button>`;
+      else if(r.status==='TRANSIT') act = `<button class="btn btn-sm btn-primary" style="background:#0f766e;border-color:#0f766e;" onclick="trRecvOpen('${r.id}')">📦 Receive (${trKindShort(trDstKind(trRoute(r)))})</button> <button class="btn btn-sm" style="font-size:10px;" onclick="trCancelTransit('${r.id}')" title="Cancel departure — back to Draft, boxes stay reserved">↩</button>`;
       else act = `<span style="font-size:10px;color:#15803d;font-weight:800;">✓ Done</span>`;
       return `<tr>
       <td class="tl"><span style="font-family:Consolas,monospace;font-weight:700;color:#7b1fa2;text-decoration:underline;cursor:pointer;" onclick="${r.status==='LOADING'?`trBuilderOpen('${r.id}')`:`trView('${r.id}')`}">${esc(r.ref||'(no number)')}</span></td>
-      <td style="font-weight:600;white-space:nowrap;color:${TR_ROUTES[trRoute(r)].color};">${trRoute(r)!=='SC2CA'?'🏭 ':''}${TR_ROUTES[trRoute(r)].short}</td>
+      <td style="font-weight:600;white-space:nowrap;color:${TR_ROUTES[trRoute(r)].color};">${(trIsSpecKind(trSrcKind(trRoute(r)))||trIsSpecKind(trDstKind(trRoute(r))))?'🏭 ':''}${TR_ROUTES[trRoute(r)].short}</td>
       <td>${trStatusChip(r.status)}</td>
       <td style="font-family:Consolas,monospace;text-align:center;">${lines.length}</td>
       <td style="font-family:Consolas,monospace;text-align:center;">${nb}</td>
@@ -7904,7 +7925,7 @@ async function trBuilderOpen(existingId, route){
       if(!palletMap[lbl]){ palletMap[lbl] = { id:'p_'+Math.random().toString(36).slice(2,9), label:lbl, lines:[] }; _shipPallets.push(palletMap[lbl]); }
       palletMap[lbl].lines.push({...l});
     });
-    if(!(_shipRoute==='H2SC'||_shipRoute==='H2CA')) _shipPallets.forEach((p,i)=>p.label='Pallet '+(i+1));
+    if(!trSrcIsSpec(_shipRoute)) _shipPallets.forEach((p,i)=>p.label='Pallet '+(i+1));
   }
   if(_shipPallets.length===0) _shipPallets.push({ id:'p_'+Math.random().toString(36).slice(2,9), label:'Pallet 1', lines:[] });
   const today = new Date().toISOString().slice(0,10);
@@ -7929,9 +7950,9 @@ async function trBuilderOpen(existingId, route){
         <div style="margin-top:8px;"><label style="font-size:10px;color:var(--text2);">Notes</label><input class="fi" id="ship-notes" value="${esc(_shipMeta.notes||'')}" placeholder="other notes" style="width:100%;"></div>
       </div>
       <div style="display:flex;gap:10px;margin-bottom:12px;flex-wrap:wrap;align-items:center;">
-        <button class="btn" style="background:#1565c0;color:#fff;border-color:#1565c0;" onclick="trScOpen()">${(_shipRoute==='H2SC'||_shipRoute==='H2CA')?'🏭 Pick from 3rd Party (H*)':'📦 Pick from SC Inventory'}</button>
+        <button class="btn" style="background:#1565c0;color:#fff;border-color:#1565c0;" onclick="trScOpen()">${trSrcIsSpec(_shipRoute)?('🏭 Pick from '+trKindShort(trSrcKind(_shipRoute))):('📦 Pick from '+trSrcKind(_shipRoute)+' Inventory')}</button>
         <button class="btn" onclick="trManualLine()">+ Add manual line</button>
-        ${(_shipRoute==='H2SC'||_shipRoute==='H2CA')?'':'<button class="btn" onclick="trAddPallet()">📍 + Add Pallet</button>'}
+        ${trSrcIsSpec(_shipRoute)?'':'<button class="btn" onclick="trAddPallet()">📍 + Add Pallet</button>'}
         <span style="margin-left:auto;font-size:11px;color:var(--text2);">📦 <b id="ship-pallet-count">0</b> pallet(s) · <b id="ship-line-count">0</b> line(s) · <b id="ship-box-count">0</b> box(es) · <b id="ship-pcs-count">0</b> pcs</span>
       </div>
       <div id="ship-pallets" style="display:flex;flex-direction:column;gap:10px;"></div>
@@ -7939,7 +7960,7 @@ async function trBuilderOpen(existingId, route){
     <div style="padding:12px 16px;border-top:1px solid var(--border);display:flex;gap:8px;justify-content:flex-end;background:#fff;flex-wrap:wrap;">
       <button class="btn" style="background:#f5f5f5;" onclick="trBuilderClose()">📝 Close (keep Draft)</button>
       <button class="btn" style="background:#fee2e2;color:#c62828;border-color:#fecaca;" onclick="trCancelDraft()">🗑 Delete Draft (restore stock)</button>
-      ${(_shipRoute==='H2SC'||_shipRoute==='H2CA')?'<button class="btn" style="background:#b45309;color:#fff;border-color:#b45309;" onclick="trPickupReq()">🖨 Pickup Request</button>':''}
+      ${trSrcIsSpec(_shipRoute)?'<button class="btn" style="background:#b45309;color:#fff;border-color:#b45309;" onclick="trPickupReq()">🖨 Pickup Request</button>':''}
       <button class="btn" style="background:#0f4c8a;color:#fff;border-color:#0f4c8a;" onclick="trPL()">🖨 Packing List Preview/Print</button>
       <button class="btn" style="background:#334155;color:#fff;border-color:#334155;" onclick="trBOL()">🖨 BOL</button>
       <button class="btn btn-primary" style="background:#7b1fa2;border-color:#7b1fa2;" onclick="trPost()">✅ Post — Start Shipment</button>
@@ -7982,7 +8003,7 @@ async function trDelPallet(pid){
   if(p.lines.length && !confirm('Delete all '+p.lines.length+' line(s) on '+p.label+' and restore SC stock?')) return;
   for(let li=p.lines.length-1;li>=0;li--) await _trRemoveLine(pid, li, true);
   _shipPallets = _shipPallets.filter(x=>x.id!==pid);
-  if(!(_shipRoute==='H2SC'||_shipRoute==='H2CA')) _shipPallets.forEach((x,i)=>x.label='Pallet '+(i+1));
+  if(!trSrcIsSpec(_shipRoute)) _shipPallets.forEach((x,i)=>x.label='Pallet '+(i+1));
   await trSaveDraftLines();
   trRenderPallets();
 }
@@ -8112,8 +8133,8 @@ async function trScOpen(pid){
   if(!bxLoaded) await bxFetchStore();
   // SC 박스를 (loc, style, full color, size) 그룹으로
   const gm = {};
-  const _src3P = (_shipRoute==='H2SC'||_shipRoute==='H2CA');
-  bxStore.filter(b=>bxWh(b)==='SC' && trIs3PLoc(b.loc)===_src3P).forEach(b=>{
+  const _srcK = trSrcKind(_shipRoute), _srcWh = trWhOfKind(_srcK);
+  bxStore.filter(b=>bxWh(b)===_srcWh && trLocIsKind(b.loc, _srcK)).forEach(b=>{
     const loc = String(b.loc||'?').toUpperCase();
     const k = loc+'|'+String(b.style)+'|'+String(b.color).toUpperCase()+'|'+String(b.size).toUpperCase();
     if(!gm[k]) gm[k] = { key:k, loc, style:String(b.style), color:String(b.color).toUpperCase(), size:String(b.size).toUpperCase(), ppb:Number(b.pcs)||0, boxes:[] };
@@ -8128,7 +8149,7 @@ async function trScOpen(pid){
   div.id = 'modal-scv';
   div.style.cssText = 'position:fixed;inset:0;background:rgba(15,23,42,.6);z-index:110;display:flex;align-items:center;justify-content:center;padding:10px;';
   div.innerHTML = `<div style="background:#fff;border-radius:12px;max-width:1150px;width:98vw;max-height:96vh;display:flex;flex-direction:column;overflow:hidden;">
-    <div style="background:#1565c0;color:#fff;padding:10px 16px;font-weight:800;display:flex;align-items:center;">${(_shipRoute==='H2SC'||_shipRoute==='H2CA')?'🏭 Pick 3rd Party (H*) Inventory':'📦 Pick SC Inventory'}
+    <div style="background:#1565c0;color:#fff;padding:10px 16px;font-weight:800;display:flex;align-items:center;">${trIsSpecKind(_srcK)?('🏭 Pick '+trKindName(_srcK)+' Inventory'):('📦 Pick '+_srcWh+' Inventory')}
       <button class="btn btn-sm" style="margin-left:auto;background:transparent;color:#bfdbfe;border-color:#60a5fa;" onclick="document.getElementById('modal-scv').remove()">✕</button></div>
     <div style="padding:10px 16px;border-bottom:1px solid var(--border);background:#fff8e1;display:flex;align-items:center;gap:10px;flex-wrap:wrap;font-size:12px;">
       <span style="font-weight:700;color:#7c2d12;">Selected <b id="scv-count">0</b> line(s) · <b id="scv-boxes">0</b> box(es) · <b id="scv-pcs">0</b> pcs</span>
@@ -8265,7 +8286,7 @@ async function trScAdd(){
   const m = document.getElementById('modal-scv'); if(m) m.remove();
   showToast('💾 Adding '+es.length+' line(s)...');
   let ok = 0;
-  const _is3Psrc = (_shipRoute==='H2SC'||_shipRoute==='H2CA');
+  const _is3Psrc = trSrcIsSpec(_shipRoute);
   for(const e of es){
     const g = e.g;
     let target = _scvTarget;
@@ -8282,13 +8303,13 @@ async function trScAdd(){
     if(done) ok++;
   }
   if(_is3Psrc && _shipPallets.length>1){ _shipPallets = _shipPallets.filter(p=>p.lines.length); await trSaveDraftLines(); }
-  showToast('✅ '+ok+'/'+es.length+' line(s) added (reserved from SC)');
+  showToast('✅ '+ok+'/'+es.length+' line(s) added (reserved from '+trKindShort(trSrcKind(_shipRoute))+')');
   trRenderPallets();
   if($('bx-body')) renderBoxRoom();
 }
 // ── 3rd Party 문서 (Pickup Request / 주소) ──
 function trPartyInfo(route){
-  const A = { SC:'Pacific Sports — SC Warehouse<br>Sumter, SC', CA:'Pacific Sports — CA Warehouse<br>Eastvale, CA', '3P':'Hodge Warehouse (3rd Party Storage)<br>Sumter, SC' };
+  const A = { SC:'Pacific Sports — SC Warehouse<br>Sumter, SC', CA:'Pacific Sports — CA Warehouse<br>Eastvale, CA', '3P':'Hodge Warehouse (3rd Party Storage)<br>Sumter, SC', LK:'3rd Party Warehouse (CA)<br>Ontario, CA' };
   const R = TR_ROUTES[route]||TR_ROUTES.SC2CA;
   return { from:A[R.from]||A.SC, to:A[R.dest]||A.CA };
 }
@@ -8424,7 +8445,7 @@ function trPLHtml(D){
       <div><div style="border-bottom:1px solid #000;height:50px;"></div><div style="margin-top:4px;">Driver Signature & Date</div></div>
     </div>
     <div style="margin-top:30px;display:grid;grid-template-columns:1fr 1fr;gap:30px;font-size:12px;page-break-inside:avoid;">
-      <div><div style="border-bottom:1px solid #000;height:50px;"></div><div style="margin-top:4px;">${_R.dest==='3P'?'Hodge':_R.dest} Receiver Signature & Date</div></div>
+      <div><div style="border-bottom:1px solid #000;height:50px;"></div><div style="margin-top:4px;">${trKindShort(_R.dest)} Receiver Signature & Date</div></div>
       <div></div>
     </div>
   </div>`;
@@ -8564,7 +8585,7 @@ async function trView(id){
       ${R.from==='3P'?`<button class="btn btn-sm" style="background:#b45309;color:#fff;border-color:#b45309;" onclick="trViewDoc('${rec.id}','pickup')">🖨 Pickup Request</button>`:''}
       <button class="btn btn-sm" onclick="trViewDoc('${rec.id}','pl')">🖨 Packing List</button>
       <button class="btn btn-sm" onclick="trViewDoc('${rec.id}','bol')">🖨 BOL</button>
-      ${rec.status==='TRANSIT'?`<button class="btn btn-sm btn-primary" style="background:#0f766e;border-color:#0f766e;" onclick="document.getElementById('modal-trv').remove();trRecvOpen('${rec.id}')">📦 ${R.dest==='CA'?'CA Arrival':(R.dest==='3P'?'Hodge Arrival':'SC Arrival')}</button>`:''}
+      ${rec.status==='TRANSIT'?`<button class="btn btn-sm btn-primary" style="background:#0f766e;border-color:#0f766e;" onclick="document.getElementById('modal-trv').remove();trRecvOpen('${rec.id}')">📦 ${trKindShort(R.dest)} Arrival</button>`:''}
       <button class="btn" onclick="document.getElementById('modal-trv').remove()">Close</button>
     </div></div>`;
   document.body.appendChild(div);
@@ -8577,26 +8598,24 @@ async function trRecvOpen(id){
   _trRecvRec = rec;
   const lines = Array.isArray(rec.lines)?rec.lines:[];
   const palletMap = {};
-  const _rvRoute = trRoute(rec), _rvDest = TR_ROUTES[_rvRoute].dest;
+  const _rvRoute = trRoute(rec), _rvDest = trDstKind(_rvRoute), _rvSrc = trSrcKind(_rvRoute);
   window._trRecvRoute = _rvRoute;
-  lines.forEach(l=>{ const lbl = l.pallet||'Pallet 1'; if(!palletMap[lbl]) palletMap[lbl] = { label:lbl, mode:'whole', bin:'', act:'sc', lines:[] }; palletMap[lbl].lines.push({...l, ca_bin:(_rvDest==='3P'&&l.ret_bin)?String(l.ret_bin).toUpperCase():'', act:'sc', dmg_note:''}); });
+  lines.forEach(l=>{ const lbl = l.pallet||'Pallet 1'; if(!palletMap[lbl]) palletMap[lbl] = { label:lbl, mode:'whole', bin:'', act:'sc', lines:[] }; palletMap[lbl].lines.push({...l, ca_bin:(trIsSpecKind(_rvDest)&&l.ret_bin)?String(l.ret_bin).toUpperCase():'', act:'sc', dmg_note:''}); });
   _trRecvPallets = Object.values(palletMap);
-  if(_rvDest==='3P') _trRecvPallets.forEach(p=>{ const bs=[...new Set(p.lines.map(l=>l.ca_bin).filter(Boolean))]; if(bs.length===1) p.bin=bs[0]; });
+  if(trIsSpecKind(_rvDest)) _trRecvPallets.forEach(p=>{ const bs=[...new Set(p.lines.map(l=>l.ca_bin).filter(Boolean))]; if(bs.length===1) p.bin=bs[0]; });
   ['modal-tr','modal-trr'].forEach(x=>{ const e=document.getElementById(x); if(e) e.remove(); });
   const totP = lines.reduce((s,l)=>s+trLinePcs(l),0);
   const totB = lines.reduce((s,l)=>s+trLineBoxes(l),0);
   const M = rec.meta||{};
-  const caLocs = [...new Set(bxStore.filter(b=>{
-    if(_rvDest==='CA') return bxWh(b)==='CA';
-    if(_rvDest==='3P') return bxWh(b)==='SC' && trIs3PLoc(b.loc);
-    return bxWh(b)==='SC' && !trIs3PLoc(b.loc);   // SC 자체 bin
-  }).map(b=>String(b.loc||'').toUpperCase()).filter(Boolean))].sort();
-  const hLocs = [...new Set(bxStore.filter(b=>bxWh(b)==='SC' && trIs3PLoc(b.loc)).map(b=>String(b.loc||'').toUpperCase()))].sort();
+  const _dWh = trWhOfKind(_rvDest);
+  const caLocs = [...new Set(bxStore.filter(b=>bxWh(b)===_dWh && trLocIsKind(b.loc, _rvDest)).map(b=>String(b.loc||'').toUpperCase()).filter(Boolean))].sort();
+  const _spK = trIsSpecKind(_rvDest) ? _rvDest : (trIsSpecKind(_rvSrc) ? _rvSrc : '3P');
+  const hLocs = [...new Set(bxStore.filter(b=>bxWh(b)===trWhOfKind(_spK) && trLocIsKind(b.loc, _spK)).map(b=>String(b.loc||'').toUpperCase()).filter(Boolean))].sort();
   const div = document.createElement('div');
   div.id = 'modal-trr';
   div.style.cssText = 'position:fixed;inset:0;background:rgba(15,23,42,.6);z-index:110;display:flex;align-items:center;justify-content:center;padding:10px;';
   div.innerHTML = `<div style="background:#fff;border-radius:12px;max-width:1100px;width:98vw;max-height:96vh;display:flex;flex-direction:column;overflow:hidden;">
-    <div style="background:#0f766e;color:#fff;padding:10px 16px;font-weight:800;">📦 ${_rvDest==='CA'?'CA Arrival':(_rvDest==='3P'?'Hodge Arrival (assign new H bin)':'SC Arrival — Recall from 3rd Party')}${_rvRoute!=='SC2CA'?' · '+TR_ROUTES[_rvRoute].label:''}
+    <div style="background:#0f766e;color:#fff;padding:10px 16px;font-weight:800;">📦 ${trIsSpecKind(_rvDest)?('3rd Party Arrival — assign '+(_rvDest==='LK'?'SPECIAL':'H')+' bin'):(trIsSpecKind(_rvSrc)?(_rvDest+' Arrival — recall from 3rd Party'):(_rvDest+' Arrival'))}${_rvRoute!=='SC2CA'?' · '+TR_ROUTES[_rvRoute].label:''}
       <button class="btn btn-sm" style="float:right;background:transparent;color:#99f6e4;border-color:#2dd4bf;" onclick="document.getElementById('modal-trr').remove();trOpen();">✕</button></div>
     <div style="padding:12px 16px;overflow-y:auto;flex:1;">
       <div style="margin-bottom:10px;padding:10px 14px;background:#ecfdf5;border-radius:8px;font-size:12px;display:flex;gap:16px;flex-wrap:wrap;align-items:center;">
@@ -8612,7 +8631,7 @@ async function trRecvOpen(id){
     </div>
     <div style="padding:12px 16px;border-top:1px solid var(--border);display:flex;gap:8px;justify-content:flex-end;">
       <button class="btn" onclick="document.getElementById('modal-trr').remove();trOpen();">Cancel</button>
-      <button class="btn btn-primary" style="background:#0f766e;border-color:#0f766e;" onclick="trRecvPost()">✅ Post — Receive${_rvDest==='CA'?' to CA':(_rvDest==='3P'?' at Hodge':' to SC')}</button>
+      <button class="btn btn-primary" style="background:#0f766e;border-color:#0f766e;" onclick="trRecvPost()">✅ Post — Receive ${trIsSpecKind(_rvDest)?'at ':'to '}${esc(trKindShort(_rvDest))}</button>
     </div></div>`;
   document.body.appendChild(div);
   trRecvRender();
@@ -8624,15 +8643,18 @@ function trRecvRender(){
     const isWhole = p.mode==='whole';
     let body;
     const _rt = window._trRecvRoute || 'SC2CA';
-    const _isRecall = _rt==='H2SC';
-    const _destLbl = TR_ROUTES[_rt].dest==='CA' ? 'CA' : (TR_ROUTES[_rt].dest==='3P' ? 'new H bin (Hodge)' : 'SC');
+    const _rtD = trDstKind(_rt), _rtS = trSrcKind(_rt);
+    const _isRecall = trIsSpecKind(_rtS) && !trIsSpecKind(_rtD);
+    const _dSpec = trIsSpecKind(_rtD);
+    const _retName = _rtS==='LK' ? '3rd Party (CA)' : 'Hodge';
+    const _destLbl = _dSpec ? ('new '+(_rtD==='LK'?'SPECIAL':'H')+' bin') : _rtD;
     if(isWhole){
       body = `<div style="padding:12px;background:#ecfdf5;border:1px solid #6ee7b7;border-radius:6px;display:flex;align-items:center;gap:12px;flex-wrap:wrap;">
         ${_isRecall ? `<select class="fi" onchange="trRecvWholeAct(${pi}, this.value)" style="font-weight:700;font-size:11.5px;">
-          <option value="sc" ${p.act!=='ret'?'selected':''}>📍 Receive whole pallet to SC bin</option>
-          <option value="ret" ${p.act==='ret'?'selected':''}>↩ Return whole pallet to Hodge (→ return truck list)</option>
+          <option value="sc" ${p.act!=='ret'?'selected':''}>📍 Receive whole pallet to ${_rtD} bin</option>
+          <option value="ret" ${p.act==='ret'?'selected':''}>↩ Return whole pallet to ${_retName} (→ return truck list)</option>
         </select>` : `<span style="color:#047857;font-weight:700;">📍 Receive whole pallet to bin:</span>`}
-        <input class="fi" list="${(_isRecall&&p.act==='ret')||TR_ROUTES[_rt].dest==='3P'?'trr-h-bins':'trr-ca-bins'}" value="${esc(p.bin||'')}" placeholder="${(_isRecall&&p.act==='ret')||TR_ROUTES[_rt].dest==='3P'?'H bin (e.g. H2999)':'bin code ('+_destLbl+')'}" onchange="trRecvWholeBin(${pi}, this.value)" style="width:170px;font-family:Consolas,monospace;font-weight:700;text-transform:uppercase;">
+        <input class="fi" list="${(_isRecall&&p.act==='ret')||_dSpec?'trr-h-bins':'trr-ca-bins'}" value="${esc(p.bin||'')}" placeholder="${(_isRecall&&p.act==='ret')?trBinHint(_rtS):trBinHint(_rtD)}" onchange="trRecvWholeBin(${pi}, this.value)" style="width:170px;font-family:Consolas,monospace;font-weight:700;text-transform:uppercase;">
         <span style="color:var(--text2);font-size:11px;">${p.lines.length} line(s) · ${pPcs.toLocaleString()} pcs into one bin</span></div>
       <table class="etbl" style="font-size:11.5px;margin-top:6px;">
         <thead><tr><th class="tl">Style</th><th class="tl">Color/Size</th><th>From Bin</th><th>Boxes</th><th>Qty</th></tr></thead>
@@ -8644,9 +8666,9 @@ function trRecvRender(){
           <td style="text-align:right;font-family:Consolas,monospace;font-weight:700;">${trLinePcs(l).toLocaleString()}</td>
         </tr>`).join('')}</tbody></table>`;
     }else{
-      body = `<div style="background:#fef3c7;border:1px solid #fbbf24;padding:6px 10px;border-radius:4px;font-size:11px;color:#92400e;margin-bottom:6px;">🔧 Break-down mode — ${_isRecall?'choose an action per line (SC bin / return to Hodge / damage claim)':'place each line in a different bin'}</div>
+      body = `<div style="background:#fef3c7;border:1px solid #fbbf24;padding:6px 10px;border-radius:4px;font-size:11px;color:#92400e;margin-bottom:6px;">🔧 Break-down mode — ${_isRecall?('choose an action per line ('+_rtD+' bin / return to '+_retName+' / damage claim)'):'place each line in a different bin'}</div>
       <table class="etbl" style="font-size:11.5px;">
-        <thead><tr><th class="tl">Style</th><th class="tl">Color</th><th>Size</th><th>Boxes</th><th>Qty</th>${_isRecall?'<th style="background:#fef3c7;">Action</th>':''}<th style="background:#fef3c7;">${_isRecall?'Bin / Claim note':(TR_ROUTES[_rt].dest==='3P'?'New H Bin':_destLbl+' Bin')}</th></tr></thead>
+        <thead><tr><th class="tl">Style</th><th class="tl">Color</th><th>Size</th><th>Boxes</th><th>Qty</th>${_isRecall?'<th style="background:#fef3c7;">Action</th>':''}<th style="background:#fef3c7;">${_isRecall?'Bin / Claim note':(_dSpec?('New '+(_rtD==='LK'?'SPECIAL':'H')+' Bin'):(_destLbl+' Bin'))}</th></tr></thead>
         <tbody>${p.lines.map((l,li)=>`<tr>
           <td class="tl" style="font-weight:700;font-family:Consolas,monospace;">${esc(l.style)}</td>
           <td class="tl">${esc(bxBaseColor(l.color))}</td>
@@ -8654,13 +8676,13 @@ function trRecvRender(){
           <td style="text-align:center;font-family:Consolas,monospace;font-weight:700;">${trLineBoxes(l)}</td>
           <td style="text-align:right;font-family:Consolas,monospace;font-weight:700;">${trLinePcs(l).toLocaleString()}</td>
           ${_isRecall?`<td style="background:#fffde7;"><select class="fi" style="font-size:10.5px;padding:2px 4px;" onchange="trRecvLineAct(${pi},${li},this.value)">
-            <option value="sc" ${l.act==='sc'?'selected':''}>📍 SC bin</option>
-            <option value="ret" ${l.act==='ret'?'selected':''}>↩ Return to Hodge</option>
+            <option value="sc" ${l.act==='sc'?'selected':''}>📍 ${_rtD} bin</option>
+            <option value="ret" ${l.act==='ret'?'selected':''}>↩ Return to ${_retName}</option>
             <option value="dmg" ${l.act==='dmg'?'selected':''}>🗑 Damage claim</option>
           </select></td>`:''}
           <td style="background:#fffde7;">${_isRecall&&l.act==='dmg'
             ? `<input class="fi" value="${esc(l.dmg_note||'')}" placeholder="claim note (damage reason)" onchange="trRecvLineNote(${pi},${li},this.value)" style="width:190px;font-size:11px;padding:3px 6px;">`
-            : `<input class="fi" list="${(_isRecall&&l.act==='ret')||TR_ROUTES[_rt].dest==='3P'?'trr-h-bins':'trr-ca-bins'}" value="${esc(l.ca_bin||'')}" placeholder="${(_isRecall&&l.act==='ret')||TR_ROUTES[_rt].dest==='3P'?'H bin':'bin'}" onchange="trRecvLineBin(${pi},${li},this.value)" style="width:110px;font-size:11px;padding:3px 6px;font-family:Consolas,monospace;font-weight:700;text-transform:uppercase;">`}</td>
+            : `<input class="fi" list="${(_isRecall&&l.act==='ret')||_dSpec?'trr-h-bins':'trr-ca-bins'}" value="${esc(l.ca_bin||'')}" placeholder="${(_isRecall&&l.act==='ret')?trBinHint(_rtS):trBinHint(_rtD)}" onchange="trRecvLineBin(${pi},${li},this.value)" style="width:110px;font-size:11px;padding:3px 6px;font-family:Consolas,monospace;font-weight:700;text-transform:uppercase;">`}</td>
         </tr>`).join('')}</tbody></table>`;
     }
     return `<div style="border:2px solid #6ee7b7;border-radius:8px;background:#fff;">
@@ -8681,37 +8703,39 @@ function trRecvLineNote(pi, li, v){ _trRecvPallets[pi].lines[li].dmg_note = Stri
 function trRecvWholeBin(pi, v){ _trRecvPallets[pi].bin = String(v||'').trim().toUpperCase(); }
 function trRecvLineBin(pi, li, v){ _trRecvPallets[pi].lines[li].ca_bin = String(v||'').trim().toUpperCase(); }
 async function trRecvPost(){
-  const route = trRoute(_trRecvRec), dest = TR_ROUTES[route].dest;
-  const isRecall = route==='H2SC';
+  const route = trRoute(_trRecvRec), dest = trDstKind(route), src = trSrcKind(route);
+  const isRecall = trIsSpecKind(src) && !trIsSpecKind(dest);
+  const retRoute = src==='LK' ? 'CA2LK' : 'SC2H';
+  const retName  = src==='LK' ? '3rd Party (CA)' : 'Hodge';
   const errors = [];
   _trRecvPallets.forEach(p=>{
     if(p.mode==='whole'){
       if(!p.bin) errors.push(p.label+': bin missing');
-      else if(dest==='3P' || (isRecall && p.act==='ret')){ if(!trIs3PLoc(p.bin)) errors.push(p.label+': Hodge bin must start with H'); }
-      else if(isRecall && p.act!=='ret' && trIs3PLoc(p.bin)) errors.push(p.label+': SC bin should not start with H (H* = Hodge). Use "Return to Hodge" instead.');
+      else if(trIsSpecKind(dest) || (isRecall && p.act==='ret')){ const k=(isRecall&&p.act==='ret')?src:dest; if(!trLocIsKind(p.bin,k)) errors.push(p.label+': must be a '+trBinHint(k)); }
+      else if(isRecall && p.act!=='ret' && !trLocIsKind(p.bin,dest)) errors.push(p.label+': that is a 3rd party bin — use "Return to '+retName+'" instead.');
     }
     else p.lines.forEach((l,li)=>{
       const act = isRecall ? (l.act||'sc') : 'sc';
       if(act==='dmg') return;   // damage line needs no bin
       if(!l.ca_bin) errors.push(p.label+' line '+(li+1)+': bin missing');
-      else if(dest==='3P' || (isRecall && act==='ret')){ if(!trIs3PLoc(l.ca_bin)) errors.push(p.label+' line '+(li+1)+': Hodge bin must start with H'); }
-      else if(isRecall && act==='sc' && trIs3PLoc(l.ca_bin)) errors.push(p.label+' line '+(li+1)+': SC bin should not start with H — use "Return to Hodge"');
+      else if(trIsSpecKind(dest) || (isRecall && act==='ret')){ const k=(isRecall&&act==='ret')?src:dest; if(!trLocIsKind(l.ca_bin,k)) errors.push(p.label+' line '+(li+1)+': must be a '+trBinHint(k)); }
+      else if(isRecall && act==='sc' && !trLocIsKind(l.ca_bin,dest)) errors.push(p.label+' line '+(li+1)+': that is a 3rd party bin — use "Return to '+retName+'"');
     });
   });
   if(errors.length){ alert('Please fix these lines:\n\n'+errors.slice(0,6).join('\n')); return; }
   const totLines = _trRecvPallets.reduce((s,p)=>s+p.lines.length,0);
   const dmgN = isRecall ? _trRecvPallets.reduce((s,p)=>s+(p.mode==='whole'?0:p.lines.filter(l=>l.act==='dmg').length),0) : 0;
-  if(!confirm('Receive '+_trRecvPallets.length+' pallet(s), '+totLines+' line(s)'+(dest==='CA'?' to CA':(dest==='3P'?' at Hodge':' to SC'))+'?'+(dmgN?'\n\n⚠ '+dmgN+' damage line(s) will be REMOVED from stock (claim).':''))) return;
+  if(!confirm('Receive '+_trRecvPallets.length+' pallet(s), '+totLines+' line(s) '+(trIsSpecKind(dest)?'at ':'to ')+trKindShort(dest)+'?'+(dmgN?'\n\n⚠ '+dmgN+' damage line(s) will be REMOVED from stock (claim).':''))) return;
   let ok = 0; const errs = [];
   const manualNew = []; const retLines = [];
-  const destWh = dest==='CA' ? 'CA' : 'SC';
+  const destWh = trWhOfKind(dest);
   for(const p of _trRecvPallets){
     for(const l of p.lines){
       const act = (isRecall && p.mode!=='whole') ? (l.act||'sc') : (isRecall && p.mode==='whole' ? (p.act==='ret'?'ret':'sc') : 'sc');
       const bin = p.mode==='whole' ? p.bin : l.ca_bin;
       try{
         if(act==='dmg'){
-          if((l.ids||[]).length) await trPatchBoxes(l.ids, {wh:'SC', status:'OUT', out_at:new Date().toISOString(), out_by:(SESS&&SESS.email)||'', out_po:'3P DAMAGE CLAIM'+(l.dmg_note?(' — '+l.dmg_note):'')});
+          if((l.ids||[]).length) await trPatchBoxes(l.ids, {wh:trWhOfKind(src), status:'OUT', out_at:new Date().toISOString(), out_by:(SESS&&SESS.email)||'', out_po:'3P DAMAGE CLAIM'+(l.dmg_note?(' — '+l.dmg_note):'')});
           l.ca_bin = '(DAMAGE CLAIM)';
         }else if(act==='ret'){
           retLines.push({ is_manual:!!l.is_manual, style:l.style, color:l.color, size:l.size, bin:l.bin, ppb:l.ppb, pcs:l.pcs, boxes:l.boxes, ids:(l.ids||[]), pallet:'Pallet 1', ret_bin:bin });
@@ -8737,9 +8761,9 @@ async function trRecvPost(){
   }
   let retRef = '';
   if(retLines.length){
-    retRef = trGenShipNo('SC2H');
+    retRef = trGenShipNo(retRoute);
     try{
-      const rr = await sbFetch('/rest/v1/pr_transfers', {method:'POST', headers:{Prefer:'return=minimal'}, body:JSON.stringify([{ref:retRef, status:'LOADING', lines:retLines, meta:{route:'SC2H', notes:'Return to Hodge — from '+(_trRecvRec.ref||'')}, created_by:(SESS&&SESS.email)||''}])});
+      const rr = await sbFetch('/rest/v1/pr_transfers', {method:'POST', headers:{Prefer:'return=minimal'}, body:JSON.stringify([{ref:retRef, status:'LOADING', lines:retLines, meta:{route:retRoute, notes:'Return to '+retName+' — from '+(_trRecvRec.ref||'')}, created_by:(SESS&&SESS.email)||''}])});
       if(!rr.ok) throw new Error('insert failed');
       _trRecvPallets.forEach(p=>p.lines.forEach(l=>{ if(l.ca_bin==='(RETURN)') l.ca_bin = '(RET → '+retRef+')'; }));
     }catch(e){ errs.push('Return truck draft creation failed — return lines stay In Transit'); retRef=''; }
@@ -8751,7 +8775,7 @@ async function trRecvPost(){
   await bxFetchStore();
   if($('bx-body')) renderBoxRoom();
   const m = document.getElementById('modal-trr'); if(m) m.remove();
-  let msg = '✅ '+ok+' line(s) received'+(dest==='CA'?' to CA':(dest==='3P'?' at Hodge':' to SC'));
+  let msg = '✅ '+ok+' line(s) received '+(trIsSpecKind(dest)?'at ':'to ')+trKindShort(dest);
   if(retRef) msg += '\n\n↩ '+retLines.length+' return line(s) → Return truck draft '+retRef+' (see Transfer list — print PL/BOL there, then Post when the truck is set)';
   if(errs.length) msg += '\n\n❌ '+errs.length+' error(s):\n'+errs.slice(0,5).join('\n');
   alert(msg);
