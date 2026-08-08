@@ -137,7 +137,7 @@ main{max-width:1100px;margin:0 auto;padding:16px;}
     <button class="btn btn-sm" onclick="doLogout()" style="padding:2px 8px;font-size:10px;" data-i18n="logout">Log out</button>
   </span>
   <select id="lang-sel" onchange="setLang(this.value)" style="font-size:11px;padding:3px 6px;border-radius:5px;border:none;background:#1d3f66;color:#fff;"><option value="ko">한국어</option><option value="en">English</option><option value="es">Español</option></select>
-  <span style="font-size:10px;color:#9fb8d4;">v346 🚚</span>
+  <span style="font-size:10px;color:#9fb8d4;">v347 🚚</span>
 </div>
 <script type="text/javascript" src="https://js.authorize.net/v1/Accept.js" charset="utf-8"></script>
 <div id="po-viewer" style="display:none;position:fixed;top:0;right:0;width:44%;height:100vh;background:#fff;border-left:2px solid var(--border);z-index:60;box-shadow:-6px 0 20px rgba(0,0,0,.15);">
@@ -7927,7 +7927,8 @@ async function trBuilderOpen(existingId, route){
     });
     if(!trSrcIsSpec(_shipRoute)) _shipPallets.forEach((p,i)=>p.label='Pallet '+(i+1));
   }
-  if(_shipPallets.length===0) _shipPallets.push({ id:'p_'+Math.random().toString(36).slice(2,9), label:'Pallet 1', lines:[] });
+  // 3rd party 출발은 bin(=팔레트) 단위로 통째로 오므로 빈 팔레트를 미리 만들지 않는다
+  if(_shipPallets.length===0 && !trSrcIsSpec(_shipRoute)) _shipPallets.push({ id:'p_'+Math.random().toString(36).slice(2,9), label:'Pallet 1', lines:[] });
   const today = new Date().toISOString().slice(0,10);
   const div = document.createElement('div');
   div.id = 'modal-trb';
@@ -7956,6 +7957,7 @@ async function trBuilderOpen(existingId, route){
         <span style="margin-left:auto;font-size:11px;color:var(--text2);">📦 <b id="ship-pallet-count">0</b> pallet(s) · <b id="ship-line-count">0</b> line(s) · <b id="ship-box-count">0</b> box(es) · <b id="ship-pcs-count">0</b> pcs</span>
       </div>
       <div id="ship-pallets" style="display:flex;flex-direction:column;gap:10px;"></div>
+      ${trSrcIsSpec(_shipRoute)?`<div id="ship-hint" style="margin-top:10px;padding:14px;border:1.5px dashed #fbbf24;border-radius:8px;background:#fffbeb;font-size:12px;color:#92400e;">🏭 This route moves <b>whole pallets</b> — press <b>Pick from ${esc(trKindShort(trSrcKind(_shipRoute)))}</b> and each bin you choose becomes its own pallet automatically. No need to create Pallet 1 / Pallet 2 yourself.</div>`:''}
     </div>
     <div style="padding:12px 16px;border-top:1px solid var(--border);display:flex;gap:8px;justify-content:flex-end;background:#fff;flex-wrap:wrap;">
       <button class="btn" style="background:#f5f5f5;" onclick="trBuilderClose()">📝 Close (keep Draft)</button>
@@ -8000,7 +8002,7 @@ function trAddPallet(){
 }
 async function trDelPallet(pid){
   const p = _shipPallets.find(x=>x.id===pid); if(!p) return;
-  if(p.lines.length && !confirm('Delete all '+p.lines.length+' line(s) on '+p.label+' and restore SC stock?')) return;
+  if(p.lines.length && !confirm('Delete all '+p.lines.length+' line(s) on '+p.label+' and restore '+trKindShort(trSrcKind(_shipRoute))+' stock?')) return;
   for(let li=p.lines.length-1;li>=0;li--) await _trRemoveLine(pid, li, true);
   _shipPallets = _shipPallets.filter(x=>x.id!==pid);
   if(!trSrcIsSpec(_shipRoute)) _shipPallets.forEach((x,i)=>x.label='Pallet '+(i+1));
@@ -8024,8 +8026,8 @@ async function _trRemoveLine(pid, li, silent){
   const p = _shipPallets.find(x=>x.id===pid); if(!p) return false;
   const l = p.lines[li]; if(!l) return false;
   if(!l.is_manual && (l.ids||[]).length){
-    if(!silent && !confirm('Delete this line and restore SC stock?\n'+(l.bin||'?')+' / '+l.style+' '+l.color+' '+l.size+' / '+trLineBoxes(l)+' box(es)')) return false;
-    try{ await trPatchBoxes(l.ids, {wh:'SC'}); }
+    if(!silent && !confirm('Delete this line and restore '+trKindShort(trSrcKind(_shipRoute))+' stock?\n'+(l.bin||'?')+' / '+l.style+' '+l.color+' '+l.size+' / '+trLineBoxes(l)+' box(es)')) return false;
+    try{ await trPatchBoxes(l.ids, {wh: trWhOfKind(trSrcKind(_shipRoute))}); }
     catch(e){ showToast('⚠ Restore failed'); return false; }
     const idSet = new Set(l.ids);
     bxStore.forEach(b=>{ if(idSet.has(b.id)) b.wh = 'SC'; });
@@ -8041,7 +8043,7 @@ async function trDelLine(pid, li){
 async function trCancelDraft(){
   const n = _shipPallets.reduce((s,p)=>s+p.lines.length,0);
   if(!_shipId && !n){ const m = document.getElementById('modal-trb'); if(m) m.remove(); trOpen(); return; }
-  if(!confirm('Completely cancel this Draft shipment?\n\nAll '+n+' line(s) will be deleted and SC stock restored.')) return;
+  if(!confirm('Completely cancel this Draft shipment?\n\nAll '+n+' line(s) will be deleted and '+trKindShort(trSrcKind(_shipRoute))+' stock restored.')) return;
   for(let pi=_shipPallets.length-1;pi>=0;pi--){
     const p = _shipPallets[pi];
     for(let li=p.lines.length-1;li>=0;li--) await _trRemoveLine(p.id, li, true);
@@ -8068,11 +8070,14 @@ function trManualEdit(pid, li, field, val){
 }
 function trRenderPallets(){
   const el = document.getElementById('ship-pallets'); if(!el) return;
+  const _hint = document.getElementById('ship-hint'); if(_hint) _hint.style.display = _shipPallets.length ? 'none' : '';
   el.innerHTML = _shipPallets.map(p=>{
     const pB = p.lines.reduce((s,l)=>s+trLineBoxes(l),0);
     const pP = p.lines.reduce((s,l)=>s+trLinePcs(l),0);
+    const _spSrc = trSrcIsSpec(_shipRoute);
+    const _srcLbl = _spSrc ? trKindShort(trSrcKind(_shipRoute)) : trSrcKind(_shipRoute);
     const rows = p.lines.length===0
-      ? '<tr><td colspan="9" style="padding:14px;text-align:center;color:var(--text2);font-size:11.5px;">No lines — add from SC Inventory or manually</td></tr>'
+      ? `<tr><td colspan="9" style="padding:14px;text-align:center;color:var(--text2);font-size:11.5px;">No lines — add from ${esc(_srcLbl)} Inventory or manually</td></tr>`
       : p.lines.map((l,li)=>{
         const vl = bxVariantLabel(l.color, l.style);
         const vTag = (!l.is_manual && vl!==bxDefaultVariant(l.style)) ? ` <span style="font-size:9px;font-weight:800;color:#7c3aed;">${esc(vl)}</span>` : '';
@@ -8098,20 +8103,20 @@ function trRenderPallets(){
         <td style="text-align:right;font-family:Consolas,monospace;font-weight:700;">${trLinePcs(l).toLocaleString()}</td>
         <td style="text-align:center;font-size:11px;color:var(--text2);">${Number(l.ppb)||'—'}</td>
         <td></td>
-        <td style="text-align:center;"><button onclick="trDelLine('${p.id}',${li})" style="border:none;background:none;color:#e53935;cursor:pointer;font-weight:800;" title="Delete + restore SC">✕</button></td>
+        <td style="text-align:center;"><button onclick="trDelLine('${p.id}',${li})" style="border:none;background:none;color:#e53935;cursor:pointer;font-weight:800;" title="Delete + restore stock">✕</button></td>
         </tr>`;
       }).join('');
-    return `<div style="border:2px solid #d8b4fe;border-radius:8px;background:#fff;">
-      <div style="background:#f3e8ff;padding:8px 14px;display:flex;align-items:center;gap:10px;border-radius:6px 6px 0 0;flex-wrap:wrap;">
-        <span style="font-weight:700;color:#7b1fa2;">📦 ${esc(p.label)}</span>
+    return `<div style="border:2px solid ${_spSrc?'#fbbf24':'#d8b4fe'};border-radius:8px;background:#fff;">
+      <div style="background:${_spSrc?'#fffbeb':'#f3e8ff'};padding:8px 14px;display:flex;align-items:center;gap:10px;border-radius:6px 6px 0 0;flex-wrap:wrap;">
+        <span style="font-weight:700;color:${_spSrc?'#b45309':'#7b1fa2'};">${_spSrc?'🏭 Bin':'📦'} ${esc(p.label)}</span>
         <span style="color:var(--text2);font-size:11px;">${p.lines.length} line(s) · <b>${pB}</b> box(es) · <b>${pP.toLocaleString()}</b> pcs</span>
-        <button class="btn btn-sm" style="margin-left:auto;background:#1565c0;color:#fff;border-color:#1565c0;" onclick="trScOpen('${p.id}')">+ SC Inventory</button>
-        <button class="btn btn-sm" onclick="trManualLine('${p.id}')">+ Manual</button>
-        <button class="btn btn-sm" style="background:#fee2e2;color:#c62828;border-color:#fecaca;" onclick="trDelPallet('${p.id}')">✕ Delete pallet</button>
+        ${_spSrc?'':`<button class="btn btn-sm" style="margin-left:auto;background:#1565c0;color:#fff;border-color:#1565c0;" onclick="trScOpen('${p.id}')">+ ${esc(_srcLbl)} Inventory</button>`}
+        <button class="btn btn-sm" style="${_spSrc?'margin-left:auto;':''}" onclick="trManualLine('${p.id}')">+ Manual</button>
+        <button class="btn btn-sm" style="background:#fee2e2;color:#c62828;border-color:#fecaca;" onclick="trDelPallet('${p.id}')">✕ ${_spSrc?'Remove this bin':'Delete pallet'}</button>
       </div>
       <div style="overflow-x:auto;">
       <table class="etbl" style="font-size:12px;">
-        <thead><tr style="background:#fce7f3;"><th class="tl">Style</th><th class="tl">Color</th><th>Size</th><th>SC Bin</th><th>Boxes</th><th>Pcs</th><th>pcs/box</th><th></th><th style="width:30px;"></th></tr></thead>
+        <thead><tr style="background:${_spSrc?'#fef3c7':'#fce7f3'};"><th class="tl">Style</th><th class="tl">Color</th><th>Size</th><th>From Bin</th><th>Boxes</th><th>Pcs</th><th>pcs/box</th><th></th><th style="width:30px;"></th></tr></thead>
         <tbody>${rows}</tbody>
       </table></div></div>`;
   }).join('');
@@ -8129,7 +8134,7 @@ let _scvCache = [], _scvSel = {}, _scvTarget = null, _scvLimit = 40, _scvDebT = 
 function trScFilterDeb(){ clearTimeout(_scvDebT); _scvDebT = setTimeout(()=>{ _scvLimit = 40; trScRender(); }, 220); }
 async function trScOpen(pid){
   _scvTarget = pid || (_shipPallets[_shipPallets.length-1]||{}).id;
-  if(!_scvTarget){ trAddPallet(); _scvTarget = _shipPallets[_shipPallets.length-1].id; }
+  if(!_scvTarget && !trSrcIsSpec(_shipRoute)){ trAddPallet(); _scvTarget = _shipPallets[_shipPallets.length-1].id; }
   if(!bxLoaded) await bxFetchStore();
   // SC 박스를 (loc, style, full color, size) 그룹으로
   const gm = {};
