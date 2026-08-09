@@ -137,7 +137,7 @@ main{max-width:1100px;margin:0 auto;padding:16px;}
     <button class="btn btn-sm" onclick="doLogout()" style="padding:2px 8px;font-size:10px;" data-i18n="logout">Log out</button>
   </span>
   <select id="lang-sel" onchange="setLang(this.value)" style="font-size:11px;padding:3px 6px;border-radius:5px;border:none;background:#1d3f66;color:#fff;"><option value="ko">한국어</option><option value="en">English</option><option value="es">Español</option></select>
-  <span style="font-size:10px;color:#9fb8d4;">v354 🚚</span>
+  <span style="font-size:10px;color:#9fb8d4;">v355 🚚</span>
 </div>
 <script type="text/javascript" src="https://js.authorize.net/v1/Accept.js" charset="utf-8"></script>
 <div id="po-viewer" style="display:none;position:fixed;top:0;right:0;width:44%;height:100vh;background:#fff;border-left:2px solid var(--border);z-index:60;box-shadow:-6px 0 20px rgba(0,0,0,.15);">
@@ -376,6 +376,7 @@ main{max-width:1100px;margin:0 auto;padding:16px;}
       <button class="btn btn-sm" onclick="bxAuditOpen()" style="background:#0f2a4a;color:#fff;border-color:#0f2a4a;" title="Boxes/qty by location per Style+Color — print or Excel for a physical stock count">🔍 Stock Count</button>
       <button class="btn btn-sm" onclick="hiOpen()" style="background:#0e7490;color:#fff;border-color:#0e7490;" title="Upload Haiti invoice → review → assign locations on arrival">🇭🇹 Haiti Receive</button>
       <button class="btn btn-sm" onclick="trOpen()" style="background:#b45309;color:#fff;border-color:#b45309;" title="SC → CA box transfer (build batch → depart → assign CA locations on arrival)">🚚 Transfer</button>
+      <button class="btn btn-sm" onclick="dvcOpen()" style="background:#334155;color:#fff;border-color:#334155;" title="Drop the DaVinci 'Inventory By Location' Excel exports here to compare against our stock, line by line">⚖ DV Compare</button>
       <input type="file" id="bx-import-file" accept=".xlsx,.xls,.csv" style="display:none;" onchange="bxImport(this.files[0]);this.value='';">
       <input type="file" id="hi-file" accept=".xlsx,.xls" style="display:none;" onchange="hiUpload(this.files[0]);this.value='';">
     </div>
@@ -5675,6 +5676,266 @@ async function skuFetch(){
 function skuStyles(){ return [...new Set(skuStore.map(k=>String(k.style)))].sort(); }
 function skuColors(style){ const s = String(style).trim(); return skuStore.filter(k=>String(k.style)===s).map(k=>k.color); }
 function skuHas(style, color){ const s = String(style).trim(), c = String(color).trim().toUpperCase(); return skuStore.some(k=>String(k.style)===s && String(k.color).toUpperCase()===c); }
+
+/* ═══ ⚖ DaVinci Compare — 병행 운영 검증 (v355) ═══
+   DaVinci 'Inventory By Location' export(엑셀)를 드롭하면 08-09 컷오버와
+   동일한 파싱/매핑 규칙으로 정규화한 뒤 우리 재고와 줄 단위로 대조한다. */
+const DVC_SPECIAL = {"1310B4XL": ["1310", "BLACK", "4XL", 48], "1314LEMONAS": ["1314", "LEMONADE", "S", 72], "1362PAPAYAXS": ["1362", "PAPAYA", "XS", 60], "2310BURGUNS": ["2310", "BURGUNDY", "S", 1], "5210ROYAL5T": ["5210", "ROYAL", "5T", 144], "8210BLACKMIX+WM": ["8210", "POLY BLACK MIX (WM)", "OS", 72], "8210CHARCOMIX+WM": ["8210", "POLY CHARCOAL MIX (WM)", "OS", 72], "8210ROYALMIX+WM": ["8210", "POLY ROYAL MIX (WM)", "OS", 72], "3010 BLACK": ["3010", "MASK BLACK", "OS", 480], "3020 WHITE": ["3020", "MASK WHITE", "OS", 480], "3030 DARK NAVY": ["3030", "MASK DARK NAVY", "OS", 480], "3040ROYAL480": ["3040", "MASK ROYAL", "OS", 480], "3050RED": ["3050", "MASK RED", "OS", 180], "3060": ["3060", "MASK GREY HEATHER", "OS", 180], "3099B": ["3099", "MASK SIRO SPAN BLACK", "OS", 480], "3330 ADULT MASK CVC WHITE": ["3330", "MASK CVC WHITE", "OS", 180], "3510 CAMO GREEN": ["3510", "MASK CAMO GREEN", "OS", 480], "3530 CAMO GREY": ["3530", "MASK CAMO GREY", "OS", 480], "3570 digital camo": ["3570", "MASK DIGITAL CAMO", "OS", 180], "3710 MESH NAVY": ["3710", "MASK MESH NAVY", "OS", 480], "3715 MESH NAVY/DARK NAVY": ["3715", "MASK MESH NAVY/DARK NAVY", "OS", 480], "3730 MESH BLACK": ["3730", "MASK MESH BLACK", "OS", 480], "3735 MESH BLACK/BLACK/WHITE": ["3735", "MASK MESH BLACK/BLACK/WHITE", "OS", 480], "3750 MESH RED": ["3750", "MASK MESH RED", "OS", 480], "3770 MESH ROYAL": ["3770", "MASK MESH ROYAL", "OS", 480], "395 XL BLACK": ["395", "MASK BLACK XL", "OS", 600], "911REDOS480": ["911", "MASK RED", "OS", 480], "J330": ["J330", "MASK BLACK", "OS", 180], "J332": ["J332", "MASK DARK NAVY", "OS", 180], "J334": ["J334", "MASK ROYAL", "OS", 180], "J336": ["J336", "MASK RED", "OS", 180], "J338": ["J338", "MASK GREY HEATHER", "OS", 180], "J340": ["J340", "MASK WHITE", "OS", 180], "J350": ["J350", "MASK DIGITAL CAMO", "OS", 180], "J371": ["J371", "MASK PINK/YELLOW", "OS", 180], "J375": ["J375", "MASK BLUE/YELLOW", "OS", 180], "K550": ["K550", "MASK BLACK", "OS", 180], "K552": ["K552", "MASK DARK NAVY", "OS", 180], "K554": ["K554", "MASK ROYAL", "OS", 180], "K556": ["K556", "MASK RED", "OS", 180], "K558": ["K558", "MASK GREY HEATHER", "OS", 180], "K560": ["K560", "MASK WHITE", "OS", 180], "K570": ["K570", "MASK DIGITAL CAMO", "OS", 1], "K591": ["K591", "MASK PINK/YELLOW", "OS", 180], "K593": ["K593", "MASK PINK/MINT", "OS", 180], "K595": ["K595", "MASK BLUE/YELLOW", "OS", 180], "K597": ["K597", "MASK BLUE/MINT", "OS", 180], "HJHTKWM": ["HJHT", "TRI KIWI", "M", 1], "HJLRL": ["HJLR", "SF ROYAL", "L", 1], "HJV30COM": ["HJV30", "COFFEE", "M", 1], "HJV30ESWBRS": ["HJV30", "BROWN ESW", "S", 1], "HJV30ESWYL": ["HJV30", "YELLOW ESW", "L", 1], "HJV30SHL": ["HJV30", "SHAMROCK", "L", 1], "HJV30SHS": ["HJV30", "SHAMROCK", "S", 1], "HM30B3XL": ["HM30", "BLACK", "3XL", 1], "HM30BRM": ["HM30", "BROWN", "M", 72], "HM30BRXL": ["HM30", "BROWN", "XL", 1], "HM30BXS": ["HM30", "BLACK", "XS", 1], "HM30NY2XL": ["HM30", "NEON YELLOW", "2XL", 1], "HM30PLM": ["HM30", "PALM", "M", 1], "HM30PLS": ["HM30", "PALM", "S", 1], "HM30TKCM": ["HM30", "CHARCOAL (TK)", "M", 72], "HM30VESWAGL": ["HM30V", "ARMY GREEN ESW", "L", 1], "HMHSNRHXL": ["HMHS", "NEON ROSE HTR", "XL", 1], "HTNRH3T": ["HTNRH", "NEON ROSE HTR", "3T", 1], "HY30BUXL": ["HY30", "BURGUNDY", "XL", 1], "HY30HM": ["HY30", "HEATHER GREY", "M", 1], "HYC20XL": ["HYC20", "SF CHARCOAL", "XL", 1], "HYHTAGM": ["HYHT", "TRI ARCTIC GREY", "M", 1], "HYHTAGS": ["HYHT", "TRI ARCTIC GREY", "S", 1], "HYHTAGXS": ["HYHT", "TRI ARCTIC GREY", "XS", 1], "PB22CXL": ["PB22", "CHARCOAL (DS)", "XL", 72], "PB22LTS": ["PB22L", "TURQUOISE", "S", 60], "PJR30WL": ["PJR30", "WHITE", "L", 72], "PJR30WM": ["PJR30", "WHITE", "M", 72], "PJR30WS": ["PJR30", "WHITE", "S", 72], "PJR30WXS": ["PJR30", "WHITE", "XS", 72], "PJV30ESWYS": ["PJV30", "YELLOW ESW", "S", 1], "PT22C4T": ["PT22", "CHARCOAL", "4T", 144], "PY30DCXL": ["PY30", "RED CLAY", "XL", 1], "PY30KXL": ["PY30", "KHAKI", "XL", 1]};
+const DVC_REMAP = {"1260S|HEATHER GREY (SIDE SEAM)": ["1260", "HEATHER GREY (SIDE SEAM)"], "1260S|ORANGE HTR (SIDE SEAM)": ["1260", "ORANGE HTR (SIDE SEAM)"], "1314S|BLACK (SIDE SEAM)": ["1314", "BLACK (SIDE SEAM)"], "1314S|CHARCOAL (HT) (SIDE SEAM)": ["1314", "CHARCOAL (HT) (SIDE SEAM)"], "1314S|DARK NAVY (SIDE SEAM)": ["1314", "DARK NAVY (SIDE SEAM)"], "1314S|RED (SIDE SEAM)": ["1314", "RED (SIDE SEAM)"], "1314S|ROYAL (SIDE SEAM)": ["1314", "ROYAL (SIDE SEAM)"], "1314S|WHITE (SIDE SEAM)": ["1314", "WHITE (SIDE SEAM)"], "1315K|BLACK (SIDE SEAM)": ["1315", "BLACK (SIDE SEAM)"], "1315S|BLACK (SIDE SEAM)": ["1315", "BLACK (SIDE SEAM)"], "1315S|CHARCOAL (HT) (SIDE SEAM)": ["1315", "CHARCOAL (HT) (SIDE SEAM)"], "1315S|DARK NAVY (SIDE SEAM)": ["1315", "DARK NAVY (SIDE SEAM)"], "1315S|LIGHT BLUE (SIDE SEAM)": ["1315", "LIGHT BLUE (SIDE SEAM)"], "1315S|LIGHT NAVY (SIDE SEAM)": ["1315", "LIGHT NAVY (SIDE SEAM)"], "1315S|MAROON (SIDE SEAM)": ["1315", "MAROON (SIDE SEAM)"], "1315S|PUTTY (SIDE SEAM)": ["1315", "PUTTY (SIDE SEAM)"], "1315S|RED (SIDE SEAM)": ["1315", "RED (SIDE SEAM)"], "1315S|ROYAL (SIDE SEAM)": ["1315", "ROYAL (SIDE SEAM)"], "1315S|WHITE (SIDE SEAM)": ["1315", "WHITE (SIDE SEAM)"], "1350|BLACK": ["1350", "SNOW BLACK"], "1350|BLUE": ["1350", "SNOW BLUE"], "1350|GREEN": ["1350", "SNOW GREEN"], "1350|KHAKI": ["1350", "SNOW KHAKI"], "1350|METAL": ["1350", "SNOW METAL"], "1350|MILITARY": ["1350", "SNOW MILITARY"], "1350|NAVY": ["1350", "SNOW NAVY"], "1350|RED": ["1350", "SNOW RED"], "1350|SKY BLUE": ["1350", "SNOW SKY BLUE"], "1350|YELLOW": ["1350", "SNOW YELLOW"], "1368S|BERMUDA (SIDE SEAM)": ["1368", "BERMUDA (SIDE SEAM)"], "1368S|BUTTER (SIDE SEAM)": ["1368", "BUTTER (SIDE SEAM)"], "1530|ONYX BLACK": ["1530", "ONYX"], "1532|ONYX BLACK": ["1532", "ONYX"], "1543|BLUE / DARK NAVY": ["1543", "SNOW BLUE / DARK NAVY"], "1543|NAVY / DARK NAVY": ["1543", "SNOW NAVY / DARK NAVY"], "1600|BLACK": ["1600", "BLACK (-2 INCHES)"], "2310S|BLACK (SIDE SEAM)": ["2310", "BLACK (SIDE SEAM)"], "2310S|LIGHT NAVY (SIDE SEAM)": ["2310", "LIGHT NAVY (SIDE SEAM)"], "2350|BLACK": ["2350", "SNOW BLACK"], "2350|BLUE": ["2350", "SNOW BLUE"], "2350|GREEN": ["2350", "SNOW GREEN"], "2350|KHAKI": ["2350", "SNOW KHAKI"], "2350|METAL": ["2350", "SNOW METAL"], "2350|MILITARY": ["2350", "SNOW MILITARY"], "2350|NAVY": ["2350", "SNOW NAVY"], "2350|RED": ["2350", "SNOW RED"], "2350|SKY BLUE": ["2350", "SNOW SKY BLUE"], "2350|YELLOW": ["2350", "SNOW YELLOW"], "3350|BLACK": ["3350", "SNOW BLACK"], "3350|BLUE": ["3350", "SNOW BLUE"], "3350|KHAKI": ["3350", "SNOW KHAKI"], "3350|METAL": ["3350", "SNOW METAL"], "3350|MILITARY": ["3350", "SNOW MILITARY"], "3350|NAVY": ["3350", "SNOW NAVY"], "3350|SKY BLUE": ["3350", "SNOW SKY BLUE"], "3350|YELLOW": ["3350", "SNOW YELLOW"], "5350|BLACK": ["5350", "SNOW BLACK"], "5350|BLUE": ["5350", "SNOW BLUE"], "5350|KHAKI": ["5350", "SNOW KHAKI"], "5350|METAL": ["5350", "SNOW METAL"], "5350|MILITARY": ["5350", "SNOW MILITARY"], "5350|NAVY": ["5350", "SNOW NAVY"], "5350|RED": ["5350", "SNOW RED"], "5350|SKY BLUE": ["5350", "SNOW SKY BLUE"], "8110|ATHLETIC ORANGE": ["8110", "POLY ATHLETIC ORANGE"], "8110|BLACK": ["8110", "POLY BLACK"], "8110|CHARCOAL": ["8110", "POLY CHARCOAL"], "8110|KELLY GREEN": ["8110", "POLY KELLY GREEN"], "8110|NAVY": ["8110", "POLY NAVY"], "8110|NEON GREEN": ["8110", "POLY NEON GREEN"], "8110|NEON ORANGE": ["8110", "POLY NEON ORANGE"], "8110|NEON YELLOW": ["8110", "POLY NEON YELLOW"], "8110|RED": ["8110", "POLY RED"], "8110|ROYAL": ["8110", "POLY ROYAL"], "8110|TEAL": ["8110", "POLY TEAL"], "8110|TURQUOISE": ["8110", "POLY TURQUOISE"], "8110|WHITE": ["8110", "POLY WHITE"], "8150|CHARCOAL": ["8150", "CATIONIC CHARCOAL"], "8150|KELLY GREEN": ["8150", "CATIONIC KELLY"], "8150|NAVY": ["8150", "CATIONIC NAVY"], "8150|RED": ["8150", "CATIONIC RED"], "8150|ROYAL": ["8150", "CATIONIC ROYAL"], "8155|BLACK": ["8155", "SPACEDYE BLACK"], "8155|BLACKOUT GREEN": ["8155", "SPACEDYE BLACKOUT GREEN"], "8155|ELECTRIC BLUE": ["8155", "SPACEDYE ELECTRIC BLUE"], "8155|GREY": ["8155", "SPACEDYE GREY"], "8155|NAVY": ["8155", "SPACEDYE NAVY"], "8155|NEON YELLOW": ["8155", "SPACEDYE NEON YELLOW"], "8155|ORANGE": ["8155", "SPACEDYE ORANGE"], "8155|ROYAL": ["8155", "SPACEDYE ROYAL"], "8155|TRUE RED": ["8155", "SPACEDYE TRUE RED"], "8180|BLACK": ["8180", "MESH BLACK"], "8180|NAVY": ["8180", "MESH NAVY"], "8180|RED": ["8180", "MESH RED"], "8180|ROYAL": ["8180", "MESH ROYAL"], "1368S|SAPPHIRE ADULT SS (SIDE SEAM)": ["1368", "SAPPHIRE ADULT SS (SIDE SEAM)"], "1315S|ARMY GREEN (SIDE SEAM)": ["1315", "ARMY GREEN (SIDE SEAM)"], "30|MENS SS KJ BLACK": ["30", "BLACK (KJ)"], "3310|KJ BLACK": ["3310", "BLACK (KJ)"], "30/1|MENS SS TK CHARCOAL": ["30/1", "CHARCOAL (TK)"], "1368|PEWTER XL SIDE SEAM (SIDE SEAM)": ["1368", "PEWTER XL (SIDE SEAM)"]};
+const DVC_TYPO = {'NEON SYK BLUE HTR':'NEON SKY BLUE HTR','TWILIGHT BALCK':'TWILIGHT BLACK','CHACOAL HTR':'CHARCOAL HTR','AERTICHOKE':'ARTICHOKE','AHTLETIC HTR':'ATHLETIC HTR','BLUBERRY':'BLUEBERRY','DARK NAVH':'DARK NAVY','SEA SIDE':'SEASIDE','ICE BERG':'ICEBERG','HONEY COMB':'HONEYCOMB','SKYBLUE':'SKY BLUE','ABYYS':'ABYSS','NAUTRAL':'NATURAL','CHARMBRAY':'CHAMBRAY','EVER GREEN':'EVERGREEN','MAK':'MAKO','LT BLUE HTR':'LIGHT BLUE HTR'};
+const DVC_SIZES = new Set(['XXS','XS','S','M','L','XL','2XL','3XL','4XL','5XL','6XL','2T','3T','4T','5T','2','3','4','5','6','7','6M','12M','18M','24M','XS(7)']);
+const DVC_CAT = new Set(['ADULT','YOUTH','TODDLER','JUVY','JUNIOR','INFANT']);
+const DVC_TYPE = new Set(['SS','LS','S/S','L/S','TANK','TANKTOP','HOODIE','VNECK','V-NECK','RAGLAN','TEE','TOP','MASK','SNOW','WASH','PIGMENT','POLY','CATIONIC','SPACEDYE','MESH','CAMO','LONG','SLEEVE','SHORT','CREW','FLEECE','ZIP','FULL','QUARTER','1/4']);
+function dvcFixPre(c){
+  c = c.replace(/^SSS\s+/,'');
+  c = DVC_TYPO[c] || c;
+  c = c.replace(/^HT\s+(.+)$/, '$1 (HT)').replace(/^TK\s+(.+)$/, '$1 (TK)');
+  c = c.replace(/^(.+)\+HT$/, '$1 (HT)').replace(/^(.+)\+TK$/, '$1 (TK)');
+  c = c.replace(/^DS\s+(.+)$/, '$1 (DS)').replace(/^(.+)\s+DS$/, '$1 (DS)');
+  return c.replace(/\s+/g,' ').trim();
+}
+function dvcPfd(IT, D, ppb){
+  const toks = D.split(' ');
+  let size = DVC_SIZES.has(toks[toks.length-1]) ? toks[toks.length-1] : null;
+  if(size==='4') size='4T';
+  const m = IT.match(/^(\d{4})/); const st = m ? m[1] : null;
+  const suf = IT.includes('+') ? IT.split('+').pop() : '';
+  if(st==='1290') return ['1290','20/1 PFD (F)',size,ppb];
+  if(st==='1292') return ['1292','20/1 PFD',size,ppb];
+  if(st==='1390') return ['1390', suf==='J'?'30/1 PFD (J)':(suf==='S'?'30/1 PFD (S)':'30/1 PFD (L)'), size, ppb];
+  if(st==='1392') return ['1392','30/1 PFD',size,ppb];
+  if(st==='1394'){ const m2=IT.match(/^1394(2XL|3XL|XS|XL|S|M|L)$/); return ['1394','30/1 PFD', m2?m2[1]:size, ppb]; }
+  if(st==='1248') return ['1248','PFD',size,ppb];
+  if(st==='1615') return ['1615','PFD',size,ppb];
+  if(st==='1690') return ['1690','PFD',size,ppb];
+  if(st==='5390') return ['5390','PFD',size||'4T',ppb];
+  if(st==='7390') return ['7390','30/1 PFD',size,ppb];
+  if(st==='2390') return ['2390','PFD',size,ppb];
+  if(IT.startsWith('PJR30V')) return ['PJR30V','WHITE PFD',size,ppb];
+  return null;
+}
+function dvcTryMap(style, color){
+  const key = style+'|'+color;
+  if(DVC_REMAP[key]) return DVC_REMAP[key];
+  if(skuHas(style, color)) return null;
+  if(skuHas(style, 'SNOW '+color)) return [style,'SNOW '+color];
+  if(color==='ONYX BLACK' && skuHas(style,'ONYX')) return [style,'ONYX'];
+  if(style==='1600' && color.indexOf('BLACK')===0) return [style,'BLACK (-2 INCHES)'];
+  for(const p of ['POLY ','CATIONIC ','SPACEDYE ','MESH ']){
+    if(skuHas(style, p+color)) return [style, p+color];
+    const kg = p+color.replace('KELLY GREEN','KELLY');
+    if(skuHas(style, kg)) return [style, kg];
+  }
+  const c2 = color.replace('LT ','LIGHT ');
+  if(c2!==color && skuHas(style, c2)) return [style, c2];
+  const sm = style.match(/^(\d{4})[SK]$/);
+  if(sm){
+    const base = sm[1];
+    const cs = /\(SIDE SEAM\)/.test(color) ? color : color+' (SIDE SEAM)';
+    return [base, cs];
+  }
+  return null;
+}
+// DaVinci 행 배열 → 정규화 라인 [{loc,style,color,size,ppb,qty}]
+function dvcParse(rows){
+  const out=[], skipped=[];
+  for(const r of rows){
+    const [loc, zone, item, uom, lot, sub, desc, avail] = r;
+    const qty = parseInt(avail)||0;
+    if(qty<=0) continue;
+    const IT = String(item||'').trim();
+    const L = String(loc||'?').trim().toUpperCase();
+    // 특수 품목 (마스크/private label)
+    if(DVC_SPECIAL[IT]){
+      const [st,co,sz,pb] = DVC_SPECIAL[IT];
+      out.push({loc:L, style:st, color:co, size:sz, ppb:pb, qty});
+      continue;
+    }
+    const um = String(uom||'').match(/:\s*(\d+)/);
+    let ppb = um ? parseInt(um[1]) : (/^\d+$/.test(String(uom||'').trim()) ? parseInt(uom) : (String(uom||'').trim().toUpperCase()==='EA' ? 1 : 0));
+    if(!ppb){ skipped.push([L,IT,String(desc||''),qty,'ppb?']); continue; }
+    let D = String(desc||'').trim().toUpperCase().replace(/\s+/g,' ');
+    const ITU = IT.toUpperCase();
+    const flags = new Set();
+    if(/\(\s*US\s*\)/.test(D) || ITU.endsWith('+US')) flags.add('US');
+    if(/\(\s*(SIDE|SIE)\s*SEAM\s*\)/.test(D) || ITU.endsWith('+SS')) flags.add('SS');
+    if(/\(\s*TK\s*\)/.test(D) || ITU.endsWith('+TK')) flags.add('TK');
+    if(/\(\s*\d{4}\s*S\s*\)/.test(D)) flags.add('SS');
+    if(ITU.endsWith('+ESW')) flags.add('ESW');
+    let D2 = D.replace(/\(\s*(US|(SIDE|SIE)\s*SEAM|TUBULAR|TK|HT|WM|ESW|-2\s*IN(CHES)?|\d+\s*PCS|\d{4}\s*S|\d+)\s*\)/g,' ').replace(/\s+/g,' ').trim();
+    const t = D2.split(' ');
+    if(t.length<2){ skipped.push([L,IT,D,qty,'desc?']); continue; }
+    let style = t[0];
+    if('PFD'===undefined){}
+    if(D2.includes('PFD')){
+      const pm = dvcPfd(ITU, D2, ppb);
+      if(pm && pm[2]){ out.push({loc:L, style:pm[0], color:pm[1], size:pm[2], ppb:pm[3], qty}); continue; }
+      skipped.push([L,IT,D,qty,'PFD?']); continue;
+    }
+    let size = t[t.length-1], body = t.slice(1,-1);
+    if(!DVC_SIZES.has(size)){
+      const s2 = String(sub||'').trim().toUpperCase();
+      if(DVC_SIZES.has(s2)){ size = s2; body = t.slice(1); }
+      else { skipped.push([L,IT,D,qty,'size?']); continue; }
+    }
+    let ci = 0;
+    while(ci<body.length && (DVC_CAT.has(body[ci]) || DVC_TYPE.has(body[ci]))) ci++;
+    let color = body.slice(ci).join(' ').trim();
+    if(!color){
+      const lm = String(lot||'').toUpperCase().match(/^([A-Z /()+.-]+?)\s*\(\d+\)/);
+      if(lm) color = lm[1].trim();
+    }
+    if(!color){ skipped.push([L,IT,D,qty,'color?']); continue; }
+    color = dvcFixPre(color);
+    if(flags.has('TK') && !color.includes('(TK)')) color += ' (TK)';
+    if(flags.has('SS') && !color.includes('(SIDE SEAM)')) color += ' (SIDE SEAM)';
+    if(flags.has('US') && !color.includes('(US)')) color += ' (US)';
+    if(flags.has('ESW') && !color.includes('ESW')) color += ' ESW';
+    const mp = dvcTryMap(style, color);
+    if(mp){ style = mp[0]; color = mp[1]; }
+    out.push({loc:L, style, color, size, ppb, qty});
+  }
+  return {lines:out, skipped};
+}
+function dvcDetectWh(rows){
+  let h=0, ca=0, n=0;
+  for(const r of rows.slice(0, 400)){
+    const L = String(r[0]||'').toUpperCase(); n++;
+    if(/^H\d/.test(L) || /-\d/.test(L)) h++;
+    if(/^[A-Z]\d{2}[A-Z]$/.test(L)) ca++;
+  }
+  return ca > h ? 'CA' : 'SC';
+}
+async function dvcReadXlsx(file){
+  await loadXlsxLib();
+  const buf = await file.arrayBuffer();
+  const wb = XLSX.read(buf, {type:'array'});
+  const ws = wb.Sheets[wb.SheetNames[0]];
+  const rows = XLSX.utils.sheet_to_json(ws, {header:1, raw:true});
+  const hdr = (rows[0]||[]).map(x=>String(x||'').toLowerCase());
+  if(hdr[0]!=='location' || !hdr.includes('styler')) throw new Error(file.name+': DaVinci Inventory By Location export 형식이 아닙니다');
+  return rows.slice(1).filter(r=>r && r.length);
+}
+function dvcOpen(){
+  const ex = document.getElementById('modal-dvc'); if(ex) ex.remove();
+  const div = document.createElement('div');
+  div.id = 'modal-dvc';
+  div.style.cssText = 'position:fixed;inset:0;background:rgba(15,23,42,.6);z-index:120;display:flex;align-items:center;justify-content:center;padding:10px;';
+  div.innerHTML = `<div style="background:#fff;border-radius:12px;max-width:1200px;width:98vw;max-height:96vh;display:flex;flex-direction:column;overflow:hidden;">
+    <div style="background:#334155;color:#fff;padding:10px 16px;font-weight:800;display:flex;align-items:center;gap:10px;">⚖ DaVinci Compare
+      <span style="font-weight:400;font-size:11px;opacity:.85;">DaVinci → Warehouse → Inventory By Location → Export Lines As Excel 파일을 넣으세요 (SC/CA 자동 인식)</span>
+      <button class="btn btn-sm" style="margin-left:auto;background:transparent;color:#cbd5e1;border-color:#64748b;" onclick="document.getElementById('modal-dvc').remove()">✕</button></div>
+    <div style="padding:12px 16px;border-bottom:1px solid var(--border);background:#f8fafc;display:flex;gap:10px;align-items:center;flex-wrap:wrap;">
+      <input type="file" id="dvc-files" accept=".xlsx,.xls" multiple class="fi" style="font-size:12px;">
+      <button class="btn btn-sm btn-primary" style="background:#334155;border-color:#334155;" onclick="dvcRun()">⚖ Compare</button>
+      <span id="dvc-status" style="font-size:11.5px;color:var(--text2);"></span>
+      <button class="btn btn-sm" id="dvc-xl" style="margin-left:auto;display:none;" onclick="dvcExcel()">⬇ Excel</button>
+    </div>
+    <div id="dvc-body" style="overflow-y:auto;flex:1;padding:10px 16px;">
+      <div class="muted" style="padding:20px;font-size:12px;">📋 매주 토요일 아침 하는 법:<br><br>
+      1. DaVinci 로그인 → 창고 선택(SC WAREHOUSE) → Warehouse → Inventory By Location → Search → <b>Export Lines As Excel</b><br>
+      2. 창고를 Eastvale CA로 바꾸고 한 번 더 export<br>
+      3. 받은 엑셀 2개를 위에 선택하고 <b>Compare</b><br><br>
+      우리 시스템과 DaVinci를 bin+스타일+칼라+사이즈 단위로 대조해서 차이만 보여줍니다.<br>
+      CA의 SPECIAL bin(Melmarc)과 In Transit 박스는 DaVinci에 없으므로 자동 제외/별도 표시됩니다.</div>
+    </div></div>`;
+  document.body.appendChild(div);
+}
+window._dvcRes = null;
+async function dvcRun(){
+  const inp = document.getElementById('dvc-files');
+  if(!inp.files.length){ showToast('⚠ 엑셀 파일을 선택하세요'); return; }
+  const st = document.getElementById('dvc-status');
+  st.textContent = '분석 중...';
+  try{
+    if(!skuLoaded) await skuFetch();
+    if(!bxLoaded) await bxFetchStore();
+    const perWh = {};
+    for(const f of inp.files){
+      const rows = await dvcReadXlsx(f);
+      const wh = dvcDetectWh(rows);
+      const p = dvcParse(rows);
+      if(perWh[wh]){ p.lines.forEach(l=>perWh[wh].lines.push(l)); p.skipped.forEach(x=>perWh[wh].skipped.push(x)); perWh[wh].files.push(f.name); }
+      else perWh[wh] = {lines:p.lines, skipped:p.skipped, files:[f.name]};
+    }
+    const res = {whs:{}, at:new Date().toLocaleString()};
+    for(const wh of Object.keys(perWh)){
+      const dv = new Map();
+      perWh[wh].lines.forEach(l=>{ const k=l.loc+'|'+l.style+'|'+l.color+'|'+l.size; dv.set(k,(dv.get(k)||0)+l.qty); });
+      const us = new Map(); let transit=0;
+      bxStore.forEach(b=>{
+        const L = String(b.loc||'?').toUpperCase();
+        if(bxWh(b)!==wh) return;
+        if(wh==='CA' && L.startsWith('SPECIAL')) return;
+        const k=L+'|'+b.style+'|'+String(b.color).toUpperCase()+'|'+String(b.size).toUpperCase();
+        us.set(k,(us.get(k)||0)+1);
+      });
+      const diffs=[];
+      const keys = new Set([...dv.keys(), ...us.keys()]);
+      let dvT=0, usT=0;
+      dv.forEach(v=>dvT+=v); us.forEach(v=>usT+=v);
+      keys.forEach(k=>{
+        const a=dv.get(k)||0, b=us.get(k)||0;
+        if(a!==b) diffs.push({k, dv:a, us:b, d:b-a});
+      });
+      diffs.sort((x,y)=>Math.abs(y.d)-Math.abs(x.d) || x.k.localeCompare(y.k));
+      res.whs[wh] = {files:perWh[wh].files, dvBoxes:dvT, usBoxes:usT, lines:keys.size, diffs, skipped:perWh[wh].skipped};
+    }
+    window._dvcRes = res;
+    dvcRender();
+    document.getElementById('dvc-xl').style.display='';
+    st.textContent = '완료 · '+res.at;
+  }catch(e){ st.textContent=''; showToast('⚠ '+(e.message||e)); }
+}
+function dvcRender(){
+  const res = window._dvcRes; if(!res) return;
+  const el = document.getElementById('dvc-body');
+  let html = '';
+  for(const wh of Object.keys(res.whs).sort()){
+    const W = res.whs[wh];
+    const ok = W.diffs.length===0;
+    html += `<div style="border:2px solid ${ok?'#86efac':'#fca5a5'};border-radius:10px;margin-bottom:14px;overflow:hidden;">
+      <div style="background:${ok?'#dcfce7':'#fee2e2'};padding:10px 14px;display:flex;gap:14px;align-items:center;flex-wrap:wrap;">
+        <b style="font-size:14px;color:${ok?'#15803d':'#b91c1c'};">${ok?'✅':'⚠'} [${wh}] ${ok?'완전 일치':'차이 '+W.diffs.length+'줄'}</b>
+        <span style="font-size:11.5px;color:var(--text2);">DaVinci <b>${W.dvBoxes.toLocaleString()}</b> boxes · 우리 <b>${W.usBoxes.toLocaleString()}</b> boxes · 차이 <b style="color:${W.usBoxes-W.dvBoxes===0?'#15803d':'#b91c1c'};">${(W.usBoxes-W.dvBoxes)>0?'+':''}${(W.usBoxes-W.dvBoxes).toLocaleString()}</b></span>
+        <span style="font-size:10.5px;color:var(--text2);margin-left:auto;">${esc(W.files.join(', '))}</span>
+      </div>`;
+    if(W.diffs.length){
+      html += `<div style="max-height:340px;overflow-y:auto;"><table class="etbl" style="font-size:11.5px;">
+        <thead><tr><th class="tl">Bin</th><th class="tl">Style</th><th class="tl">Color</th><th>Size</th><th>DaVinci</th><th>우리</th><th>차이</th></tr></thead><tbody>`;
+      for(const d of W.diffs.slice(0,500)){
+        const [loc,sty,col,sz] = d.k.split('|');
+        html += `<tr><td class="tl" style="font-family:Consolas,monospace;font-weight:700;">${esc(loc)}</td><td class="tl" style="font-family:Consolas,monospace;">${esc(sty)}</td><td class="tl">${esc(col)}</td><td style="text-align:center;">${esc(sz)}</td>
+          <td style="text-align:center;">${d.dv}</td><td style="text-align:center;">${d.us}</td>
+          <td style="text-align:center;font-weight:800;color:${d.d>0?'#1d4ed8':'#b91c1c'};">${d.d>0?'+':''}${d.d}</td></tr>`;
+      }
+      html += '</tbody></table>'+(W.diffs.length>500?'<div class="muted" style="padding:6px 12px;font-size:11px;">...외 '+(W.diffs.length-500)+'줄 — Excel로 받아 보세요</div>':'')+'</div>';
+    }
+    if(W.skipped.length){
+      html += `<div style="padding:8px 14px;background:#fffbeb;font-size:11px;color:#92400e;">⚠ 파싱 제외 ${W.skipped.length}줄 (새로운 형식의 품목 — Excel 리포트에 포함): `+
+        W.skipped.slice(0,5).map(x=>esc(x[1])).join(', ')+(W.skipped.length>5?' ...':'')+'</div>';
+    }
+    html += '</div>';
+  }
+  html += `<div class="muted" style="font-size:10.5px;padding:4px 2px;">기준: bin + 스타일 + 칼라 + 사이즈별 박스 수. 08-09 컷오버와 동일한 이름 정규화 규칙 적용.
+    "+"는 우리가 더 많음(DaVinci에서 아직 안 뺀 것일 수 있음), "−"는 DaVinci가 더 많음(우리 쪽에서 뺐거나 이동한 것일 수 있음).
+    In Transit 중인 박스는 어느 창고에도 안 잡히므로 transfer 진행 중이면 그만큼 차이로 보일 수 있습니다.</div>`;
+  el.innerHTML = html;
+}
+async function dvcExcel(){
+  const res = window._dvcRes; if(!res) return;
+  await loadXlsxLib();
+  const wb = XLSX.utils.book_new();
+  for(const wh of Object.keys(res.whs).sort()){
+    const W = res.whs[wh];
+    const rows = [['Bin','Style','Color','Size','DaVinci Boxes','Our Boxes','Diff']];
+    W.diffs.forEach(d=>{ const [loc,sty,col,sz]=d.k.split('|'); rows.push([loc,sty,col,sz,d.dv,d.us,d.d]); });
+    if(W.skipped.length){ rows.push([]); rows.push(['-- 파싱 제외 --','item','desc','qty','사유']); W.skipped.forEach(x=>rows.push([x[0],x[1],x[2],x[3],x[4]])); }
+    XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet(rows), wh+' diff');
+  }
+  XLSX.writeFile(wb, 'DV_compare_'+new Date().toISOString().slice(0,10)+'.xlsx');
+}
+
 function skuDist(a, b){
   if(Math.abs(a.length-b.length) > 2) return 9;
   const dp = Array.from({length:b.length+1}, (_,j)=>j);
