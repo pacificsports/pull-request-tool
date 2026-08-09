@@ -137,7 +137,7 @@ main{max-width:1100px;margin:0 auto;padding:16px;}
     <button class="btn btn-sm" onclick="doLogout()" style="padding:2px 8px;font-size:10px;" data-i18n="logout">Log out</button>
   </span>
   <select id="lang-sel" onchange="setLang(this.value)" style="font-size:11px;padding:3px 6px;border-radius:5px;border:none;background:#1d3f66;color:#fff;"><option value="ko">한국어</option><option value="en">English</option><option value="es">Español</option></select>
-  <span style="font-size:10px;color:#9fb8d4;">v357 🚚</span>
+  <span style="font-size:10px;color:#9fb8d4;">v358 🚚</span>
 </div>
 <script type="text/javascript" src="https://js.authorize.net/v1/Accept.js" charset="utf-8"></script>
 <div id="po-viewer" style="display:none;position:fixed;top:0;right:0;width:44%;height:100vh;background:#fff;border-left:2px solid var(--border);z-index:60;box-shadow:-6px 0 20px rgba(0,0,0,.15);">
@@ -5232,6 +5232,7 @@ let pcMoves = {};   // 'STYLE|COLOR|SIZE' -> {delta,at,by,note} 최근 1건 (14�
 async function loadPcRoom(){
   if(!stLoaded) stFetch().then(()=>{ if($('pc-body') && typeof renderPcRoom==='function') renderPcRoom(); });
   if(typeof skuLoaded!=='undefined' && !skuLoaded && typeof skuFetch==='function') skuFetch().then(()=>{ if($('pc-body') && typeof renderPcRoom==='function') renderPcRoom(); });
+  if(typeof bxLoaded!=='undefined' && !bxLoaded && typeof bxFetchStore==='function') bxFetchStore().then(()=>{ if($('pc-body') && typeof renderPcRoom==='function') renderPcRoom(); });
   try{
     const r = await sbFetch('/rest/v1/pr_pcroom?select=k,style,color,qty,bqty,bnote,sizes,wh,locs,updated_at,updated_by&order=style.asc,color.asc');
     if(r.ok){ pcStore = await r.json(); pcLoaded = true; }
@@ -5520,40 +5521,29 @@ function pcSizesFor(style){
   const s2 = rows.find(r=>Array.isArray(r.sizes) && r.sizes.length);
   return (s2 && s2.sizes) || PC_ADULT;
 }
-function renderPcRoom(){
-  const el = $('pc-body'); if(!el) return;
+// ── PC Room 뼈대 헬퍼 (v358): Full Box 칼라 포함 + 접힌 스타일은 펼칠 때 그림 ──
+function pcStyleColors(sty, q){
+  const bx = (window._pcBxCols && window._pcBxCols[String(sty)]) ? [...window._pcBxCols[String(sty)]]
+    : ((typeof bxStore!=='undefined' && Array.isArray(bxStore)) ? bxStore.filter(b=>String(b.style)===String(sty)).map(b=>String(b.color).toUpperCase()) : []);
+  let colors = [...new Set([].concat(
+    pcStore.filter(r=>String(r.style)===String(sty)).map(r=>String(r.color).toUpperCase()),
+    (typeof skuLoaded!=='undefined' && skuLoaded) ? skuColors(sty).map(c=>String(c).toUpperCase()) : [],
+    bx
+  ))].sort();
+  const styMatch = !q || String(sty).toLowerCase().includes(q);
+  if(q && !styMatch) colors = colors.filter(c=>bxSearchMatch(q, sty, c));
+  return colors;
+}
+function pcLazyTgl(d){
+  if(!d.open) return;
+  const inner = d.querySelector('.pc-inner');
+  if(inner && !inner.innerHTML.trim()) inner.innerHTML = pcStyleInner(d.dataset.sty);
+}
+function pcStyleInner(sty){
   const q = (($('pc-search')||{}).value||'').trim().toLowerCase();
-  const byStyle = {};
-  pcStore.forEach(r=>{
-    if(q && !(String(r.style).toLowerCase().includes(q) || String(r.color).toLowerCase().includes(q))) return;
-    (byStyle[r.style] = byStyle[r.style] || []).push(r);
-  });
-  const styles = Object.keys(byStyle).sort();
-  if(!styles.length){ el.innerHTML = '<div class="muted" style="padding:14px;">' + (pcLoaded ? 'No inventory — start with ＋ Add Style' : 'Loading...') + '</div>'; return; }
-  const lastUp = pcStore.reduce((a,r)=> (r.updated_at||'') > a ? r.updated_at : a, '');
-  const pickBase = (($('pc-order-pick')||{}).value)||'';
-  const pickRec = pickBase ? (savedCache||[]).find(s=>s.base===pickBase) : null;
-  el.innerHTML = `<div style="display:flex;gap:14px;align-items:center;margin-bottom:10px;flex-wrap:wrap;">
-      <span style="font-weight:800;color:#0f2a4a;">Total: <span id="pc-grand">${pcGrandTotal().toLocaleString()}</span> pcs</span>
-      <span class="muted" style="font-size:11px;">Last updated: ${lastUp ? new Date(lastUp).toLocaleString() : '—'}</span>
-      <span class="muted" style="font-size:11px;">Type <b>+12</b> in a cell to add · <b>-8</b> to deduct · plain number sets the value</span>
-    </div>
-    <div style="display:flex;gap:12px;align-items:flex-start;">
-    <div style="flex:1;min-width:0;">` + styles.map(sty=>{
-    const rows = byStyle[sty];
-    const styMatch = !q || String(sty).toLowerCase().includes(q);
-    // 마스터 SKU 칼라 전체 + 재고에 있는 칼라 (마스터가 뼈대 — 재고 0이어도 칸이 준비됨)
-    let colors = [...new Set([].concat(
-      pcStore.filter(r=>String(r.style)===String(sty)).map(r=>String(r.color).toUpperCase()),
-      (typeof skuLoaded!=='undefined' && skuLoaded) ? skuColors(sty).map(c=>String(c).toUpperCase()) : []
-    ))].sort();
-    if(q && !styMatch) colors = colors.filter(c=>bxSearchMatch(q, sty, c));
-    const sizes = pcSizesFor(sty);
-    return `<details open style="margin-bottom:10px;border:1px solid var(--border);border-radius:8px;">
-      <summary style="cursor:pointer;padding:8px 12px;font-weight:800;color:#0f2a4a;background:#f1f5f9;border-radius:8px;">
-        ${esc(String(sty))} <span class="muted" style="font-weight:400;">(${colors.length} colors)</span>
-        <span style="float:right;font-family:Consolas,monospace;" id="pcst-${cssId(String(sty))}">${pcStyleTotal(sty).toLocaleString()}</span></summary>
-      <div style="overflow-x:auto;padding:6px 10px 10px;">
+  const colors = pcStyleColors(sty, q);
+  const sizes = pcSizesFor(sty);
+  return `<div style="overflow-x:auto;padding:6px 10px 10px;">
       <table class="etbl" style="font-size:11.5px;">
         <thead><tr><th class="tl" style="min-width:120px;">Color</th><th>WH</th>${sizes.map(s2=>`<th>${s2}</th>`).join('')}<th>Total</th><th class="tl" style="white-space:nowrap;">Check</th><th style="width:52px;"></th></tr></thead>
         <tbody>${colors.map(col=>['SC','CA'].map((w,wi)=>{
@@ -5578,7 +5568,44 @@ function renderPcRoom(){
         })()).join('')}</tbody>
       </table>
       <button class="btn btn-sm" style="margin-top:5px;" onclick="pcAddColor('${esc(String(sty))}')">＋ Color</button>
-      </div></details>`;
+      </div>`;
+}
+function renderPcRoom(){
+  const el = $('pc-body'); if(!el) return;
+  const q = (($('pc-search')||{}).value||'').trim().toLowerCase();
+  const byStyle = {};
+  pcStore.forEach(r=>{
+    if(q && !(String(r.style).toLowerCase().includes(q) || String(r.color).toLowerCase().includes(q))) return;
+    (byStyle[r.style] = byStyle[r.style] || []).push(r);
+  });
+  // Full Box 재고에 있는 스타일/칼라 = 뼈대. 재고 0이어도 칸이 준비되고, 첫 입력 때 행이 생성됨
+  window._pcBxCols = {};
+  if(typeof bxStore!=='undefined' && Array.isArray(bxStore)) bxStore.forEach(b=>{
+    const st = String(b.style); (window._pcBxCols[st] = window._pcBxCols[st] || new Set()).add(String(b.color).toUpperCase());
+  });
+  const styleSet = new Set(Object.keys(byStyle));
+  Object.keys(window._pcBxCols).forEach(st=>{
+    if(!q || st.toLowerCase().includes(q) || [...window._pcBxCols[st]].some(c=>bxSearchMatch(q, st, c))) styleSet.add(st);
+  });
+  const styles = [...styleSet].sort();
+  if(!styles.length){ el.innerHTML = '<div class="muted" style="padding:14px;">' + (pcLoaded ? 'No inventory — start with ＋ Add Style' : 'Loading...') + '</div>'; return; }
+  const lastUp = pcStore.reduce((a,r)=> (r.updated_at||'') > a ? r.updated_at : a, '');
+  const pickBase = (($('pc-order-pick')||{}).value)||'';
+  const pickRec = pickBase ? (savedCache||[]).find(s=>s.base===pickBase) : null;
+  el.innerHTML = `<div style="display:flex;gap:14px;align-items:center;margin-bottom:10px;flex-wrap:wrap;">
+      <span style="font-weight:800;color:#0f2a4a;">Total: <span id="pc-grand">${pcGrandTotal().toLocaleString()}</span> pcs</span>
+      <span class="muted" style="font-size:11px;">Last updated: ${lastUp ? new Date(lastUp).toLocaleString() : '—'}</span>
+      <span class="muted" style="font-size:11px;">Type <b>+12</b> in a cell to add · <b>-8</b> to deduct · plain number sets the value</span>
+    </div>
+    <div style="display:flex;gap:12px;align-items:flex-start;">
+    <div style="flex:1;min-width:0;">` + styles.map(sty=>{
+    const hasPc = !!byStyle[sty];
+    const expanded = hasPc || !!q;
+    return `<details ${expanded?'open':''} data-sty="${esc(String(sty))}" ontoggle="pcLazyTgl(this)" style="margin-bottom:10px;border:1px solid var(--border);border-radius:8px;">
+      <summary style="cursor:pointer;padding:8px 12px;font-weight:800;color:${hasPc?'#0f2a4a':'#64748b'};background:#f1f5f9;border-radius:8px;">
+        ${esc(String(sty))} <span class="muted" style="font-weight:400;">(${pcStyleColors(sty,q).length} colors)</span>
+        <span style="float:right;font-family:Consolas,monospace;" id="pcst-${cssId(String(sty))}">${pcStyleTotal(sty).toLocaleString()}</span></summary>
+      <div class="pc-inner">${expanded ? pcStyleInner(sty) : ''}</div></details>`;
   }).join('') + `</div>
     ${pickRec ? `<div style="flex:0 0 280px;position:sticky;top:10px;z-index:8;border:1.5px solid #c4b5fd;border-radius:10px;background:#faf5ff;max-height:80vh;overflow-y:auto;">
       <div style="background:#7c3aed;color:#fff;padding:8px 12px;border-radius:8px 8px 0 0;font-weight:800;font-size:12px;">📋 ${esc((pickRec.meta&&pickRec.meta.cust)||'')} — PO ${esc((pickRec.meta&&pickRec.meta.po)||'')}</div>
