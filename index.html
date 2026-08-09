@@ -137,7 +137,7 @@ main{max-width:1100px;margin:0 auto;padding:16px;}
     <button class="btn btn-sm" onclick="doLogout()" style="padding:2px 8px;font-size:10px;" data-i18n="logout">Log out</button>
   </span>
   <select id="lang-sel" onchange="setLang(this.value)" style="font-size:11px;padding:3px 6px;border-radius:5px;border:none;background:#1d3f66;color:#fff;"><option value="ko">한국어</option><option value="en">English</option><option value="es">Español</option></select>
-  <span style="font-size:10px;color:#9fb8d4;">v361 🚚</span>
+  <span style="font-size:10px;color:#9fb8d4;">v362 🚚</span>
 </div>
 <script type="text/javascript" src="https://js.authorize.net/v1/Accept.js" charset="utf-8"></script>
 <div id="po-viewer" style="display:none;position:fixed;top:0;right:0;width:44%;height:100vh;background:#fff;border-left:2px solid var(--border);z-index:60;box-shadow:-6px 0 20px rgba(0,0,0,.15);">
@@ -1773,7 +1773,7 @@ async function enterApp(){
   await migrateLocal();
   await loadSavedList();
   // 오더 파싱 화면에서 재고 힌트(📦풀박스+location · PC자투리)가 바로 보이도록 백그라운드 로드
-  bxFetchStore().then(()=>{ if(poLines.length) renderTable(); }).catch(()=>{});
+  bxLoadCached().then(hit=>{ if(hit && poLines.length) renderTable(); return bxFetchStore(); }).then(()=>{ if(poLines.length) renderTable(); }).catch(()=>{});
   sbFetch('/rest/v1/pr_pcroom?select=k,style,color,qty,bqty,bnote,sizes,wh,locs').then(async r=>{
     if(r.ok){ pcStore = await r.json(); pcLoaded = true; if(poLines.length) renderTable(); }
   }).catch(()=>{});
@@ -5235,7 +5235,7 @@ let pcMoves = {};   // 'STYLE|COLOR|SIZE' -> {delta,at,by,note} 최근 1건 (14�
 async function loadPcRoom(){
   if(!stLoaded) stFetch().then(()=>{ if($('pc-body') && typeof renderPcRoom==='function') renderPcRoom(); });
   if(typeof skuLoaded!=='undefined' && !skuLoaded && typeof skuFetch==='function') skuFetch().then(()=>{ if($('pc-body') && typeof renderPcRoom==='function') renderPcRoom(); });
-  if(typeof bxLoaded!=='undefined' && !bxLoaded && typeof bxFetchStore==='function') bxFetchStore().then(()=>{ if($('pc-body') && typeof renderPcRoom==='function') renderPcRoom(); });
+  if(typeof bxLoaded!=='undefined' && !bxLoaded && typeof bxFetchStore==='function') bxLoadCached().then(hit=>{ if(hit && $('pc-body') && typeof renderPcRoom==='function') renderPcRoom(); return bxFetchStore(); }).then(()=>{ if($('pc-body') && typeof renderPcRoom==='function') renderPcRoom(); });
   try{
     const r = await sbFetch('/rest/v1/pr_pcroom?select=k,style,color,qty,bqty,bnote,sizes,wh,locs,updated_at,updated_by&order=style.asc,color.asc');
     if(r.ok){ pcStore = await r.json(); pcLoaded = true; }
@@ -6269,7 +6269,42 @@ function pcUseBToggle(i){
   refreshRow(i);
   showToast(l.useB ? '🅱 This line will deduct from B-grade on save — ' + l.style + ' ' + l.color + ' ' + l.size : '↩ Changed to deduct from Good (A) stock');
 }
-async function bxFetchStore(){
+// ── 브라우저 캐시 (IndexedDB): 12만+ 박스를 매번 다시 받지 않고, 캐시로 먼저 그리고 뒤에서 갱신 (v362) ──
+function idbOpen(){
+  return new Promise((res,rej)=>{
+    const r = indexedDB.open('prtool', 1);
+    r.onupgradeneeded = ()=>{ r.result.createObjectStore('kv'); };
+    r.onsuccess = ()=>res(r.result);
+    r.onerror = ()=>rej(r.error);
+  });
+}
+async function idbGet(k){
+  try{ const db = await idbOpen();
+    return await new Promise((res,rej)=>{ const t = db.transaction('kv').objectStore('kv').get(k); t.onsuccess=()=>res(t.result); t.onerror=()=>rej(t.error); });
+  }catch(e){ return null; }
+}
+async function idbSet(k, v){
+  try{ const db = await idbOpen();
+    await new Promise((res,rej)=>{ const t = db.transaction('kv','readwrite').objectStore('kv').put(v, k); t.onsuccess=res; t.onerror=()=>rej(t.error); });
+  }catch(e){}
+}
+async function bxLoadCached(){
+  if(bxLoaded) return false;
+  try{
+    const c = await idbGet('bx');
+    if(!c || !c.rows || !c.rows.length || bxLoaded) return false;
+    bxStore = c.rows; bxLoaded = true;
+    window._bxRev = (window._bxRev||0)+1;
+    window._bxCacheAt = c.at || 0;
+    return true;
+  }catch(e){ return false; }
+}
+function bxFetchStore(){
+  if(window._bxFetchP) return window._bxFetchP;   // 이미 받는 중이면 그 요청을 같이 기다림 (중복 다운로드 방지)
+  window._bxFetchP = _bxFetchStore().finally(()=>{ window._bxFetchP = null; });
+  return window._bxFetchP;
+}
+async function _bxFetchStore(){
   // 5만씩 페이징 + 한 묶음(4페이지=20만)을 병렬로 받아서 로딩 시간 최소화
   try{
     const PAGE = 50000, out = [];
@@ -6286,6 +6321,7 @@ async function bxFetchStore(){
     out.sort((a,b)=> a._sk<b._sk?-1:(a._sk>b._sk?1:0));
     bxStore = out; bxLoaded = true;
     window._bxRev = (window._bxRev||0)+1;
+    idbSet('bx', { at: Date.now(), rows: out });   // 다음 접속 때 즉시 표시용
   }catch(e){ console.warn('bxFetchStore', e); }
 }
 async function loadBoxRoom(){
@@ -6298,6 +6334,11 @@ async function loadBoxRoom(){
     return;
   }
   window._bxAt = Date.now();
+  if(await bxLoadCached()){
+    renderBoxRoom();   // 캐시로 즉시 — 뒤에서 최신본 받아서 다시 그림
+    bxFetchStore().then(()=>{ if($('bx-body')) renderBoxRoom(); });
+    return;
+  }
   await bxFetchStore(); renderBoxRoom();
 }
 function bxFindAll(style,color,size,wh){ const ex = bxFind(style,color,size,wh); const ids = new Set(ex.map(b=>b.id)); return ex.concat(bxFindBase(style,color,size,wh).filter(b=>!ids.has(b.id))); }
