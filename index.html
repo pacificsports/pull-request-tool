@@ -137,7 +137,7 @@ main{max-width:1100px;margin:0 auto;padding:16px;}
     <button class="btn btn-sm" onclick="doLogout()" style="padding:2px 8px;font-size:10px;" data-i18n="logout">Log out</button>
   </span>
   <select id="lang-sel" onchange="setLang(this.value)" style="font-size:11px;padding:3px 6px;border-radius:5px;border:none;background:#1d3f66;color:#fff;"><option value="ko">한국어</option><option value="en">English</option><option value="es">Español</option></select>
-  <span style="font-size:10px;color:#9fb8d4;">v358 🚚</span>
+  <span style="font-size:10px;color:#9fb8d4;">v361 🚚</span>
 </div>
 <script type="text/javascript" src="https://js.authorize.net/v1/Accept.js" charset="utf-8"></script>
 <div id="po-viewer" style="display:none;position:fixed;top:0;right:0;width:44%;height:100vh;background:#fff;border-left:2px solid var(--border);z-index:60;box-shadow:-6px 0 20px rgba(0,0,0,.15);">
@@ -349,7 +349,7 @@ main{max-width:1100px;margin:0 auto;padding:16px;}
   <div class="card">
     <div class="card-title"><span>🧺 PC Room — SC·CA Partial Pcs Inventory</span>
       <select class="fi" id="pc-order-pick" onfocus="pcFillOrderPick()" onchange="renderPcRoom()" style="margin-left:auto;max-width:280px;font-size:12px;padding:5px 8px;"><option value="">📋 View Pull Request...</option></select>
-      <input class="fi" id="pc-search" placeholder="🔍 Style / Color" oninput="renderPcRoom()" style="width:170px;font-size:12px;padding:5px 10px;">
+      <input class="fi" id="pc-search" placeholder="🔍 Style / Color" oninput="pcSearchDeb()" style="width:170px;font-size:12px;padding:5px 10px;">
       <button class="btn btn-sm" onclick="detToggleAll('pc-body',true)" title="Expand all styles">▾ Expand</button>
       <button class="btn btn-sm" onclick="detToggleAll('pc-body',false)" title="Collapse all styles">▸ Collapse</button>
       <button class="btn btn-sm btn-primary" onclick="pcAddStyle()">＋ Add Style</button>
@@ -362,7 +362,7 @@ main{max-width:1100px;margin:0 auto;padding:16px;}
   <div class="card">
     <div class="card-title"><span>📦 Full Box Inventory (Location per box)</span>
       <select class="fi" id="bx-order-pick" onfocus="bxFillOrderPick()" onchange="renderBoxRoom()" style="margin-left:auto;max-width:280px;font-size:12px;padding:5px 8px;"><option value="">📋 View Pull Request...</option></select>
-      <input class="fi" id="bx-search" placeholder="🔍 Style / Color / Loc" oninput="renderBoxRoom()" style="width:170px;font-size:12px;padding:5px 10px;">
+      <input class="fi" id="bx-search" placeholder="🔍 Style / Color / Loc" oninput="bxSearchDeb()" style="width:170px;font-size:12px;padding:5px 10px;">
       <button class="btn btn-sm" onclick="detToggleAll('bx-body',true)" title="Expand all styles">▾ Expand</button>
       <button class="btn btn-sm" onclick="detToggleAll('bx-body',false)" title="Collapse all styles">▸ Collapse</button>
       <button class="btn btn-sm" id="bx-viewbtn" onclick="bxToggleView()" title="Toggle grid (size columns) ↔ detail (location chips)">📍 Detail view</button>
@@ -5201,6 +5201,9 @@ function renderTx(){
   </div>`;
 }
 let dashPeriod = 'all', dashFrom = '', dashTo = '';
+let _bxSearchT=null, _pcSearchT=null;
+function bxSearchDeb(){ clearTimeout(_bxSearchT); _bxSearchT = setTimeout(renderBoxRoom, 250); }
+function pcSearchDeb(){ clearTimeout(_pcSearchT); _pcSearchT = setTimeout(renderPcRoom, 250); }
 function showView(v){
   try{ localStorage.setItem('pr_view', v); }catch(e){}
   const ov = $('orders-view'), dv = $('dash-view'), cv = $('cust-view'), pv = $('pc-view'), tv = $('tx-view'), bv = $('box-view');
@@ -5219,7 +5222,7 @@ function showView(v){
   const nb = $('nav-box'); if(nb) nb.classList.toggle('nav-active', v==='box');
   if(v==='dash') renderDash();
   if(v==='cust') renderCustomers();
-  if(v==='pc') loadPcRoom();
+  if(v==='pc'){ if(pcLoaded){ if(window._pcDirty !== false) renderPcRoom(); } else loadPcRoom(); }
   if(v==='box') loadBoxRoom();
   if(v==='tx') renderTx();
 }
@@ -5268,30 +5271,52 @@ function pcLocBadge(row, k, s2){
   return `<div id="${id}" onclick="pcSetLoc('${esc(k)}','${s2}')" title="Set the bin where the opened box / loose pieces sit" style="cursor:pointer;font-size:8.5px;line-height:1.25;color:#dbe4f0;padding:0 2px;">📍</div>`;
 }
 function pcSetLoc(k, s2){
-  // 팝업 없이 제자리 편집: 핀을 누르면 그 자리가 작은 입력칸으로 바뀐다 (Enter 저장 · Esc 취소)
-  const id = 'pcl-'+cssId(k)+'-'+cssId(s2);
-  const el = document.getElementById(id); if(!el || el.tagName==='INPUT') return;
+  // 📍 핀 → bin 선택 모달: 그 스타일/칼라/사이즈 박스가 실제로 있는 bin 리스트에서 고른다
+  const p = String(k).split('|');
+  const wh = p[2]==='CA' ? 'CA' : 'SC';
   const row = pcStore.find(r=>r.k===k);
-  const inp = document.createElement('input');
-  inp.id = id; inp.value = row ? pcLoc(row, s2) : ''; inp.placeholder = 'bin';
-  inp.autocomplete = 'off'; inp.spellcheck = false;
-  inp.style.cssText = 'width:52px;font-size:9.5px;padding:1px 3px;text-transform:uppercase;font-weight:800;color:#0e7490;border:1px solid #22d3ee;border-radius:5px;text-align:center;outline:none;background:#ecfeff;';
-  inp.onkeydown = e=>{ e.stopPropagation(); if(e.key==='Enter') inp.blur(); else if(e.key==='Escape'){ inp.dataset.cancel='1'; inp.blur(); } };
-  inp.onclick = e=>e.stopPropagation();
-  inp.onblur = ()=>pcLocCommit(k, s2, inp.dataset.cancel ? null : inp.value);
-  el.replaceWith(inp);
-  inp.focus(); inp.select();
+  const cur = row ? pcLoc(row, s2) : '';
+  // 이 SKU 박스가 있는 bin (변형 칼라 포함) — 박스 많은 순
+  const gm = {};
+  (typeof bxFindAll==='function' ? bxFindAll(p[0], p[1], s2, wh) : []).forEach(b=>{
+    const L = String(b.loc||'?').toUpperCase();
+    gm[L] = (gm[L]||0) + 1;
+  });
+  const bins = Object.entries(gm).sort((a,b)=> b[1]-a[1] || a[0].localeCompare(b[0]));
+  const allBins = [...new Set(bxStore.filter(b=>bxWh(b)===wh).map(b=>String(b.loc||'').toUpperCase()).filter(Boolean))].sort();
+  const ex = document.getElementById('modal-pcloc'); if(ex) ex.remove();
+  const div = document.createElement('div');
+  div.id = 'modal-pcloc';
+  div.style.cssText = 'position:fixed;inset:0;background:rgba(15,23,42,.55);z-index:130;display:flex;align-items:center;justify-content:center;padding:10px;';
+  div.innerHTML = `<div style="background:#fff;border-radius:12px;width:340px;max-height:80vh;display:flex;flex-direction:column;overflow:hidden;">
+    <div style="background:#0e7490;color:#fff;padding:9px 14px;font-weight:800;font-size:12.5px;">📍 ${esc(p[0])} ${esc(p[1])} <b>${esc(s2)}</b> · [${wh}]
+      <button class="btn btn-sm" style="float:right;background:transparent;color:#cffafe;border-color:#67e8f9;" onclick="document.getElementById('modal-pcloc').remove()">✕</button>
+      <div style="font-weight:400;font-size:10.5px;opacity:.9;">남은 장수(까둔 박스)가 있는 bin — 리스트에서 고르세요</div></div>
+    <div style="overflow-y:auto;flex:1;padding:6px 12px;">
+      ${bins.length ? bins.map(([L,n])=>`<div onclick="pcLocSave('${esc(k)}','${s2}','${esc(L)}')" style="display:flex;align-items:center;gap:8px;padding:7px 6px;border-bottom:1px solid #f1f5f9;font-size:12.5px;cursor:pointer;${L===cur?'background:#ecfeff;':''}" onmouseover="this.style.background='#f0fdfa'" onmouseout="this.style.background='${L===cur?'#ecfeff':''}'">
+        <span style="font-family:Consolas,monospace;font-weight:800;color:#0e7490;">📍 ${esc(L)}</span>
+        <span class="muted" style="font-size:10.5px;">${n} box(es) here</span>
+        ${L===cur?'<span style="margin-left:auto;font-size:10px;font-weight:800;color:#0e7490;">✓ current</span>':''}
+      </div>`).join('') : '<div class="muted" style="padding:14px;font-size:11.5px;">이 사이즈의 박스가 ['+wh+']에 없습니다 — 아래에 직접 입력하세요</div>'}
+    </div>
+    <div style="padding:10px 12px;border-top:1px solid var(--border);display:flex;gap:6px;align-items:center;">
+      <input class="fi" id="pcloc-manual" list="pcloc-bins" value="${esc(cur)}" placeholder="직접 입력" style="flex:1;font-family:Consolas,monospace;font-weight:700;text-transform:uppercase;font-size:12px;" onkeydown="if(event.key==='Enter')pcLocSave('${esc(k)}','${s2}',this.value)">
+      <datalist id="pcloc-bins">${allBins.map(L=>'<option value="'+esc(L)+'">').join('')}</datalist>
+      <button class="btn btn-sm btn-primary" style="background:#0e7490;border-color:#0e7490;" onclick="pcLocSave('${esc(k)}','${s2}',document.getElementById('pcloc-manual').value)">Save</button>
+      ${cur?`<button class="btn btn-sm" style="background:#fee2e2;color:#b91c1c;border-color:#fecaca;" onclick="pcLocSave('${esc(k)}','${s2}','')">Remove</button>`:''}
+    </div></div>`;
+  document.body.appendChild(div);
 }
-async function pcLocCommit(k, s2, val){
+async function pcLocSave(k, s2, val){
+  const m = document.getElementById('modal-pcloc'); if(m) m.remove();
   let row = await pcFetchRowFresh(k) || pcStore.find(r=>r.k===k);
   if(!row){ const p=String(k).split('|'); row={ k, style:p[0], color:p[1], wh:(p[2]==='CA'?'CA':'SC'), qty:{}, sizes:pcSizesFor(p[0]) }; pcStore.push(row); }
-  const put = ()=>{ const el=document.getElementById('pcl-'+cssId(k)+'-'+cssId(s2)); if(el){ const t=document.createElement('div'); t.innerHTML = pcLocBadge(row, k, s2); el.replaceWith(t.firstChild); } };
-  if(val===null){ put(); return; }                    // Esc → 원래대로
-  const nv = String(val).trim().toUpperCase();
+  const nv = String(val||'').trim().toUpperCase();
   const old = pcLoc(row, s2);
   row.locs = row.locs || {};
   if(nv) row.locs[s2] = nv; else delete row.locs[s2];
-  put();
+  const el = document.getElementById('pcl-'+cssId(k)+'-'+cssId(s2));
+  if(el){ const t=document.createElement('div'); t.innerHTML = pcLocBadge(row, k, s2); el.replaceWith(t.firstChild); }
   if(nv !== old){
     await pcSaveRow(row);
     showToast('📍 '+row.style+' '+row.color+' '+s2+' ['+pcWhOf(row)+']: '+(nv||'(removed)'));
@@ -5572,17 +5597,22 @@ function pcStyleInner(sty){
 }
 function renderPcRoom(){
   const el = $('pc-body'); if(!el) return;
+  if(el.offsetParent === null){ window._pcDirty = true; return; }   // 숨겨진 탭 — 돌아올 때 그림
+  window._pcDirty = false;
   const q = (($('pc-search')||{}).value||'').trim().toLowerCase();
   const byStyle = {};
   pcStore.forEach(r=>{
     if(q && !(String(r.style).toLowerCase().includes(q) || String(r.color).toLowerCase().includes(q))) return;
     (byStyle[r.style] = byStyle[r.style] || []).push(r);
   });
-  // Full Box 재고에 있는 스타일/칼라 = 뼈대. 재고 0이어도 칸이 준비되고, 첫 입력 때 행이 생성됨
-  window._pcBxCols = {};
-  if(typeof bxStore!=='undefined' && Array.isArray(bxStore)) bxStore.forEach(b=>{
-    const st = String(b.style); (window._pcBxCols[st] = window._pcBxCols[st] || new Set()).add(String(b.color).toUpperCase());
-  });
+  // Full Box 재고에 있는 스타일/칼라 = 뼈대 (재고 버전이 바뀔 때만 재계산)
+  if(!window._pcBxCols || window._pcBxColsRev !== (window._bxRev||0)){
+    window._pcBxCols = {};
+    if(typeof bxStore!=='undefined' && Array.isArray(bxStore)) bxStore.forEach(b=>{
+      const st = String(b.style); (window._pcBxCols[st] = window._pcBxCols[st] || new Set()).add(String(b.color).toUpperCase());
+    });
+    window._pcBxColsRev = (window._bxRev||0);
+  }
   const styleSet = new Set(Object.keys(byStyle));
   Object.keys(window._pcBxCols).forEach(st=>{
     if(!q || st.toLowerCase().includes(q) || [...window._pcBxCols[st]].some(c=>bxSearchMatch(q, st, c))) styleSet.add(st);
@@ -6240,24 +6270,36 @@ function pcUseBToggle(i){
   showToast(l.useB ? '🅱 This line will deduct from B-grade on save — ' + l.style + ' ' + l.color + ' ' + l.size : '↩ Changed to deduct from Good (A) stock');
 }
 async function bxFetchStore(){
-  // 재고가 10만 박스를 넘어서 PostgREST 한도에 걸리지 않도록 5만씩 페이징
+  // 5만씩 페이징 + 한 묶음(4페이지=20만)을 병렬로 받아서 로딩 시간 최소화
   try{
-    const out = []; let off = 0;
+    const PAGE = 50000, out = [];
+    let base = 0;
     while(true){
-      const r = await sbFetch('/rest/v1/pr_boxes?select=id,style,color,size,pcs,loc,wh,note,in_at,in_by&status=eq.IN&order=id.asc&limit=50000&offset='+off);
-      if(!r.ok) break;
-      const j = await r.json();
-      out.push.apply(out, j);
-      off += j.length;
-      if(j.length < 50000) break;
+      const rs = await Promise.all([0,1,2,3].map(i=>
+        sbFetch('/rest/v1/pr_boxes?select=id,style,color,size,pcs,loc,wh,note,in_at,in_by&status=eq.IN&order=id.asc&limit='+PAGE+'&offset='+(base+i*PAGE)).then(r=>r.ok?r.json():[])));
+      let short = false;
+      for(const j of rs){ out.push.apply(out, j); if(j.length < PAGE) short = true; }
+      if(short) break;
+      base += 4*PAGE;
     }
-    if(off > 0 || out.length === 0){
-      out.sort((a,b)=> String(a.style).localeCompare(String(b.style)) || String(a.color).localeCompare(String(b.color)) || String(a.size).localeCompare(String(b.size)) || String(a.in_at||'').localeCompare(String(b.in_at||'')));
-      bxStore = out; bxLoaded = true;
-    }
+    out.forEach(b=>{ b._sk = b.style+'\u0001'+b.color+'\u0001'+b.size+'\u0001'+(b.in_at||''); });
+    out.sort((a,b)=> a._sk<b._sk?-1:(a._sk>b._sk?1:0));
+    bxStore = out; bxLoaded = true;
+    window._bxRev = (window._bxRev||0)+1;
   }catch(e){ console.warn('bxFetchStore', e); }
 }
-async function loadBoxRoom(){ if(!stLoaded) stFetch().then(()=>{ if($('bx-body')) renderBoxRoom(); }); if(!skuLoaded) skuFetch().then(()=>{ if($('bx-body')) renderBoxRoom(); }); await bxFetchStore(); renderBoxRoom(); }
+async function loadBoxRoom(){
+  if(!stLoaded) stFetch().then(()=>{ if($('bx-body')) renderBoxRoom(); });
+  if(!skuLoaded) skuFetch().then(()=>{ if($('bx-body')) renderBoxRoom(); });
+  if(bxLoaded){
+    if(window._bxDirty !== false) renderBoxRoom();   // 안 바뀌었으면 즉시 (그리지 않음)
+    const _age = Date.now() - (window._bxAt||0);
+    if(_age > 60000){ window._bxAt = Date.now(); bxFetchStore().then(()=>{ if($('bx-body')) renderBoxRoom(); }); }
+    return;
+  }
+  window._bxAt = Date.now();
+  await bxFetchStore(); renderBoxRoom();
+}
 function bxFindAll(style,color,size,wh){ const ex = bxFind(style,color,size,wh); const ids = new Set(ex.map(b=>b.id)); return ex.concat(bxFindBase(style,color,size,wh).filter(b=>!ids.has(b.id))); }
 function bxFind(style,color,size,wh){ const k = bxK(style,color,size); const w = wh ? String(wh).trim().toUpperCase() : ''; return bxStore.filter(b=>bxK(b.style,b.color,b.size)===k && (!w || bxWh(b)===w)); }
 function bxLocsLabel(list, max){
@@ -6931,6 +6973,32 @@ function bxVarCell(style, fullColor, size, wh){
 }
 // ▦ 그리드 뷰: 칼라마다 SC / CA / Total 3줄 · 사이즈는 열 · 칸 클릭 → location (PC Room과 같은 구조)
 function bxGridStyle(sty, colGroups){
+  // v361: 요약 줄은 항상 · 무거운 표는 펼칠 때만 (PC Room 과 같은 지연 방식)
+  const baseGroups = {};
+  Object.keys(colGroups).forEach(c=>{ const bc = bxBaseColor(c); (baseGroups[bc] = baseGroups[bc] || []).push(...colGroups[c]); });
+  const colors = Object.keys(baseGroups).sort();
+  const all = colors.reduce((a,c)=>a.concat(baseGroups[c]),[]);
+  const scN = all.filter(b=>bxWh(b)==='SC').length, caN = all.filter(b=>bxWh(b)==='CA').length;
+  const spTotSC = all.filter(b=>bxWh(b)==='SC' && bxSpecLoc(b.loc,'SC')).length;
+  const spTotCA = all.filter(b=>bxWh(b)==='CA' && bxSpecLoc(b.loc,'CA')).length;
+  if(!window._bxGridOpen) window._bxGridOpen = new Set();
+  const expanded = (window._bxQExpand && all.length>0) || window._bxGridOpen.has(String(sty));
+  return `<details${expanded?' open':''} data-bxsty="${esc(String(sty))}" ontoggle="bxGridTgl(this)" style="margin-bottom:10px;border:1px solid var(--border);border-radius:8px;">
+    <summary style="cursor:pointer;padding:8px 12px;font-weight:800;color:${all.length?'#0f2a4a':'#94a3b8'};background:#f1f5f9;border-radius:8px;">
+      <input type="checkbox" ${colors.length&&colors.every(c=>window._bxRptSel[bxRptKey(sty,c,'TOTAL')])?'checked':''} onclick="event.stopPropagation();" onchange="bxRptStyle('${esc(sty)}', this.checked)" style="width:15px;height:15px;accent-color:#0d9488;vertical-align:-2px;margin-right:6px;cursor:pointer;" title="Add ALL colors of this style (Total) to customer stock report">${esc(sty)} <span class="muted" style="font-weight:400;">(${colors.length} colors)</span>
+      <span style="float:right;font-family:Consolas,monospace;">${all.length?`${all.length.toLocaleString()} boxes <span style="color:#1d4ed8;">SC ${scN.toLocaleString()}</span>${spTotSC?`<span style="color:#b45309;font-size:10px;"> (🏭 ${spTotSC.toLocaleString()})</span>`:''} · <span style="color:#9a3412;">CA ${caN.toLocaleString()}</span>${spTotCA?`<span style="color:#7c3aed;font-size:10px;"> (🔒 ${spTotCA.toLocaleString()})</span>`:''}`:'<span style="color:#b6bfcc;">no stock</span>'}</span></summary>
+    <div class="bxg-inner">${expanded ? bxGridInner(sty, colGroups) : ''}</div></details>`;
+}
+function bxGridTgl(d){
+  if(!window._bxGridOpen) window._bxGridOpen = new Set();
+  const sty = d.dataset.bxsty;
+  if(d.open){
+    window._bxGridOpen.add(sty);
+    const inner = d.querySelector('.bxg-inner');
+    if(inner && !inner.innerHTML.trim()){ const g = (window._bxGroups||{})[sty]; inner.innerHTML = g ? bxGridInner(sty, g) : ''; }
+  } else window._bxGridOpen.delete(sty);
+}
+function bxGridInner(sty, colGroups){
   const sizeOrder = ['2T','3T','4T','5T','XXS','XS','S','M','L','XL','2XL','3XL','4XL','5XL','6XL'];
   const stockSizes = new Set();
   Object.values(colGroups).forEach(list=>list.forEach(b=>stockSizes.add(String(b.size).toUpperCase())));
@@ -7043,16 +7111,12 @@ function bxGridStyle(sty, colGroups){
       </tr>
     </tbody>`;
   }).join('');
-  return `<details${all.length?' open':''} style="margin-bottom:10px;border:1px solid var(--border);border-radius:8px;">
-    <summary style="cursor:pointer;padding:8px 12px;font-weight:800;color:${all.length?'#0f2a4a':'#94a3b8'};background:#f1f5f9;border-radius:8px;">
-      <input type="checkbox" ${colors.length&&colors.every(c=>window._bxRptSel[bxRptKey(sty,c,'TOTAL')])?'checked':''} onclick="event.stopPropagation();" onchange="bxRptStyle('${esc(sty)}', this.checked)" style="width:15px;height:15px;accent-color:#0d9488;vertical-align:-2px;margin-right:6px;cursor:pointer;" title="Add ALL colors of this style (Total) to customer stock report">${esc(sty)} <span class="muted" style="font-weight:400;">(${colors.length} colors)</span>
-      <span style="float:right;font-family:Consolas,monospace;">${all.length?`${all.length.toLocaleString()} boxes <span style="color:#1d4ed8;">SC ${scN.toLocaleString()}</span>${spTotSC?`<span style="color:#b45309;font-size:10px;"> (🏭 ${spTotSC.toLocaleString()})</span>`:''} · <span style="color:#9a3412;">CA ${caN.toLocaleString()}</span>${spTotCA?`<span style="color:#7c3aed;font-size:10px;"> (🔒 ${spTotCA.toLocaleString()})</span>`:''}`:'<span style="color:#b6bfcc;">no stock</span>'}</span></summary>
-    <div style="overflow-x:auto;padding:6px 10px 10px;">
+  return `<div style="overflow-x:auto;padding:6px 10px 10px;">
     <table class="etbl" style="font-size:11.5px;">
       <thead><tr><th class="tl" style="min-width:118px;">Color</th><th style="text-align:left;padding-left:12px;">WH</th>${sizes.map(s2=>`<th>${s2}</th>`).join('')}<th>Total</th><th class="tl" style="white-space:nowrap;">Check</th><th style="width:52px;"></th></tr></thead>
       ${rows}
     </table>
-    </div></details>`;
+    </div>`;
 }
 // 🔍 스마트 검색 공용 — "1368 black" / "1368black" 모두 매칭 (토큰 전부 일치)
 function bxSearchMatch(q, ...parts){
@@ -7466,6 +7530,8 @@ function bxLocSelBin(eloc, on){
   const loc = decodeURIComponent(eloc), wh = bxLocSelWh();
   const d = document.getElementById('bxld-'+cssId(wh+'-'+loc));
   if(!d){ renderBoxRoom(); return; }
+  const _inner = d.querySelector('.bxl-inner');
+  if(_inner && !_inner.innerHTML.trim()){ const g = (window._bxLocGroups||{})[loc]; if(g) _inner.innerHTML = bxLocInner(loc, g.rows, g.wh); }
   d.querySelectorAll('input[type=checkbox][data-k]').forEach(c=>{
     const k = c.getAttribute('data-k'), n = Number(c.getAttribute('data-n'))||1;
     c.checked = on;
@@ -7754,10 +7820,17 @@ function bxToggleLocView(){
 }
 function bxLocSetWh(w){ window._bxLocWh = w; renderBoxRoom(); }
 // bin 펼침 상태 기억 — 저장 후에도 보던 자리 그대로
-function bxLocOpenTgl(encLoc, open){
+function bxLocOpenTgl(encLoc, d){
   if(!window._bxLocOpen) window._bxLocOpen = new Set();
   const loc = decodeURIComponent(encLoc);
-  if(open) window._bxLocOpen.add(loc); else window._bxLocOpen.delete(loc);
+  const open = (d && typeof d === 'object') ? d.open : !!d;
+  if(open){
+    window._bxLocOpen.add(loc);
+    if(d && d.querySelector){
+      const inner = d.querySelector('.bxl-inner');
+      if(inner && !inner.innerHTML.trim()){ const g = (window._bxLocGroups||{})[loc]; if(g) inner.innerHTML = bxLocInner(loc, g.rows, g.wh); }
+    }
+  } else window._bxLocOpen.delete(loc);
 }
 // 상단 합계 줄 (저장 후 그 부분만 다시 씀)
 function bxLocStatsHtml(wh, nBins){
@@ -7818,6 +7891,7 @@ function bxRenderByLoc(el, q){
   </div>
   <div id="bxl-selbar">${bxLocSelBarHtml(wh)}</div>`;
   if(!locs.length){ el.innerHTML = head + '<div class="muted" style="padding:14px;">No bins match</div>'; return; }
+  window._bxLocGroups = {};                      // 펼칠 때 표를 만들기 위해 보관 (v361)
   el.innerHTML = head + locs.map(loc=>{
     const boxes = byLoc[loc];
     const gm = {};
@@ -7827,8 +7901,10 @@ function bxRenderByLoc(el, q){
       gm[k].n++;
     });
     const rows = Object.values(gm).sort((a,b)=>a.style.localeCompare(b.style)||a.color.localeCompare(b.color)||bxSizeCmp(a.size,b.size));
+    window._bxLocGroups[loc] = { rows, wh };
+    const _open = !!(window._bxLocOpen && window._bxLocOpen.has(loc));
     const _sk = bxSpecLoc(loc, wh); const _sm = _sk?bxSpecMeta(_sk):null; const is3p = !!_sk;
-    return `<details id="bxld-${cssId(wh+'-'+loc)}" ${(window._bxLocOpen&&window._bxLocOpen.has(loc))?'open':''} ontoggle="bxLocOpenTgl('${esc(encodeURIComponent(loc))}', this.open)" style="margin-bottom:8px;border:1px solid ${is3p?_sm.bd:'var(--border)'};border-radius:8px;${is3p?'background:'+_sm.bg+';':''}">
+    return `<details id="bxld-${cssId(wh+'-'+loc)}" ${_open?'open':''} ontoggle="bxLocOpenTgl('${esc(encodeURIComponent(loc))}', this)" style="margin-bottom:8px;border:1px solid ${is3p?_sm.bd:'var(--border)'};border-radius:8px;${is3p?'background:'+_sm.bg+';':''}">
       <summary style="cursor:pointer;padding:7px 12px;font-weight:800;color:#0f2a4a;display:flex;align-items:center;gap:8px;">
         ${(()=>{ const keys = rows.map(r=>bxLocSelKey(loc, r)); const allSel = keys.length && keys.every(k=>window._bxLocSel[k]);
           return `<input type="checkbox" id="bxlb-${cssId(wh+'-'+loc)}" data-loc="${esc(loc)}" ${allSel?'checked':''} onclick="event.stopPropagation();bxLocSelBin('${esc(encodeURIComponent(loc))}', this.checked)" title="Select whole location" style="width:15px;height:15px;accent-color:#b45309;cursor:pointer;">`; })()}
@@ -7838,7 +7914,11 @@ function bxRenderByLoc(el, q){
         <span style="font-weight:400;white-space:nowrap;" title="Stock count date for this whole bin">${stBadge('BXBIN', wh, loc)}</span>
         <button class="btn btn-sm" style="border:none;padding:0 4px;" onclick="event.preventDefault();bxLocPrintBin('${wh}','${esc(loc)}')" title="Print this bin's contents">🖨</button>
       </summary>
-      <div style="padding:4px 12px 10px;">
+      <div class="bxl-inner">${_open ? bxLocInner(loc, rows, wh) : ''}</div></details>`;
+  }).join('');
+}
+function bxLocInner(loc, rows, wh){
+  return `      <div style="padding:4px 12px 10px;">
       <table class="etbl" style="font-size:11.5px;">
         <thead><tr><th></th><th class="tl">Style</th><th class="tl">Color</th><th>Size</th><th style="background:#b45309;">Boxes ✎</th><th style="background:#0e7490;" title="How many boxes of this line to move — check the line first, then change this">Take</th><th>Total Pcs</th><th>Pcs/Box</th><th class="tl">📅 Counted</th><th></th></tr></thead>
         <tbody>${rows.map(r=>`<tr>
@@ -7852,8 +7932,7 @@ function bxRenderByLoc(el, q){
           <td style="text-align:center;font-family:Consolas,monospace;color:var(--text2);">${r.ppb||''}</td>
           <td class="tl" style="white-space:nowrap;">${stBadge('BX', r.style, r.color, wh+'|'+loc)}</td>
           <td style="white-space:nowrap;"><button class="btn btn-sm" style="border:none;padding:0 5px;" onclick="bxLocModal('${esc(r.style)}','${esc(r.color)}','${esc(r.size)}','${wh}','${esc(loc)}')" title="Adjust / move / ship">⚙</button></td>
-        </tr>`).join('')}</tbody></table></div></details>`;
-  }).join('');
+        </tr>`).join('')}</tbody></table></div>`;
 }
 async function bxLocViewExcel(){
   const wh = window._bxLocWh || 'SC';
@@ -7903,6 +7982,8 @@ function bxLocPrintBin(wh, loc){
 }
 function renderBoxRoom(){
   const el = $('bx-body'); if(!el) return;
+  if(el.offsetParent === null){ window._bxDirty = true; return; }   // 숨겨진 탭 — 돌아올 때 그림
+  window._bxDirty = false;
   const q = (($('bx-search')||{}).value||'').trim().toLowerCase();
   if(window._bxLocMode){ const _sy = window.scrollY; bxRenderByLoc(el, q); window.scrollTo(0, _sy); return; }
   const gridMode = window._bxView !== 'detail';
@@ -7923,6 +8004,8 @@ function renderBoxRoom(){
     });
   }
   const styles = Object.keys(groups).sort();
+  window._bxGroups = groups;                       // 펼칠 때 표를 만들기 위해 보관 (v361)
+  window._bxQExpand = !!q && styles.length <= 15;  // 검색으로 좁혀졌을 때만 자동 펼침
   const pickBase = (($('bx-order-pick')||{}).value)||'';
   const pickRec = pickBase ? (savedCache||[]).find(s=>s.base===pickBase) : null;
   const body = !styles.length
