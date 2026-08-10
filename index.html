@@ -137,7 +137,7 @@ main{max-width:1100px;margin:0 auto;padding:16px;}
     <button class="btn btn-sm" onclick="doLogout()" style="padding:2px 8px;font-size:10px;" data-i18n="logout">Log out</button>
   </span>
   <select id="lang-sel" onchange="setLang(this.value)" style="font-size:11px;padding:3px 6px;border-radius:5px;border:none;background:#1d3f66;color:#fff;"><option value="ko">한국어</option><option value="en">English</option><option value="es">Español</option></select>
-  <span style="font-size:10px;color:#9fb8d4;">v368 🚚</span>
+  <span style="font-size:10px;color:#9fb8d4;">v370 🚚</span>
 </div>
 <script type="text/javascript" src="https://js.authorize.net/v1/Accept.js" charset="utf-8"></script>
 <div id="po-viewer" style="display:none;position:fixed;top:0;right:0;width:44%;height:100vh;background:#fff;border-left:2px solid var(--border);z-index:60;box-shadow:-6px 0 20px rgba(0,0,0,.15);">
@@ -2178,7 +2178,7 @@ async function delSaved(base){
         if(rows.length && confirm('📦 '+rows.length+' full box(es) were deducted for this order ('+po+').\nRestore them to stock?')){
           await sbFetch('/rest/v1/pr_boxes?status=eq.OUT&out_po=eq.'+encodeURIComponent(po), {method:'PATCH', headers:{Prefer:'return=minimal'}, body:JSON.stringify({status:'IN', out_at:null, out_by:null, out_po:null})});
           showToast('↩ '+rows.length+' full box(es) restored to stock');
-          if(bxLoaded){ await bxFetchStore(); if($('bx-body')) renderBoxRoom(); }
+          if(bxLoaded){ await bxRefetch(); if($('bx-body')) renderBoxRoom(); }
         }
       }
     }
@@ -2202,7 +2202,7 @@ async function delSaved(base){
             await pcSaveRow(row2);
           }
           showToast('↩ '+rows2.length+' box(es) restored from PC Room move');
-          if(bxLoaded){ await bxFetchStore(); if($('bx-body')) renderBoxRoom(); }
+          if(bxLoaded){ await bxRefetch(); if($('bx-body')) renderBoxRoom(); }
         }
       }
     }
@@ -3025,7 +3025,7 @@ async function _invSyncOnSaveInner(rec){
       await bxPatch(back.map(b=>b.id), {status:'IN', out_at:null, out_by:null, out_po:null});
       backN += back.length;
     }
-    if(backN) await bxFetchStore();
+    if(backN) await bxRefetch();
     // ── PC Room (SC·CA 자투리): 이전 스냅샷과 비교해 차이만 반영 ──
     const prev = (rec.meta && rec.meta._pcAuto && rec.meta._pcAuto.lines) || {};
     const cur = {};
@@ -6240,7 +6240,7 @@ async function skuRenameColor(style, oldC){
     // 3) 마스터에서 옛 이름 제거
     await sbFetch('/rest/v1/pr_skus?style=eq.'+encodeURIComponent(style)+'&color=eq.'+encodeURIComponent(oldC), {method:'DELETE', headers:{Prefer:'return=minimal'}});
     skuStore = skuStore.filter(k=>!(String(k.style)===String(style) && String(k.color).toUpperCase()===oldC));
-    await bxFetchStore();
+    await bxRefetch();
   }catch(e){ showToast('⚠ Change failed: '+String(e.message||'').slice(0,80)); return; }
   showToast('✏️ '+style+' '+oldC+' → '+nc+(merging?' merged':' renamed'));
   if($('bx-body')) renderBoxRoom();
@@ -6362,6 +6362,11 @@ function bxFetchStore(){
   if(window._bxFetchP) return window._bxFetchP;   // 이미 받는 중이면 그 요청을 같이 기다림 (중복 다운로드 방지)
   window._bxFetchP = _bxFetchStore().finally(()=>{ window._bxFetchP = null; });
   return window._bxFetchP;
+}
+async function bxRefetch(){
+  // 재고 변경 직후 새로고침 — 변경 "전"에 시작된 다운로드가 진행 중이면 끝나길 기다렸다가 새로 받는다 (v370)
+  if(window._bxFetchP){ try{ await window._bxFetchP; }catch(e){} }
+  return bxFetchStore();
 }
 async function _bxFetchStore(){
   // 5만씩 페이징 + 한 묶음(4페이지=20만)을 병렬로 받아서 로딩 시간 최소화
@@ -6636,7 +6641,7 @@ async function bxLocSet(){
       showToast('✅ '+(-diff)+' box(es) deducted @'+c.loc);
     }
   }catch(e){ showToast('⚠ Save failed — check your connection'); return; }
-  await bxFetchStore();
+  await bxRefetch();
   renderBoxRoom();
   bxLocModal(c.style, c.color, c.size, c.wh, c.loc);
 }
@@ -6659,7 +6664,7 @@ async function bxLocRowSet(style, color, size, wh, loc, val, el){
     }
   }catch(e){ showToast('⚠ Save failed — check your connection'); if(el){ el.disabled=false; el.value=list.length; } return; }
   showToast('✅ '+style+' '+color+' '+size+' @'+loc+': '+list.length+' → '+target+' box(es)');
-  await bxFetchStore();
+  await bxRefetch();
   if(el && el.isConnected){
     // 펼친 화면을 닫지 않도록 바뀐 칸만 갱신
     el.disabled = false; el.style.background = '';
@@ -6709,6 +6714,83 @@ async function bxLocOutDo(){
   bxLocModal(c.style, c.color, c.size, c.wh, c.loc);
 }
 // 📦→🧺 박스 하나(들)를 열어 PC Room 으로 — 재고 차감 + PC 수량 증가 + 작업지시서 인쇄
+// 🧺 빠른 박스 열기 — By Location 줄에서 바로: 모달(기본 1박스) → Confirm → 인쇄+차감+PC추가 (v369)
+function bxLocPcQuick(style, color, size, wh, loc){
+  const ex = document.getElementById('modal-bxpcq'); if(ex) ex.remove();
+  const list = bxLocList(style, color, size, wh, loc);
+  if(!list.length){ showToast('⚠ No boxes here'); return; }
+  const ppb = Number(list[0].pcs)||0;
+  const pcWh = wh==='CA' ? 'CA' : 'SC';
+  window._bxpcqCtx = { style, color, size, wh, loc, ppb, pcWh, max:list.length };
+  const row = (typeof pcStore!=='undefined' && pcStore) ? pcStore.find(r=>r.k===pcKey(style,color,pcWh)) : null;
+  const cur = row ? (Number((row.qty||{})[size])||0) : 0;
+  const div = document.createElement('div');
+  div.id = 'modal-bxpcq';
+  div.style.cssText = 'position:fixed;inset:0;background:rgba(15,23,42,.55);z-index:130;display:flex;align-items:center;justify-content:center;';
+  div.onclick = e=>{ if(e.target===div) div.remove(); };
+  div.innerHTML = `<div style="background:#fff;border-radius:12px;width:400px;max-width:94vw;overflow:hidden;box-shadow:0 20px 60px rgba(0,0,0,.35);">
+    <div style="background:#7c3aed;color:#fff;padding:10px 16px;font-weight:800;">🧺 Open Box → PC Room</div>
+    <div style="padding:14px 16px;">
+      <div style="font-size:13.5px;font-weight:800;color:#0f2a4a;">${esc(String(style))} ${esc(String(color))} <span style="background:#0f2a4a;color:#fff;border-radius:6px;padding:1px 8px;">${esc(String(size))}</span> <span style="background:${wh==='CA'?'#9a3412':'#1d4ed8'};color:#fff;border-radius:4px;padding:1px 6px;font-size:10.5px;">${esc(wh)}</span></div>
+      <div style="font-size:11.5px;color:var(--text2);margin:6px 0 12px;">📍 <b>${esc(loc)}</b> · stock <b>${list.length}</b> box(es) × ${ppb} pcs · PC Room now <b>${cur.toLocaleString()}</b> pcs</div>
+      <div style="display:flex;align-items:center;gap:10px;">
+        <label style="font-size:12px;font-weight:700;">Boxes to open</label>
+        <input class="fi num" id="bxpcq-n" type="number" min="1" max="${list.length}" value="1" style="width:72px;text-align:center;font-weight:800;font-size:16px;" oninput="bxpcqUpd()">
+        <span id="bxpcq-info" style="font-size:12.5px;color:#7c3aed;font-weight:800;">= ${ppb.toLocaleString()} pcs → PC Room</span>
+      </div>
+      <div style="font-size:10.5px;color:var(--text2);margin-top:10px;line-height:1.6;">Confirm → 🖨 work order prints · box leaves Full Box (${esc(loc)}) · pcs added to PC Room [${esc(pcWh)}] · 📍 ${esc(loc)} pinned on that size</div>
+      <div style="display:flex;gap:8px;margin-top:14px;justify-content:flex-end;">
+        <button class="btn btn-sm" onclick="document.getElementById('modal-bxpcq').remove()">Cancel</button>
+        <button class="btn btn-sm" id="bxpcq-go" style="background:#7c3aed;color:#fff;border-color:#7c3aed;font-weight:800;" onclick="bxPcQuickGo()">🧺 Confirm &amp; Print</button>
+      </div>
+    </div></div>`;
+  document.body.appendChild(div);
+  const inp = $('bxpcq-n'); if(inp){ inp.focus(); inp.select(); }
+}
+function bxpcqUpd(){
+  const c = window._bxpcqCtx; if(!c) return;
+  let n = parseInt(($('bxpcq-n')||{}).value)||0; if(n>c.max) n=c.max; if(n<0) n=0;
+  const el = $('bxpcq-info'); if(el) el.textContent = '= '+(n*c.ppb).toLocaleString()+' pcs → PC Room';
+}
+async function bxPcQuickGo(){
+  const c = window._bxpcqCtx; if(!c) return;
+  let n = parseInt(($('bxpcq-n')||{}).value)||0;
+  if(n<1){ showToast('⚠ Enter a quantity'); return; }
+  const btn = $('bxpcq-go'); if(btn){ btn.disabled = true; btn.textContent = 'Saving...'; }
+  const list = bxLocList(c.style, c.color, c.size, c.wh, c.loc);
+  if(!list.length){ showToast('⚠ No boxes here anymore'); const m0=document.getElementById('modal-bxpcq'); if(m0) m0.remove(); return; }
+  if(n > list.length) n = list.length;
+  const sel = list.slice(0, n);
+  const ppb = Number(sel[0].pcs)||0;
+  const add = sel.reduce((a,b)=>a+(Number(b.pcs)||0),0);
+  const by = (SESS&&SESS.email)||'';
+  try{
+    for(const ch of trChunk(sel.map(b=>b.id))) await bxPatch(ch, {status:'OUT', out_at:new Date().toISOString(), out_by:by, out_po:'PC ROOM (@'+c.loc+')'});
+    if(!pcLoaded){
+      const r0 = await sbFetch('/rest/v1/pr_pcroom?select=k,style,color,qty,bqty,bnote,sizes,wh,locs,updated_at,updated_by');
+      if(r0.ok){ pcStore = await r0.json(); pcLoaded = true; }
+    }
+    const k = pcKey(c.style, c.color, c.pcWh);
+    let row = await pcFetchRowFresh(k) || pcStore.find(r=>r.k===k);
+    if(!row){ row = { k, style:c.style, color:c.color, wh:c.pcWh, qty:{} }; pcStore.push(row); }
+    row.qty = row.qty || {};
+    row.qty[c.size] = (Number(row.qty[c.size])||0) + add;
+    row.locs = row.locs || {};
+    row.locs[c.size] = String(c.loc).toUpperCase();
+    await pcSaveRow(row);
+    pcLogMove(row, c.size, add, row.qty[c.size], '📦 Box move @'+c.loc);
+    bxPcWorkOrder(c.wh, c.pcWh, {loc:c.loc, style:c.style, color:c.color, size:c.size, ppb, n, pcs:add, bal:row.qty[c.size], by});
+  }catch(e){
+    showToast('⚠ Failed: '+(e.message||e));
+    if(btn){ btn.disabled = false; btn.textContent = '🧺 Confirm & Print'; }
+    return;
+  }
+  const m = document.getElementById('modal-bxpcq'); if(m) m.remove();
+  showToast('🧺 '+n+' box(es) opened → PC Room · +'+add.toLocaleString()+' pcs');
+  await bxRefetch();
+  renderBoxRoom();
+  if($('pc-body') && typeof renderPcRoom==='function' && document.getElementById('pc-body').offsetParent!==null) renderPcRoom(); else window._pcDirty = true;
+}
 async function bxLocToPc(){
   const c = window._blmCtx; if(!c) return;
   const list = bxLocList(c.style, c.color, c.size, c.wh, c.loc);
@@ -6738,7 +6820,7 @@ async function bxLocToPc(){
     bxPcWorkOrder(c.wh, pcWh, {loc:c.loc, style:c.style, color:c.color, size:c.size, ppb, n, pcs:add, bal:row.qty[c.size], by});
   }catch(e){ showToast('⚠ Failed: '+(e.message||e)); return; }
   showToast('🧺 '+n+' box(es) → PC Room · +'+add.toLocaleString()+' pcs');
-  await bxFetchStore();
+  await bxRefetch();
   renderBoxRoom();
   bxLocModal(c.style, c.color, c.size, c.wh, c.loc);
 }
@@ -6834,7 +6916,7 @@ async function pcMoveUndo(i){
     await pcSaveRow(row);
   }
   l.pcMove = []; l.pcMoveData = [];
-  await bxFetchStore();
+  await bxRefetch();
   refreshRow(i);
   if($('bx-body')) renderBoxRoom();
   showToast('\u21A9 '+mv.length+' box(es) restored to full-box stock');
@@ -7837,7 +7919,7 @@ async function bxLocBulkExec(){
   }
   window._bxLocSel = {};
   const m = document.getElementById('modal-blb'); if(m) m.remove();
-  await bxFetchStore();
+  await bxRefetch();
   renderBoxRoom();
   if(fails2.length) alert('✅ '+ok+' box(es) done\n\n❌ Failed:\n'+fails2.slice(0,5).join('\n'));
   else showToast('✅ '+ok+' box(es) — '+parts.join(' · '));
@@ -7909,7 +7991,7 @@ async function bxLocBulk(action){
     }else return;
   }catch(e){ showToast('⚠ Failed: '+(e.message||e)); }
   window._bxLocSel = {};
-  await bxFetchStore();
+  await bxRefetch();
   renderBoxRoom();
 }
 // ═══ 🗺 By Location view — bin 별 재고 (H* = 3rd Party/Hodge) ═══
@@ -8031,7 +8113,7 @@ function bxLocInner(loc, rows, wh){
           <td style="text-align:right;font-family:Consolas,monospace;font-weight:700;">${(r.n*r.ppb).toLocaleString()}</td>
           <td style="text-align:center;font-family:Consolas,monospace;color:var(--text2);">${r.ppb||''}</td>
           <td class="tl" style="white-space:nowrap;">${stBadge('BX', r.style, r.color, wh+'|'+loc)}</td>
-          <td style="white-space:nowrap;"><button class="btn btn-sm" style="border:none;padding:0 5px;" onclick="bxLocModal('${esc(r.style)}','${esc(r.color)}','${esc(r.size)}','${wh}','${esc(loc)}')" title="Adjust / move / ship">⚙</button></td>
+          <td style="white-space:nowrap;"><button class="btn btn-sm" style="border:none;padding:0 4px;color:#7c3aed;font-size:13px;" onclick="bxLocPcQuick('${esc(r.style)}','${esc(r.color)}','${esc(r.size)}','${wh}','${esc(loc)}')" title="Open box → PC Room (prints the work order)">🧺</button><button class="btn btn-sm" style="border:none;padding:0 5px;" onclick="bxLocModal('${esc(r.style)}','${esc(r.color)}','${esc(r.size)}','${wh}','${esc(loc)}')" title="Adjust / move / ship">⚙</button></td>
         </tr>`).join('')}</tbody></table></div>`;
 }
 async function bxLocViewExcel(){
@@ -8635,7 +8717,7 @@ async function trBuilderClose(){
   }
   const m = document.getElementById('modal-trb'); if(m) m.remove();
   _shipId = null; _shipNo = null; _shipMeta = {}; _shipPallets = [];
-  await bxFetchStore();
+  await bxRefetch();
   if($('bx-body')) renderBoxRoom();
   trOpen();
 }
@@ -8713,7 +8795,7 @@ async function trCancelDraft(){
   _shipId = null; _shipNo = null; _shipMeta = {}; _shipPallets = [];
   showToast('🗑 Draft canceled');
   const m = document.getElementById('modal-trb'); if(m) m.remove();
-  await bxFetchStore();
+  await bxRefetch();
   if($('bx-body')) renderBoxRoom();
   trOpen();
 }
@@ -9439,7 +9521,7 @@ async function trRecvPost(){
   const savedLines = [];
   _trRecvPallets.forEach(p=>p.lines.forEach(l=>savedLines.push({...l, pallet:p.label})));
   await trPatchRec(_trRecvRec.id, { status:'RECEIVED', lines:savedLines, received_at:new Date().toISOString(), received_by:(SESS&&SESS.email)||'' });
-  await bxFetchStore();
+  await bxRefetch();
   if($('bx-body')) renderBoxRoom();
   const m = document.getElementById('modal-trr'); if(m) m.remove();
   let msg = '✅ '+ok+' line(s) received '+(trIsSpecKind(dest)?'at ':'to ')+trKindShort(dest);
