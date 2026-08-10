@@ -137,7 +137,7 @@ main{max-width:1100px;margin:0 auto;padding:16px;}
     <button class="btn btn-sm" onclick="doLogout()" style="padding:2px 8px;font-size:10px;" data-i18n="logout">Log out</button>
   </span>
   <select id="lang-sel" onchange="setLang(this.value)" style="font-size:11px;padding:3px 6px;border-radius:5px;border:none;background:#1d3f66;color:#fff;"><option value="ko">한국어</option><option value="en">English</option><option value="es">Español</option></select>
-  <span style="font-size:10px;color:#9fb8d4;">v387 🚚</span>
+  <span style="font-size:10px;color:#9fb8d4;">v388 🚚</span>
 </div>
 <script type="text/javascript" src="https://js.authorize.net/v1/Accept.js" charset="utf-8"></script>
 <div id="po-viewer" style="display:none;position:fixed;top:0;right:0;width:44%;height:100vh;background:#fff;border-left:2px solid var(--border);z-index:60;box-shadow:-6px 0 20px rgba(0,0,0,.15);">
@@ -368,6 +368,7 @@ main{max-width:1100px;margin:0 auto;padding:16px;}
       <button class="btn btn-sm" onclick="detToggleAll('bx-body',false)" title="Collapse all styles">▸ Collapse</button>
       <button class="btn btn-sm" id="bx-viewbtn" onclick="bxToggleView()" title="Toggle grid (size columns) ↔ detail (location chips)">📍 Detail view</button>
       <button class="btn btn-sm" id="bx-locbtn" onclick="bxToggleLocView()" title="Group inventory by location bin — H* bins are 3rd party (Hodge)">🗺 By Location</button>
+      <button class="btn btn-sm" id="bx-sobtn" onclick="soListOpen()" title="Ship out requests — staff pull the boxes first, then Confirm here to deduct stock">🚚 Ship outs</button>
       <label style="display:none;align-items:center;gap:4px;font-size:11px;color:var(--text2);cursor:pointer;white-space:nowrap;" id="bx-showall-wrap"><input type="checkbox" id="bx-showall" onchange="renderBoxRoom()" style="accent-color:#0f2a4a;">All SKUs</label>
       <button class="btn btn-sm" onclick="skuManager()" style="background:#7c3aed;color:#fff;border-color:#7c3aed;" title="SKU master — add/rename/merge">🎨 SKU</button>
       <button class="btn btn-sm btn-primary" onclick="bxAddBoxes()">＋ Add Boxes</button>
@@ -6492,6 +6493,7 @@ async function _bxFetchStore(){
       }
     }catch(e){}
     idbSet('bx', { at: Date.now(), rows: out, inc: window._bxInc||{} });   // 다음 접속 때 즉시 표시용
+    soCountUpd();   // 🚚 pending ship out 뱃지 (v388)
   }catch(e){ console.warn('bxFetchStore', e); }
 }
 async function loadBoxRoom(){
@@ -8007,7 +8009,7 @@ async function bxLocBulkExec(){
   if(cnt.pc) parts.push(cnt.pc+' → PC Room');
   if(cnt.ship) parts.push(cnt.ship+' ship');
   if(cnt.remove) parts.push(cnt.remove+' remove');
-  if(!confirm('Execute now?\n\n'+parts.join(' · ')+'\n\n(Tip: print the Work Order first so staff can physically do it)')) return;
+  if(!confirm('Execute now?\n\n'+parts.join(' · ')+(cnt.ship?'\n\n🚚 Ship out lines become a PENDING request — boxes are deducted only when you Confirm (Full Box → 🚚 Ship outs) after staff pull them.':'')+'\n\n(Tip: print the Work Order first so staff can physically do it)')) return;
   const by = (SESS&&SESS.email)||'';
   let ok = 0; const fails2 = []; const shipped = [];
   for(const l of ls){
@@ -8017,7 +8019,7 @@ async function bxLocBulkExec(){
       if(l.act==='move'){
         for(const ch of trChunk(ids)) await bxPatch(ch, {loc:l.bin});
       }else if(l.act==='ship'){
-        for(const ch of trChunk(ids)) await bxPatch(ch, {status:'OUT', out_at:new Date().toISOString(), out_by:by, out_po: l.note ? ('Ship out — '+l.note) : 'Manual ship (By Location)'});
+        // v388: 즉시 차감하지 않음 — PENDING 요청으로 만들고 직원이 뽑은 뒤 Confirm 때 차감
         shipped.push({loc:l.loc, style:l.style, color:l.color, size:l.size, ppb:l.ppb, take:l.take, note:l.note});
       }else if(l.act==='remove'){
         for(const ch of trChunk(ids)) await bxPatch(ch, {status:'OUT', out_at:new Date().toISOString(), out_by:by, out_po:'Removed — '+(l.note||'adjustment')});
@@ -8042,14 +8044,158 @@ async function bxLocBulkExec(){
   }
   window._bxLocSel = {};
   const m = document.getElementById('modal-blb'); if(m) m.remove();
-  if(shipped.length) bxShipPullReq(wh, shipped, by);   // 🚚 직원용 pull request (v387)
+  if(shipped.length) await soCreate(wh, shipped, by);   // 🚚 PENDING 요청 + pull request 인쇄 (v388)
   await bxRefetch();
   renderBoxRoom();
   if(fails2.length) alert('✅ '+ok+' box(es) done\n\n❌ Failed:\n'+fails2.slice(0,5).join('\n'));
   else showToast('✅ '+ok+' box(es) — '+parts.join(' · '));
 }
+// ═══ 🚚 Ship Out 2단계 (v388) — 요청은 PENDING, 직원이 뽑은 뒤 Confirm 때 실제 수량으로 차감 ═══
+async function soCreate(wh, lines, by){
+  try{
+    const note = [...new Set(lines.map(l=>String(l.note||'').trim()).filter(Boolean))].join(' / ');
+    const r = await sbFetch('/rest/v1/pr_shipout', {method:'POST', headers:{Prefer:'return=representation'}, body: JSON.stringify([{wh, note, lines, status:'OPEN', created_by:by}])});
+    if(!r.ok) throw new Error('save '+r.status);
+    const row = (await r.json())[0];
+    const nb = lines.reduce((a,l)=>a+l.take,0);
+    showToast('🚚 SO-'+row.id+' created — '+nb+' box(es) PENDING (stock deducted on Confirm)');
+    bxShipPullReq(wh, lines, by, {soNo:row.id, pending:true});
+    soCountUpd();
+  }catch(e){ showToast('⚠ Ship out request failed: '+(e.message||e)); }
+}
+async function soFetchOpen(){
+  const r = await sbFetch('/rest/v1/pr_shipout?select=*&status=eq.OPEN&order=created_at.desc');
+  return r.ok ? await r.json() : [];
+}
+async function soCountUpd(){
+  try{
+    const list = await soFetchOpen(); window._soOpen = list;
+    const b = $('bx-sobtn');
+    if(b) b.innerHTML = '🚚 Ship outs'+(list.length?' <span style="background:#b91c1c;color:#fff;border-radius:9px;padding:0 6px;font-size:10px;font-weight:800;">'+list.length+'</span>':'');
+  }catch(e){}
+}
+async function soListOpen(){
+  const ex = document.getElementById('modal-so'); if(ex) ex.remove();
+  const list = await soFetchOpen(); window._soOpen = list;
+  let done = [];
+  try{
+    const rd = await sbFetch('/rest/v1/pr_shipout?select=id,wh,note,lines,status,created_at,done_at,done_by&status=neq.OPEN&order=id.desc&limit=15');
+    if(rd.ok) done = await rd.json();
+  }catch(e){}
+  const rowH = (q,open)=>{
+    const nb = (q.lines||[]).reduce((a,l)=>a+(Number(l.take)||0),0);
+    const na = (q.lines||[]).reduce((a,l)=>a+(l.actual!=null?Number(l.actual):0),0);
+    return `<tr style="${open?'':'opacity:.62;'}">
+      <td style="font-family:Consolas,monospace;font-weight:800;white-space:nowrap;">SO-${q.id}</td>
+      <td style="text-align:center;">${esc(q.wh)}</td>
+      <td class="tl">${esc(q.note||'')}</td>
+      <td style="text-align:center;white-space:nowrap;">${(q.lines||[]).length} line · <b>${nb}</b> bx${!open&&q.status==='DONE'&&na!==nb?' <span style="color:#b45309;font-weight:800;" title="actually shipped">→ '+na+'</span>':''}</td>
+      <td style="white-space:nowrap;font-size:10.5px;">${q.created_at?new Date(q.created_at).toLocaleString():''}</td>
+      <td style="white-space:nowrap;">${open
+        ? `<button class="btn btn-sm" onclick="soPrint(${q.id})" title="Reprint the pull request">🖨</button>
+           <button class="btn btn-sm" style="background:#065f46;color:#fff;border-color:#065f46;font-weight:800;" onclick="soConfirmOpen(${q.id})" title="Staff pulled the boxes — enter actual counts and deduct stock">✅ Confirm</button>
+           <button class="btn btn-sm" onclick="soCancel(${q.id})" title="Cancel this request (nothing was deducted)">🗑</button>`
+        : `<span style="font-size:10px;font-weight:800;color:${q.status==='DONE'?'#166534':'#b91c1c'};">${esc(q.status)}</span>${q.done_at?' <span style="font-size:10px;color:#64748b;">'+new Date(q.done_at).toLocaleDateString()+'</span>':''}`}</td></tr>`;
+  };
+  const div = document.createElement('div');
+  div.id = 'modal-so';
+  div.style.cssText = 'position:fixed;inset:0;background:rgba(15,23,42,.55);z-index:120;display:flex;align-items:center;justify-content:center;padding:10px;';
+  div.innerHTML = `<div style="background:#fff;border-radius:12px;max-width:860px;width:100%;max-height:88vh;display:flex;flex-direction:column;overflow:hidden;">
+    <div class="mhead" style="background:#0f2a4a;color:#fff;padding:12px 18px;font-size:15px;font-weight:800;display:flex;align-items:center;gap:8px;">🚚 Ship Out Requests
+      <span style="font-size:11px;font-weight:400;color:#9fb8d4;">pull first, confirm to deduct</span>
+      <button class="btn btn-sm" style="margin-left:auto;" onclick="document.getElementById('modal-so').remove()">✕</button></div>
+    <div style="padding:14px 18px;overflow-y:auto;">
+      ${list.length?`<table class="etbl" style="font-size:11.5px;"><thead><tr><th>SO#</th><th>WH</th><th class="tl">Destination / Note</th><th>Lines · Boxes</th><th>Created</th><th></th></tr></thead>
+        <tbody>${list.map(q=>rowH(q,true)).join('')}</tbody></table>`
+      : '<div class="muted" style="padding:14px 0;">No pending ship out requests. Make one in 🗺 By Location → select lines → ⚙ Work with selected → 🚚 Ship (OUT).</div>'}
+      ${done.length?`<div style="font-size:11px;font-weight:800;color:#64748b;margin:16px 0 4px;">RECENT (done / canceled)</div>
+        <table class="etbl" style="font-size:11px;"><tbody>${done.map(q=>rowH(q,false)).join('')}</tbody></table>`:''}
+    </div></div>`;
+  document.body.appendChild(div);
+  soCountUpd();
+}
+function soPrint(id){
+  const q = (window._soOpen||[]).find(x=>x.id===id); if(!q) return;
+  bxShipPullReq(q.wh, q.lines||[], q.created_by||'', {soNo:q.id, pending:true});
+}
+async function soCancel(id){
+  const q = (window._soOpen||[]).find(x=>x.id===id); if(!q) return;
+  if(!confirm('Cancel SO-'+id+'?\n\nNothing was deducted — the request is just closed.')) return;
+  try{
+    await sbFetch('/rest/v1/pr_shipout?id=eq.'+id, {method:'PATCH', headers:{Prefer:'return=minimal'}, body: JSON.stringify({status:'CANCELED', done_at:new Date().toISOString(), done_by:(SESS&&SESS.email)||''})});
+    showToast('🗑 SO-'+id+' canceled');
+  }catch(e){ showToast('⚠ '+(e.message||e)); }
+  soListOpen();
+}
+function soConfirmOpen(id){
+  const q = (window._soOpen||[]).find(x=>x.id===id); if(!q) return;
+  const ex = document.getElementById('modal-soc'); if(ex) ex.remove();
+  window._socQ = q;
+  const rows = (q.lines||[]).map((l,i)=>{
+    const avail = bxLocList(l.style, l.color, l.size, q.wh, String(l.loc).toUpperCase()).length;
+    const def = Math.min(Number(l.take)||0, avail);
+    return `<tr>
+      <td style="font-family:Consolas,monospace;font-weight:800;">${esc(l.loc)}</td>
+      <td style="font-weight:700;">${esc(l.style)}</td><td class="tl">${esc(l.color)}</td><td style="text-align:center;">${esc(l.size)}</td>
+      <td style="text-align:center;font-weight:800;">${l.take}</td>
+      <td style="text-align:center;font-weight:700;color:${avail<l.take?'#b91c1c':'#166534'};">${avail}</td>
+      <td style="background:#fffde7;text-align:center;"><input class="fi" type="number" min="0" max="${avail}" value="${def}" id="soc-a${i}" style="width:62px;font-weight:800;text-align:center;"></td>
+    </tr>`;
+  }).join('');
+  const div = document.createElement('div');
+  div.id = 'modal-soc';
+  div.style.cssText = 'position:fixed;inset:0;background:rgba(15,23,42,.6);z-index:125;display:flex;align-items:center;justify-content:center;padding:10px;';
+  div.innerHTML = `<div style="background:#fff;border-radius:12px;max-width:760px;width:100%;max-height:88vh;display:flex;flex-direction:column;overflow:hidden;">
+    <div style="background:#065f46;color:#fff;padding:12px 18px;font-size:15px;font-weight:800;display:flex;align-items:center;gap:8px;">✅ Confirm SO-${q.id}
+      <span style="font-size:11px;font-weight:400;color:#a7f3d0;">${esc(q.note||'')}</span>
+      <button class="btn btn-sm" style="margin-left:auto;" onclick="document.getElementById('modal-soc').remove()">✕</button></div>
+    <div style="padding:14px 18px;overflow-y:auto;">
+      <div style="font-size:12px;color:#334155;margin-bottom:8px;">Enter what staff <b>actually pulled</b> — only that amount is deducted. Short lines stay in stock (recorded as a discrepancy on the SO).</div>
+      <table class="etbl" style="font-size:11.5px;"><thead><tr><th>BIN</th><th>Style</th><th class="tl">Color</th><th>Size</th><th>Requested</th><th>In bin now</th><th style="background:#fef3c7;">Actual pulled</th></tr></thead>
+      <tbody>${rows}</tbody></table>
+    </div>
+    <div style="padding:12px 18px;border-top:1px solid #eee;display:flex;gap:8px;justify-content:flex-end;">
+      <button class="btn" onclick="document.getElementById('modal-soc').remove()">Cancel</button>
+      <button class="btn" id="soc-go" style="background:#065f46;color:#fff;border-color:#065f46;font-weight:800;" onclick="soConfirmGo()">✅ Confirm & Deduct</button>
+    </div></div>`;
+  document.body.appendChild(div);
+}
+async function soConfirmGo(){
+  const q = window._socQ; if(!q) return;
+  const by = (SESS&&SESS.email)||'';
+  const btn = $('soc-go'); if(btn){ btn.disabled = true; btn.textContent = 'Saving...'; }
+  let done = 0, pcsT = 0; const outLines = [];
+  try{
+    for(let i=0;i<(q.lines||[]).length;i++){
+      const l = q.lines[i];
+      let n = parseInt(($('soc-a'+i)||{}).value)||0;
+      const list = bxLocList(l.style, l.color, l.size, q.wh, String(l.loc).toUpperCase());
+      if(n > list.length) n = list.length;
+      if(n > 0){
+        const sel = list.slice(0, n);
+        for(const ch of trChunk(sel.map(b=>b.id))) await bxPatch(ch, {status:'OUT', out_at:new Date().toISOString(), out_by:by, out_po:'Ship out — '+(String(l.note||q.note||'').trim()||'manual')+' (SO-'+q.id+')'});
+        pcsT += sel.reduce((a,b)=>a+(Number(b.pcs)||0),0);
+      }
+      done += n;
+      outLines.push(Object.assign({}, l, {actual:n}));
+    }
+    await sbFetch('/rest/v1/pr_shipout?id=eq.'+q.id, {method:'PATCH', headers:{Prefer:'return=minimal'}, body: JSON.stringify({status:'DONE', lines:outLines, done_at:new Date().toISOString(), done_by:by})});
+  }catch(e){
+    showToast('⚠ Confirm failed: '+(e.message||e));
+    if(btn){ btn.disabled = false; btn.textContent = '✅ Confirm & Deduct'; }
+    return;
+  }
+  const m = document.getElementById('modal-soc'); if(m) m.remove();
+  const m2 = document.getElementById('modal-so'); if(m2) m2.remove();
+  const req = (q.lines||[]).reduce((a,l)=>a+(Number(l.take)||0),0);
+  showToast('✅ SO-'+q.id+' shipped — '+done+' box(es) · '+pcsT.toLocaleString()+' pcs'+(done!==req?' (requested '+req+' — short recorded)':''));
+  soCountUpd();
+  await bxRefetch();
+  renderBoxRoom();
+}
 // 🚚 Ship out 직원용 Pull Request — 어느 bin에서 몇 박스 뽑아 실을지 (v387)
-function bxShipPullReq(wh, lines, by){
+function bxShipPullReq(wh, lines, by, opts){
+  opts = opts || {};
   const w = window.open('', '_blank');
   if(!w){ showToast('⚠ Popup blocked — ship out saved, pull request print skipped'); return; }
   const rows = lines.slice().sort((a,b)=>String(a.loc).localeCompare(String(b.loc),undefined,{numeric:true})||String(a.style).localeCompare(String(b.style))||String(a.color).localeCompare(String(b.color))||bxSizeCmp(String(a.size),String(b.size)));
@@ -8072,9 +8218,10 @@ function bxShipPullReq(wh, lines, by){
     .line{border-bottom:1.5px solid #111;height:38px;}
     .lbl{font-size:11px;font-weight:700;margin-top:4px;}
   </style></head><body>
-    <h1>🚚 SHIP OUT — PULL REQUEST</h1>
+    <h1>🚚 SHIP OUT — PULL REQUEST${opts.soNo?' <span style="font-size:16px;color:#555;font-family:Consolas,monospace;">SO-'+opts.soNo+'</span>':''}</h1>
     <div class="sub">${esc(wh)} warehouse · ${new Date().toLocaleString('en-US')} · by ${esc(by||'')} · ${rows.length} line(s) · <b>${tb}</b> box(es) · ${tp.toLocaleString()} pcs</div>
     ${dests.length?`<div class="dest">→ ${esc(dests.join(' / '))}</div>`:''}
+    ${opts.pending?'<div style="display:inline-block;background:#eff6ff;border:2px solid #3b82f6;border-radius:8px;padding:5px 12px;font-size:12px;font-weight:800;margin:4px 0 4px 8px;">⏳ PENDING — pull the boxes, then Confirm in the app (Full Box → 🚚 Ship outs) to deduct stock</div>':''}
     <table><tr><th>BIN</th><th>STYLE</th><th>COLOR</th><th>SIZE</th><th>BOXES</th><th>PCS/BOX</th><th>TOTAL PCS</th><th style="width:60px;">✓</th></tr>
     ${rows.map(l=>`<tr><td class="bin">${trIs3PLoc(l.loc, wh)?'🏭 ':''}${esc(l.loc)}</td><td style="font-weight:800;">${esc(l.style)}</td><td>${esc(l.color)}</td><td style="font-weight:700;">${esc(l.size)}</td><td class="n">${l.take}</td><td>${l.ppb||''}</td><td style="font-weight:700;">${(l.take*(l.ppb||0)).toLocaleString()}</td><td></td></tr>`).join('')}
     </table>
@@ -8140,16 +8287,14 @@ async function bxLocBulk(action){
       for(const ch of trChunk(ids)) await bxPatch(ch, {loc:bin});
       showToast('📦→ Moved '+ids.length+' box(es) to '+bin);
     }else if(action==='ship'){
-      const note = window.prompt('Ship (OUT) '+ids.length+' box(es) · '+pcs.toLocaleString()+' pcs\n\nWhere to / why? (e.g. Return to Haiti) — saved in the record', '');
+      const note = window.prompt('Ship out '+ids.length+' box(es) · '+pcs.toLocaleString()+' pcs\n\nWhere to? (e.g. Return to Haiti)\n\nThis makes a PENDING request + prints a pull request — stock is deducted when you Confirm after pulling.', '');
       if(note===null) return;
-      for(const ch of trChunk(ids)) await bxPatch(ch, {status:'OUT', out_at:new Date().toISOString(), out_by:by, out_po: note.trim() ? ('Ship out — '+note.trim()) : 'Manual ship (bulk · By Location)'});
-      showToast('📦→ Shipped '+ids.length+' box(es)');
       const gm = {};
       boxes.forEach(b=>{
         const kk = [String(b.loc).toUpperCase(), String(b.style), String(b.color).toUpperCase(), String(b.size).toUpperCase(), Number(b.pcs)||0].join('|');
         (gm[kk] = gm[kk] || {loc:String(b.loc).toUpperCase(), style:String(b.style), color:String(b.color).toUpperCase(), size:String(b.size).toUpperCase(), ppb:Number(b.pcs)||0, take:0, note:(note||'').trim()}).take++;
       });
-      bxShipPullReq(wh, Object.values(gm), by);
+      await soCreate(wh, Object.values(gm), by);
     }else if(action==='remove'){
       const why = window.prompt('Remove '+ids.length+' box(es) from stock (adjustment). Reason?', 'Stock adjustment');
       if(why===null) return;
