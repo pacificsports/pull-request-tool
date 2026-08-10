@@ -137,7 +137,7 @@ main{max-width:1100px;margin:0 auto;padding:16px;}
     <button class="btn btn-sm" onclick="doLogout()" style="padding:2px 8px;font-size:10px;" data-i18n="logout">Log out</button>
   </span>
   <select id="lang-sel" onchange="setLang(this.value)" style="font-size:11px;padding:3px 6px;border-radius:5px;border:none;background:#1d3f66;color:#fff;"><option value="ko">한국어</option><option value="en">English</option><option value="es">Español</option></select>
-  <span style="font-size:10px;color:#9fb8d4;">v388 🚚</span>
+  <span style="font-size:10px;color:#9fb8d4;">v389 🚚</span>
 </div>
 <script type="text/javascript" src="https://js.authorize.net/v1/Accept.js" charset="utf-8"></script>
 <div id="po-viewer" style="display:none;position:fixed;top:0;right:0;width:44%;height:100vh;background:#fff;border-left:2px solid var(--border);z-index:60;box-shadow:-6px 0 20px rgba(0,0,0,.15);">
@@ -5400,6 +5400,91 @@ async function pcSaveRow(row){
     await sbFetch('/rest/v1/pr_pcroom?on_conflict=k', {method:'POST', headers:{Prefer:'resolution=merge-duplicates,return=minimal'}, body:JSON.stringify([row])});
   }catch(e){ showToast('⚠ Save failed — check your connection'); }
 }
+// ═══ ⇄ 같은 base 칼라의 다른 변형 (NATURAL ↔ NATURAL (US) 등) — shade 추적용 분리 재고 (v389) ═══
+function pcVariantSibs(style, color, wh, size){
+  const base = bxBaseColor(color);
+  const cu = String(color).toUpperCase().replace(/\s+/g,' ').trim();
+  const out = [];
+  (pcStore||[]).forEach(r=>{
+    if(String(r.style).trim().toUpperCase() !== String(style).trim().toUpperCase()) return;
+    if(pcWhOf(r) !== wh) return;
+    const c = String(r.color).toUpperCase().replace(/\s+/g,' ').trim();
+    if(c === cu) return;
+    if(bxBaseColor(c) !== base) return;
+    const q = Number((r.qty||{})[size])||0;
+    if(q) out.push({ color: String(r.color), qty: q, k: r.k });
+  });
+  return out;
+}
+function pcSibChip(style, color, wh, size, have){
+  try{
+    const all0 = pcVariantSibs(style, color, wh, size);
+    const pos = all0.filter(x=>x.qty>0);
+    if(!pos.length) return '';
+    const all = (Number(have)||0) + all0.reduce((a,x)=>a+x.qty,0);
+    return ` <span style="font-size:10px;font-weight:800;color:#7c3aed;background:#faf5ff;border:1px solid #ddd6fe;border-radius:6px;padding:0 5px;white-space:nowrap;cursor:pointer;" onclick="event.stopPropagation();pcVarMoveOpen('${esc(String(style))}','${esc(String(color).toUpperCase())}','${esc(wh)}','${esc(size)}')" title="Same color, other variant (separated only for shade tracking). Combined available: ${all}. Click to move pieces between variants.">⇄ ${pos.map(x=>esc(bxVariantLabel(x.color, style))+' '+x.qty).join(' · ')} → Σ${all}</span>`;
+  }catch(e){ return ''; }
+}
+function pcSibBadge(row, s2){
+  try{
+    const v = Number((row.qty||{})[s2])||0;
+    if(v >= 0) return '';
+    const pos = pcVariantSibs(row.style, row.color, pcWhOf(row), s2).filter(x=>x.qty>0);
+    if(!pos.length) return '';
+    const tot = pos.reduce((a,x)=>a+x.qty,0);
+    return `<span style="font-size:9px;font-weight:800;color:#7c3aed;background:#faf5ff;border:1px solid #ddd6fe;border-radius:6px;padding:0 4px;cursor:pointer;white-space:nowrap;" onclick="pcVarMoveOpen('${esc(String(row.style))}','${esc(String(row.color).toUpperCase())}','${pcWhOf(row)}','${s2}')" title="Other variant of this color has ${tot} pcs — click to move over and clear the negative">⇄${tot}</span>`;
+  }catch(e){ return ''; }
+}
+function pcVarMoveOpen(style, color, wh, size){
+  const sibs = pcVariantSibs(style, color, wh, size).filter(x=>x.qty>0);
+  if(!sibs.length){ showToast('⚠ No stock in other variants'); return; }
+  const cur = pcStore.find(r=>r.k===pcKey(style, color, wh));
+  const have = cur ? (Number((cur.qty||{})[size])||0) : 0;
+  const deficit = have < 0 ? -have : 0;
+  const ex = document.getElementById('modal-pcvm'); if(ex) ex.remove();
+  const div = document.createElement('div');
+  div.id = 'modal-pcvm';
+  div.style.cssText = 'position:fixed;inset:0;background:rgba(15,23,42,.55);z-index:130;display:flex;align-items:center;justify-content:center;padding:10px;';
+  div.innerHTML = `<div style="background:#fff;border-radius:12px;width:500px;max-width:94vw;overflow:hidden;box-shadow:0 20px 60px rgba(0,0,0,.35);">
+    <div style="background:#7c3aed;color:#fff;padding:12px 16px;font-weight:800;display:flex;align-items:center;gap:8px;">⇄ Variant move
+      <span style="font-size:11px;font-weight:400;color:#ddd6fe;">${esc(String(style))} ${esc(String(color))} · ${esc(size)} [${esc(wh)}]</span>
+      <button class="btn btn-sm" style="margin-left:auto;" onclick="document.getElementById('modal-pcvm').remove()">✕</button></div>
+    <div style="padding:14px 16px;font-size:12px;">
+      <div style="margin-bottom:8px;">Now <b>${esc(String(color))}</b>: <b style="color:${have<0?'#dc2626':'#0f2a4a'};font-family:Consolas,monospace;">${have}</b>${deficit?` <span style="color:#dc2626;font-weight:800;">(short ${deficit})</span>`:''}<br>
+      <span class="muted">Same product, kept apart only for shade tracking — move pieces over. Both rows get a ledger entry (⇄ variant move).</span></div>
+      ${sibs.map((x,i)=>`<div style="display:flex;gap:8px;align-items:center;padding:8px 0;border-top:1px solid #eee;">
+        <div style="flex:1;min-width:0;"><b>${esc(x.color)}</b> <span class="muted">(${esc(bxVariantLabel(x.color, style))})</span> <span class="muted">has</span> <b style="font-family:Consolas,monospace;">${x.qty}</b></div>
+        <input class="fi" type="number" id="pcvm-a${i}" min="1" max="${x.qty}" value="${Math.min(x.qty, deficit || x.qty)}" style="width:74px;text-align:center;font-weight:800;">
+        <button class="btn btn-sm" style="background:#7c3aed;color:#fff;border-color:#7c3aed;font-weight:800;" onclick="pcVarMove('${esc(String(style))}','${esc(String(color).toUpperCase())}','${esc(wh)}','${esc(size)}','${esc(x.k)}', document.getElementById('pcvm-a${i}').value)">⇄ Move here</button>
+      </div>`).join('')}
+    </div></div>`;
+  document.body.appendChild(div);
+}
+async function pcVarMove(style, toColor, wh, size, fromK, amt){
+  amt = Math.floor(Number(amt)||0);
+  if(amt <= 0){ showToast('⚠ Enter a quantity'); return; }
+  const from = await pcFetchRowFresh(fromK) || pcStore.find(r=>r.k===fromK);
+  if(!from){ showToast('⚠ Source variant row not found'); return; }
+  const fHave = Number((from.qty||{})[size])||0;
+  if(amt > fHave){ showToast('⚠ Only '+fHave+' available in '+from.color); return; }
+  const kTo = pcKey(style, toColor, wh);
+  let to = await pcFetchRowFresh(kTo) || pcStore.find(r=>r.k===kTo);
+  if(!to){ to = { k: kTo, style: String(style), color: String(toColor), wh, qty: {} }; pcStore.push(to); }
+  from.qty = from.qty || {}; to.qty = to.qty || {};
+  const fNew = fHave - amt;
+  const tNew = (Number(to.qty[size])||0) + amt;
+  if(fNew === 0) delete from.qty[size]; else from.qty[size] = fNew;
+  to.qty[size] = tNew;
+  try{
+    await pcSaveRow(from);
+    await pcSaveRow(to);
+  }catch(e){ showToast('⚠ Save failed: '+(e.message||e)); return; }
+  pcLogMove(from, size, -amt, fNew, '⇄ variant move → '+String(toColor));
+  pcLogMove(to, size, amt, tNew, '⇄ variant move ← '+String(from.color));
+  const m = document.getElementById('modal-pcvm'); if(m) m.remove();
+  renderPcRoom();
+  showToast('⇄ '+amt+' pcs: '+from.color+' → '+String(toColor)+' ('+size+')');
+}
 function pcLogMove(row, size, delta, bal, note){
   if(!delta) return;
   try{
@@ -5650,7 +5735,7 @@ function pcStyleInner(sty){
           return `<tr${wi===0?' style="border-top:2px solid #dbe4f0;"':''}>
           ${wi===0?`<td class="tl" rowspan="3" style="font-weight:700;white-space:nowrap;vertical-align:top;padding-top:7px;">${esc(col)}</td>`:''}
           <td style="font-weight:800;font-size:10px;color:${whCol};">${w}</td>
-          ${sizes.map(s2=>{ const v = (r.qty||{})[s2]; return `<td style="padding:2px 2px 0;vertical-align:top;"><input class="num" data-pc="${cssId(k)}-${cssId(s2)}" value="${v!=null?v:''}" onchange="pcCellChange('${esc(k)}','${s2}',this.value,this)" style="width:52px;text-align:center;${v<0?'color:#dc2626;font-weight:800;':''}${virtual?'background:#fafbfd;':''}"><div style="display:flex;gap:4px;justify-content:center;align-items:center;">${pcLocBadge(r, k, s2)}${pcBBadge(r, k, s2)}${pcMoveBadge(r, s2, 'pcm-'+cssId(k)+'-'+cssId(s2))}</div></td>`; }).join('')}
+          ${sizes.map(s2=>{ const v = (r.qty||{})[s2]; return `<td style="padding:2px 2px 0;vertical-align:top;"><input class="num" data-pc="${cssId(k)}-${cssId(s2)}" value="${v!=null?v:''}" onchange="pcCellChange('${esc(k)}','${s2}',this.value,this)" style="width:52px;text-align:center;${v<0?'color:#dc2626;font-weight:800;':''}${virtual?'background:#fafbfd;':''}"><div style="display:flex;gap:4px;justify-content:center;align-items:center;">${pcLocBadge(r, k, s2)}${pcBBadge(r, k, s2)}${pcSibBadge(r, s2)}${pcMoveBadge(r, s2, 'pcm-'+cssId(k)+'-'+cssId(s2))}</div></td>`; }).join('')}
           <td style="font-family:Consolas,monospace;font-weight:800;white-space:nowrap;"><span id="pcrt-${cssId(k)}">${pcRowTotal(r)||''}</span>${pcBRowTotal(r)?`<span style="font-size:9px;color:#b45309;font-weight:800;"> +B${pcBRowTotal(r)}</span>`:''}</td>
           <td class="tl" style="white-space:nowrap;">${stBadge('PC', sty, col, w==='CA'?'CA':'')}</td>
           <td style="white-space:nowrap;"><button class="btn btn-sm" style="border:none;padding:0 5px;" onclick="pcHistory('${esc(String(sty))}','${esc(col)}','${w}')" title="[${w}] Movement history for this color (ledger)">📜</button>${virtual?'':`<button class="btn btn-sm" style="border:none;color:#b91c1c;padding:0 6px;" oncontextmenu="return false;" onclick="pcDelRow('${esc(k)}')" title="[${w}] Delete this color row">✕</button>`}</td>
@@ -5724,7 +5809,7 @@ function renderPcRoom(){
             <div style="flex:1;min-width:0;"><b>${esc(String(L.style||''))}</b> ${esc(String(L.color||''))} <b>${esc(size)}</b> × ${need}
               <span class="muted">(order ${Number(L.qty)||0}${bc.full ? ' = full boxes ' + bc.full + ' + ' + need : ''}) [${esc(L.wh||'')}]</span><br>
               ${isSC
-                ? `<span id="pchave-${li}" style="color:${inPc==null?'#94a3b8':(have < need ? '#dc2626' : '#166534')};font-weight:700;">[${whL2}] PC stock: ${inPc==null?'none':have}</span>${inPc&&pcLoc(inPc,size)?` <span style="font-size:10px;font-weight:800;color:#0e7490;background:#ecfeff;border:1px solid #a5f3fc;border-radius:6px;padding:0 5px;white-space:nowrap;" title="Pick the loose pieces from this bin">📍 ${esc(pcLoc(inPc,size))}</span>`:''}${inPc&&pcB(inPc,size)?` <span style="color:#b45309;font-weight:800;font-size:10px;">+B${pcB(inPc,size)}</span>`:''}${need ? '' : ' <span class="muted">full boxes only — no PC prep</span>'}`
+                ? `<span id="pchave-${li}" style="color:${inPc==null?'#94a3b8':(have < need ? '#dc2626' : '#166534')};font-weight:700;">[${whL2}] PC stock: ${inPc==null?'none':have}</span>${pcSibChip(L.style, L.color, whL2, size, have)}${inPc&&pcLoc(inPc,size)?` <span style="font-size:10px;font-weight:800;color:#0e7490;background:#ecfeff;border:1px solid #a5f3fc;border-radius:6px;padding:0 5px;white-space:nowrap;" title="Pick the loose pieces from this bin">📍 ${esc(pcLoc(inPc,size))}</span>`:''}${inPc&&pcB(inPc,size)?` <span style="color:#b45309;font-weight:800;font-size:10px;">+B${pcB(inPc,size)}</span>`:''}${need ? '' : ' <span class="muted">full boxes only — no PC prep</span>'}`
                 : `<span style="color:#94a3b8;font-weight:700;">Not SC/CA stock — cannot deduct/add</span>`}</div>
             ${isSC && inPc && need ? `<button class="btn btn-sm" id="pcapply-${li}" style="flex-shrink:0;font-size:10px;padding:2px 7px;background:#fff;color:#7c3aed;border-color:#c4b5fd;" onclick="pcApplyLine('${esc(pickRec.base)}',${li})" title="Deduct this line\u0027s partial qty (${need}) from PC Room">− Deduct ${need}</button>` : ''}
             ${isSC && inPc ? `<button class="btn btn-sm" id="pcadd-${li}" style="flex-shrink:0;font-size:10px;padding:2px 7px;background:#fff;color:#166534;border-color:#86efac;" onclick="pcApplyLine('${esc(pickRec.base)}',${li},'add')" title="Open 1 box — adds pcs/box (${ppb}) to PC Room">＋${ppb}</button>` : ''}
