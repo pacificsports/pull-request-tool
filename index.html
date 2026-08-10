@@ -137,7 +137,7 @@ main{max-width:1100px;margin:0 auto;padding:16px;}
     <button class="btn btn-sm" onclick="doLogout()" style="padding:2px 8px;font-size:10px;" data-i18n="logout">Log out</button>
   </span>
   <select id="lang-sel" onchange="setLang(this.value)" style="font-size:11px;padding:3px 6px;border-radius:5px;border:none;background:#1d3f66;color:#fff;"><option value="ko">한국어</option><option value="en">English</option><option value="es">Español</option></select>
-  <span style="font-size:10px;color:#9fb8d4;">v382 🚚</span>
+  <span style="font-size:10px;color:#9fb8d4;">v383 🚚</span>
 </div>
 <script type="text/javascript" src="https://js.authorize.net/v1/Accept.js" charset="utf-8"></script>
 <div id="po-viewer" style="display:none;position:fixed;top:0;right:0;width:44%;height:100vh;background:#fff;border-left:2px solid var(--border);z-index:60;box-shadow:-6px 0 20px rgba(0,0,0,.15);">
@@ -6284,7 +6284,29 @@ async function stFetch(){
   try{ const r = await sbFetch('/rest/v1/pr_stocktake?select=k,at,by_email'); if(r.ok){ stMap = {}; (await r.json()).forEach(x=>{ stMap[x.k] = x; }); stLoaded = true; } }catch(e){}
 }
 function stKey(kind, style, color, extra){ return kind+'|'+String(style).trim().toUpperCase()+'|'+String(color).trim().toUpperCase()+(extra?'|'+String(extra).trim().toUpperCase():''); }
-function stInfo(kind, style, color, extra){ return stMap[stKey(kind, style, color, extra)] || null; }
+function stInfo(kind, style, color, extra){
+  const exact = stMap[stKey(kind, style, color, extra)];
+  if(exact) return exact;
+  // 색 이름이 바뀌어도(변형 표기 통합 등) 마지막 실사 날짜가 유지되도록 base 칼라로 재검색 (v383)
+  try{
+    const base = (typeof bxBaseColor==='function') ? bxBaseColor(String(color).trim().toUpperCase()) : String(color).trim().toUpperCase();
+    const pfx = kind+'|'+String(style).trim().toUpperCase()+'|';
+    const sfx = extra ? '|'+String(extra).trim().toUpperCase() : '';
+    let best = null;
+    Object.keys(stMap).forEach(k=>{
+      if(k.indexOf(pfx) !== 0) return;
+      const rest = k.slice(pfx.length);
+      let col2 = null;
+      if(sfx){ if(rest.length > sfx.length && rest.slice(-sfx.length) === sfx) col2 = rest.slice(0, -sfx.length); }
+      else { if(rest.indexOf('|') < 0) col2 = rest; }
+      if(col2 === null || col2.indexOf('|') >= 0) return;
+      if(bxBaseColor(col2) !== base) return;
+      const x = stMap[k];
+      if(!best || String(x.at) > String(best.at)) best = x;
+    });
+    return best;
+  }catch(e){ return null; }
+}
 function stBadge(kind, style, color, extra){
   const x = stInfo(kind, style, color, extra);
   const btn = `<span style="cursor:pointer;font-size:10px;opacity:.55;" onclick="event.stopPropagation();stMark('${kind}','${esc(String(style))}','${esc(String(color))}'${extra?`,'${esc(String(extra))}'`:''})" title="Mark stock count done (recorded with today\u0027s date)">📅</span>`;
@@ -7801,14 +7823,14 @@ function bxLocSelBarHtml(wh){
       <b style="color:#92400e;">☑ ${selN} line(s) · ${sb.length} box(es) · ${sp.toLocaleString()} pcs</b>
       ${partN?`<span style="font-size:10px;font-weight:800;color:#0e7490;background:#ecfeff;border:1px solid #67e8f9;padding:1px 7px;border-radius:9px;white-space:nowrap;" title="Some lines move only part of their stock">✂ ${partN} partial</span>`:`<span style="font-size:10px;color:#a16207;white-space:nowrap;">need only a few boxes? change the <b>Take</b> cell</span>`}
       <button class="btn btn-sm" style="background:#0f2a4a;color:#fff;border-color:#0f2a4a;font-weight:800;" onclick="bxLocBulkOpen()">⚙ Work with selected...</button>
-      <button class="btn btn-sm" style="background:#334155;color:#fff;border-color:#334155;font-weight:800;" onclick="bxLocPrintSel()" title="Print the selected lines grouped by bin (pick sheet)">🖨 Print selected</button>
       ${(()=>{ const allSpec = sb.length && sb.every(b=>bxSpecLoc(b.loc, wh));
         const allOwn = sb.length && sb.every(b=>!bxSpecLoc(b.loc, wh));
         const B = (rt,lbl,bg)=>`<button class="btn btn-sm" style="background:${bg};color:#fff;border-color:${bg};font-weight:800;white-space:nowrap;" onclick="bxLocToTransfer('${rt}')" title="Creates a new ${esc(TR_ROUTES[rt].label)} shipment draft with the selected boxes">${lbl}</button>`;
         if(allSpec) return B(wh==='CA'?'LK2CA':'H2SC', '🚚 Transfer to '+wh, '#0f766e');
         if(allOwn)  return (wh==='SC' ? B('SC2CA','🚚 Transfer to CA','#7b1fa2') : '') + B(wh==='CA'?'CA2LK':'SC2H', '🏭 Send to 3rd Party', '#b45309');
         return '<span style="font-size:10.5px;color:#b45309;">select either our own bins or 3rd party bins (not both) to build a transfer</span>'; })()}
-      <button class="btn btn-sm" style="margin-left:auto;" onclick="bxLocSelClear()">✕ Clear</button>
+      <button class="btn btn-sm" style="margin-left:auto;background:#334155;color:#fff;border-color:#334155;font-weight:800;" onclick="bxLocPrintSel()" title="Print the selected lines grouped by bin (pick sheet)">🖨 Print selected</button>
+      <button class="btn btn-sm" onclick="bxLocSelClear()">✕ Clear</button>
     </div>`;
 }
 function bxLocSelBarUpd(){ const e = document.getElementById('bxl-selbar'); if(e) e.innerHTML = bxLocSelBarHtml(bxLocSelWh()); }
@@ -8126,6 +8148,7 @@ function bxRenderByLoc(el, q){
     <span style="font-weight:800;color:var(--text2);">~</span>
     <input class="fi" id="bxl-rto" list="bxl-binlist" placeholder="C01A" style="width:76px;font-size:11px;padding:3px 6px;text-transform:uppercase;font-family:Consolas,monospace;" title="Range end bin">
     <button class="btn btn-sm" onclick="bxLocRangeSel()" title="Select every bin from start to end (inclusive)">☑ Range</button>
+    <button class="btn btn-sm" onclick="bxLocSelAllShown()" title="Select every line currently shown (works with search / filters)">☑ All shown</button>
     <datalist id="bxl-binlist">${locs.map(l=>`<option>${esc(l)}</option>`).join('')}</datalist>
     <button class="btn btn-sm" style="margin-left:auto;" onclick="bxLocViewExcel()">⬇ Excel</button>
     <span id="bxl-stats" style="font-size:11px;color:var(--text2);">${bxLocStatsHtml(wh, locs.length)}</span>
@@ -8214,6 +8237,18 @@ function bxLocRangeSel(){
   if(!bins){ showToast('⚠ No bins between '+lo+' and '+hi+' in this view'); return; }
   renderBoxRoom();
   showToast('☑ '+lo+' ~ '+hi+': '+bins+' bin(s), '+lines+' line(s) selected');
+}
+// ☑ 화면에 보이는 전체 선택 — 검색/필터 결과 그대로 (v383)
+function bxLocSelAllShown(){
+  const G = window._bxLocGroups || {};
+  let bins = 0, lines = 0;
+  Object.keys(G).forEach(loc=>{
+    bins++;
+    G[loc].rows.forEach(r=>{ window._bxLocSel[bxLocSelKey(loc,r)] = r.n; lines++; });
+  });
+  if(!lines){ showToast('⚠ Nothing to select'); return; }
+  renderBoxRoom();
+  showToast('☑ All shown — '+bins+' bin(s), '+lines+' line(s) selected');
 }
 // 🖨 선택한 라인들을 bin별로 묶어 한번에 인쇄 (v382)
 function bxLocPrintSel(){
