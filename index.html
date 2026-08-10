@@ -137,7 +137,7 @@ main{max-width:1100px;margin:0 auto;padding:16px;}
     <button class="btn btn-sm" onclick="doLogout()" style="padding:2px 8px;font-size:10px;" data-i18n="logout">Log out</button>
   </span>
   <select id="lang-sel" onchange="setLang(this.value)" style="font-size:11px;padding:3px 6px;border-radius:5px;border:none;background:#1d3f66;color:#fff;"><option value="ko">한국어</option><option value="en">English</option><option value="es">Español</option></select>
-  <span style="font-size:10px;color:#9fb8d4;">v378 🚚</span>
+  <span style="font-size:10px;color:#9fb8d4;">v380 🚚</span>
 </div>
 <script type="text/javascript" src="https://js.authorize.net/v1/Accept.js" charset="utf-8"></script>
 <div id="po-viewer" style="display:none;position:fixed;top:0;right:0;width:44%;height:100vh;background:#fff;border-left:2px solid var(--border);z-index:60;box-shadow:-6px 0 20px rgba(0,0,0,.15);">
@@ -339,6 +339,7 @@ main{max-width:1100px;margin:0 auto;padding:16px;}
       <input class="fi" id="cm-search" placeholder="🔍 Search customer" oninput="renderCustomers()" style="margin-left:auto;width:200px;font-size:12px;padding:5px 10px;">
       <button class="btn btn-sm" id="cm-sort-az" onclick="cmSort='az';renderCustomers();">A-Z</button>
       <button class="btn btn-sm" id="cm-sort-sales" onclick="cmSort='sales';renderCustomers();">💰 Total Sales</button>
+      <button class="btn btn-sm" style="background:#7c2d12;color:#fff;border-color:#7c2d12;font-weight:700;" onclick="cmAgingOpen()">📒 A/R Aging</button>
       <button class="btn btn-sm btn-primary" onclick="openAddCustomer()">＋ Add Customer</button>
     </div>
     <div id="cust-body"><div class="muted">Loading...</div></div>
@@ -4653,14 +4654,14 @@ function buildFullBoxLabelZpl(box, totalBoxes, order) {
   const fP = poL.length > 1 ? Math.min(36, fit(poLongest, 36, 390)) : fP1;
   const poY = 18 + fC + 5;   // 위 여백 늘림 (v378)
   const poZpl = poL.map((ln,li)=>'^FO' + k(8) + ',' + k(poY + li*(fP+3)) + '^A0N,' + k(fP) + ',' + k(fP) + '^FD' + ln + '^FS\n').join('');
-  const fD = fit(detail, 18, 390);
-  const fB = fit(boxLine, 16, 390);
+  const fD = fit(detail, 16, 390);
+  const fB = fit(boxLine, 14, 390);
   return '^XA\n'
     + '^MMT\n^PW' + k(406) + '\n^LL' + k(203) + '\n^LS0\n'
     + '^FO' + k(8) + ',' + k(18) + '^A0N,' + k(fC) + ',' + k(fC) + '^FD' + cust + '^FS\n'
     + poZpl
-    + '^FO' + k(8) + ',' + k(162) + '^A0N,' + k(fD) + ',' + k(fD) + '^FD' + detail + '^FS\n'
-    + '^FO' + k(8) + ',' + k(184) + '^A0N,' + k(fB) + ',' + k(fB) + '^FD' + boxLine + '^FS\n'
+    + '^FO' + k(8) + ',' + k(170) + '^A0N,' + k(fD) + ',' + k(fD) + '^FD' + detail + '^FS\n'
+    + '^FO' + k(8) + ',' + k(188) + '^A0N,' + k(fB) + ',' + k(fB) + '^FD' + boxLine + '^FS\n'
     + '^XZ';
 }
 // 온전한 케이스(full box) 목록 — 라인별 full 박스 수만큼 1장씩
@@ -10365,6 +10366,96 @@ async function saveAddCustomer(){
   document.getElementById('modal-addcust').remove();
   showToast('✅ ' + name + ' added — enter Address/Ship To with ✎');
   renderCustomers();
+}
+// 📒 전체 거래처 A/R Aging 리포트 (v380)
+function cmAgingData(){
+  const names = {};
+  (savedCache||[]).forEach(r=>{ const c = custCanon(r.meta && r.meta.cust); if(c) names[custGroupName(c)] = 1; });
+  const out = [];
+  Object.keys(names).forEach(n=>{
+    const rows = custARRows(n); if(!rows.length) return;
+    const b = agingBuckets(rows);
+    const tot = rows.reduce((a,r)=>a+r.bal, 0);
+    if(tot <= 0.005) return;
+    out.push({ name:n, cur:b.cur, d30:b.d30, d60:b.d60, d90:b.d90, d120:b.d120, over:b.over, tot });
+  });
+  out.sort((a,b)=>b.tot-a.tot);
+  return out;
+}
+function cmAgingOpen(){
+  const money2 = n => '$' + Number(n).toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2});
+  const data = cmAgingData();
+  const T = data.reduce((a,r)=>({cur:a.cur+r.cur, d30:a.d30+r.d30, d60:a.d60+r.d60, d90:a.d90+r.d90, d120:a.d120+r.d120, over:a.over+r.over, tot:a.tot+r.tot}), {cur:0,d30:0,d60:0,d90:0,d120:0,over:0,tot:0});
+  const cell = (v, hot) => `<td style="text-align:right;font-family:Consolas,monospace;${v>0.005?(hot?'color:#b91c1c;font-weight:800;':'color:#78350f;font-weight:700;'):'color:#cbd5e1;'}">${v>0.005?money2(v):'—'}</td>`;
+  const ex = document.getElementById('modal-cmaging'); if(ex) ex.remove();
+  const div = document.createElement('div');
+  div.id = 'modal-cmaging';
+  div.style.cssText = 'position:fixed;inset:0;background:rgba(15,23,42,.6);z-index:120;display:flex;align-items:center;justify-content:center;padding:14px;';
+  div.onclick = e=>{ if(e.target===div) div.remove(); };
+  div.innerHTML = `<div style="background:#fff;border-radius:12px;max-width:980px;width:98vw;max-height:92vh;display:flex;flex-direction:column;overflow:hidden;">
+    <div style="background:#7c2d12;color:#fff;padding:10px 16px;font-weight:800;display:flex;align-items:center;gap:10px;">📒 A/R Aging — All Customers
+      <span style="font-weight:400;font-size:11px;opacity:.85;">${new Date().toLocaleDateString('en-US')} · ${data.length} customer(s) with open balance</span>
+      <button class="btn btn-sm" style="margin-left:auto;background:transparent;color:#fecaca;border-color:#b91c1c;" onclick="cmAgingPrint()">🖨 Print</button>
+      <button class="btn btn-sm" style="background:transparent;color:#fecaca;border-color:#b91c1c;" onclick="cmAgingExcel()">⬇ Excel</button>
+      <button class="btn btn-sm" style="background:transparent;color:#fecaca;border-color:#b91c1c;" onclick="document.getElementById('modal-cmaging').remove()">✕</button></div>
+    <div style="overflow-y:auto;padding:12px 16px;">
+      ${data.length ? `<table class="etbl" style="font-size:11.5px;">
+        <thead><tr><th class="tl">Customer</th><th>Current</th><th>1-30</th><th>31-60</th><th>61-90</th><th>91-120</th><th>120+</th><th>Total Due</th></tr></thead>
+        <tbody>${data.map(r=>`<tr style="cursor:pointer;" onclick="document.getElementById('modal-cmaging').remove(); if(typeof cmOpenAR!=='undefined' && cmOpenAR!==${JSON.stringify('')}){} if(cmOpenAR!=='${esc(r.name)}') cmToggleAR('${esc(r.name)}');" title="Click to open this customer's A/R detail">
+          <td class="tl" style="font-weight:700;">${esc(r.name)}</td>
+          ${cell(r.cur,false)}${cell(r.d30,false)}${cell(r.d60,false)}${cell(r.d90,true)}${cell(r.d120,true)}${cell(r.over,true)}
+          <td style="text-align:right;font-family:Consolas,monospace;font-weight:800;color:#0f2a4a;">${money2(r.tot)}</td></tr>`).join('')}</tbody>
+        <tfoot><tr style="background:#0f2a4a;color:#fff;font-weight:800;">
+          <td class="tl" style="color:#fff;">TOTAL</td>
+          <td style="text-align:right;font-family:Consolas,monospace;color:#fff;">${money2(T.cur)}</td>
+          <td style="text-align:right;font-family:Consolas,monospace;color:#fff;">${money2(T.d30)}</td>
+          <td style="text-align:right;font-family:Consolas,monospace;color:#fff;">${money2(T.d60)}</td>
+          <td style="text-align:right;font-family:Consolas,monospace;color:#fff;">${money2(T.d90)}</td>
+          <td style="text-align:right;font-family:Consolas,monospace;color:#fff;">${money2(T.d120)}</td>
+          <td style="text-align:right;font-family:Consolas,monospace;color:#fff;">${money2(T.over)}</td>
+          <td style="text-align:right;font-family:Consolas,monospace;color:#fff;">${money2(T.tot)}</td></tr></tfoot>
+      </table>
+      <div class="muted" style="font-size:10.5px;margin-top:8px;">Based on invoice due dates (terms). Click a customer to open their A/R detail &amp; statement. Balances = invoices − payments − credit memos.</div>`
+      : '<div class="muted" style="padding:20px;text-align:center;">🎉 No outstanding balances — everything is paid!</div>'}
+    </div></div>`;
+  document.body.appendChild(div);
+  window._cmAgingData = { data, T };
+}
+function cmAgingPrint(){
+  const money2 = n => '$' + Number(n).toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2});
+  const { data, T } = window._cmAgingData || cmAgingData();
+  const w = window.open('', '_blank');
+  if(!w){ showToast('⚠ Popup blocked'); return; }
+  w.document.write(`<html><head><title>A-R Aging</title><style>
+    *{-webkit-print-color-adjust:exact !important;print-color-adjust:exact !important;}
+    body{font-family:Segoe UI,Arial,sans-serif;color:#1a202c;margin:30px 36px;font-size:12px;}
+    h1{font-size:20px;margin:0;color:#0f2a4a;} .hd{border-bottom:3px solid #0f2a4a;padding-bottom:10px;margin-bottom:14px;display:flex;justify-content:space-between;align-items:flex-end;}
+    table{border-collapse:collapse;width:100%;} th,td{border:1px solid #cbd5e1;padding:5px 8px;font-size:11px;}
+    th{background:#0f2a4a;color:#fff;} td.n{text-align:right;font-family:Consolas,monospace;} td.hot{color:#b91c1c;font-weight:700;}
+    tfoot td{background:#eef2f7;font-weight:800;}
+  </style></head><body>
+    <div class="hd"><div><h1>A/R AGING SUMMARY</h1><div style="font-size:11px;color:#475569;">Peace Textile America, Inc. dba Pacific Sports</div></div>
+    <div style="font-size:11px;">As of ${new Date().toLocaleDateString('en-US',{year:'numeric',month:'long',day:'numeric'})}</div></div>
+    <table><thead><tr><th style="text-align:left;">Customer</th><th>Current</th><th>1-30</th><th>31-60</th><th>61-90</th><th>91-120</th><th>120+</th><th>Total Due</th></tr></thead>
+    <tbody>${data.map(r=>`<tr><td style="font-weight:700;">${esc(r.name)}</td>
+      <td class="n">${r.cur>0.005?money2(r.cur):''}</td><td class="n">${r.d30>0.005?money2(r.d30):''}</td><td class="n">${r.d60>0.005?money2(r.d60):''}</td>
+      <td class="n hot">${r.d90>0.005?money2(r.d90):''}</td><td class="n hot">${r.d120>0.005?money2(r.d120):''}</td><td class="n hot">${r.over>0.005?money2(r.over):''}</td>
+      <td class="n" style="font-weight:800;">${money2(r.tot)}</td></tr>`).join('')}</tbody>
+    <tfoot><tr><td>TOTAL — ${data.length} customer(s)</td><td class="n">${money2(T.cur)}</td><td class="n">${money2(T.d30)}</td><td class="n">${money2(T.d60)}</td><td class="n">${money2(T.d90)}</td><td class="n">${money2(T.d120)}</td><td class="n">${money2(T.over)}</td><td class="n">${money2(T.tot)}</td></tr></tfoot></table>
+    <script>window.onload=function(){window.print();};<\/script></body></html>`);
+  w.document.close();
+}
+async function cmAgingExcel(){
+  await loadXlsxLib();
+  const { data, T } = window._cmAgingData || cmAgingData();
+  const rows = [['Customer','Current','1-30','31-60','61-90','91-120','120+','Total Due']];
+  data.forEach(r=>rows.push([r.name, r.cur, r.d30, r.d60, r.d90, r.d120, r.over, r.tot]));
+  rows.push(['TOTAL', T.cur, T.d30, T.d60, T.d90, T.d120, T.over, T.tot]);
+  const wb = XLSX.utils.book_new();
+  const ws = XLSX.utils.aoa_to_sheet(rows);
+  ws['!cols'] = [{wch:30},{wch:12},{wch:12},{wch:12},{wch:12},{wch:12},{wch:12},{wch:14}];
+  XLSX.utils.book_append_sheet(wb, ws, 'AR Aging');
+  XLSX.writeFile(wb, 'AR-Aging-'+new Date().toISOString().slice(0,10)+'.xlsx');
 }
 // 💰 Customer 탭 A/R 패널에서 바로 입금 기록 (v376)
 function cmOpenPay(base, wh){
