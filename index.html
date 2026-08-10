@@ -137,7 +137,7 @@ main{max-width:1100px;margin:0 auto;padding:16px;}
     <button class="btn btn-sm" onclick="doLogout()" style="padding:2px 8px;font-size:10px;" data-i18n="logout">Log out</button>
   </span>
   <select id="lang-sel" onchange="setLang(this.value)" style="font-size:11px;padding:3px 6px;border-radius:5px;border:none;background:#1d3f66;color:#fff;"><option value="ko">한국어</option><option value="en">English</option><option value="es">Español</option></select>
-  <span style="font-size:10px;color:#9fb8d4;">v381 🚚</span>
+  <span style="font-size:10px;color:#9fb8d4;">v382 🚚</span>
 </div>
 <script type="text/javascript" src="https://js.authorize.net/v1/Accept.js" charset="utf-8"></script>
 <div id="po-viewer" style="display:none;position:fixed;top:0;right:0;width:44%;height:100vh;background:#fff;border-left:2px solid var(--border);z-index:60;box-shadow:-6px 0 20px rgba(0,0,0,.15);">
@@ -7801,6 +7801,7 @@ function bxLocSelBarHtml(wh){
       <b style="color:#92400e;">☑ ${selN} line(s) · ${sb.length} box(es) · ${sp.toLocaleString()} pcs</b>
       ${partN?`<span style="font-size:10px;font-weight:800;color:#0e7490;background:#ecfeff;border:1px solid #67e8f9;padding:1px 7px;border-radius:9px;white-space:nowrap;" title="Some lines move only part of their stock">✂ ${partN} partial</span>`:`<span style="font-size:10px;color:#a16207;white-space:nowrap;">need only a few boxes? change the <b>Take</b> cell</span>`}
       <button class="btn btn-sm" style="background:#0f2a4a;color:#fff;border-color:#0f2a4a;font-weight:800;" onclick="bxLocBulkOpen()">⚙ Work with selected...</button>
+      <button class="btn btn-sm" style="background:#334155;color:#fff;border-color:#334155;font-weight:800;" onclick="bxLocPrintSel()" title="Print the selected lines grouped by bin (pick sheet)">🖨 Print selected</button>
       ${(()=>{ const allSpec = sb.length && sb.every(b=>bxSpecLoc(b.loc, wh));
         const allOwn = sb.length && sb.every(b=>!bxSpecLoc(b.loc, wh));
         const B = (rt,lbl,bg)=>`<button class="btn btn-sm" style="background:${bg};color:#fff;border-color:${bg};font-weight:800;white-space:nowrap;" onclick="bxLocToTransfer('${rt}')" title="Creates a new ${esc(TR_ROUTES[rt].label)} shipment draft with the selected boxes">${lbl}</button>`;
@@ -8120,6 +8121,12 @@ function bxRenderByLoc(el, q){
     ${chip('','All', flt==='all', "bxLocSetFilter('all')")}
     ${chip('', specM.icon+' '+(specKind==='LK'?'3rd Party (SPECIAL*)':'3rd Party (H*)'), flt==='3p', "bxLocSetFilter('3p')")}
     ${chip('','Own bins', flt==='own', "bxLocSetFilter('own')")}
+    <span style="color:var(--border);">|</span>
+    <input class="fi" id="bxl-rfrom" list="bxl-binlist" placeholder="A01A" style="width:76px;font-size:11px;padding:3px 6px;text-transform:uppercase;font-family:Consolas,monospace;" title="Range start bin">
+    <span style="font-weight:800;color:var(--text2);">~</span>
+    <input class="fi" id="bxl-rto" list="bxl-binlist" placeholder="C01A" style="width:76px;font-size:11px;padding:3px 6px;text-transform:uppercase;font-family:Consolas,monospace;" title="Range end bin">
+    <button class="btn btn-sm" onclick="bxLocRangeSel()" title="Select every bin from start to end (inclusive)">☑ Range</button>
+    <datalist id="bxl-binlist">${locs.map(l=>`<option>${esc(l)}</option>`).join('')}</datalist>
     <button class="btn btn-sm" style="margin-left:auto;" onclick="bxLocViewExcel()">⬇ Excel</button>
     <span id="bxl-stats" style="font-size:11px;color:var(--text2);">${bxLocStatsHtml(wh, locs.length)}</span>
   </div>
@@ -8188,6 +8195,68 @@ async function bxLocViewExcel(){
   const wb = XLSX.utils.book_new();
   XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet(rows), 'By Location');
   XLSX.writeFile(wb, 'inventory-by-location-'+wh+'-'+new Date().toISOString().slice(0,10)+'.xlsx');
+}
+// ☑ bin 범위 선택 — 화면에 보이는 bin 중 시작~끝 사이 전부 선택 (v382)
+function bxLocRangeSel(){
+  const f = String((($('bxl-rfrom')||{}).value)||'').trim().toUpperCase();
+  const t = String((($('bxl-rto')||{}).value)||'').trim().toUpperCase();
+  if(!f || !t){ showToast('⚠ Enter the start and end bins'); return; }
+  const cmp = (a,b)=>a.localeCompare(b, undefined, {numeric:true});
+  const lo = cmp(f,t)<=0 ? f : t, hi = cmp(f,t)<=0 ? t : f;
+  const G = window._bxLocGroups || {};
+  let bins = 0, lines = 0;
+  Object.keys(G).forEach(loc=>{
+    if(cmp(loc,lo)>=0 && cmp(loc,hi)<=0){
+      bins++;
+      G[loc].rows.forEach(r=>{ window._bxLocSel[bxLocSelKey(loc,r)] = r.n; lines++; });
+    }
+  });
+  if(!bins){ showToast('⚠ No bins between '+lo+' and '+hi+' in this view'); return; }
+  renderBoxRoom();
+  showToast('☑ '+lo+' ~ '+hi+': '+bins+' bin(s), '+lines+' line(s) selected');
+}
+// 🖨 선택한 라인들을 bin별로 묶어 한번에 인쇄 (v382)
+function bxLocPrintSel(){
+  const wh = window._bxLocWh || 'SC';
+  const keys = Object.keys(window._bxLocSel||{});
+  if(!keys.length){ showToast('⚠ Select lines first'); return; }
+  const byLoc = {};
+  keys.forEach(k=>{
+    const g = bxLocKeyBoxes(k, wh); if(!g.length) return;
+    const n = bxLocTake(k, g.length) || g.length;
+    const b = g[0];
+    const loc = k.split('||')[0];
+    (byLoc[loc] = byLoc[loc] || []).push({ style:String(b.style), color:String(b.color).toUpperCase(), size:String(b.size).toUpperCase(), ppb:Number(b.pcs)||0, n, stock:g.length });
+  });
+  const locs2 = Object.keys(byLoc).sort((a,b)=>a.localeCompare(b, undefined, {numeric:true}));
+  if(!locs2.length){ showToast('⚠ Nothing to print'); return; }
+  let gb = 0, gp = 0;
+  const secs = locs2.map(loc=>{
+    const rows = byLoc[loc].sort((a,b)=>a.style.localeCompare(b.style)||a.color.localeCompare(b.color)||bxSizeCmp(a.size,b.size));
+    const tb = rows.reduce((a,r)=>a+r.n,0), tp = rows.reduce((a,r)=>a+r.n*r.ppb,0);
+    gb += tb; gp += tp;
+    return `<h3 style="margin:18px 0 4px;">${trIs3PLoc(loc, wh)?'🏭':'📍'} ${esc(loc)} <span style="font-size:12px;font-weight:400;color:#555;">— ${tb} boxes · ${tp.toLocaleString()} pcs</span></h3>
+    <table><tr><th>Style</th><th>Color</th><th>Size</th><th>Boxes</th><th>Total Pcs</th><th>Pcs/Box</th><th style="width:70px;">Check</th></tr>
+    ${rows.map(r=>`<tr><td><b>${esc(r.style)}</b></td><td>${esc(r.color)}</td><td class="n">${esc(r.size)}</td><td class="n"><b>${r.n}</b>${r.n<r.stock?'<span style="font-size:10px;color:#b45309;"> / '+r.stock+'</span>':''}</td><td class="r">${(r.n*r.ppb).toLocaleString()}</td><td class="n">${r.ppb}</td><td></td></tr>`).join('')}
+    </table>`;
+  }).join('');
+  const w = window.open('', '_blank');
+  if(!w){ showToast('⚠ Popup blocked'); return; }
+  w.document.write(`<html><head><title>Bin Pick Sheet</title><style>
+    *{-webkit-print-color-adjust:exact !important;print-color-adjust:exact !important;}
+    body{font-family:Helvetica,Arial,sans-serif;font-size:13px;padding:24px;color:#111;}
+    h2{margin:0 0 2px;} table{border-collapse:collapse;width:100%;margin-top:6px;}
+    th,td{border:1px solid #999;padding:5px 10px;font-size:12px;} th{background:#eee;}
+    td.n{text-align:center;font-family:Consolas,monospace;} td.r{text-align:right;font-family:Consolas,monospace;}
+    h3{page-break-inside:avoid;}
+  </style></head><body>
+    <h2>🖨 BIN PICK SHEET <span style="font-size:14px;font-weight:400;">(${esc(wh)} warehouse)</span></h2>
+    <div style="font-size:12px;color:#444;">${locs2.length} bin(s) · <b>${gb}</b> boxes · <b>${gp.toLocaleString()}</b> pcs · ${new Date().toLocaleString()}${keys.length?'':''} — boxes shown as "take / stock" when taking only part</div>
+    ${secs}
+    <div style="margin-top:30px;display:flex;gap:40px;"><div style="flex:1;"><div style="border-bottom:1.5px solid #111;height:34px;"></div><div style="font-size:11px;font-weight:700;margin-top:4px;">Picked by</div></div>
+    <div style="flex:1;"><div style="border-bottom:1.5px solid #111;height:34px;"></div><div style="font-size:11px;font-weight:700;margin-top:4px;">Date</div></div></div>
+    <script>window.onload=function(){window.print();};<\/script></body></html>`);
+  w.document.close();
 }
 function bxLocPrintBin(wh, loc){
   const boxes = bxStore.filter(b=>bxWh(b)===wh && String(b.loc||'').toUpperCase()===String(loc).toUpperCase());
