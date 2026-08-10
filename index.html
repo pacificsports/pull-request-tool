@@ -137,7 +137,7 @@ main{max-width:1100px;margin:0 auto;padding:16px;}
     <button class="btn btn-sm" onclick="doLogout()" style="padding:2px 8px;font-size:10px;" data-i18n="logout">Log out</button>
   </span>
   <select id="lang-sel" onchange="setLang(this.value)" style="font-size:11px;padding:3px 6px;border-radius:5px;border:none;background:#1d3f66;color:#fff;"><option value="ko">한국어</option><option value="en">English</option><option value="es">Español</option></select>
-  <span style="font-size:10px;color:#9fb8d4;">v393 🚚</span>
+  <span style="font-size:10px;color:#9fb8d4;">v394 🚚</span>
 </div>
 <script type="text/javascript" src="https://js.authorize.net/v1/Accept.js" charset="utf-8"></script>
 <div id="po-viewer" style="display:none;position:fixed;top:0;right:0;width:44%;height:100vh;background:#fff;border-left:2px solid var(--border);z-index:60;box-shadow:-6px 0 20px rgba(0,0,0,.15);">
@@ -177,6 +177,7 @@ main{max-width:1100px;margin:0 auto;padding:16px;}
   <button id="nav-pc" class="nav-btn" onclick="showView('pc')">🧺 PC Room</button>
   <button id="nav-box" class="nav-btn" onclick="showView('box')">📦 Full Box</button>
   <button id="nav-tx" class="nav-btn" onclick="showView('tx')">💳 Transactions</button>
+  <button id="nav-act" class="nav-btn" onclick="showView('act')">📜 Activity</button>
 </div>
 <div id="orders-view">
 
@@ -359,6 +360,21 @@ main{max-width:1100px;margin:0 auto;padding:16px;}
     <div id="pc-body"><div class="muted">Loading...</div></div>
   </div>
 </div>
+<div id="act-view" style="display:none;">
+  <div class="card">
+    <div class="card-title"><span>📜 Activity Log</span>
+      <span class="muted" style="font-weight:400;font-size:11px;">who did what, when — boxes · PC Room · ship outs · orders · stock counts</span>
+      <select class="fi" id="act-days" onchange="actLoad()" style="margin-left:auto;font-size:12px;padding:5px 8px;">
+        <option value="1">Today</option><option value="3">3 days</option><option value="7" selected>7 days</option><option value="14">14 days</option><option value="30">30 days</option><option value="90">90 days</option>
+      </select>
+      <input class="fi" id="act-q" placeholder="🔍 who / style / PO / bin / note..." oninput="clearTimeout(window._actDeb);window._actDeb=setTimeout(actRender,250);" style="width:230px;font-size:12px;padding:5px 10px;">
+      <button class="btn btn-sm" onclick="actLoad()">↻ Refresh</button>
+      <button class="btn btn-sm" onclick="actExcel()">⬇ Excel</button>
+    </div>
+    <div id="act-flt" style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:8px;"></div>
+    <div id="act-body"><div class="muted">Open the tab to load activity...</div></div>
+  </div>
+</div>
 <div id="box-view" style="display:none;">
   <div class="card">
     <div class="card-title"><span>📦 Full Box Inventory (Location per box)</span>
@@ -382,6 +398,7 @@ main{max-width:1100px;margin:0 auto;padding:16px;}
       <input type="file" id="bx-import-file" accept=".xlsx,.xls,.csv" style="display:none;" onchange="bxImport(this.files[0]);this.value='';">
       <input type="file" id="hi-file" accept=".xlsx,.xls" style="display:none;" onchange="hiUpload(this.files[0]);this.value='';">
     </div>
+    <div id="bx-sobar"></div>
     <div id="bx-body"><div class="muted">Loading...</div></div>
   </div>
 </div>
@@ -5277,7 +5294,7 @@ function bxSearchDeb(){ clearTimeout(_bxSearchT); _bxSearchT = setTimeout(render
 function pcSearchDeb(){ clearTimeout(_pcSearchT); _pcSearchT = setTimeout(renderPcRoom, 250); }
 function showView(v){
   try{ localStorage.setItem('pr_view', v); }catch(e){}
-  const ov = $('orders-view'), dv = $('dash-view'), cv = $('cust-view'), pv = $('pc-view'), tv = $('tx-view'), bv = $('box-view');
+  const ov = $('orders-view'), dv = $('dash-view'), cv = $('cust-view'), pv = $('pc-view'), tv = $('tx-view'), bv = $('box-view'), av = $('act-view');
   if(!ov || !dv) return;
   ov.style.display = v==='orders' ? 'block' : 'none';
   dv.style.display = v==='dash' ? 'block' : 'none';
@@ -5285,17 +5302,145 @@ function showView(v){
   if(pv) pv.style.display = v==='pc' ? 'block' : 'none';
   if(tv) tv.style.display = v==='tx' ? 'block' : 'none';
   if(bv) bv.style.display = v==='box' ? 'block' : 'none';
+  if(av) av.style.display = v==='act' ? 'block' : 'none';
   $('nav-orders').classList.toggle('nav-active', v==='orders');
   $('nav-dash').classList.toggle('nav-active', v==='dash');
   const nc = $('nav-cust'); if(nc) nc.classList.toggle('nav-active', v==='cust');
   const np = $('nav-pc'); if(np) np.classList.toggle('nav-active', v==='pc');
   const nt = $('nav-tx'); if(nt) nt.classList.toggle('nav-active', v==='tx');
   const nb = $('nav-box'); if(nb) nb.classList.toggle('nav-active', v==='box');
+  const na = $('nav-act'); if(na) na.classList.toggle('nav-active', v==='act');
   if(v==='dash') renderDash();
   if(v==='cust') renderCustomers();
   if(v==='pc'){ if(pcLoaded){ if(window._pcDirty !== false) renderPcRoom(); } else loadPcRoom(); }
   if(v==='box') loadBoxRoom();
   if(v==='tx') renderTx();
+  if(v==='act'){ if(!window._actAt || Date.now()-window._actAt > 60000) actLoad(); else actRender(); }
+}
+// ═══ 📜 Activity Log — 모든 트랜잭션/메모 통합 타임라인 (v394) ═══
+const ACT_KINDS = {
+  in:  { icon:'📥', label:'Box IN',      color:'#166534', bg:'#f0fdf4' },
+  out: { icon:'📤', label:'Box OUT',     color:'#b91c1c', bg:'#fef2f2' },
+  pc:  { icon:'🧺', label:'PC Room',     color:'#6d28d9', bg:'#faf5ff' },
+  so:  { icon:'🚚', label:'Ship Out',    color:'#b45309', bg:'#fffbeb' },
+  ord: { icon:'📝', label:'Order',       color:'#1d4ed8', bg:'#eff6ff' },
+  st:  { icon:'📅', label:'Stock Count', color:'#0e7490', bg:'#ecfeff' }
+};
+async function actLoad(){
+  const el = $('act-body'); if(el) el.innerHTML = '<div class="muted">Loading activity...</div>';
+  const days = parseInt(($('act-days')||{}).value)||7;
+  const since = new Date(Date.now() - days*86400000).toISOString();
+  const rows = [];
+  const jobs = [];
+  // 📥 박스 입고 (같은 시각+아이템+위치 = 한 번의 receiving 으로 묶음)
+  jobs.push(sbFetch('/rest/v1/pr_boxes?select=style,color,size,pcs,loc,wh,in_at,in_by,note&in_at=gte.'+encodeURIComponent(since)+'&order=in_at.desc&limit=3000').then(async r=>{
+    if(!r.ok) return;
+    const gm = {};
+    (await r.json()).forEach(b=>{
+      const k = [b.in_at, b.style, String(b.color).toUpperCase(), String(b.size).toUpperCase(), String(b.loc||'').toUpperCase(), b.wh||'SC', b.note||''].join('|');
+      if(!gm[k]) gm[k] = { n:0, b };
+      gm[k].n++;
+    });
+    Object.values(gm).forEach(g=>rows.push({ at:g.b.in_at, by:g.b.in_by||'', kind:'in',
+      text:'Received '+g.n+' box(es) — '+g.b.style+' '+String(g.b.color).toUpperCase()+' '+String(g.b.size).toUpperCase()+' @'+(String(g.b.loc||'?').toUpperCase())+' ['+(g.b.wh||'SC')+']'+(g.b.note?' 📝 '+g.b.note:'') }));
+  }).catch(()=>{}));
+  // 📤 박스 출고 (시각+사유+아이템 묶음)
+  jobs.push(sbFetch('/rest/v1/pr_boxes?select=style,color,size,pcs,loc,wh,out_at,out_by,out_po&status=eq.OUT&out_at=gte.'+encodeURIComponent(since)+'&order=out_at.desc&limit=3000').then(async r=>{
+    if(!r.ok) return;
+    const gm = {};
+    (await r.json()).forEach(b=>{
+      const k = [b.out_at, b.out_po||'', b.style, String(b.color).toUpperCase(), String(b.size).toUpperCase(), b.wh||'SC'].join('|');
+      if(!gm[k]) gm[k] = { n:0, b };
+      gm[k].n++;
+    });
+    Object.values(gm).forEach(g=>rows.push({ at:g.b.out_at, by:g.b.out_by||'', kind:'out',
+      text:(g.b.out_po||'OUT')+' — '+g.n+' box(es) '+g.b.style+' '+String(g.b.color).toUpperCase()+' '+String(g.b.size).toUpperCase()+' from '+(String(g.b.loc||'?').toUpperCase())+' ['+(g.b.wh||'SC')+']' }));
+  }).catch(()=>{}));
+  // 🧺 PC Room 원장
+  jobs.push(sbFetch('/rest/v1/pr_pcmoves?select=style,color,size,delta,bal,note,wh,by_email,at&at=gte.'+encodeURIComponent(since)+'&order=at.desc&limit=2000').then(async r=>{
+    if(!r.ok) return;
+    (await r.json()).forEach(m=>rows.push({ at:m.at, by:m.by_email||'', kind:'pc',
+      text:m.style+' '+String(m.color).toUpperCase()+' '+String(m.size).toUpperCase()+' ['+(m.wh||'SC')+'] '+(m.delta>0?'+':'')+m.delta+' pcs → bal '+m.bal+(m.note?' — '+m.note:'') }));
+  }).catch(()=>{}));
+  // 🚚 Ship Out 요청 (생성/완료/취소)
+  jobs.push(sbFetch('/rest/v1/pr_shipout?select=id,wh,note,lines,status,created_at,created_by,done_at,done_by&order=id.desc&limit=200').then(async r=>{
+    if(!r.ok) return;
+    (await r.json()).forEach(q=>{
+      const nb = (q.lines||[]).reduce((a,l)=>a+(Number(l.take)||0),0);
+      const na = (q.lines||[]).reduce((a,l)=>a+(l.actual!=null?Number(l.actual):0),0);
+      if(q.created_at >= since) rows.push({ at:q.created_at, by:q.created_by||'', kind:'so',
+        text:'SO-'+q.id+' created — '+nb+' box(es) ['+esc(q.wh)+']'+(q.note?' → '+q.note:'')+' (pending)' });
+      if(q.done_at && q.done_at >= since) rows.push({ at:q.done_at, by:q.done_by||'', kind:'so',
+        text:'SO-'+q.id+' '+(q.status==='DONE'?('confirmed — '+na+' of '+nb+' box(es) shipped'):'canceled')+(q.note?' → '+q.note:'') });
+    });
+  }).catch(()=>{}));
+  // 📅 실사 (stock count)
+  jobs.push(sbFetch('/rest/v1/pr_stocktake?select=k,at,by_email&at=gte.'+encodeURIComponent(since)+'&order=at.desc&limit=500').then(async r=>{
+    if(!r.ok) return;
+    (await r.json()).forEach(x=>{
+      const p = String(x.k||'').split('|');
+      rows.push({ at:x.at, by:x.by_email||'', kind:'st', text:'Counted '+(p[0]==='PC'?'PC Room':'Boxes')+' — '+p.slice(1).join(' ') });
+    });
+  }).catch(()=>{}));
+  await Promise.all(jobs);
+  // 📝 오더 히스토리 (이미 로컬 캐시에 있음)
+  try{
+    (savedCache||[]).forEach(rec=>{
+      (rec.history||[]).forEach(h=>{
+        if(!h.t || h.t < since) return;
+        rows.push({ at:h.t, by:h.by||'', kind:'ord', text:(rec.base||'')+' — '+(h.e||'')+' ('+((rec.meta&&rec.meta.cust)||'')+' PO '+((rec.meta&&rec.meta.po)||'')+')' });
+      });
+    });
+  }catch(e){}
+  rows.sort((a,b)=>String(b.at).localeCompare(String(a.at)));
+  window._actRows = rows;
+  window._actAt = Date.now();
+  if(!window._actOn) window._actOn = { in:true, out:true, pc:true, so:true, ord:true, st:true };
+  actRender();
+}
+function actTgl(k){ window._actOn[k] = !window._actOn[k]; actRender(); }
+function actRender(){
+  const el = $('act-body'); if(!el) return;
+  const on = window._actOn || {};
+  const q = String((($('act-q')||{}).value)||'').trim().toLowerCase();
+  const flt = $('act-flt');
+  if(flt){
+    const cnt = {};
+    (window._actRows||[]).forEach(r=>{ cnt[r.kind] = (cnt[r.kind]||0)+1; });
+    flt.innerHTML = Object.keys(ACT_KINDS).map(k=>{
+      const K = ACT_KINDS[k];
+      return `<button class="btn btn-sm" style="font-size:11px;${on[k]?`background:${K.color};color:#fff;border-color:${K.color};`:'opacity:.55;'}" onclick="actTgl('${k}')">${K.icon} ${K.label} ${cnt[k]||0}</button>`;
+    }).join('');
+  }
+  const rows = (window._actRows||[]).filter(r=>on[r.kind] && (!q || (r.text+' '+r.by).toLowerCase().includes(q)));
+  if(!rows.length){ el.innerHTML = '<div class="muted" style="padding:12px 0;">No activity found — try a longer period or different filters.</div>'; return; }
+  let lastDay = '';
+  const out = [];
+  rows.slice(0, 800).forEach(r=>{
+    const d = new Date(r.at);
+    const day = d.toLocaleDateString('en-US', {weekday:'short', month:'numeric', day:'numeric'});
+    if(day !== lastDay){ lastDay = day; out.push(`<div style="font-weight:800;font-size:11px;color:#64748b;background:#f1f5f9;padding:4px 10px;border-radius:6px;margin:10px 0 4px;">📆 ${day}</div>`); }
+    const K = ACT_KINDS[r.kind];
+    out.push(`<div style="display:flex;gap:8px;align-items:flex-start;padding:4px 6px;border-bottom:1px solid #f1f5f9;font-size:12px;">
+      <span style="font-family:Consolas,monospace;color:#94a3b8;font-size:10.5px;white-space:nowrap;padding-top:2px;">${d.toLocaleTimeString('en-US',{hour:'numeric',minute:'2-digit'})}</span>
+      <span style="font-size:9.5px;font-weight:800;color:${K.color};background:${K.bg};border:1px solid ${K.color}33;border-radius:6px;padding:1px 7px;white-space:nowrap;margin-top:1px;">${K.icon} ${K.label}</span>
+      <span style="flex:1;min-width:0;">${esc(r.text)}</span>
+      <span style="color:#64748b;font-size:10.5px;white-space:nowrap;">${esc(String(r.by||'').split('@')[0])}</span>
+    </div>`);
+  });
+  if(rows.length > 800) out.push(`<div class="muted" style="padding:8px;">Showing first 800 of ${rows.length} — narrow the search or period.</div>`);
+  el.innerHTML = out.join('');
+}
+function actExcel(){
+  const rows = (window._actRows||[]).filter(r=>(window._actOn||{})[r.kind]);
+  if(!rows.length){ showToast('⚠ Nothing to export'); return; }
+  const aoa = [['Time','Type','Activity','By']];
+  rows.forEach(r=>aoa.push([ new Date(r.at).toLocaleString(), ACT_KINDS[r.kind].label, r.text, r.by ]));
+  const ws = XLSX.utils.aoa_to_sheet(aoa);
+  ws['!cols'] = [{wch:20},{wch:12},{wch:90},{wch:26}];
+  const wb = XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(wb, ws, 'Activity');
+  XLSX.writeFile(wb, 'activity_log_' + new Date().toISOString().slice(0,10) + '.xlsx');
 }
 // ═══ PC Room (SC partial pcs inventory) ═══
 const PC_ADULT = ['XS','S','M','L','XL','2XL','3XL','4XL','5XL'];
@@ -8192,7 +8337,30 @@ async function soCountUpd(){
     const list = await soFetchOpen(); window._soOpen = list;
     const b = $('bx-sobtn');
     if(b) b.innerHTML = '🚚 Ship outs'+(list.length?' <span style="background:#b91c1c;color:#fff;border-radius:9px;padding:0 6px;font-size:10px;font-weight:800;">'+list.length+'</span>':'');
+    soBarRender();
   }catch(e){}
+}
+// ⏳ Full Box 상단 pending ship out 패널 — 직원이 뽑고 나서 여기서 바로 Confirm (v394)
+function soBarRender(){
+  const el = $('bx-sobar'); if(!el) return;
+  const list = window._soOpen || [];
+  if(!list.length){ el.innerHTML = ''; return; }
+  el.innerHTML = `<div style="border:1.5px solid #f59e0b;background:#fffbeb;border-radius:10px;padding:10px 14px;margin-bottom:10px;">
+    <div style="font-weight:800;color:#92400e;font-size:12.5px;margin-bottom:2px;">⏳ Pending Ship Outs (${list.length}) <span style="font-weight:400;color:#a16207;">— pull the boxes on the sheet first, then press Confirm to deduct stock</span></div>
+    ${list.map(q=>{
+      const nb = (q.lines||[]).reduce((a,l)=>a+(Number(l.take)||0),0);
+      const np = (q.lines||[]).reduce((a,l)=>a+(Number(l.take)||0)*(Number(l.ppb)||0),0);
+      return `<div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;padding:6px 0;border-top:1px solid #fde68a;font-size:12px;">
+        <b style="font-family:Consolas,monospace;">SO-${q.id}</b>
+        <span style="background:#fef3c7;border:1px solid #f59e0b;border-radius:6px;padding:0 8px;font-weight:800;color:#92400e;">→ ${esc(q.note||'—')}</span>
+        <span>[${esc(q.wh)}] ${(q.lines||[]).length} line · <b>${nb}</b> box · ${np.toLocaleString()} pcs</span>
+        <span class="muted" style="font-size:10.5px;">${q.created_at?new Date(q.created_at).toLocaleString():''} · ${esc(String(q.created_by||'').split('@')[0])}</span>
+        <span style="margin-left:auto;display:flex;gap:6px;">
+          <button class="btn btn-sm" onclick="soPrint(${q.id})" title="Reprint the pull request sheet">🖨</button>
+          <button class="btn btn-sm" style="background:#065f46;color:#fff;border-color:#065f46;font-weight:800;" onclick="soConfirmOpen(${q.id})" title="Boxes pulled — enter actual counts and deduct">✅ Confirm</button>
+          <button class="btn btn-sm" onclick="soCancel(${q.id})" title="Cancel — nothing was deducted">🗑</button>
+        </span></div>`;
+    }).join('')}</div>`;
 }
 async function soListOpen(){
   const ex = document.getElementById('modal-so'); if(ex) ex.remove();
@@ -8245,7 +8413,7 @@ async function soCancel(id){
     await sbFetch('/rest/v1/pr_shipout?id=eq.'+id, {method:'PATCH', headers:{Prefer:'return=minimal'}, body: JSON.stringify({status:'CANCELED', done_at:new Date().toISOString(), done_by:(SESS&&SESS.email)||''})});
     showToast('🗑 SO-'+id+' canceled');
   }catch(e){ showToast('⚠ '+(e.message||e)); }
-  soListOpen();
+  if(document.getElementById('modal-so')) soListOpen(); else soCountUpd();
 }
 function soConfirmOpen(id){
   const q = (window._soOpen||[]).find(x=>x.id===id); if(!q) return;
