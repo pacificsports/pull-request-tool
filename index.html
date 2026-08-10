@@ -137,7 +137,7 @@ main{max-width:1100px;margin:0 auto;padding:16px;}
     <button class="btn btn-sm" onclick="doLogout()" style="padding:2px 8px;font-size:10px;" data-i18n="logout">Log out</button>
   </span>
   <select id="lang-sel" onchange="setLang(this.value)" style="font-size:11px;padding:3px 6px;border-radius:5px;border:none;background:#1d3f66;color:#fff;"><option value="ko">한국어</option><option value="en">English</option><option value="es">Español</option></select>
-  <span style="font-size:10px;color:#9fb8d4;">v383 🚚</span>
+  <span style="font-size:10px;color:#9fb8d4;">v384 🚚</span>
 </div>
 <script type="text/javascript" src="https://js.authorize.net/v1/Accept.js" charset="utf-8"></script>
 <div id="po-viewer" style="display:none;position:fixed;top:0;right:0;width:44%;height:100vh;background:#fff;border-left:2px solid var(--border);z-index:60;box-shadow:-6px 0 20px rgba(0,0,0,.15);">
@@ -4731,15 +4731,27 @@ function buildBoxLabelZpl(box, totalBoxes, order) {
     + '^FO0,1175^FB812,1,0,C,0^A0N,28,28^FDPacific Sports^FS\n'
     + '^XZ';
 }
+async function blGetPrinters(){
+  const r = await fetch('http://localhost:9100/available', { method:'GET', headers:{'Content-Type':'application/json'} });
+  const d = await r.json();
+  let list = (d && d.printer) ? d.printer : (Array.isArray(d) ? d : []);
+  if(!Array.isArray(list)) list = [list];
+  return list.filter(Boolean);
+}
+function blPrinterKey(){ return 'bl_printer_' + (window._blMode==='full' ? 'full' : 'box'); }
 async function sendToZebraBrowserPrint(zplData, labelCount) {
   showToast(t('bl_connecting'));
   try {
-    const bpResponse = await fetch('http://localhost:9100/available', { method: 'GET', headers: { 'Content-Type': 'application/json' } });
-    const devices = await bpResponse.json();
-    const printer = (devices && devices.printer && devices.printer[0]) || (devices && devices[0]);
-    if (!printer) { showToast(t('bl_nozebra')); return false; }
+    const list = await blGetPrinters();
+    if (!list.length) { showToast(t('bl_nozebra')); return false; }
+    let printer = list[0];
+    try{
+      const want = localStorage.getItem(blPrinterKey());
+      const m = list.find(p=>p && ((p.uid && p.uid===want) || p.name===want));
+      if(m) printer = m;
+    }catch(e){}
     const writeRes = await fetch('http://localhost:9100/write', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ device: printer, data: zplData }) });
-    if (writeRes.ok){ showToast(t('bl_done',{x:labelCount})); return true; }
+    if (writeRes.ok){ showToast(t('bl_done',{x:labelCount}) + ' → ' + (printer.name||printer.uid||'')); return true; }
     else throw new Error('Write failed: ' + writeRes.status);
   } catch(e) {
     showToast(t('bl_connfail'));
@@ -4770,6 +4782,8 @@ function openBoxLabelModal(boxes, order){
     + '<button onclick="document.getElementById(\'modal-box-select\').remove()" style="background:none;border:none;color:#fff;font-size:18px;cursor:pointer;">✕</button>'
     + '</div>'
     + (window._blMode==='full' ? '<div style="background:#ecfeff;border-bottom:1px solid #a5f3fc;padding:7px 14px;font-size:11.5px;color:#0e7490;font-weight:700;display:flex;align-items:center;gap:8px;flex-wrap:wrap;">\uD83C\uDFF7 ' + boxes.length + ' full box(es) \u2192 ' + boxes.length + ' label(s) &nbsp;\u00B7&nbsp; \u26A0 Load <b>2\" x 1\"</b> label stock first.</div>' : '')
+    + '<div style="padding:6px 14px;border-bottom:1px solid #eee;font-size:11.5px;display:flex;gap:6px;align-items:center;background:#f8fafc;">🖨 <b>Printer</b> '
+    + '<select id="bl-printer" class="fi" style="font-size:11.5px;flex:1;padding:3px 6px;" onchange="try{localStorage.setItem(blPrinterKey(), this.value)}catch(e){}"><option value="">Loading printers...</option></select></div>'
     + '<div style="overflow-y:auto;flex:1;">' + boxListHtml + '</div>'
     + '<div style="padding:12px 16px;border-top:1px solid #e5e7eb;display:flex;justify-content:flex-end;gap:8px;">'
     + '<button onclick="document.getElementById(\'modal-box-select\').remove()" style="padding:7px 16px;background:#f3f4f6;border:1px solid #d1d5db;border-radius:6px;cursor:pointer;">' + t('bl_cancel') + '</button>'
@@ -4777,6 +4791,22 @@ function openBoxLabelModal(boxes, order){
     + '</div></div>';
   document.body.appendChild(modal);
   initModalDrag(modal);
+  blFillPrinterSel();
+}
+async function blFillPrinterSel(){
+  const sel = document.getElementById('bl-printer'); if(!sel) return;
+  try{
+    const list = await blGetPrinters();
+    if(!list.length){ sel.innerHTML = '<option value="">⚠ No Zebra found — is Browser Print running?</option>'; return; }
+    let saved = null; try{ saved = localStorage.getItem(blPrinterKey()); }catch(e){}
+    const has = saved && list.some(p=>(p.uid&&p.uid===saved)||p.name===saved);
+    sel.innerHTML = list.map((p,i)=>{
+      const id = p.uid || p.name || ('printer'+i);
+      const on = has ? ((p.uid&&p.uid===saved)||p.name===saved) : i===0;
+      return '<option value="'+esc(id)+'"'+(on?' selected':'')+'>'+esc(p.name||id)+(p.connection?' · '+esc(p.connection):'')+'</option>';
+    }).join('');
+    if(!has){ try{ localStorage.setItem(blPrinterKey(), list[0].uid||list[0].name||'printer0'); }catch(e){} }
+  }catch(e){ sel.innerHTML = '<option value="">⚠ Browser Print not reachable</option>'; }
 }
 async function confirmBoxLabelPrint(){
   const boxes = window._blBoxes || [];
