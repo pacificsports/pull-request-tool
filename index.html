@@ -137,7 +137,7 @@ main{max-width:1100px;margin:0 auto;padding:16px;}
     <button class="btn btn-sm" onclick="doLogout()" style="padding:2px 8px;font-size:10px;" data-i18n="logout">Log out</button>
   </span>
   <select id="lang-sel" onchange="setLang(this.value)" style="font-size:11px;padding:3px 6px;border-radius:5px;border:none;background:#1d3f66;color:#fff;"><option value="ko">한국어</option><option value="en">English</option><option value="es">Español</option></select>
-  <span style="font-size:10px;color:#9fb8d4;">v398 🚚</span>
+  <span style="font-size:10px;color:#9fb8d4;">v399 🚚</span>
 </div>
 <script type="text/javascript" src="https://js.authorize.net/v1/Accept.js" charset="utf-8"></script>
 <div id="po-viewer" style="display:none;position:fixed;top:0;right:0;width:44%;height:100vh;background:#fff;border-left:2px solid var(--border);z-index:60;box-shadow:-6px 0 20px rgba(0,0,0,.15);">
@@ -6923,6 +6923,39 @@ async function bxAddSave(){
   showToast('✅ '+rows.length+' box(es) received');
   loadBoxRoom();
 }
+// 🗑 칼라 통째로 삭제 — 잘못 등록된 칼라 정리용 (예: LIGHT BLUE vs LIGHT BLUE HTR) (v399)
+async function bxColorPurge(sty, col){
+  const c = String(col).toUpperCase();
+  const boxes = bxStore.filter(b=>String(b.style)===String(sty) && String(b.color).toUpperCase()===c);
+  const pcs = boxes.reduce((a,b)=>a+(Number(b.pcs)||0),0);
+  const pcRows = (typeof pcStore!=='undefined' && pcStore ? pcStore : []).filter(r=>String(r.style)===String(sty) && String(r.color).toUpperCase()===c);
+  const pcTot = pcRows.reduce((a,r)=>a+Object.values(r.qty||{}).reduce((x,v)=>x+(Number(v)||0),0),0);
+  if(!confirm('🗑 Delete color ['+sty+'] '+c+' EVERYWHERE?\n\n'
+    +'• Full Box: '+boxes.length+' box(es) · '+pcs.toLocaleString()+' pcs → removed from stock (kept in 📜 history, restorable)\n'
+    +'• PC Room: '+pcRows.length+' row(s) · '+pcTot.toLocaleString()+' pcs → deleted\n'
+    +'• SKU Master: unregistered (future receiving for it is blocked)\n\n'
+    +'Use this for a color that was entered wrong (e.g. LIGHT BLUE vs LIGHT BLUE HTR).')) return;
+  const why = window.prompt('Reason (saved in the record):', 'Wrong color — deleted');
+  if(why===null) return;
+  const by = (SESS&&SESS.email)||'';
+  try{
+    if(boxes.length){
+      const ids = boxes.map(b=>b.id);
+      for(const ch of trChunk(ids)) await bxPatch(ch, {status:'OUT', out_at:new Date().toISOString(), out_by:by, out_po:'Color deleted — '+(why||'wrong color')});
+    }
+    for(const wh of ['SC','CA']){
+      const k = pcKey(sty, c, wh);
+      await sbFetch('/rest/v1/pr_pcroom?k=eq.'+encodeURIComponent(k), {method:'DELETE', headers:{Prefer:'return=minimal'}}).catch(()=>{});
+    }
+    if(typeof pcStore!=='undefined' && pcStore) pcStore = pcStore.filter(r=>!(String(r.style)===String(sty) && String(r.color).toUpperCase()===c));
+    await sbFetch('/rest/v1/pr_skus?style=eq.'+encodeURIComponent(String(sty))+'&color=eq.'+encodeURIComponent(c), {method:'DELETE', headers:{Prefer:'return=minimal'}}).catch(()=>{});
+    if(typeof skuStore!=='undefined' && skuStore) skuStore = skuStore.filter(x=>!(String(x.style)===String(sty) && String(x.color).toUpperCase()===c));
+  }catch(e){ showToast('⚠ Delete failed: '+(e.message||e)); return; }
+  showToast('🗑 ['+sty+'] '+c+' deleted — '+boxes.length+' box(es) out of stock, PC Room + SKU cleaned');
+  await bxRefetch();
+  renderBoxRoom();
+  if(typeof renderPcRoom==='function' && $('pc-body') && $('pc-body').offsetParent!==null) renderPcRoom(); else window._pcDirty = true;
+}
 async function bxEditLoc(id){
   const b = bxStore.find(x=>x.id===id); if(!b) return;
   const loc = window.prompt(b.style+' '+b.color+' '+b.size+' — new location', b.loc||'');
@@ -7692,7 +7725,7 @@ function bxGridInner(sty, colGroups){
         <td class="tl" rowspan="${rSpan}" style="font-weight:700;white-space:nowrap;vertical-align:top;padding-top:7px;"><input type="checkbox" data-bxr="${encodeURIComponent(bxRptKey(sty,c,'TOTAL'))}" ${window._bxRptSel[bxRptKey(sty,c,'TOTAL')]?'checked':''} onchange="bxRptTgl('${esc(sty)}','${esc(c)}','TOTAL',this.checked)" style="width:13px;height:13px;accent-color:#0d9488;vertical-align:-2px;margin-right:5px;cursor:pointer;" title="Add to customer stock report">${esc(c)}${vChips}</td>
         ${whCells('SC')}
         <td class="tl" style="white-space:nowrap;">${stBadge('BX', sty, c, 'SC')}</td>
-        <td rowspan="${rSpan}" style="white-space:nowrap;vertical-align:top;padding-top:5px;"><button class="btn btn-sm" style="border:none;padding:0 4px;" onclick="bxAddBoxes({style:'${esc(sty)}',color:'${esc(c)}'})" title="Add boxes">＋</button><button class="btn btn-sm" style="border:none;padding:0 4px;" onclick="bxHistory('${esc(sty)}','${esc(c)}')" title="Ship history / restore">📜</button></td>
+        <td rowspan="${rSpan}" style="white-space:nowrap;vertical-align:top;padding-top:5px;"><button class="btn btn-sm" style="border:none;padding:0 4px;" onclick="bxAddBoxes({style:'${esc(sty)}',color:'${esc(c)}'})" title="Add boxes">＋</button><button class="btn btn-sm" style="border:none;padding:0 4px;" onclick="bxHistory('${esc(sty)}','${esc(c)}')" title="Ship history / restore">📜</button><button class="btn btn-sm" style="border:none;padding:0 4px;color:#b91c1c;" onclick="bxColorPurge('${esc(sty)}','${esc(c)}')" title="Delete this color everywhere — Full Box (removed from stock, restorable) + PC Room + SKU master">🗑</button></td>
       </tr>
       ${specRows('SC')}
       ${varRows('SC')}
@@ -8928,7 +8961,7 @@ function renderBoxRoom(){
               return `<tr style="opacity:.55;">
                 <td class="tl" style="font-weight:600;white-space:nowrap;color:#94a3b8;">${esc(c)}${stBadge('BX', sty, c)}</td>
                 <td colspan="7" style="color:#b6bfcc;font-size:10.5px;">No stock (SKU registered)</td>
-                <td style="white-space:nowrap;"><button class="btn btn-sm" style="border:none;padding:0 4px;" onclick="bxAddBoxes({style:'${esc(sty)}',color:'${esc(c)}'})" title="Add boxes for this item">＋</button></td>
+                <td style="white-space:nowrap;"><button class="btn btn-sm" style="border:none;padding:0 4px;" onclick="bxAddBoxes({style:'${esc(sty)}',color:'${esc(c)}'})" title="Add boxes for this item">＋</button><button class="btn btn-sm" style="border:none;padding:0 4px;color:#b91c1c;" onclick="bxColorPurge('${esc(sty)}','${esc(c)}')" title="Delete this color everywhere — Full Box + PC Room + SKU master">🗑</button></td>
               </tr>`;
             }
             const bySize = {};
