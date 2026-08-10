@@ -137,7 +137,7 @@ main{max-width:1100px;margin:0 auto;padding:16px;}
     <button class="btn btn-sm" onclick="doLogout()" style="padding:2px 8px;font-size:10px;" data-i18n="logout">Log out</button>
   </span>
   <select id="lang-sel" onchange="setLang(this.value)" style="font-size:11px;padding:3px 6px;border-radius:5px;border:none;background:#1d3f66;color:#fff;"><option value="ko">한국어</option><option value="en">English</option><option value="es">Español</option></select>
-  <span style="font-size:10px;color:#9fb8d4;">v365 🚚</span>
+  <span style="font-size:10px;color:#9fb8d4;">v366 🚚</span>
 </div>
 <script type="text/javascript" src="https://js.authorize.net/v1/Accept.js" charset="utf-8"></script>
 <div id="po-viewer" style="display:none;position:fixed;top:0;right:0;width:44%;height:100vh;background:#fff;border-left:2px solid var(--border);z-index:60;box-shadow:-6px 0 20px rgba(0,0,0,.15);">
@@ -5907,9 +5907,32 @@ async function dvcReadXlsx(file){
   const wb = XLSX.read(buf, {type:'array'});
   const ws = wb.Sheets[wb.SheetNames[0]];
   const rows = XLSX.utils.sheet_to_json(ws, {header:1, raw:true});
-  const hdr = (rows[0]||[]).map(x=>String(x||'').toLowerCase());
-  if(hdr[0]!=='location' || !hdr.includes('styler')) throw new Error(file.name+': DaVinci Inventory By Location export 형식이 아닙니다');
-  return rows.slice(1).filter(r=>r && r.length);
+  // 헤더 줄을 처음 15줄 안에서 찾고, 열은 이름으로 매핑 (제목줄/열 순서 변화 허용 — v366)
+  let hi = -1, map = null;
+  for(let i=0; i<Math.min(rows.length,15); i++){
+    const h = (rows[i]||[]).map(x=>String(x||'').trim().toLowerCase());
+    const idx = (...names)=>{ for(const n of names){ const j = h.indexOf(n); if(j>=0) return j; } return -1; };
+    const iL = idx('location','loc','location code','bin','bin location');
+    const iS = idx('styler','style r','item','item code','item number','item #');
+    if(iL>=0 && iS>=0){
+      map = { loc:iL, item:iS,
+        uom:  idx('uom','u/m','unit of measure','case pack'),
+        lot:  idx('color','lot code','lot'),
+        sub:  idx('size','sublot','sub lot'),
+        desc: idx('description','item description','desc'),
+        avail:idx('available qty','available','avail qty','qty available','available quantity','qty') };
+      hi = i; break;
+    }
+  }
+  if(hi < 0){
+    const h0 = (rows[0]||[]).map(x=>String(x||'')).filter(Boolean).join(' | ').slice(0,180);
+    throw new Error(file.name+': DaVinci Inventory By Location export 형식이 아닙니다\n\n파일 첫 줄: [ '+(h0||'(비어있음)')+' ]\n\nDaVinci → ☰ → Warehouse → Inventory By Location → 검색 후 초록색 "Export Lines As Excel" 아이콘으로 받은 파일인지 확인해주세요. (합계용 "Export As Excel"과 다릅니다)');
+  }
+  if(map.desc < 0 || map.avail < 0){
+    throw new Error(file.name+': 필요한 열(Description / Available Qty)이 없습니다.\n찾은 헤더: '+(rows[hi]||[]).map(x=>String(x||'')).filter(Boolean).join(', ').slice(0,200));
+  }
+  return rows.slice(hi+1).filter(r=>r && r.length && r[map.loc]!=null && String(r[map.loc]).trim()!=='')
+    .map(r=>[ r[map.loc], '', r[map.item], map.uom>=0?r[map.uom]:'', map.lot>=0?r[map.lot]:'', map.sub>=0?r[map.sub]:'', r[map.desc], r[map.avail] ]);
 }
 function dvcOpen(){
   const ex = document.getElementById('modal-dvc'); if(ex) ex.remove();
