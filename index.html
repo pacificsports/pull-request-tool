@@ -137,7 +137,7 @@ main{max-width:1100px;margin:0 auto;padding:16px;}
     <button class="btn btn-sm" onclick="doLogout()" style="padding:2px 8px;font-size:10px;" data-i18n="logout">Log out</button>
   </span>
   <select id="lang-sel" onchange="setLang(this.value)" style="font-size:11px;padding:3px 6px;border-radius:5px;border:none;background:#1d3f66;color:#fff;"><option value="ko">한국어</option><option value="en">English</option><option value="es">Español</option></select>
-  <span style="font-size:10px;color:#9fb8d4;">v366 🚚</span>
+  <span style="font-size:10px;color:#9fb8d4;">v367 🚚</span>
 </div>
 <script type="text/javascript" src="https://js.authorize.net/v1/Accept.js" charset="utf-8"></script>
 <div id="po-viewer" style="display:none;position:fixed;top:0;right:0;width:44%;height:100vh;background:#fff;border-left:2px solid var(--border);z-index:60;box-shadow:-6px 0 20px rgba(0,0,0,.15);">
@@ -5835,15 +5835,24 @@ function dvcTryMap(style, color){
 function dvcParse(rows){
   const out=[], skipped=[];
   for(const r of rows){
-    const [loc, zone, item, uom, lot, sub, desc, avail] = r;
+    const [loc, zone, item, uom, lot, sub, desc, avail, phys] = r;
     const qty = parseInt(avail)||0;
-    if(qty<=0) continue;
+    const qtyP = (phys===undefined || phys===null || phys==='') ? qty : (parseInt(phys)||0);
+    if(qty<=0 && qtyP<=0) continue;
     const IT = String(item||'').trim();
     const L = String(loc||'?').trim().toUpperCase();
+    // 0) 코드 대응표 — 컷오버 때 확정한 item code → 우리 SKU 매핑이 가장 정확 (v367)
+    const _um0 = String(uom||'').match(/:\s*(\d+)/);
+    const _pb0 = _um0 ? parseInt(_um0[1]) : 0;
+    const cm = (window._dvcMap||{})[IT.toUpperCase()];
+    if(cm){
+      out.push({loc:L, style:cm.s, color:cm.c, size:cm.z, ppb:(_pb0||Number(cm.p)||0), qty, qtyP});
+      continue;
+    }
     // 특수 품목 (마스크/private label)
     if(DVC_SPECIAL[IT]){
       const [st,co,sz,pb] = DVC_SPECIAL[IT];
-      out.push({loc:L, style:st, color:co, size:sz, ppb:pb, qty});
+      out.push({loc:L, style:st, color:co, size:sz, ppb:pb, qty, qtyP});
       continue;
     }
     const um = String(uom||'').match(/:\s*(\d+)/);
@@ -5864,7 +5873,9 @@ function dvcParse(rows){
     if('PFD'===undefined){}
     if(D2.includes('PFD')){
       const pm = dvcPfd(ITU, D2, ppb);
-      if(pm && pm[2]){ out.push({loc:L, style:pm[0], color:pm[1], size:pm[2], ppb:pm[3], qty}); continue; }
+      if(pm && pm[2]){ out.push({loc:L, style:pm[0], color:pm[1], size:pm[2], ppb:pm[3], qty, qtyP});
+        if(IT && window._dvcNew) window._dvcNew.push({code:IT.toUpperCase(), style:pm[0], color:pm[1], size:pm[2], ppb:pm[3]});
+        continue; }
       skipped.push([L,IT,D,qty,'PFD?']); continue;
     }
     let size = t[t.length-1], body = t.slice(1,-1);
@@ -5888,7 +5899,8 @@ function dvcParse(rows){
     if(flags.has('ESW') && !color.includes('ESW')) color += ' ESW';
     const mp = dvcTryMap(style, color);
     if(mp){ style = mp[0]; color = mp[1]; }
-    out.push({loc:L, style, color, size, ppb, qty});
+    out.push({loc:L, style, color, size, ppb, qty, qtyP});
+    if(IT && window._dvcNew) window._dvcNew.push({code:IT.toUpperCase(), style, color, size, ppb});
   }
   return {lines:out, skipped};
 }
@@ -5918,9 +5930,10 @@ async function dvcReadXlsx(file){
       map = { loc:iL, item:iS,
         uom:  idx('uom','u/m','unit of measure','case pack'),
         lot:  idx('color','lot code','lot'),
-        sub:  idx('size','sublot','sub lot'),
+        sub:  idx('size','sublot','sub lot','sublot code','size code'),
         desc: idx('description','item description','desc'),
-        avail:idx('available qty','available','avail qty','qty available','available quantity','qty') };
+        avail:idx('available qty','available','avail qty','qty available','available quantity','qty'),
+        phys: idx('physical qty','physical','phys qty','qty physical') };
       hi = i; break;
     }
   }
@@ -5932,7 +5945,7 @@ async function dvcReadXlsx(file){
     throw new Error(file.name+': 필요한 열(Description / Available Qty)이 없습니다.\n찾은 헤더: '+(rows[hi]||[]).map(x=>String(x||'')).filter(Boolean).join(', ').slice(0,200));
   }
   return rows.slice(hi+1).filter(r=>r && r.length && r[map.loc]!=null && String(r[map.loc]).trim()!=='')
-    .map(r=>[ r[map.loc], '', r[map.item], map.uom>=0?r[map.uom]:'', map.lot>=0?r[map.lot]:'', map.sub>=0?r[map.sub]:'', r[map.desc], r[map.avail] ]);
+    .map(r=>[ r[map.loc], '', r[map.item], map.uom>=0?r[map.uom]:'', map.lot>=0?r[map.lot]:'', map.sub>=0?r[map.sub]:'', r[map.desc], r[map.avail], map.phys>=0?r[map.phys]:'' ]);
 }
 function dvcOpen(){
   const ex = document.getElementById('modal-dvc'); if(ex) ex.remove();
@@ -5968,6 +5981,15 @@ async function dvcRun(){
   try{
     if(!skuLoaded) await skuFetch();
     if(!bxLoaded) await bxFetchStore();
+    // 코드 대응표 로드 (10분 캐시) — item code 기준 매칭용 (v367)
+    if(!window._dvcMap || (Date.now()-(window._dvcMapAt||0)) > 600000){
+      try{
+        const mr = await sbFetch('/rest/v1/pr_dvmap?select=code,s:style,c:color,z:size,p:ppb&limit=30000');
+        if(mr.ok){ const m={}; (await mr.json()).forEach(x=>{ m[x.code]=x; }); window._dvcMap=m; window._dvcMapAt=Date.now(); }
+      }catch(e){}
+      window._dvcMap = window._dvcMap || {};
+    }
+    window._dvcNew = [];
     const perWh = {};
     for(const f of inp.files){
       const rows = await dvcReadXlsx(f);
@@ -5978,8 +6000,8 @@ async function dvcRun(){
     }
     const res = {whs:{}, at:new Date().toLocaleString()};
     for(const wh of Object.keys(perWh)){
-      const dv = new Map();
-      perWh[wh].lines.forEach(l=>{ const k=l.loc+'|'+l.style+'|'+l.color+'|'+l.size; dv.set(k,(dv.get(k)||0)+l.qty); });
+      const dv = new Map(), dvP = new Map();
+      perWh[wh].lines.forEach(l=>{ const k=l.loc+'|'+l.style+'|'+l.color+'|'+l.size; dv.set(k,(dv.get(k)||0)+l.qty); dvP.set(k,(dvP.get(k)||0)+(l.qtyP!=null?l.qtyP:l.qty)); });
       const us = new Map(); let transit=0;
       bxStore.forEach(b=>{
         const L = String(b.loc||'?').toUpperCase();
@@ -5994,10 +6016,22 @@ async function dvcRun(){
       dv.forEach(v=>dvT+=v); us.forEach(v=>usT+=v);
       keys.forEach(k=>{
         const a=dv.get(k)||0, b=us.get(k)||0;
-        if(a!==b) diffs.push({k, dv:a, us:b, d:b-a});
+        if(a!==b) diffs.push({k, dv:a, us:b, d:b-a, p:dvP.get(k)||0});
       });
       diffs.sort((x,y)=>Math.abs(y.d)-Math.abs(x.d) || x.k.localeCompare(y.k));
       res.whs[wh] = {files:perWh[wh].files, dvBoxes:dvT, usBoxes:usT, lines:keys.size, diffs, skipped:perWh[wh].skipped};
+    }
+    // 새로 나타난 코드는 대응표에 자동 등록 — 다음부터는 코드로 바로 매칭 (v367)
+    const _seen = {};
+    const _newRows = (window._dvcNew||[]).filter(x=>{ if(!x.code || _seen[x.code] || (window._dvcMap||{})[x.code]) return false; _seen[x.code]=1; return true; });
+    if(_newRows.length){
+      try{
+        for(let i=0;i<_newRows.length;i+=500){
+          await sbFetch('/rest/v1/pr_dvmap?on_conflict=code',{method:'POST',headers:{Prefer:'resolution=merge-duplicates,return=minimal'},body:JSON.stringify(_newRows.slice(i,i+500))});
+        }
+        _newRows.forEach(x=>{ window._dvcMap[x.code]={code:x.code, s:x.style, c:x.color, z:x.size, p:x.ppb}; });
+        res.newCodes = _newRows.length;
+      }catch(e){}
     }
     window._dvcRes = res;
     dvcRender();
@@ -6024,8 +6058,8 @@ function dvcRender(){
       for(const d of W.diffs.slice(0,500)){
         const [loc,sty,col,sz] = d.k.split('|');
         html += `<tr><td class="tl" style="font-family:Consolas,monospace;font-weight:700;">${esc(loc)}</td><td class="tl" style="font-family:Consolas,monospace;">${esc(sty)}</td><td class="tl">${esc(col)}</td><td style="text-align:center;">${esc(sz)}</td>
-          <td style="text-align:center;">${d.dv}</td><td style="text-align:center;">${d.us}</td>
-          <td style="text-align:center;font-weight:800;color:${d.d>0?'#1d4ed8':'#b91c1c'};">${d.d>0?'+':''}${d.d}</td></tr>`;
+          <td style="text-align:center;">${d.dv}${(d.p!=null && d.p!==d.dv)?`<div style="font-size:9.5px;color:#b45309;font-weight:700;" title="DaVinci Available ${d.dv} / Physical ${d.p} — ${d.p-d.dv} box(es) allocated to open orders">실물 ${d.p} (할당 ${d.p-d.dv})</div>`:''}</td><td style="text-align:center;">${d.us}</td>
+          <td style="text-align:center;font-weight:800;color:${d.d>0?'#1d4ed8':'#b91c1c'};">${d.d>0?'+':''}${d.d}${(d.p!=null && d.p===d.us && d.p!==d.dv)?'<div style="font-size:9px;color:#166534;font-weight:800;">실물 일치</div>':''}</td></tr>`;
       }
       html += '</tbody></table>'+(W.diffs.length>500?'<div class="muted" style="padding:6px 12px;font-size:11px;">...외 '+(W.diffs.length-500)+'줄 — Excel로 받아 보세요</div>':'')+'</div>';
     }
@@ -6035,7 +6069,9 @@ function dvcRender(){
     }
     html += '</div>';
   }
-  html += `<div class="muted" style="font-size:10.5px;padding:4px 2px;">기준: bin + 스타일 + 칼라 + 사이즈별 박스 수. 08-09 컷오버와 동일한 이름 정규화 규칙 적용.
+  if(res.newCodes) html += `<div style="padding:6px 12px;margin-bottom:8px;background:#ecfdf5;border:1px solid #6ee7b7;border-radius:8px;font-size:11px;color:#065f46;">🆕 DaVinci 새 item code ${res.newCodes}개를 대응표에 자동 등록했어요 — 다음 비교부터는 코드로 바로 매칭됩니다.</div>`;
+  html += `<div class="muted" style="font-size:10.5px;padding:4px 2px;">기준: bin + 스타일 + 칼라 + 사이즈별 박스 수. <b>item code 대응표(6,900여개) 우선 매칭</b>, 새 코드는 description 해석 후 자동 등록.
+    DaVinci 숫자는 Available 기준 — "실물 N (할당 M)"이 붙은 줄은 오픈 오더에 할당된 박스 때문에 Available이 실물보다 작은 경우이며, "실물 일치"면 실제 재고는 우리와 같은 것입니다.
     "+"는 우리가 더 많음(DaVinci에서 아직 안 뺀 것일 수 있음), "−"는 DaVinci가 더 많음(우리 쪽에서 뺐거나 이동한 것일 수 있음).
     In Transit 중인 박스는 어느 창고에도 안 잡히므로 transfer 진행 중이면 그만큼 차이로 보일 수 있습니다.</div>`;
   el.innerHTML = html;
