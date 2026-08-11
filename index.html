@@ -137,7 +137,7 @@ main{max-width:1100px;margin:0 auto;padding:16px;}
     <button class="btn btn-sm" onclick="doLogout()" style="padding:2px 8px;font-size:10px;" data-i18n="logout">Log out</button>
   </span>
   <select id="lang-sel" onchange="setLang(this.value)" style="font-size:11px;padding:3px 6px;border-radius:5px;border:none;background:#1d3f66;color:#fff;"><option value="ko">한국어</option><option value="en">English</option><option value="es">Español</option></select>
-  <span style="font-size:10px;color:#9fb8d4;">v427 🚚</span>
+  <span style="font-size:10px;color:#9fb8d4;">v428 🚚</span>
 </div>
 <script type="text/javascript" src="https://js.authorize.net/v1/Accept.js" charset="utf-8"></script>
 <div id="po-viewer" style="display:none;position:fixed;top:0;right:0;width:44%;height:100vh;background:#fff;border-left:2px solid var(--border);z-index:60;box-shadow:-6px 0 20px rgba(0,0,0,.15);">
@@ -10521,7 +10521,7 @@ function trRecvRender(){
             <option value="dmg" ${l.act==='dmg'?'selected':''}>🗑 Damage claim</option>
           </select></td>`:''}
           <td style="background:#fffde7;">${_binCell}</td>
-          <td style="text-align:center;"><button class="btn btn-sm" style="background:#0f766e;color:#fff;border-color:#0f766e;font-weight:800;" onclick="trRecvApplyLine(${pi},${li})" title="이 라인 지정 수량만 처리">✓</button></td>
+          <td style="text-align:center;white-space:nowrap;"><button class="btn btn-sm" style="border-color:#a78bfa;color:#6d28d9;font-weight:800;padding:0 6px;" onclick="trRecvSplitLine(${pi},${li})" title="Take 수량만큼 떼어 아래 새 줄로 분리 (나머지는 다른 액션)">✂</button> <button class="btn btn-sm" style="background:#0f766e;color:#fff;border-color:#0f766e;font-weight:800;" onclick="trRecvApplyLine(${pi},${li})" title="이 라인 지정 수량만 처리">✓</button></td>
         </tr>`;
         }).join('')}</tbody></table>`;
     }
@@ -10545,6 +10545,21 @@ function trRecvLineBin(pi, li, v){ _trRecvPallets[pi].lines[li].ca_bin = String(
 // 🔧 모든 pallet break down 모드로 (v425)
 function trRecvBreakAll(){ _trRecvPallets.forEach(p=>p.mode='split'); trRecvRender(); }
 function trRecvLineMemo(pi, li, v){ _trRecvPallets[pi].lines[li].so_memo = String(v||''); }
+// ✂ Take 수량만큼 떼어 아래 새 줄로 분리 — 나머지에 다른 액션 지정 (v428)
+async function trRecvSplitLine(pi, li){
+  const p = _trRecvPallets[pi]; if(!p) return; const l = p.lines[li]; if(!l || l._applied) return;
+  const remain = trLineBoxes(l);
+  let qty = parseInt(($('trr-take-'+pi+'-'+li)||{}).value);
+  if(!(qty>0)){ showToast('Take 수량을 먼저 넣으세요.'); return; }
+  if(qty>=remain){ showToast('남은 수량보다 작게 넣어야 분리됩니다.'); return; }
+  const newLine = Object.assign({}, l); delete newLine._applied; delete newLine._log;
+  if(l.is_manual){ l.boxes = qty; newLine.boxes = remain - qty; newLine.ids = []; }
+  else { const ids = l.ids||[]; newLine.ids = ids.slice(qty); l.ids = ids.slice(0, qty); }
+  newLine.ca_bin = ''; newLine.so_memo = '';
+  p.lines.splice(li+1, 0, newLine);
+  trRecvRender();
+  try{ const savedLines=[]; _trRecvPallets.forEach(pp=>pp.lines.forEach(x=>savedLines.push({...x, pallet:pp.label}))); await trPatchRec(_trRecvRec.id, {lines:savedLines}); }catch(e){}
+}
 // ✓ 라인 하나 처리(핵심) — 수량 쪼개기 · SC bin/PC Room/Ship Out(메모)/Hodge 반송/Damage (v426)
 async function trRecvApplyOne(pi, li){
   const p = _trRecvPallets[pi]; if(!p) return null; const l = p.lines[li]; if(!l || l._applied || trLineBoxes(l)<=0) return null;
@@ -10602,7 +10617,7 @@ async function trRecvApplyOne(pi, li){
   }
   if(l.is_manual) l.boxes = Math.max(0, (Number(l.boxes)||0) - qty);
   if(l.ids && l.ids.length) l.ids = l.ids.slice(qty);
-  l._log = l._log||[]; l._log.push(label); l.ca_bin = label;
+  l._log = l._log||[]; l._log.push(label);   // ⚠ l.ca_bin(=bin 소스)에 라벨 쓰면 다음 apply에서 bin 오염됨 → 안 씀 (v428)
   if(trLineBoxes(l)<=0) l._applied = true;
   return label;
 }
