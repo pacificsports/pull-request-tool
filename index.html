@@ -137,7 +137,7 @@ main{max-width:1100px;margin:0 auto;padding:16px;}
     <button class="btn btn-sm" onclick="doLogout()" style="padding:2px 8px;font-size:10px;" data-i18n="logout">Log out</button>
   </span>
   <select id="lang-sel" onchange="setLang(this.value)" style="font-size:11px;padding:3px 6px;border-radius:5px;border:none;background:#1d3f66;color:#fff;"><option value="ko">한국어</option><option value="en">English</option><option value="es">Español</option></select>
-  <span style="font-size:10px;color:#9fb8d4;">v428 🚚</span>
+  <span style="font-size:10px;color:#9fb8d4;">v429 🚚</span>
 </div>
 <script type="text/javascript" src="https://js.authorize.net/v1/Accept.js" charset="utf-8"></script>
 <div id="po-viewer" style="display:none;position:fixed;top:0;right:0;width:44%;height:100vh;background:#fff;border-left:2px solid var(--border);z-index:60;box-shadow:-6px 0 20px rgba(0,0,0,.15);">
@@ -10497,7 +10497,7 @@ function trRecvRender(){
         <thead><tr><th style="width:22px;"></th><th class="tl">Style</th><th class="tl">Color</th><th>Size</th><th>Boxes</th><th style="background:#e0f2fe;">Take</th>${_isRecall?'<th style="background:#fef3c7;">Action</th>':''}<th style="background:#fef3c7;">${_isRecall?'Bin / Memo / Note':(_dSpec?('New '+(_rtD==='LK'?'SPECIAL':'H')+' Bin'):(_destLbl+' Bin'))}</th><th style="background:#ccfbf1;">Apply</th></tr></thead>
         <tbody>${p.lines.map((l,li)=>{
           const _rem = trLineBoxes(l);
-          if(l._applied || _rem<=0){ return `<tr style="opacity:.5;"><td></td><td class="tl" style="font-family:Consolas,monospace;">${esc(l.style)}</td><td class="tl">${esc(bxBaseColor(l.color))}</td><td style="text-align:center;">${esc(l.size)}</td><td style="text-align:center;">0</td><td></td>${_isRecall?'<td></td>':''}<td class="tl" style="font-size:10px;color:#15803d;font-weight:700;">${esc((l._log||[]).join(' · ')||l.ca_bin||'done')}</td><td style="text-align:center;color:#15803d;font-weight:800;">✓</td></tr>`; }
+          if(l._applied || _rem<=0){ return `<tr style="opacity:.62;"><td></td><td class="tl" style="font-family:Consolas,monospace;">${esc(l.style)}</td><td class="tl">${esc(bxBaseColor(l.color))}</td><td style="text-align:center;">${esc(l.size)}</td><td style="text-align:center;font-family:Consolas,monospace;font-weight:700;color:#15803d;">${Number(l._doneN)||0}</td><td></td>${_isRecall?'<td></td>':''}<td class="tl" style="font-size:10px;color:#15803d;font-weight:700;">${esc((l._log||[]).join(' · ')||l.ca_bin||'done')}</td><td style="text-align:center;white-space:nowrap;"><span style="color:#15803d;font-weight:800;">✓</span> <button class="btn btn-sm" style="border-color:#fca5a5;color:#b91c1c;font-weight:800;padding:0 6px;" onclick="trRecvReverseLine(${pi},${li})" title="이 처리 되돌리기 — 박스를 원래 bin(${esc(l.bin||'?')})으로 복구">↩</button></td></tr>`; }
           const _act = _isRecall ? (l.act||'sc') : 'sc';
           const _binCell = _act==='dmg'
             ? `<input class="fi" value="${esc(l.dmg_note||'')}" placeholder="claim note (damage reason)" onchange="trRecvLineNote(${pi},${li},this.value)" style="width:180px;font-size:11px;padding:3px 6px;">`
@@ -10618,6 +10618,10 @@ async function trRecvApplyOne(pi, li){
   if(l.is_manual) l.boxes = Math.max(0, (Number(l.boxes)||0) - qty);
   if(l.ids && l.ids.length) l.ids = l.ids.slice(qty);
   l._log = l._log||[]; l._log.push(label);   // ⚠ l.ca_bin(=bin 소스)에 라벨 쓰면 다음 apply에서 bin 오염됨 → 안 씀 (v428)
+  // ↩ 되돌리기용 처리 내역 기록 (v429) — 박스 id/수량/액션/PC수량/return draft id
+  l._doneN = (Number(l._doneN)||0) + qty;
+  l._done = l._done || [];
+  l._done.push({ act, ids: takeIds.slice(), n: qty, bin, ppb, memo:String(l.so_memo||''), addPcs:(act==='pc'?qty*ppb:0), retId:(act==='ret'?window._trRecvRetId:null), manual:!!l.is_manual });
   if(trLineBoxes(l)<=0) l._applied = true;
   return label;
 }
@@ -10643,6 +10647,56 @@ async function trRecvApplySelected(){
   await trRecvFinishApply();
   showToast('✓ '+ok+'개 처리'+(errs.length?(' · '+errs.length+' 건너뜀'):''));
   if(errs.length) alert('일부 라인 건너뜀:\n\n'+errs.slice(0,6).join('\n'));
+}
+// ↩ 적용된 라인 되돌리기 (v429) — 박스를 원래 source bin으로 복구, PC/Ship/Return/Damage 처리도 반대로
+async function trRecvReverseLine(pi, li){
+  const p = _trRecvPallets[pi]; if(!p) return; const l = p.lines[li];
+  if(!l || !l._done || !l._done.length){ showToast('되돌릴 처리 내역이 없습니다.'); return; }
+  if(l.is_manual){ showToast('⚠ manual(수기 입력) 라인은 자동 되돌리기 미지원 — 수동 확인하세요.'); return; }
+  const route = trRoute(_trRecvRec), src = trSrcKind(route), dest = trDstKind(route);
+  const origWh = trWhOfKind(src);
+  const origBin = String(l.bin||'').trim().toUpperCase();
+  if(!origBin){ showToast('원래 bin 정보가 없어 되돌릴 수 없습니다.'); return; }
+  const n = Number(l._doneN)||l._done.reduce((a,d)=>a+(Number(d.n)||0),0);
+  if(!confirm('이 라인 처리('+n+' box)를 되돌려 박스를 원래 위치 '+origBin+'로 복구할까요?')) return;
+  const restoreIds = []; let emptiedDraft = false;
+  try{
+    for(const d of (l._done||[])){
+      const ids = (d.ids||[]);
+      if(d.act==='sc'){
+        if(ids.length) await trPatchBoxes(ids, {wh:origWh, loc:origBin});
+      } else if(d.act==='dmg' || d.act==='so'){
+        if(ids.length) await trPatchBoxes(ids, {wh:origWh, loc:origBin, status:'IN', out_at:null, out_by:null, out_po:null});
+      } else if(d.act==='pc'){
+        if(ids.length) await trPatchBoxes(ids, {wh:origWh, loc:origBin, status:'IN', out_at:null, out_by:null, out_po:null});
+        try{
+          const pcWh = trWhOfKind(dest)==='CA'?'CA':'SC'; const col = String(l.color).toUpperCase(); const k = pcKey(l.style, col, pcWh);
+          let row = (typeof pcFetchRowFresh==='function' ? await pcFetchRowFresh(k) : null) || pcStore.find(r=>r.k===k);
+          if(row){ row.qty = row.qty||{}; row.qty[l.size] = Math.max(0, (Number(row.qty[l.size])||0) - (Number(d.addPcs)||0)); await pcSaveRow(row); pcLogMove(row, l.size, -(Number(d.addPcs)||0), row.qty[l.size], '↩ reverse break down ('+(_trRecvRec.ref||'')+')'); }
+          if(typeof renderPcRoom==='function' && $('pc-body')) renderPcRoom();
+        }catch(e){ showToast('⚠ PC Room 되돌리기 실패 — 수동으로 -'+(Number(d.addPcs)||0)+' 확인'); }
+      } else if(d.act==='ret'){
+        if(d.retId){ try{
+          const cur = await trGet(d.retId); let arr = (cur && Array.isArray(cur.lines)) ? cur.lines : [];
+          const idset = new Set(ids); arr = arr.filter(x=>!((x.ids||[]).some(z=>idset.has(z))));
+          await trPatchRec(d.retId, {lines:arr});
+          if(!arr.length){ emptiedDraft = true; if(window._trRecvRetId===d.retId){ window._trRecvRetId=null; window._trRecvRetRef=''; } }
+        }catch(e){} }
+      }
+      ids.forEach(x=>restoreIds.push(x));
+    }
+  }catch(e){ alert('되돌리기 실패: '+(e.message||e)); return; }
+  // 라인 원상복구
+  l.ids = restoreIds.concat(l.ids||[]);
+  delete l._done; delete l._applied; delete l._doneN; l._log = []; l.ca_bin = '';
+  // transfer 는 다시 진행중(TRANSIT)으로
+  if(_trRecvRec){ _trRecvRec.status='TRANSIT'; _trRecvRec.received_at=null; _trRecvRec.received_by=null; }
+  const savedLines = []; _trRecvPallets.forEach(pp=>pp.lines.forEach(x=>savedLines.push({...x, pallet:pp.label})));
+  try{ await trPatchRec(_trRecvRec.id, {status:'TRANSIT', received_at:null, received_by:null, lines:savedLines}); }catch(e){}
+  await bxRefetch(); if($('bx-body')) renderBoxRoom();
+  if(typeof soCountUpd==='function') soCountUpd(); if(typeof trBarUpd==='function') trBarUpd();
+  trRecvRender();
+  showToast('↩ 되돌림 — 박스 '+restoreIds.length+'개 '+origBin+'로 복구'+(emptiedDraft?' · 빈 return draft는 직접 취소하세요':''));
 }
 async function trRecvPost(){
   const route = trRoute(_trRecvRec), dest = trDstKind(route), src = trSrcKind(route);
