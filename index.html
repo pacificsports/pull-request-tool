@@ -137,7 +137,7 @@ main{max-width:1100px;margin:0 auto;padding:16px;}
     <button class="btn btn-sm" onclick="doLogout()" style="padding:2px 8px;font-size:10px;" data-i18n="logout">Log out</button>
   </span>
   <select id="lang-sel" onchange="setLang(this.value)" style="font-size:11px;padding:3px 6px;border-radius:5px;border:none;background:#1d3f66;color:#fff;"><option value="ko">한국어</option><option value="en">English</option><option value="es">Español</option></select>
-  <span style="font-size:10px;color:#9fb8d4;">v422 🚚</span>
+  <span style="font-size:10px;color:#9fb8d4;">v423 🚚</span>
 </div>
 <script type="text/javascript" src="https://js.authorize.net/v1/Accept.js" charset="utf-8"></script>
 <div id="po-viewer" style="display:none;position:fixed;top:0;right:0;width:44%;height:100vh;background:#fff;border-left:2px solid var(--border);z-index:60;box-shadow:-6px 0 20px rgba(0,0,0,.15);">
@@ -9443,22 +9443,41 @@ async function bxAuditExcel(){
 }
 async function bxExport(){
   await loadXlsxLib();
-  const wb = XLSX.utils.book_new();
-  // 같은 wh/style/color/size/loc/pcs 박스를 한 줄로 묶어서 출력
-  const agg = {};
+  // ── SCCA 포맷: STYLES·COLOR·SIZE·WAREHOUSE·AVAILABLE QTY (풀박스 박스 수) · 재고 0 사이즈도 포함 (v423) ──
+  const WH = [['SC','Sumter, SC'],['CA','Eastvale, CA']];
+  const ADULT = ['XS','S','M','L','XL','2XL','3XL','4XL','5XL'];
+  const cnt = {};                 // style|basecolor|size|wh → 박스 수
+  const styColors = {};           // style → Set(basecolor)  (재고 있는 것)
+  const stySizes = {};            // style → Set(size)        (재고 있는 것)
   bxStore.forEach(b=>{
-    const k = [bxWh(b), b.style, String(b.color).toUpperCase(), String(b.size).toUpperCase(), String(b.loc||'').toUpperCase(), b.pcs].join('|');
-    (agg[k] = agg[k] || {wh:bxWh(b), style:b.style, color:String(b.color).toUpperCase(), size:String(b.size).toUpperCase(), loc:String(b.loc||'').toUpperCase(), pcs:Number(b.pcs)||0, n:0}).n++;
+    const w = bxWh(b); if(w==='TRANSIT') return;
+    const st = String(b.style); const bc = bxBaseColor(b.color); const sz = String(b.size||'').toUpperCase();
+    cnt[st+'|'+bc+'|'+sz+'|'+w] = (cnt[st+'|'+bc+'|'+sz+'|'+w]||0)+1;
+    (styColors[st] = styColors[st] || new Set()).add(bc);
+    (stySizes[st] = stySizes[st] || new Set()).add(sz);
   });
-  const data = [['WH','STYLE','COLOR','SIZE','LOC','BOXES','TOTAL PCS','PCS/BOX']];
-  Object.values(agg).sort((a,b)=>a.wh.localeCompare(b.wh)||String(a.style).localeCompare(String(b.style))||a.color.localeCompare(b.color)||bxSizeCmp(a.size,b.size)||a.loc.localeCompare(b.loc))
-    .forEach(g=>data.push([g.wh, g.style, g.color, g.size, g.loc, g.n, g.n*g.pcs, g.pcs]));
-  data.push([]);
-  data.push(['','','','','Total', bxStore.length, '', bxStore.reduce((a,b)=>a+(Number(b.pcs)||0),0)]);
+  const data = [['STYLES','COLOR','SIZE','WAREHOUSE','AVAILABLE QTY']];
+  const styles = Object.keys(styColors).sort((a,b)=>String(a).localeCompare(String(b),undefined,{numeric:true}));
+  let totalBoxes = 0;
+  styles.forEach(st=>{
+    const colors = [...styColors[st]].sort();
+    const sizes = [...new Set([...ADULT, ...(stySizes[st]||[])])].sort(bxSizeCmp);   // 표준 성인 + 실제 있는 사이즈(유아 등)
+    colors.forEach(c=>{
+      WH.forEach(([w,wn])=>{
+        sizes.forEach(sz=>{
+          const n = cnt[st+'|'+c+'|'+sz+'|'+w]||0; totalBoxes += n;
+          data.push([isNaN(+st)?st:+st, c, sz, wn, n]);
+        });
+      });
+    });
+  });
   const ws = XLSX.utils.aoa_to_sheet(data);
-  ws['!cols'] = [{wch:5},{wch:8},{wch:18},{wch:6},{wch:9},{wch:7},{wch:8},{wch:10}];
-  XLSX.utils.book_append_sheet(wb, ws, 'FULL BOX');
-  XLSX.writeFile(wb, 'FULLBOX-' + new Date().toISOString().slice(0,10) + '.xlsx');
+  ws['!cols'] = [{wch:9},{wch:22},{wch:7},{wch:14},{wch:14}];
+  ws['!freeze'] = { xSplit:0, ySplit:1 };
+  const wb = XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(wb, ws, 'SCCA');
+  XLSX.writeFile(wb, 'FULLBOX-SCCA-' + new Date().toISOString().slice(0,10) + '.xlsx');
+  showToast('✅ Full Box Excel (SCCA format, '+totalBoxes.toLocaleString()+' boxes) downloaded');
 }
 // ═══ 🇭🇹 Haiti 입고: 인보이스 업로드 → 리뷰 → 입고 예정 → 도착 시 location 지정 → SC 재고 확정 ═══
 const HI_SZ = ['2T','3T','4T','5T','XXS','XS','S','M','L','XL','2XL','3XL','4XL','5XL','6XL'];
