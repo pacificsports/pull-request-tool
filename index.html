@@ -137,7 +137,7 @@ main{max-width:1100px;margin:0 auto;padding:16px;}
     <button class="btn btn-sm" onclick="doLogout()" style="padding:2px 8px;font-size:10px;" data-i18n="logout">Log out</button>
   </span>
   <select id="lang-sel" onchange="setLang(this.value)" style="font-size:11px;padding:3px 6px;border-radius:5px;border:none;background:#1d3f66;color:#fff;"><option value="ko">한국어</option><option value="en">English</option><option value="es">Español</option></select>
-  <span style="font-size:10px;color:#9fb8d4;">v423 🚚</span>
+  <span style="font-size:10px;color:#9fb8d4;">v424 🚚</span>
 </div>
 <script type="text/javascript" src="https://js.authorize.net/v1/Accept.js" charset="utf-8"></script>
 <div id="po-viewer" style="display:none;position:fixed;top:0;right:0;width:44%;height:100vh;background:#fff;border-left:2px solid var(--border);z-index:60;box-shadow:-6px 0 20px rgba(0,0,0,.15);">
@@ -401,6 +401,7 @@ main{max-width:1100px;margin:0 auto;padding:16px;}
       <input type="file" id="hi-file" accept=".xlsx,.xls" style="display:none;" onchange="hiUpload(this.files[0]);this.value='';">
     </div>
     <div id="bx-sobar"></div>
+    <div id="bx-trbar"></div>
     <div id="bx-body"><div class="muted">Loading...</div></div>
   </div>
 </div>
@@ -5903,7 +5904,7 @@ function pcStyleInner(sty){
   const q = (($('pc-search')||{}).value||'').trim().toLowerCase();
   const colors = pcStyleColors(sty, q);
   const sizes = pcSizesFor(sty);
-  return `<div style="overflow-x:auto;padding:6px 10px 10px;">
+  return `<div style="padding:6px 10px 10px;">
       <table class="etbl" style="font-size:11.5px;">
         <thead><tr><th class="tl" style="min-width:120px;">Color</th><th>WH</th>${sizes.map(s2=>`<th>${s2}</th>`).join('')}<th>Total</th><th class="tl" style="white-space:nowrap;">Check</th><th style="width:52px;"></th></tr></thead>
         <tbody>${colors.map(col=>['SC','CA'].map((w,wi)=>{
@@ -6859,6 +6860,7 @@ async function _bxFetchStore(){
     }catch(e){}
     idbSet('bx', { at: Date.now(), rows: out, inc: window._bxInc||{} });   // 다음 접속 때 즉시 표시용
     soCountUpd();   // 🚚 pending ship out 뱃지 (v388)
+    trBarUpd();     // 🚚 pending transfer 패널 (v424)
   }catch(e){ console.warn('bxFetchStore', e); }
 }
 async function loadBoxRoom(){
@@ -8558,7 +8560,7 @@ function soBarRender(){
       const nb = (q.lines||[]).reduce((a,l)=>a+(Number(l.take)||0),0);
       const np = (q.lines||[]).reduce((a,l)=>a+(Number(l.take)||0)*(Number(l.ppb)||0),0);
       return `<div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;padding:6px 0;border-top:1px solid #fde68a;font-size:12px;">
-        <b style="font-family:Consolas,monospace;">SO-${q.id}</b>
+        <b style="font-family:Consolas,monospace;color:#065f46;text-decoration:underline;cursor:pointer;" onclick="soEditOpen(${q.id})" title="Click to edit lines / quantities / note">SO-${q.id}</b>
         <span style="background:#fef3c7;border:1px solid #f59e0b;border-radius:6px;padding:0 8px;font-weight:800;color:#92400e;">→ ${esc(q.note||'—')}</span>
         <span>[${esc(q.wh)}] ${(q.lines||[]).length} line · <b>${nb}</b> box · ${np.toLocaleString()} pcs</span>
         <span class="muted" style="font-size:10.5px;">${q.created_at?new Date(q.created_at).toLocaleString():''} · ${esc(String(q.created_by||'').split('@')[0])}</span>
@@ -8568,6 +8570,82 @@ function soBarRender(){
           <button class="btn btn-sm" onclick="soCancel(${q.id})" title="Cancel — nothing was deducted">🗑</button>
         </span></div>`;
     }).join('')}</div>`;
+}
+// 🚚 pending transfer 패널 — Full Box 상단, transfer 안 들어가도 바로 보이고 Receive 가능 (v424)
+async function trPendingFetch(){
+  try{ const r = await sbFetch('/rest/v1/pr_transfers?select=id,ref,status,lines,meta,created_at,departed_at,received_at&status=in.(LOADING,TRANSIT)&order=created_at.desc&limit=100'); return r.ok ? await r.json() : []; }catch(e){ return []; }
+}
+async function trBarUpd(){ try{ window._trPending = await trPendingFetch(); trBarRender(); }catch(e){} }
+function trBarRender(){
+  const el = $('bx-trbar'); if(!el) return;
+  const list = window._trPending || [];
+  if(!list.length){ el.innerHTML = ''; return; }
+  el.innerHTML = `<div style="border:1.5px solid #a78bfa;background:#faf5ff;border-radius:10px;padding:10px 14px;margin-bottom:10px;">
+    <div style="font-weight:800;color:#6d28d9;font-size:12.5px;margin-bottom:2px;">🚚 Pending Transfers (${list.length}) <span style="font-weight:400;color:#7c3aed;">— In Transit: 도착하면 여기서 Receive(bin 지정) · Draft: 작성 중</span></div>
+    ${list.map(r=>{
+      const lines = Array.isArray(r.lines)?r.lines:[];
+      const nb = lines.reduce((a,l)=>a+trLineBoxes(l),0);
+      const np = lines.reduce((a,l)=>a+trLinePcs(l),0);
+      const rt = TR_ROUTES[trRoute(r)] || TR_ROUTES.SC2CA;
+      const st = r.status==='TRANSIT' ? {lb:'In Transit',c:'#b45309',bg:'#fef3c7'} : {lb:'Draft',c:'#92400e',bg:'#fde68a'};
+      const act = r.status==='TRANSIT'
+        ? `<button class="btn btn-sm btn-primary" style="background:#0f766e;border-color:#0f766e;font-weight:800;" onclick="trRecvOpen('${r.id}')" title="박스 도착 — ${trKindShort(trDstKind(trRoute(r)))} bin 지정">📦 Receive</button> <button class="btn btn-sm" style="font-size:10px;" onclick="trCancelTransit('${r.id}')" title="출발 취소 — Draft로 되돌림">↩</button>`
+        : `<button class="btn btn-sm" onclick="trBuilderOpen('${r.id}')" title="이 Draft 계속 편집">✏️ Edit</button>`;
+      return `<div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;padding:6px 0;border-top:1px solid #ede9fe;font-size:12px;">
+        <b style="font-family:Consolas,monospace;color:#7b1fa2;cursor:pointer;text-decoration:underline;" onclick="${r.status==='LOADING'?`trBuilderOpen('${r.id}')`:`trView('${r.id}')`}" title="열기">${esc(r.ref||'(no #)')}</b>
+        <span style="font-weight:700;color:${rt.color};white-space:nowrap;">${esc(rt.short)}</span>
+        <span style="background:${st.bg};border-radius:6px;padding:0 8px;font-weight:800;color:${st.c};">${st.lb}</span>
+        <span>${lines.length} line · <b>${nb}</b> box · ${np.toLocaleString()} pcs</span>
+        <span class="muted" style="font-size:10.5px;">${r.departed_at?('departed '+new Date(r.departed_at).toLocaleDateString()):(r.created_at?new Date(r.created_at).toLocaleDateString():'')}</span>
+        <span style="margin-left:auto;display:flex;gap:6px;">${act}</span></div>`;
+    }).join('')}</div>`;
+}
+// ✏️ pending ship out 편집 — SO-# 클릭 시 라인 수량/노트 수정 · 라인 삭제 (v424)
+function soEditOpen(id){
+  const q = (window._soOpen||[]).find(x=>x.id===id); if(!q) return;
+  const ex = document.getElementById('modal-soe'); if(ex) ex.remove();
+  window._soeQ = q;
+  const rows = (q.lines||[]).map((l,i)=>`<tr id="soe-row${i}">
+    <td style="font-family:Consolas,monospace;font-weight:800;">${esc(l.loc)}</td>
+    <td style="font-weight:700;">${esc(l.style)}</td><td class="tl">${esc(l.color)}</td><td style="text-align:center;">${esc(l.size)}</td>
+    <td style="background:#eff6ff;text-align:center;"><input class="fi" type="number" min="0" value="${Number(l.take)||0}" id="soe-t${i}" style="width:62px;font-weight:800;text-align:center;"></td>
+    <td style="text-align:center;"><button class="btn btn-sm" style="color:#b91c1c;border:none;padding:0 6px;" onclick="var e=document.getElementById('soe-row${i}');if(e)e.remove();" title="이 라인 삭제">✕</button></td>
+  </tr>`).join('');
+  const div = document.createElement('div');
+  div.id = 'modal-soe';
+  div.style.cssText = 'position:fixed;inset:0;background:rgba(15,23,42,.6);z-index:126;display:flex;align-items:center;justify-content:center;padding:10px;';
+  div.innerHTML = `<div style="background:#fff;border-radius:12px;max-width:720px;width:100%;max-height:88vh;display:flex;flex-direction:column;overflow:hidden;">
+    <div style="background:#7c2d12;color:#fff;padding:12px 18px;font-size:15px;font-weight:800;display:flex;align-items:center;gap:8px;">✏️ Edit SO-${q.id} <span style="font-size:11px;font-weight:400;color:#fed7aa;">[${esc(q.wh)}] — 아직 차감 전, 수량/노트 수정 가능</span>
+      <button class="btn btn-sm" style="margin-left:auto;" onclick="document.getElementById('modal-soe').remove()">✕</button></div>
+    <div style="padding:14px 18px;overflow-y:auto;">
+      <label style="font-size:11px;font-weight:800;color:#7c2d12;">Destination / Note</label>
+      <input class="fi" id="soe-note" value="${esc(q.note||'')}" style="width:100%;margin:4px 0 12px;font-size:13px;padding:6px 10px;">
+      <table class="etbl" style="font-size:11.5px;"><thead><tr><th>BIN</th><th>Style</th><th class="tl">Color</th><th>Size</th><th style="background:#eff6ff;">Boxes</th><th></th></tr></thead>
+      <tbody>${rows}</tbody></table>
+      <div class="muted" style="font-size:10.5px;margin-top:6px;">수량을 0으로 하거나 ✕로 지우면 저장 시 그 라인은 빠집니다.</div>
+    </div>
+    <div style="padding:12px 18px;border-top:1px solid #eee;display:flex;gap:8px;justify-content:flex-end;">
+      <button class="btn" onclick="document.getElementById('modal-soe').remove()">Cancel</button>
+      <button class="btn" id="soe-go" style="background:#7c2d12;color:#fff;border-color:#7c2d12;font-weight:800;" onclick="soEditSave()">💾 Save</button>
+    </div></div>`;
+  document.body.appendChild(div);
+}
+async function soEditSave(){
+  const q = window._soeQ; if(!q) return;
+  const btn = $('soe-go'); if(btn){ btn.disabled = true; btn.textContent = 'Saving...'; }
+  const note = (($('soe-note')||{}).value||'').trim();
+  const lines = [];
+  (q.lines||[]).forEach((l,i)=>{
+    if(!document.getElementById('soe-row'+i)) return;               // 삭제됨
+    const t = parseInt(($('soe-t'+i)||{}).value)||0;
+    if(t>0) lines.push(Object.assign({}, l, {take:t}));
+  });
+  try{
+    await sbFetch('/rest/v1/pr_shipout?id=eq.'+q.id, {method:'PATCH', headers:{Prefer:'return=minimal'}, body: JSON.stringify({note, lines})});
+  }catch(e){ showToast('⚠ Save failed: '+(e.message||e)); if(btn){ btn.disabled=false; btn.textContent='💾 Save'; } return; }
+  const m = document.getElementById('modal-soe'); if(m) m.remove();
+  showToast('💾 SO-'+q.id+' updated'+(lines.length?'':' (empty — cancel it if not needed)'));
+  soCountUpd();
 }
 async function soListOpen(){
   const ex = document.getElementById('modal-so'); if(ex) ex.remove();
@@ -10271,6 +10349,7 @@ async function trCancelTransit(id){
   const rec = await trGet(id); if(!rec) return;
   if(!confirm('↩ Cancel departure of '+rec.ref+' and revert to Draft? (boxes stay reserved)')) return;
   await trPatchRec(id, {status:'LOADING', departed_at:null, departed_by:null});
+  if(typeof trBarUpd==='function') trBarUpd();
   trOpen();
 }
 // ── 보기 (In Transit / Received) ──
