@@ -137,7 +137,7 @@ main{max-width:1100px;margin:0 auto;padding:16px;}
     <button class="btn btn-sm" onclick="doLogout()" style="padding:2px 8px;font-size:10px;" data-i18n="logout">Log out</button>
   </span>
   <select id="lang-sel" onchange="setLang(this.value)" style="font-size:11px;padding:3px 6px;border-radius:5px;border:none;background:#1d3f66;color:#fff;"><option value="ko">한국어</option><option value="en">English</option><option value="es">Español</option></select>
-  <span style="font-size:10px;color:#9fb8d4;">v418 🚚</span>
+  <span style="font-size:10px;color:#9fb8d4;">v421 🚚</span>
 </div>
 <script type="text/javascript" src="https://js.authorize.net/v1/Accept.js" charset="utf-8"></script>
 <div id="po-viewer" style="display:none;position:fixed;top:0;right:0;width:44%;height:100vh;background:#fff;border-left:2px solid var(--border);z-index:60;box-shadow:-6px 0 20px rgba(0,0,0,.15);">
@@ -3124,42 +3124,47 @@ async function printSavedPRWh(base, wh){
       const po = 'PO ' + ((rec.meta&&rec.meta.po)||'');
       const r = await sbFetch('/rest/v1/pr_boxes?select=style,color,size,loc,wh&status=eq.OUT&out_po=eq.'+encodeURIComponent(po));
       if(r.ok) outRows = await r.json();
-      // ── PR 인쇄 시 풀박스 차감: 라인별로 location 선택 창 (기본값 = 오래된 순, 취소하면 차감 안 함) ──
-      const pending = (rec.lines||[]).filter(L=>{
-        if((String(L.wh||'SC').trim().toUpperCase()||'SC')!==wh) return false;
-        const need = boxCalc(L).full; if(!need) return false;
-        // 이미 차감됐나? — 변형(US/Side Seam)로 나간 박스도 같은 라인으로 인식 (base 칼라로 비교) (v413)
-        const _stU = String(bxStyleFor(L)).trim().toUpperCase();
-        const _baseC = bxBaseColor(bxColorFor(L));
-        const _szU = String(L.size||'').trim().toUpperCase();
-        if((outRows||[]).some(b=>bxWh(b)===wh && String(b.style).trim().toUpperCase()===_stU && bxBaseColor(String(b.color).toUpperCase())===_baseC && String(b.size).trim().toUpperCase()===_szU)) return false;  // 이미 차감됨
-        return bxFindAll(bxStyleFor(L), bxColorFor(L), L.size, wh).length > 0;
-      });
-      let anyPicked = false;
-      for(const L of pending){
-        // 편집 때 📍로 지정해둔 location이 있으면 거기서 자동 차감 (location 안에서는 오래된 순)
-        if(L.pickLocs && L.pickLocs.length){
-          const take = [];
-          L.pickLocs.forEach(g=>{
-            const pool = g.col ? bxLocListCol(bxStyleFor(L), g.col, L.size, wh, String(g.loc).toUpperCase())
-                               : bxLocList(bxStyleFor(L), bxColorFor(L), L.size, wh, String(g.loc).toUpperCase());
-            take.push(...pool.slice(0, g.n));
-          });
-          if(take.length){
-            await bxPatch(take.map(b=>b.id), {status:'OUT', out_at:new Date().toISOString(), out_by:(SESS&&SESS.email)||'', out_po:po});
-            const ids = new Set(take.map(b=>b.id));
-            bxStore = bxStore.filter(b=>!ids.has(b.id));
-            showToast('📦 '+L.style+' '+String(L.color).toUpperCase()+' '+String(L.size).toUpperCase()+' — deducted '+take.length+' box(es) from assigned locations');
-            anyPicked = true;
-            continue;
+      // ── 풀박스 차감은 창고별 최초 1회만 — 이 PO+창고로 이미 나간 박스가 있거나(_fbAuto) 완료 플래그가 있으면 재차감/피커 없이 스킵 (v421) ──
+      const _fbDone = !!(rec.meta && rec.meta._fbAuto && rec.meta._fbAuto[wh]) || (outRows||[]).some(b=>bxWh(b)===wh);
+      if(!_fbDone){
+        // ── PR 인쇄 시 풀박스 차감: 라인별로 location 선택 창 (기본값 = 오래된 순, 취소하면 차감 안 함) ──
+        const pending = (rec.lines||[]).filter(L=>{
+          if((String(L.wh||'SC').trim().toUpperCase()||'SC')!==wh) return false;
+          const need = boxCalc(L).full; if(!need) return false;
+          const _stU = String(bxStyleFor(L)).trim().toUpperCase();
+          const _baseC = bxBaseColor(bxColorFor(L));
+          const _szU = String(L.size||'').trim().toUpperCase();
+          if((outRows||[]).some(b=>bxWh(b)===wh && String(b.style).trim().toUpperCase()===_stU && bxBaseColor(String(b.color).toUpperCase())===_baseC && String(b.size).trim().toUpperCase()===_szU)) return false;
+          return bxFindAll(bxStyleFor(L), bxColorFor(L), L.size, wh).length > 0;
+        });
+        let anyPicked = false;
+        for(const L of pending){
+          if(L.pickLocs && L.pickLocs.length){
+            const take = [];
+            L.pickLocs.forEach(g=>{
+              const pool = g.col ? bxLocListCol(bxStyleFor(L), g.col, L.size, wh, String(g.loc).toUpperCase())
+                                 : bxLocList(bxStyleFor(L), bxColorFor(L), L.size, wh, String(g.loc).toUpperCase());
+              take.push(...pool.slice(0, g.n));
+            });
+            if(take.length){
+              await bxPatch(take.map(b=>b.id), {status:'OUT', out_at:new Date().toISOString(), out_by:(SESS&&SESS.email)||'', out_po:po});
+              const ids = new Set(take.map(b=>b.id));
+              bxStore = bxStore.filter(b=>!ids.has(b.id));
+              showToast('📦 '+L.style+' '+String(L.color).toUpperCase()+' '+String(L.size).toUpperCase()+' — deducted '+take.length+' box(es) from assigned locations');
+              anyPicked = true;
+              continue;
+            }
           }
+          const done = await new Promise(res=>bxOpenPicker(L, wh, po, res));
+          if(done) anyPicked = true;
         }
-        const done = await new Promise(res=>bxOpenPicker(L, wh, po, res));
-        if(done) anyPicked = true;
-      }
-      if(anyPicked){
-        const r2 = await sbFetch('/rest/v1/pr_boxes?select=style,color,size,loc,wh&status=eq.OUT&out_po=eq.'+encodeURIComponent(po));
-        if(r2.ok) outRows = await r2.json();
+        if(anyPicked){
+          // 차감 완료 표시 — DB에 영속 저장해 재인쇄/다음 세션에서도 재차감 방지 (v421)
+          rec.meta = { ...(rec.meta||{}), _fbAuto: { ...((rec.meta&&rec.meta._fbAuto)||{}), [wh]: { at: new Date().toISOString(), by: (SESS&&SESS.email)||'' } } };
+          try{ await sbFetch('/rest/v1/pr_orders?base=eq.'+encodeURIComponent(base), {method:'PATCH', headers:{Prefer:'return=minimal'}, body:JSON.stringify({meta:rec.meta, updated_at:new Date().toISOString()})}); }catch(e){}
+          const r2 = await sbFetch('/rest/v1/pr_boxes?select=style,color,size,loc,wh&status=eq.OUT&out_po=eq.'+encodeURIComponent(po));
+          if(r2.ok) outRows = await r2.json();
+        }
       }
       // ── PC Room 자동 차감 (SC 라인의 자투리 수량 · 최초 인쇄 1회만) ──
       if(wh==='SC' && !(rec.meta && rec.meta._pcAuto && rec.meta._pcAuto[wh])){
@@ -3230,7 +3235,7 @@ function bxPickListHtml(rec, wh, outRows){
         <td style="${td}">${esc(String(it.L.color||'').toUpperCase())}</td>
         <td style="${td}font-weight:800;text-align:center;">${esc(String(it.L.size||'').toUpperCase())}${/side\s*seam/i.test(String(it.L.desc||'')+' '+String(it.L.rawDesc||''))?' <span style="font-size:9px;">(Side Seam)</span>':''}</td>
         <td style="${td}text-align:center;font-weight:800;">${it.need}</td>
-        <td style="${td}font-weight:700;">${it.locs.length ? it.locs.map(g=>`${esc(g.loc)}${g.n>1?' ×'+g.n:''}`).join(' · ') : '—'}${it.short?` <span style="color:#dc2626;font-weight:800;">(short ${it.short})</span>`:''}</td>
+        <td style="${td}font-weight:700;">${it.locs.length ? it.locs.map(g=>esc(g.loc)).join(' · ') : '—'}${it.short?` <span style="color:#dc2626;font-weight:800;">(short ${it.short})</span>`:''}</td>
         <td style="${td}text-align:center;font-size:10px;font-weight:800;color:${it.mode==='PICKED'?'#166534':(it.mode==='SUGGESTED'?'#1d4ed8':'#dc2626')};">${it.mode}</td>
       </tr>`).join('')}</tbody>
     </table>
@@ -7664,6 +7669,12 @@ function bxCellModal(style, baseColor, size, wh){
     </div></div>`;
   document.body.appendChild(div);
 }
+function bxToggleMonth(sty, c){
+  if(!window._bxMonthOn) window._bxMonthOn = new Set();
+  const k = sty+'|'+c;
+  if(window._bxMonthOn.has(k)) window._bxMonthOn.delete(k); else window._bxMonthOn.add(k);
+  renderBoxRoom();
+}
 function bxToggleVar(sty, c, w){
   if(!window._bxExp) window._bxExp = new Set();
   const k = sty+'|'+c+'|'+w;
@@ -7730,21 +7741,27 @@ function bxGridInner(sty, colGroups){
   const stockSizes = new Set();
   Object.values(colGroups).forEach(list=>list.forEach(b=>{ const z=String(b.size).toUpperCase().trim(); if(!MONTH_RE.test(z)) stockSizes.add(z); }));
   const base = ['XS','S','M','L','XL'];   // 2XL~5XL은 실제 재고 있을 때만 표시 (v417)
-  const sizes = [...new Set([...base, ...stockSizes])].sort((a,b)=>{ const ia=sizeOrder.indexOf(a), ib=sizeOrder.indexOf(b); return (ia<0?99:ia)-(ib<0?99:ib) || a.localeCompare(b); });
+  let sizes = [...new Set([...base, ...stockSizes])].sort((a,b)=>{ const ia=sizeOrder.indexOf(a), ib=sizeOrder.indexOf(b); return (ia<0?99:ia)-(ib<0?99:ib) || a.localeCompare(b); });
   // base 칼라로 통합 표시 — (SIDE SEAM)/(US) 변형은 칸 클릭 시 나뉘어 보임
   const baseGroups = {};
   Object.keys(colGroups).forEach(c=>{ const bc = bxBaseColor(c); (baseGroups[bc] = baseGroups[bc] || []).push(...colGroups[c]); });
-  // 개월 사이즈(6M/12M/18M) 분리 — 재고 칸/합계엔 안 넣고 색상 밑 노트로만 (v418)
+  // 개월 사이즈(6M/12M/18M): 기본 숨김(색상 밑 노트) · '활성화'하면 정식 재고 칸으로 (v419)
+  if(!window._bxMonthOn) window._bxMonthOn = new Set();
   const monthByColor = {};
+  const monthSizesActive = new Set();
   Object.keys(baseGroups).forEach(c=>{
+    const active = window._bxMonthOn.has(sty+'|'+c);
     const keep = [];
     baseGroups[c].forEach(b=>{
       const z = String(b.size).toUpperCase().trim();
-      if(MONTH_RE.test(z)){ const w = bxWh(b)==='CA'?'CA':'SC'; const m = monthByColor[c] = monthByColor[c] || {}; (m[z] = m[z] || {SC:0,CA:0})[w]++; }
-      else keep.push(b);
+      if(MONTH_RE.test(z)){
+        const w = bxWh(b)==='CA'?'CA':'SC'; const m = monthByColor[c] = monthByColor[c] || {}; (m[z] = m[z] || {SC:0,CA:0})[w]++;
+        if(active){ keep.push(b); monthSizesActive.add(z); }   // 활성 → 정식 재고
+      } else keep.push(b);
     });
     baseGroups[c] = keep;
   });
+  if(monthSizesActive.size) sizes = [...[...monthSizesActive].sort((a,b)=>parseInt(a)-parseInt(b)), ...sizes];  // 2T 앞에
   const colors = Object.keys(baseGroups).sort();
   const all = colors.reduce((a,c)=>a.concat(baseGroups[c]),[]);
   const scN = all.filter(b=>bxWh(b)==='SC').length, caN = all.filter(b=>bxWh(b)==='CA').length;
@@ -7766,9 +7783,13 @@ function bxGridInner(sty, colGroups){
     const vChips = !vset.length ? '' :
       vset.map(v=>{ const vc = v==='Tubular' ? '#64748b' : (/US/.test(v) ? '#c2410c' : '#7c3aed'); const vb = v==='Tubular' ? '#f1f5f9' : (/US/.test(v) ? '#fff7ed' : '#f5f3ff');
         return ' <span style="font-size:8.5px;font-weight:800;color:'+vc+';background:'+vb+';padding:0 5px;border-radius:8px;white-space:nowrap;" title="Stock makeup for this color — click a cell to see types">'+esc(v)+'</span>'; }).join('');
-    // 개월(유아) 사이즈 노트 — 색상 이름 밑에 표시 (v418)
+    // 개월(유아) 사이즈 노트 + 활성/비활성 토글 버튼 — 색상 이름 밑 (v419)
     const _mN = monthByColor[c];
-    const monthNote = _mN ? `<div style="font-size:9px;font-weight:700;color:#9333ea;margin-top:2px;white-space:nowrap;" title="Infant/month sizes — kept as a note only, not counted in the size grid (e.g. cancelled custom order leftovers)">🍼 ${Object.keys(_mN).sort((a,b)=>parseInt(a)-parseInt(b)).map(z=>{const e=_mN[z]; const tot=e.SC+e.CA; const wl=(e.SC&&e.CA)?` (SC ${e.SC}·CA ${e.CA})`:(e.CA?' CA':''); return esc(z)+'×'+tot+wl;}).join(' · ')}</div>` : '';
+    const _mOn = window._bxMonthOn.has(sty+'|'+c);
+    const monthNote = _mN ? `<div style="margin-top:2px;white-space:nowrap;line-height:1.6;">
+        <span style="font-size:9px;font-weight:700;color:#9333ea;" title="Infant/month sizes (cancelled custom leftovers) — hidden by default; activate to pick for an order">🍼 ${Object.keys(_mN).sort((a,b)=>parseInt(a)-parseInt(b)).map(z=>{const e=_mN[z]; const tot=e.SC+e.CA; const wl=(e.SC&&e.CA)?` (SC ${e.SC}·CA ${e.CA})`:(e.CA?' CA':''); return esc(z)+'×'+tot+wl;}).join(' · ')}</span>
+        <button onclick="bxToggleMonth('${esc(sty)}','${esc(c)}')" style="margin-left:4px;font-size:8.5px;font-weight:800;border:1px solid ${_mOn?'#c2410c':'#9333ea'};background:${_mOn?'#fff7ed':'#faf5ff'};color:${_mOn?'#c2410c':'#7c3aed'};border-radius:8px;padding:0 6px;cursor:pointer;" title="${_mOn?'Hide month sizes again (back to note)':'Show 6M/12M/18M as pickable stock columns'}">${_mOn?'▾ 숨기기':'▸ 활성화'}</button>
+      </div>` : '';
     // 창고별 변형(풀칼라) 목록 — 2개 이상 섞여 있으면 SC/CA 라벨 클릭으로 펼치기
     const whVars = (w)=>[...new Set(baseGroups[c].filter(b=>bxWh(b)===w).map(b=>String(b.color).toUpperCase()))].sort();
     const expKey = (w)=>sty+'|'+c+'|'+w;
