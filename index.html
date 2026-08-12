@@ -98,6 +98,7 @@ main{max-width:1100px;margin:0 auto;padding:16px;}
 .saved-done{background:#1f2937!important;border-color:#111827!important;border-left:4px solid #22c55e!important;filter:brightness(.42) grayscale(.85);cursor:pointer;transition:filter .15s, background .15s;}
 .saved-done:hover{filter:none;background:#f3f8f4!important;border-color:var(--border)!important;}
 .saved-done.blind-off{filter:none;background:#f3f8f4!important;border-color:var(--border)!important;}
+.saved-return{filter:none!important;background:#fff7ed!important;border-color:#fb923c!important;border-left:4px solid #ea580c!important;}
 @media (max-width: 760px){
   .card{padding:12px 10px;}
   .grid.g6{grid-template-columns:repeat(2,1fr);}
@@ -139,7 +140,7 @@ main{max-width:1100px;margin:0 auto;padding:16px;}
     <button class="btn btn-sm" onclick="doLogout()" style="padding:2px 8px;font-size:10px;" data-i18n="logout">Log out</button>
   </span>
   <select id="lang-sel" onchange="setLang(this.value)" style="font-size:11px;padding:3px 6px;border-radius:5px;border:none;background:#1d3f66;color:#fff;"><option value="ko">한국어</option><option value="en">English</option><option value="es">Español</option></select>
-  <span style="font-size:10px;color:#9fb8d4;">v460 🚚</span>
+  <span style="font-size:10px;color:#9fb8d4;">v461 🚚</span>
 </div>
 <script type="text/javascript" src="https://js.authorize.net/v1/Accept.js" charset="utf-8"></script>
 <div id="po-viewer" style="display:none;position:fixed;top:0;right:0;width:44%;height:100vh;background:#fff;border-left:2px solid var(--border);z-index:60;box-shadow:-6px 0 20px rgba(0,0,0,.15);">
@@ -2362,6 +2363,136 @@ async function replaceOrderDo(base){
   showToast('🔁 Replacement order created: PO ' + meta2.po + ' — ' + lines2.length + ' lines (free · no invoice)');
   logHist(base, 'Replace order created → ' + base2 + (reason?' ('+reason+')':''));
   await invSyncOnSave(rec2);   // 교체분 재고 차감
+}
+// ══════════ ↩ Customer Return / RMA ══════════
+function recReturns(s){ return (s && s.meta && Array.isArray(s.meta._returns)) ? s.meta._returns : []; }
+function recHasPendingReturn(s){ return recReturns(s).some(r=>r && r.status==='pending'); }
+function raGen(base, rec){ const n = recReturns(rec).length + 1; return 'RA-' + base + (n>1?('-'+n):''); }
+function openReturnModal(base){
+  const rec = savedCache.find(s=>s.base===base); if(!rec) return;
+  const items = [];
+  (rec.whs||[]).filter(w=>w==='SC'||w==='CA').forEach(w=>{
+    const src = (rec.pl && rec.pl[w] && Array.isArray(rec.pl[w].lines) && rec.pl[w].lines.length)
+      ? rec.pl[w].lines : (rec.lines||[]).filter(l=>String(l.wh||'').toUpperCase()===w);
+    src.forEach(l=>{ if((Number(l.qty)||0)>0) items.push({wh:w, style:l.style||'', desc:l.desc||'', color:l.color||'', size:l.size||'', qty:Number(l.qty)||0, ppb:Number(l.ppb)||DEFAULT_PPB, price:Number(l.price)||0}); });
+  });
+  if(!items.length){ showToast('⚠ No shipped lines'); return; }
+  window._rtItems = items;
+  const em = (rec.meta&&rec.meta.custEmail) || custEmailFor(rec.meta&&rec.meta.cust) || '';
+  const isCC = !!(rec.meta && rec.meta.cc);
+  const whOpt = (sel)=>['SC','CA'].map(w=>`<option value="${w}"${w===sel?' selected':''}>${w}</option>`).join('');
+  const ex = document.getElementById('modal-return'); if(ex) ex.remove();
+  const div = document.createElement('div');
+  div.id = 'modal-return';
+  div.style.cssText = 'position:fixed;inset:0;background:rgba(15,23,42,.55);z-index:99;display:flex;align-items:center;justify-content:center;padding:20px;';
+  div.onclick = e=>{ if(e.target===div) div.remove(); };
+  div.innerHTML = `<div style="background:#fff;border-radius:12px;max-width:780px;width:100%;max-height:90vh;display:flex;flex-direction:column;overflow:hidden;">
+    <div style="background:#ea580c;color:#fff;padding:10px 16px;font-weight:800;">↩ Customer Return / RMA · ${esc((rec.meta&&rec.meta.cust)||'')} — PO ${esc((rec.meta&&rec.meta.po)||'')}
+      ${isCC?'<span style="background:#fff;color:#b91c1c;font-size:10px;font-weight:900;padding:2px 8px;border-radius:20px;margin-left:8px;">💳 CREDIT CARD</span>':''}
+      <div style="font-weight:400;font-size:11px;color:#fed7aa;">Check items being returned, set return qty & which warehouse it comes back to, and a reason. An RA# is created and (optionally) emailed to the customer.</div></div>
+    <div style="overflow-y:auto;padding:10px 16px;">
+      <table class="etbl" style="font-size:12px;">
+        <thead><tr><th></th><th>Style</th><th class="tl">Color</th><th>Size</th><th>Shipped From</th><th>Shipped Qty</th><th>Return Qty</th><th>Return To WH</th></tr></thead>
+        <tbody>${items.map((x,i)=>`<tr>
+          <td><input type="checkbox" class="rt-cb" data-i="${i}" style="width:15px;height:15px;accent-color:#ea580c;cursor:pointer;" onchange="const q=document.querySelector('#modal-return .rt-q[data-i=\\'${i}\\']'); if(q && this.checked && !(parseInt(q.value)>0)) q.focus();"></td>
+          <td style="font-weight:700;">${esc(String(x.style))}</td>
+          <td class="tl">${esc(String(x.color).toUpperCase())}</td>
+          <td style="font-weight:700;">${esc(String(x.size).toUpperCase())}</td>
+          <td><span class="chip chip-${esc(x.wh)}" style="font-size:9.5px;padding:1px 7px;">${esc(x.wh)}</span></td>
+          <td style="font-family:Consolas,monospace;">${x.qty.toLocaleString()}</td>
+          <td><input class="fi num rt-q" data-i="${i}" type="number" min="0" max="${x.qty}" placeholder="0" style="width:75px;font-weight:800;"></td>
+          <td><select class="fi rt-wh" data-i="${i}" style="width:72px;padding:3px 6px;font-weight:700;">${whOpt(x.wh)}</select></td>
+        </tr>`).join('')}</tbody>
+      </table>
+      <div class="ff" style="margin-top:10px;"><label>Return reason (kept in the record)</label>
+        <input class="fi" id="rt-reason" placeholder="e.g. wrong size, defect, customer over-ordered"></div>
+      <div class="ff" style="margin-top:8px;"><label>Customer email (RA# is sent here)</label>
+        <input class="fi" id="rt-email" type="email" value="${esc(em)}" placeholder="customer@example.com"></div>
+      ${isCC?'<div class="muted" style="font-size:10.5px;margin-top:6px;color:#b91c1c;">💳 Credit-card customer — when this return is received & confirmed, a “refund to card needed” note is recorded on the credit memo.</div>':''}
+    </div>
+    <div style="padding:10px 16px;border-top:1px solid var(--border);display:flex;gap:8px;justify-content:flex-end;">
+      <button class="btn" onclick="document.getElementById('modal-return').remove()">Cancel</button>
+      <button class="btn" onclick="returnDo('${esc(base)}', false)">Create RA (no email)</button>
+      <button class="btn btn-primary" style="background:#ea580c;border-color:#ea580c;" onclick="returnDo('${esc(base)}', true)">↩ Create RA & Email</button>
+    </div></div>`;
+  document.body.appendChild(div);
+}
+async function returnDo(base, doEmail){
+  const rec = savedCache.find(s=>s.base===base); if(!rec) return;
+  const items = window._rtItems||[];
+  const lines = [];
+  document.querySelectorAll('#modal-return .rt-cb:checked').forEach(cb=>{
+    const i = Number(cb.dataset.i);
+    const x = items[i]; if(!x) return;
+    const q = Math.min(parseInt((document.querySelector('#modal-return .rt-q[data-i="'+i+'"]')||{}).value)||0, x.qty);
+    const toWh = ((document.querySelector('#modal-return .rt-wh[data-i="'+i+'"]')||{}).value)||x.wh;
+    if(q>0) lines.push({ style:x.style, desc:x.desc, color:x.color, size:x.size, qty:q, price:x.price, ppb:x.ppb, wh:x.wh, toWh:toWh });
+  });
+  if(!lines.length){ alert('⚠ Check items to return and enter quantities.'); return; }
+  const reason = String((document.getElementById('rt-reason')||{}).value||'').trim();
+  const email = String((document.getElementById('rt-email')||{}).value||'').trim();
+  const by = (SESS&&SESS.email)||'';
+  const ra = raGen(base, rec);
+  const ret = { ra, status:'pending', reason, custEmail:email, cc: !!(rec.meta&&rec.meta.cc), lines,
+    createdAt:new Date().toISOString(), createdBy:by, emailedAt:null };
+  rec.meta = rec.meta||{};
+  rec.meta._returns = recReturns(rec).concat([ret]);
+  try{
+    await sbFetch('/rest/v1/pr_orders?base=eq.'+encodeURIComponent(base), {method:'PATCH', headers:{Prefer:'return=minimal'}, body:JSON.stringify({meta:rec.meta, updated_at:new Date().toISOString()})});
+  }catch(e){ alert('⚠ Failed to save return: '+(e.message||e)); return; }
+  logHist(base, '↩ Return created — '+ra+' ('+lines.length+' lines'+(reason?', '+reason:'')+')');
+  const m = document.getElementById('modal-return'); if(m) m.remove();
+  renderSaved();
+  if(doEmail){
+    if(!email.includes('@')){ showToast('⚠ '+ra+' saved — no valid email, sending skipped'); return; }
+    try{
+      await sendReturnEmail(rec, ret);
+      ret.emailedAt = new Date().toISOString();
+      await sbFetch('/rest/v1/pr_orders?base=eq.'+encodeURIComponent(base), {method:'PATCH', headers:{Prefer:'return=minimal'}, body:JSON.stringify({meta:rec.meta})});
+      showToast('✅ '+ra+' created & emailed → '+email);
+      logHist(base, '↩ RA emailed — '+ra+' → '+email);
+    }catch(e){ alert('📧 Email failed: '+(e.message||e)+'\n('+ra+' is saved — you can resend later)'); }
+  } else {
+    showToast('✅ '+ra+' created (no email sent)');
+  }
+}
+async function sendReturnEmail(rec, ret){
+  const meta = rec.meta||{};
+  const row = (k,v) => `<tr><td style="padding:4px 14px 4px 0;color:#666;">${k}</td><td style="font-weight:700;">${v}</td></tr>`;
+  const lineRows = ret.lines.map(l=>`<tr>
+    <td style="border:1px solid #ddd;padding:5px 8px;font-weight:700;">${esc(l.style)}</td>
+    <td style="border:1px solid #ddd;padding:5px 8px;">${esc(bxBaseColor(l.color))}</td>
+    <td style="border:1px solid #ddd;padding:5px 8px;text-align:center;">${esc(l.size)}</td>
+    <td style="border:1px solid #ddd;padding:5px 8px;text-align:right;font-weight:700;">${(Number(l.qty)||0).toLocaleString()}</td>
+  </tr>`).join('');
+  const totQty = ret.lines.reduce((a,l)=>a+(Number(l.qty)||0),0);
+  const bodyHtml = `<div style="font-family:Helvetica,Arial,sans-serif;font-size:14px;color:#111;">
+    <table width="100%" cellpadding="0" cellspacing="0" style="background:#ea580c;border-collapse:collapse;"><tr><td style="padding:10px 18px;"><img src="https://pacificsports.github.io/pull-request-tool/logo.png" height="30" alt="Pacific Sports" style="display:block;"></td><td style="padding:10px 18px;text-align:right;color:#fff;font-size:16px;font-weight:800;letter-spacing:1.5px;white-space:nowrap;">RETURN AUTHORIZATION</td></tr></table>
+    <p style="margin-top:16px;">Hello,</p>
+    <p>Your return has been authorized. Please write the RA number clearly on the outside of the box and include this information with your return.</p>
+    <table style="border-collapse:collapse;font-size:14px;margin:10px 0;">
+      ${row('RA #', '<span style="font-size:18px;color:#ea580c;">'+esc(ret.ra)+'</span>')}
+      ${row('PO #', esc(meta.po||''))}
+      ${row('Reason', esc(ret.reason||'—'))}
+      ${row('Total', totQty.toLocaleString()+' pcs')}
+    </table>
+    <table style="border-collapse:collapse;font-size:13px;width:100%;max-width:520px;">
+      <thead><tr style="background:#f3f4f6;"><th style="border:1px solid #ddd;padding:5px 8px;text-align:left;">Style</th><th style="border:1px solid #ddd;padding:5px 8px;text-align:left;">Color</th><th style="border:1px solid #ddd;padding:5px 8px;">Size</th><th style="border:1px solid #ddd;padding:5px 8px;">Qty</th></tr></thead>
+      <tbody>${lineRows}</tbody>
+    </table>
+    <p style="margin-top:16px;">Once we receive and inspect the items, a credit memo will be issued. Thank you.</p>
+    <p style="margin-top:16px;"><b>Pacific Sports</b></p>
+  </div>`;
+  const r = await fetch('https://po-confirm-email.hjbae.workers.dev/send-pl', {
+    method:'POST', headers:{'Content-Type':'application/json'},
+    body: JSON.stringify({
+      to: String(ret.custEmail).split(',').map(e=>e.trim()).filter(e=>e.includes('@')),
+      subject: 'Return Authorization ' + ret.ra + ' — PO ' + (meta.po||'') + ' (Pacific Sports)',
+      html: bodyHtml,
+      reply_to: STAFF_EMAILS
+    })
+  });
+  if(!r.ok){ const e = await r.json().catch(()=>({})); throw new Error(e.error || e.message || ('HTTP '+r.status)); }
 }
 async function delSaved(base){
   if(!confirm(t('a_delete',{b:base}) + '\n\n(Moves to trash — restorable within 30 days)')) return;
@@ -13400,7 +13531,7 @@ function renderSaved(){
     const _strips = (_isHold?1:0) + (_isUrg?1:0) + (_isMod?1:0);
     const _done = recIsDone(s);
     const _blindOff = _done && !!window._blindOff[s.base];
-    const _html = `<div class="saved-item ${_done?'saved-done':''} ${_blindOff?'blind-off':''}" ${_done?`onclick="savedBlindToggle(event,'${esc(s.base)}')"`:''} ${_isMod?`title="✏️ Modified ${esc(_md.by||'')} · ${new Date(_md.at).toLocaleString()}"`:''} style="display:block;${stuck?'border:2px solid #dc2626;':''}${_strips?`position:relative;padding-left:${10+16*_strips}px;overflow:hidden;`:''}">
+    const _html = `<div class="saved-item ${_done?'saved-done':''} ${_blindOff?'blind-off':''} ${recHasPendingReturn(s)?'saved-return':''}" ${_done?`onclick="savedBlindToggle(event,'${esc(s.base)}')"`:''} ${_isMod?`title="✏️ Modified ${esc(_md.by||'')} · ${new Date(_md.at).toLocaleString()}"`:''} style="display:block;${stuck?'border:2px solid #dc2626;':''}${_strips?`position:relative;padding-left:${10+16*_strips}px;overflow:hidden;`:''}">
       ${_isHold?`<div style="position:absolute;left:0;top:0;bottom:0;width:16px;background:#450a0a;display:flex;align-items:center;justify-content:center;"><span style="writing-mode:vertical-rl;transform:rotate(180deg);color:#fca5a5;font-size:8px;font-weight:900;letter-spacing:2px;white-space:nowrap;">🔒 CREDIT HOLD</span></div>`:''}
       ${_isUrg?`<div class="rushblink" style="position:absolute;left:${_isHold?16:0}px;top:0;bottom:0;width:16px;display:flex;align-items:center;justify-content:center;"><span style="writing-mode:vertical-rl;transform:rotate(180deg);color:inherit;font-size:8.5px;font-weight:900;letter-spacing:2.5px;white-space:nowrap;">🔥 RUSH</span></div>`:''}
       ${_isMod?`<div style="position:absolute;left:${(_isHold?16:0)+(_isUrg?16:0)}px;top:0;bottom:0;width:16px;background:#f59e0b;display:flex;align-items:center;justify-content:center;"><span style="writing-mode:vertical-rl;transform:rotate(180deg);color:#fff;font-size:8.5px;font-weight:900;letter-spacing:2.5px;white-space:nowrap;">MODIFIED</span></div>`:''}
@@ -13418,6 +13549,7 @@ function renderSaved(){
       <span style="font-weight:700;">${tot.toLocaleString()} pcs</span>
       <span style="color:var(--ok);">$${amt.toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2})}</span>
       ${whs.map(w=>`<span class="chip chip-${w}">${w}</span>`).join('')}
+      ${recHasPendingReturn(s) ? `<span style="background:#ea580c;color:#fff;font-size:10.5px;font-weight:900;padding:3px 10px;border-radius:20px;white-space:nowrap;box-shadow:0 1px 3px rgba(234,88,12,.4);" title="Return pending — RA# ${esc((recReturns(s).find(r=>r.status==='pending')||{}).ra||'')} · awaiting goods">↩ RETURN PENDING</span>` : ''}
       ${s.meta.webCust ? `<span style="background:#0e7490;color:#fff;font-size:10.5px;font-weight:900;padding:3px 10px;border-radius:20px;white-space:nowrap;letter-spacing:0.5px;box-shadow:0 1px 3px rgba(14,116,144,.4);">🌐 WEBSITE</span>` : ''}
       ${s.meta.futureShip ? `<span style="background:${new Date(s.meta.futureShip+'T00:00:00')>new Date()?'#2563eb':'#16a34a'};color:#fff;font-size:10.5px;font-weight:900;padding:3px 10px;border-radius:20px;white-space:nowrap;box-shadow:0 1px 3px rgba(37,99,235,.35);" title="Customer-requested ship date">🚀 SHIP ${new Date(s.meta.futureShip+'T00:00:00').toLocaleDateString('en-US',{month:'numeric',day:'numeric',year:'2-digit'})}</span>` : ''}
       ${_isHold?`<span style="margin-left:auto;padding:3px 10px;border-radius:20px;font-size:10.5px;font-weight:900;background:#450a0a;color:#fca5a5;white-space:nowrap;" title="A/R $${((s.meta._hold||{}).outstanding||0).toLocaleString()} + open orders $${((s.meta._hold||{}).openOrders||0).toLocaleString()} + this order $${((s.meta._hold||{}).orderAmt||0).toLocaleString()} > limit $${((s.meta._hold||{}).limit||0).toLocaleString()}">🔒 CREDIT HOLD</span><button class="btn btn-sm" style="background:#166534;color:#fff;border-color:#166534;font-weight:800;" onclick="approveHold('${esc(s.base)}')" title="Accounting approval — unlocks processing">✅ Approve</button>`:''}
@@ -13430,6 +13562,7 @@ function renderSaved(){
       <button class="btn btn-sm" onclick="openHistory('${esc(s.base)}')" title="Change history">🕘</button>
       <button class="btn btn-sm" style="color:#7c3aed;" onclick="splitOrderOpen('${esc(s.base)}')" title="Split some items into a separate order (-S) — run urgent items separately (stock deductions transfer too)">✂ Split</button>
       ${!recIsReplace(s) && (s.whs||[]).some(w=>s.pl && s.pl[w] && s.pl[w].savedAt) ? `<button class="btn btn-sm" style="color:#be123c;border-color:#fda4af;" onclick="replaceOrderOpen('${esc(s.base)}')" title="Replace defective shipped items — creates a free PO#R order (no invoice)">🔁 Replace</button>` : ''}
+      ${!recIsReplace(s) && (s.whs||[]).some(w=>s.pl && s.pl[w] && s.pl[w].savedAt) ? `<button class="btn btn-sm" style="color:#ea580c;border-color:#fdba74;" onclick="openReturnModal('${esc(s.base)}')" title="Customer return — create RA#, choose return warehouse & qty, email the customer">↩ Return</button>` : ''}
       <button class="btn btn-sm" onclick="loadSaved('${esc(s.base)}')">${t('open_edit')}</button>
       <button class="btn btn-sm" style="color:var(--bad);" onclick="delSaved('${esc(s.base)}')">${t('del')}</button>
       </div>
