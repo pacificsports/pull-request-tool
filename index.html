@@ -139,7 +139,7 @@ main{max-width:1100px;margin:0 auto;padding:16px;}
     <button class="btn btn-sm" onclick="doLogout()" style="padding:2px 8px;font-size:10px;" data-i18n="logout">Log out</button>
   </span>
   <select id="lang-sel" onchange="setLang(this.value)" style="font-size:11px;padding:3px 6px;border-radius:5px;border:none;background:#1d3f66;color:#fff;"><option value="ko">한국어</option><option value="en">English</option><option value="es">Español</option></select>
-  <span style="font-size:10px;color:#9fb8d4;">v450 🚚</span>
+  <span style="font-size:10px;color:#9fb8d4;">v451 🚚</span>
 </div>
 <script type="text/javascript" src="https://js.authorize.net/v1/Accept.js" charset="utf-8"></script>
 <div id="po-viewer" style="display:none;position:fixed;top:0;right:0;width:44%;height:100vh;background:#fff;border-left:2px solid var(--border);z-index:60;box-shadow:-6px 0 20px rgba(0,0,0,.15);">
@@ -11108,7 +11108,7 @@ async function trRecvPost(){
     else p.lines.forEach((l,li)=>{
       if(l._applied) return;   // 이미 개별 Apply됨 (v425)
       const act = isRecall ? (l.act||'sc') : 'sc';
-      if(act==='dmg') return;   // damage line needs no bin
+      if(act==='dmg'||act==='so'||act==='pc') return;   // damage / ship-out / PC-room lines need no bin (v451)
       if(!l.ca_bin) errors.push(p.label+' line '+(li+1)+': bin missing');
       else if(trIsSpecKind(dest) || (isRecall && act==='ret')){ const k=(isRecall&&act==='ret')?src:dest; if(!trLocIsKind(l.ca_bin,k)) errors.push(p.label+' line '+(li+1)+': must be a '+trBinHint(k)); }
       else if(isRecall && act==='sc' && !trLocIsKind(l.ca_bin,dest)) errors.push(p.label+' line '+(li+1)+': that is a 3rd party bin — use "Return to '+retName+'"');
@@ -11133,6 +11133,23 @@ async function trRecvPost(){
         }else if(act==='ret'){
           retLines.push({ is_manual:!!l.is_manual, style:l.style, color:l.color, size:l.size, bin:l.bin, ppb:l.ppb, pcs:l.pcs, boxes:l.boxes, ids:(l.ids||[]), pallet:'Pallet 1', ret_bin:bin });
           l.ca_bin = '(RETURN)';
+        }else if(act==='so'){                              // 🚚 Ship Out (v451)
+          const memo = String(l.so_memo||'').trim();
+          if((l.ids||[]).length) await trPatchBoxes(l.ids, {wh:destWh, status:'OUT', out_at:new Date().toISOString(), out_by:(SESS&&SESS.email)||'', out_po:'SHIP OUT'+(memo?(' — '+memo):'')});
+          l.ca_bin = '(SHIP OUT)';
+        }else if(act==='pc'){                              // 🧺 Break down → PC Room (v451)
+          const ppb = Number(l.ppb)||Number(l.pcs)||72;
+          const qn = (l.ids||[]).length || (l.is_manual?(Number(l.boxes)||0):0);
+          if((l.ids||[]).length) await trPatchBoxes(l.ids, {wh:destWh, status:'OUT', out_at:new Date().toISOString(), out_by:(SESS&&SESS.email)||'', out_po:'BREAK DOWN → PC ('+(_trRecvRec.ref||'')+')'});
+          try{
+            if(typeof pcLoaded!=='undefined' && !pcLoaded){ const r0=await sbFetch('/rest/v1/pr_pcroom?select=k,style,color,qty,bqty,bnote,sizes,wh,locs,updated_at,updated_by'); if(r0.ok){ pcStore=await r0.json(); pcLoaded=true; } }
+            const pcWh = destWh==='CA'?'CA':'SC'; const col = pcMergeColor(l.color).toUpperCase(); const k = pcKey(l.style, col, pcWh);
+            let row = (typeof pcFetchRowFresh==='function' ? await pcFetchRowFresh(k) : null) || pcStore.find(r=>r.k===k);
+            if(!row){ row = { k, style:String(l.style), color:col, wh:pcWh, qty:{} }; pcStore.push(row); }
+            row.qty = row.qty||{}; row.qty[l.size] = (Number(row.qty[l.size])||0) + qn*ppb;
+            await pcSaveRow(row); pcLogMove(row, l.size, qn*ppb, row.qty[l.size], '📦→🧺 break down ('+(_trRecvRec.ref||'')+')');
+          }catch(e){}
+          l.ca_bin = '(PC ROOM)';
         }else if(l.is_manual){
           const by = (SESS&&SESS.email)||'';
           for(let j=0;j<(Number(l.boxes)||0);j++) manualNew.push({style:l.style, color:l.color, size:l.size, pcs:Number(l.ppb)||72, loc:bin, wh:destWh, status:'IN', in_by:by, note:'transfer '+(_trRecvRec.ref||'')});
