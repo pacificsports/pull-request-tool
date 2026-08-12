@@ -139,7 +139,7 @@ main{max-width:1100px;margin:0 auto;padding:16px;}
     <button class="btn btn-sm" onclick="doLogout()" style="padding:2px 8px;font-size:10px;" data-i18n="logout">Log out</button>
   </span>
   <select id="lang-sel" onchange="setLang(this.value)" style="font-size:11px;padding:3px 6px;border-radius:5px;border:none;background:#1d3f66;color:#fff;"><option value="ko">한국어</option><option value="en">English</option><option value="es">Español</option></select>
-  <span style="font-size:10px;color:#9fb8d4;">v454 🚚</span>
+  <span style="font-size:10px;color:#9fb8d4;">v455 🚚</span>
 </div>
 <script type="text/javascript" src="https://js.authorize.net/v1/Accept.js" charset="utf-8"></script>
 <div id="po-viewer" style="display:none;position:fixed;top:0;right:0;width:44%;height:100vh;background:#fff;border-left:2px solid var(--border);z-index:60;box-shadow:-6px 0 20px rgba(0,0,0,.15);">
@@ -10106,6 +10106,7 @@ async function trBuilderOpen(existingId, route){
       <button class="btn" style="background:#fee2e2;color:#c62828;border-color:#fecaca;" onclick="trCancelDraft()">🗑 Delete Draft (restore stock)</button>
       ${trSrcIsSpec(_shipRoute)?'<button class="btn" style="background:#b45309;color:#fff;border-color:#b45309;" onclick="trPickupReq()">🖨 Pickup Request</button>':''}
       <button class="btn" style="background:#0f4c8a;color:#fff;border-color:#0f4c8a;" onclick="trPL()">🖨 Packing List Preview/Print</button>
+      <button class="btn" style="background:#166534;color:#fff;border-color:#166534;" onclick="trPR()">🖨 Pull Request (per pallet)</button>
       <button class="btn" style="background:#334155;color:#fff;border-color:#334155;" onclick="trBOL()">🖨 BOL</button>
       <button class="btn btn-primary" style="background:#7b1fa2;border-color:#7b1fa2;" onclick="trPost()">✅ Post — Start Shipment</button>
     </div></div>`;
@@ -10487,7 +10488,7 @@ function trRecDocData(rec){
 async function trViewDoc(id, kind){
   const rec = await trGet(id); if(!rec){ showToast('⚠ Load failed'); return; }
   const D = trRecDocData(rec);
-  if(kind==='pl') trPL(D); else if(kind==='bol') trBOL(D); else trPickupReq(D);
+  if(kind==='pl') trPL(D); else if(kind==='bol') trBOL(D); else if(kind==='pr') trPR(D); else trPickupReq(D);
 }
 function trPickupReq(D){
   if(!D){ trCaptureInfo(); D = {no:_shipNo, meta:_shipMeta, pallets:_shipPallets, route:_shipRoute}; }
@@ -10640,6 +10641,114 @@ function trPrintEl(elId){
   w.document.write('<html><head><title>Print</title><style>*{-webkit-print-color-adjust:exact !important;print-color-adjust:exact !important;}</style></head><body style="margin:0;">'+content+'<scr'+'ipt>window.print();</scr'+'ipt></body></html>');
   w.document.close();
 }
+// ── Pull Request (per pallet) ──
+let _trPRD = null;
+function trPRResolveD(D){
+  if(!D){ trCaptureInfo(); D = {no:_shipNo, meta:_shipMeta, pallets:_shipPallets, route:_shipRoute}; }
+  return D;
+}
+function trPRPalletHtml(D, p){
+  const _M = D.meta||{}, _R = TR_ROUTES[D.route]||TR_ROUTES.SC2CA;
+  const fromLbl = trKindShort(_R.from), toLbl = trKindShort(_R.dest);
+  const pBox = p.lines.reduce((s,l)=>s+trLineBoxes(l),0);
+  const pPcs = p.lines.reduce((s,l)=>s+trLinePcs(l),0);
+  const rows = p.lines.map(l=>{
+    const vl = bxVariantLabel(l.color, l.style);
+    const vTag = (!l.is_manual && vl) ? ' ('+vl+')' : '';
+    return `<tr>
+      <td style="padding:6px 8px;border:1px solid #333;font-weight:700;">${esc(l.style)}</td>
+      <td style="padding:6px 8px;border:1px solid #333;">${esc(bxBaseColor(l.color))}${esc(vTag)}</td>
+      <td style="padding:6px 8px;border:1px solid #333;text-align:center;">${esc(l.size)}</td>
+      <td style="padding:6px 8px;border:1px solid #333;text-align:center;font-weight:700;">${esc(l.bin||'—')}</td>
+      <td style="padding:6px 8px;border:1px solid #333;text-align:right;font-weight:700;">${trLineBoxes(l).toLocaleString()}</td>
+      <td style="padding:6px 8px;border:1px solid #333;text-align:right;">${trLinePcs(l).toLocaleString()}</td>
+      <td style="padding:6px 8px;border:1px solid #333;text-align:center;"><div style="width:15px;height:15px;border:1.5px solid #333;margin:0 auto;"></div></td>
+    </tr>`;
+  }).join('');
+  return `<div style="background:#fff;padding:28px;font-family:Arial,sans-serif;max-width:8.5in;margin:0 auto;color:#000;">
+    <div style="background:#0f2a4a;color:#fff;padding:12px 16px;display:flex;justify-content:space-between;align-items:center;border-radius:6px 6px 0 0;">
+      <div style="font-size:18px;font-weight:800;letter-spacing:.5px;">PACIFIC SPORTS</div>
+      <div style="font-size:18px;font-weight:800;letter-spacing:1px;">PULL REQUEST</div>
+    </div>
+    <table style="width:100%;border-collapse:collapse;font-size:11px;margin-bottom:10px;">
+      <tr>
+        <td style="border:1px solid #333;padding:6px 8px;"><b>SHIPMENT #</b><br>${esc(D.no||'—')}</td>
+        <td style="border:1px solid #333;padding:6px 8px;"><b>ROUTE</b><br>${esc(fromLbl)} &rarr; ${esc(toLbl)}</td>
+        <td style="border:1px solid #333;padding:6px 8px;"><b>DATE</b><br>${new Date().toISOString().slice(0,10)}</td>
+        <td style="border:1px solid #333;padding:6px 8px;"><b>NEEDED BY</b><br>${esc(_M.ship_date||'ASAP')}</td>
+      </tr>
+    </table>
+    <div style="background:#f3e8ff;border:1px solid #d8b4fe;border-radius:4px;padding:9px 14px;margin-bottom:8px;font-weight:800;color:#6b21a8;font-size:15px;">📦 ${esc(p.label)} <span style="font-weight:500;color:#7c3aed;font-size:12px;">&mdash; ${p.lines.length} line(s) · ${pBox.toLocaleString()} boxes · ${pPcs.toLocaleString()} pcs</span></div>
+    <table style="width:100%;border-collapse:collapse;font-size:11px;">
+      <thead><tr style="background:#e5e7eb;">
+        <th style="border:1px solid #333;padding:6px 8px;text-align:left;">Style#</th>
+        <th style="border:1px solid #333;padding:6px 8px;text-align:left;">Color / Item</th>
+        <th style="border:1px solid #333;padding:6px 8px;">Size</th>
+        <th style="border:1px solid #333;padding:6px 8px;">📍 From Bin</th>
+        <th style="border:1px solid #333;padding:6px 8px;">Boxes</th>
+        <th style="border:1px solid #333;padding:6px 8px;">Qty (pcs)</th>
+        <th style="border:1px solid #333;padding:6px 8px;width:56px;">✔ Pulled</th>
+      </tr></thead>
+      <tbody>${rows}</tbody>
+      <tfoot><tr style="background:#f9fafb;font-weight:800;">
+        <td colspan="4" style="border:1px solid #333;padding:6px 8px;text-align:right;">PALLET TOTAL</td>
+        <td style="border:1px solid #333;padding:6px 8px;text-align:right;">${pBox.toLocaleString()}</td>
+        <td style="border:1px solid #333;padding:6px 8px;text-align:right;">${pPcs.toLocaleString()}</td>
+        <td style="border:1px solid #333;padding:6px 8px;"></td>
+      </tr></tfoot>
+    </table>
+    ${_M.notes?`<div style="background:#fffde7;border:1px solid #fbc02d;padding:6px 10px;font-size:11px;margin-top:10px;"><b>Notes:</b> ${esc(_M.notes)}</div>`:''}
+    <div style="font-size:10.5px;margin-top:12px;color:#333;">Pull the boxes listed above from their bins and load onto <b>${esc(p.label)}</b>. Check off each line as it is pulled.</div>
+    <div style="margin-top:34px;display:grid;grid-template-columns:1fr 1fr;gap:30px;font-size:11px;">
+      <div><div style="border-bottom:1px solid #000;height:42px;"></div><div style="margin-top:4px;"><b>PULLED BY</b> / DATE</div></div>
+      <div><div style="border-bottom:1px solid #000;height:42px;"></div><div style="margin-top:4px;"><b>CHECKED BY</b> / DATE</div></div>
+    </div>
+  </div>`;
+}
+function trPRHtml(D){
+  D = trPRResolveD(D);
+  const pals = (D.pallets||[]).filter(p=>p.lines&&p.lines.length);
+  return pals.map((p,i)=>`<div style="${i<pals.length-1?'page-break-after:always;':''}">${trPRPalletHtml(D,p)}</div>`).join('');
+}
+function trPrintHtml(content, title){
+  const w = window.open('', '_blank');
+  w.document.write('<html><head><title>'+esc(title||'Pull Request')+'</title><style>*{-webkit-print-color-adjust:exact !important;print-color-adjust:exact !important;}</style></head><body style="margin:0;">'+content+'<scr'+'ipt>window.print();</scr'+'ipt></body></html>');
+  w.document.close();
+}
+function trPRPrintAll(){ if(!_trPRD) return; trPrintHtml(trPRHtml(_trPRD), 'Pull Request — '+((_trPRD&&_trPRD.no)||'')); }
+function trPRPrintOne(idx){
+  const pals = ((_trPRD&&_trPRD.pallets)||[]).filter(p=>p.lines&&p.lines.length);
+  const p = pals[idx]; if(!p) return;
+  trPrintHtml(trPRPalletHtml(_trPRD, p), 'Pull Request — '+p.label);
+}
+function trPR(D){
+  D = trPRResolveD(D);
+  const pals = (D.pallets||[]).filter(p=>p.lines&&p.lines.length);
+  if(!pals.length){ alert('No lines.'); return; }
+  _trPRD = D;
+  const ex = document.getElementById('modal-trpr'); if(ex) ex.remove();
+  const div = document.createElement('div');
+  div.id = 'modal-trpr';
+  div.style.cssText = 'position:fixed;inset:0;background:rgba(15,23,42,.6);z-index:120;display:flex;align-items:center;justify-content:center;padding:12px;';
+  div.onclick = e=>{ if(e.target===div) div.remove(); };
+  const blocks = pals.map((p,i)=>`
+    <div style="margin-bottom:16px;">
+      <div style="display:flex;justify-content:space-between;align-items:center;background:#ede9fe;border:1px solid #c4b5fd;border-radius:6px 6px 0 0;padding:6px 12px;font-weight:700;color:#6d28d9;">
+        <span>📦 ${esc(p.label)} — ${p.lines.length} line(s)</span>
+        <button class="btn btn-sm" style="background:#166534;color:#fff;border-color:#166534;" onclick="trPRPrintOne(${i})">🖨 Print this pallet</button>
+      </div>
+      <div style="border:1px solid #e5e7eb;border-top:none;">${trPRPalletHtml(D,p)}</div>
+    </div>`).join('');
+  div.innerHTML = `<div style="background:#fff;border-radius:12px;max-width:900px;width:96vw;max-height:96vh;display:flex;flex-direction:column;overflow:hidden;">
+    <div style="background:#166534;color:#fff;padding:10px 16px;font-weight:800;">📄 Pull Request — ${pals.length} pallet(s)
+      <button class="btn btn-sm" style="float:right;background:transparent;color:#bbf7d0;border-color:#4ade80;" onclick="document.getElementById('modal-trpr').remove()">✕</button></div>
+    <div style="padding:16px;overflow-y:auto;flex:1;background:#f5f5f5;">${blocks}</div>
+    <div style="padding:10px 16px;border-top:1px solid var(--border);display:flex;gap:8px;justify-content:flex-end;">
+      <button class="btn" onclick="document.getElementById('modal-trpr').remove()">Close</button>
+      <button class="btn btn-primary" style="background:#166534;border-color:#166534;" onclick="trPRPrintAll()">🖨 Print All Pallets</button>
+    </div></div>`;
+  document.body.appendChild(div);
+}
 function trBOL(D){
   if(!D){ trCaptureInfo(); D = {no:_shipNo, meta:_shipMeta, pallets:_shipPallets, route:_shipRoute}; }
   const M = D.meta||{}, PT = trPartyInfo(D.route);
@@ -10751,6 +10860,7 @@ async function trView(id){
     <div style="padding:10px 16px;border-top:1px solid var(--border);display:flex;gap:8px;justify-content:flex-end;">
       ${R.from==='3P'?`<button class="btn btn-sm" style="background:#b45309;color:#fff;border-color:#b45309;" onclick="trViewDoc('${rec.id}','pickup')">🖨 Pickup Request</button>`:''}
       <button class="btn btn-sm" onclick="trViewDoc('${rec.id}','pl')">🖨 Packing List</button>
+      <button class="btn btn-sm" style="background:#166534;color:#fff;border-color:#166534;" onclick="trViewDoc('${rec.id}','pr')">🖨 Pull Request</button>
       <button class="btn btn-sm" onclick="trViewDoc('${rec.id}','bol')">🖨 BOL</button>
       ${rec.status==='TRANSIT'?`<button class="btn btn-sm btn-primary" style="background:#0f766e;border-color:#0f766e;" onclick="document.getElementById('modal-trv').remove();trRecvOpen('${rec.id}')">📦 ${trKindShort(R.dest)} Arrival</button>`:''}
       <button class="btn" onclick="document.getElementById('modal-trv').remove()">Close</button>
