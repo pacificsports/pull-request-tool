@@ -139,7 +139,7 @@ main{max-width:1100px;margin:0 auto;padding:16px;}
     <button class="btn btn-sm" onclick="doLogout()" style="padding:2px 8px;font-size:10px;" data-i18n="logout">Log out</button>
   </span>
   <select id="lang-sel" onchange="setLang(this.value)" style="font-size:11px;padding:3px 6px;border-radius:5px;border:none;background:#1d3f66;color:#fff;"><option value="ko">한국어</option><option value="en">English</option><option value="es">Español</option></select>
-  <span style="font-size:10px;color:#9fb8d4;">v451 🚚</span>
+  <span style="font-size:10px;color:#9fb8d4;">v452 🚚</span>
 </div>
 <script type="text/javascript" src="https://js.authorize.net/v1/Accept.js" charset="utf-8"></script>
 <div id="po-viewer" style="display:none;position:fixed;top:0;right:0;width:44%;height:100vh;background:#fff;border-left:2px solid var(--border);z-index:60;box-shadow:-6px 0 20px rgba(0,0,0,.15);">
@@ -10763,7 +10763,8 @@ async function trRecvOpen(id){
   const palletMap = {};
   const _rvRoute = trRoute(rec), _rvDest = trDstKind(_rvRoute), _rvSrc = trSrcKind(_rvRoute);
   window._trRecvRoute = _rvRoute;
-  lines.forEach(l=>{ const lbl = l.pallet||'Pallet 1'; if(!palletMap[lbl]) palletMap[lbl] = { label:lbl, mode:'whole', bin:'', act:'sc', lines:[] }; palletMap[lbl].lines.push({...l, ca_bin:(trIsSpecKind(_rvDest)&&l.ret_bin)?String(l.ret_bin).toUpperCase():'', act:'sc', dmg_note:''}); });
+  const _recvP = (rec.meta&&rec.meta._recvP)||{};   // 자동저장된 입력 복원 (v452)
+  lines.forEach(l=>{ const lbl = l.pallet||'Pallet 1'; if(!palletMap[lbl]){ const ps=_recvP[lbl]||{}; palletMap[lbl] = { label:lbl, mode:ps.mode||'whole', bin:ps.bin||'', act:ps.act||'sc', lines:[] }; } palletMap[lbl].lines.push({...l, ca_bin: (l.ca_bin!=null && l.ca_bin!=='') ? l.ca_bin : ((trIsSpecKind(_rvDest)&&l.ret_bin)?String(l.ret_bin).toUpperCase():''), act: l.act||'sc', so_memo: l.so_memo||'', dmg_note: l.dmg_note||''}); });
   _trRecvPallets = Object.values(palletMap);
   if(trIsSpecKind(_rvDest)) _trRecvPallets.forEach(p=>{ const bs=[...new Set(p.lines.map(l=>l.ca_bin).filter(Boolean))]; if(bs.length===1) p.bin=bs[0]; });
   ['modal-tr','modal-trr'].forEach(x=>{ const e=document.getElementById(x); if(e) e.remove(); });
@@ -10894,15 +10895,28 @@ function trRecvRender(){
       <div style="padding:10px 14px;">${body}</div></div>`;
   }).join('');
 }
-function trRecvMode(pi, m){ _trRecvPallets[pi].mode = m; trRecvRender(); }
-function trRecvWholeAct(pi, v){ _trRecvPallets[pi].act = v; trRecvRender(); }
-function trRecvLineAct(pi, li, v){ _trRecvPallets[pi].lines[li].act = v; trRecvRender(); }
-function trRecvLineNote(pi, li, v){ _trRecvPallets[pi].lines[li].dmg_note = String(v||'').trim(); }
-function trRecvWholeBin(pi, v){ _trRecvPallets[pi].bin = String(v||'').trim().toUpperCase(); }
-function trRecvLineBin(pi, li, v){ _trRecvPallets[pi].lines[li].ca_bin = String(v||'').trim().toUpperCase(); }
+function trRecvMode(pi, m){ _trRecvPallets[pi].mode = m; trRecvRender(); trRecvSaveSoon(); }
+function trRecvWholeAct(pi, v){ _trRecvPallets[pi].act = v; trRecvRender(); trRecvSaveSoon(); }
+function trRecvLineAct(pi, li, v){ _trRecvPallets[pi].lines[li].act = v; trRecvRender(); trRecvSaveSoon(); }
+function trRecvLineNote(pi, li, v){ _trRecvPallets[pi].lines[li].dmg_note = String(v||'').trim(); trRecvSaveSoon(); }
+function trRecvWholeBin(pi, v){ _trRecvPallets[pi].bin = String(v||'').trim().toUpperCase(); trRecvSaveSoon(); }
+function trRecvLineBin(pi, li, v){ _trRecvPallets[pi].lines[li].ca_bin = String(v||'').trim().toUpperCase(); trRecvSaveSoon(); }
 // 🔧 모든 pallet break down 모드로 (v425)
-function trRecvBreakAll(){ _trRecvPallets.forEach(p=>p.mode='split'); trRecvRender(); }
-function trRecvLineMemo(pi, li, v){ _trRecvPallets[pi].lines[li].so_memo = String(v||''); }
+function trRecvBreakAll(){ _trRecvPallets.forEach(p=>p.mode='split'); trRecvRender(); trRecvSaveSoon(); }
+// ── 입력 즉시 자동저장 (v452): bin·action·memo·pallet mode를 transfer에 저장 → exit/refresh 해도 복원 ──
+let _trRecvSaveT = null;
+function trRecvSaveSoon(){ clearTimeout(_trRecvSaveT); _trRecvSaveT = setTimeout(trRecvSaveState, 500); }
+async function trRecvSaveState(){
+  if(!_trRecvRec || !_trRecvRec.id) return;
+  try{
+    const savedLines = []; const P = {};
+    _trRecvPallets.forEach(p=>{ P[p.label] = { mode:p.mode, bin:p.bin||'', act:p.act||'sc' }; p.lines.forEach(l=>savedLines.push({...l, pallet:p.label})); });
+    const meta = Object.assign({}, _trRecvRec.meta||{}, { _recvP: P });
+    _trRecvRec.meta = meta;
+    await trPatchRec(_trRecvRec.id, { lines: savedLines, meta });
+  }catch(e){}
+}
+function trRecvLineMemo(pi, li, v){ _trRecvPallets[pi].lines[li].so_memo = String(v||''); trRecvSaveSoon(); }
 // ✂ Take 수량만큼 떼어 아래 새 줄로 분리 — 나머지에 다른 액션 지정 (v428)
 async function trRecvSplitLine(pi, li){
   const p = _trRecvPallets[pi]; if(!p) return; const l = p.lines[li]; if(!l || l._applied) return;
