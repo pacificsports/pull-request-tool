@@ -139,7 +139,7 @@ main{max-width:1100px;margin:0 auto;padding:16px;}
     <button class="btn btn-sm" onclick="doLogout()" style="padding:2px 8px;font-size:10px;" data-i18n="logout">Log out</button>
   </span>
   <select id="lang-sel" onchange="setLang(this.value)" style="font-size:11px;padding:3px 6px;border-radius:5px;border:none;background:#1d3f66;color:#fff;"><option value="ko">한국어</option><option value="en">English</option><option value="es">Español</option></select>
-  <span style="font-size:10px;color:#9fb8d4;">v440 🚚</span>
+  <span style="font-size:10px;color:#9fb8d4;">v441 🚚</span>
 </div>
 <script type="text/javascript" src="https://js.authorize.net/v1/Accept.js" charset="utf-8"></script>
 <div id="po-viewer" style="display:none;position:fixed;top:0;right:0;width:44%;height:100vh;background:#fff;border-left:2px solid var(--border);z-index:60;box-shadow:-6px 0 20px rgba(0,0,0,.15);">
@@ -5672,20 +5672,22 @@ async function pcVarMove(style, toColor, wh, size, fromK, amt){
   try{ if(typeof poLines!=='undefined' && typeof refreshRow==='function') poLines.forEach((x,ii)=>refreshRow(ii)); }catch(e){}   // 오더 입력 힌트 갱신 (v390)
   showToast('⇄ '+amt+' pcs: '+from.color+' → '+String(toColor)+' ('+size+')');
 }
-// 오더 라인 ⇄ 원클릭: 부족분을 다른 변형(Tubular 등)에서 바로 당겨와 이 라인을 커버 (v436)
-async function pcVarQuick(style, color, wh, size, need, have){
-  need = Math.max(0, Math.floor(Number(need)||0));
-  have = Math.floor(Number(have)||0);
-  const want = need - have;
-  if(want <= 0){ showToast('✓ '+color+' '+size+' already covers this line ('+have+')'); return; }
-  const sibs = pcVariantSibs(style, color, wh, size).filter(x=>x.qty>0).sort((a,b)=>b.qty-a.qty);
-  if(!sibs.length){ showToast('⚠ No other-variant stock to borrow'); return; }
-  const avail = sibs.reduce((a,x)=>a+x.qty,0);
-  const move = Math.min(want, avail);
-  const label = sibs.map(x=>(bxVariantLabel(x.color, style)||bxDefaultVariant(style))+' '+x.qty).join(' · ');
-  if(!confirm('⇄ Use other variant for '+style+' '+color+' '+size+' ['+wh+']?\n\n'+color+' now: '+have+'   ·   this line needs: '+need+'\nBorrow '+move+' pcs from: '+label+'\n\n→ '+color+' becomes '+(have+move)+(move<want?'  (still short '+(want-move)+')':'  ✓ covered'))) return;
-  let rem = move;
-  for(const s of sibs){ if(rem<=0) break; const a = Math.min(rem, s.qty); await pcVarMove(style, color, wh, size, s.k, a); rem -= a; }
+// 오더 라인 변형 전환: 이 라인 전체를 Side Seam ↔ Tubular 로 바꿈 (섞지 않고 통째로) (v441)
+// — 거래처가 변형 섞는 걸 원치 않으니, 재고 이동 대신 라인 자체의 변형을 바꾼다. 설명(desc)의 (Side Seam) 표기를 토글해서 인쇄·차감·매칭이 모두 따라오게 함.
+function pcVarSwitch(i){
+  const l = (typeof poLines!=='undefined') ? poLines[i] : null; if(!l) return;
+  const isSS = /side\s*seam/i.test(String(l.desc||'')+' '+String(l.rawDesc||''));
+  const strip = s => String(s||'').replace(/\s*\(?\s*side\s*seam\s*\)?/ig,' ').replace(/\s{2,}/g,' ').trim();
+  if(isSS){
+    l.desc = strip(l.desc);
+    if(l.rawDesc) l.rawDesc = strip(l.rawDesc);
+  } else {
+    l.desc = (String(l.desc||'').trim()+' (Side Seam)').replace(/\s{2,}/g,' ').trim();
+  }
+  try{ if(typeof refreshRow==='function') refreshRow(i); }catch(e){}
+  try{ if(typeof updateNumPreview==='function') updateNumPreview(); }catch(e){}
+  try{ if(typeof renderDocs==='function') renderDocs(); }catch(e){}
+  showToast('⇄ '+l.style+' '+l.color+' '+l.size+' → '+(isSS?'Tubular':'Side Seam')+' 로 전환');
 }
 function pcLogMove(row, size, delta, bal, note){
   if(!delta) return;
@@ -6784,11 +6786,16 @@ function pcStockHint(l, b, i){
   try{ sibs = pcVariantSibs(bxStyleFor(l), bxColorFor(l), whH, sz); }catch(e){}
   const sibPos = sibs.filter(x=>x.qty>0);
   const sibT = sibs.reduce((a,x)=>a+x.qty,0);
-  const all = (v||0) + sibT;
-  const sibChip = sibPos.length
-    ? ` <span style="color:#7c3aed;font-weight:900;cursor:pointer;" onclick="event.stopPropagation();pcVarQuick('${esc(String(bxStyleFor(l)))}','${esc(String(bxColorFor(l)).toUpperCase())}','${whH}','${esc(sz)}',${b.loose},${v||0})" title="Other variant(s): ${esc(sibPos.map(x=>(bxVariantLabel(x.color, bxStyleFor(l))||bxDefaultVariant(bxStyleFor(l)))+' '+x.qty).join(' · '))} — combined ${all}. Click to borrow the shortfall from the other variant and cover this line.">⇄${all}</span>`
+  // 이 라인이 지금 어느 변형인지 · 반대 변형 재고를 옆에 보여주고, 클릭하면 라인 전체를 그 변형으로 전환 (섞지 않음) (v441)
+  const curIsSS = /\(SIDE SEAM\)/.test(bxColorFor(l));
+  const curShort = curIsSS ? 'SS' : 'Tub';
+  const oppShort = curIsSS ? 'Tub' : 'SS';
+  const oppFull = curIsSS ? 'Tubular' : 'Side Seam';
+  const hasVar = sibPos.length>0;
+  const sibChip = (hasVar && i!=null)
+    ? ` <span style="color:#7c3aed;font-weight:900;cursor:pointer;background:#faf5ff;border:1px solid #ddd6fe;border-radius:6px;padding:0 4px;white-space:nowrap;" onclick="event.stopPropagation();pcVarSwitch(${i})" title="이 라인은 지금 ${curIsSS?'Side Seam':'Tubular'} 재고에서 나갑니다. 거래처가 변형 섞는 걸 원치 않으면 — 클릭하면 이 라인 전체를 ${oppFull} 재고(${sibT})로 전환합니다 (섞지 않고 통째로).">⇄ ${oppShort} ${sibT}</span>`
     : '';
-  const cCol = (v||0)>=b.loose ? '#166534' : (sibChip && all>=b.loose ? '#7c3aed' : '#dc2626');
+  const cCol = (v||0)>=b.loose ? '#166534' : (hasVar && sibT>=b.loose ? '#7c3aed' : '#dc2626');
   // 📍 PC 자투리 pin bin + 모자라면 📦 풀박스 위치 힌트 (v397)
   let pinChip = '';
   try{
@@ -6802,7 +6809,7 @@ function pcStockHint(l, b, i){
       if(avail.length) boxChip = ` <span style="color:#1d4ed8;background:#eff6ff;border:1px solid #bfdbfe;border-radius:6px;padding:0 4px;white-space:nowrap;" title="PC short — open a full box from: ${esc(bxLocsLabel(avail, 99))}">📦${avail.length} ${esc(bxLocsLabel(avail, 1))}</span>`;
     }
   }catch(e){}
-  return `<div style="font-size:9px;line-height:1.25;font-weight:800;color:${cCol};white-space:nowrap;" title="PC Room loose stock BEFORE this order's own deduction${addedBack?' (this order already deducted '+addedBack+' — added back for display)':''}${l.useB?' — this line deducts from B-grade':''}${sibChip?' — other variants make the combined total '+all:''}">PC${whH==='CA'?'·CA':''} ${v==null?'—':v}${pinChip}${boxChip}${sibChip}${bBadge}</div>`;
+  return `<div style="font-size:9px;line-height:1.25;font-weight:800;color:${cCol};white-space:nowrap;" title="PC Room loose stock BEFORE this order's own deduction${addedBack?' (this order already deducted '+addedBack+' — added back for display)':''}${l.useB?' — this line deducts from B-grade':''}${hasVar?' — 이 라인 변형: '+(curIsSS?'Side Seam':'Tubular')+' ('+(v||0)+') · 반대 '+oppFull+' ('+sibT+') — ⇄ 클릭하면 전환':''}">PC${whH==='CA'?'·CA':''}${hasVar?' '+curShort:''} ${v==null?'—':v}${pinChip}${boxChip}${sibChip}${bBadge}</div>`;
 }
 function pcUseBToggle(i){
   const l = poLines[i]; if(!l) return;
