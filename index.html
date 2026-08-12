@@ -139,7 +139,7 @@ main{max-width:1100px;margin:0 auto;padding:16px;}
     <button class="btn btn-sm" onclick="doLogout()" style="padding:2px 8px;font-size:10px;" data-i18n="logout">Log out</button>
   </span>
   <select id="lang-sel" onchange="setLang(this.value)" style="font-size:11px;padding:3px 6px;border-radius:5px;border:none;background:#1d3f66;color:#fff;"><option value="ko">한국어</option><option value="en">English</option><option value="es">Español</option></select>
-  <span style="font-size:10px;color:#9fb8d4;">v441 🚚</span>
+  <span style="font-size:10px;color:#9fb8d4;">v442 🚚</span>
 </div>
 <script type="text/javascript" src="https://js.authorize.net/v1/Accept.js" charset="utf-8"></script>
 <div id="po-viewer" style="display:none;position:fixed;top:0;right:0;width:44%;height:100vh;background:#fff;border-left:2px solid var(--border);z-index:60;box-shadow:-6px 0 20px rgba(0,0,0,.15);">
@@ -1230,6 +1230,108 @@ function boxCalc(l){
   const ppb = l.ppb || DEFAULT_PPB;
   return { full: Math.floor((l.qty||0)/ppb), loose: (l.qty||0)%ppb };
 }
+// ── 오더 라인: 창고별 가용 pcs (풀박스 pcs + PC Room 낱장) — 체크박스 아래 표시 + 부족 배분 (v442) ──
+let _lineAvailCache = {};
+function lineAvailPcs(l, wh){
+  const out = { boxPcs:0, loose:0, total:0, loaded:false };
+  try{
+    const st  = (typeof bxStyleFor==='function') ? bxStyleFor(l) : String((l&&l.style)||'');
+    const col = (typeof bxColorFor==='function') ? bxColorFor(l) : String((l&&l.color)||'');
+    const sz  = String((l&&l.size)||'').trim().toUpperCase();
+    const ck = st+'|'+col+'|'+sz+'|'+wh;
+    if(_lineAvailCache[ck]) return _lineAvailCache[ck];
+    if(typeof bxLoaded!=='undefined' && bxLoaded && typeof bxFindAll==='function'){
+      out.loaded = true;
+      const boxes = bxFindAll(st, col, (l&&l.size), wh) || [];
+      out.boxPcs = boxes.reduce((a,b)=>a+(Number(b.pcs)||0),0);
+    }
+    if(typeof pcLoaded!=='undefined' && pcLoaded && typeof pcRowLookup==='function'){
+      out.loaded = true;
+      const row = pcRowLookup(st, col, String((l&&l.color)||''), wh);
+      out.loose = row ? (Number((row.qty||{})[sz])||0) : 0;
+    }
+    out.total = out.boxPcs + Math.max(0, out.loose);
+    _lineAvailCache[ck] = out;
+  }catch(e){}
+  return out;
+}
+function whStockMini(l, wh){
+  const a = lineAvailPcs(l, wh);
+  if(!a.loaded) return '';
+  const need = Number(l.qty)||0;
+  const ok = need>0 && a.total >= need;
+  const none = a.total<=0;
+  const col = none ? '#c7cdd6' : (ok ? '#166534' : '#dc2626');
+  const bg  = none ? 'transparent' : (ok ? '#f0fdf4' : '#fef2f2');
+  return `<div style="font-size:8px;font-weight:800;color:${col};background:${bg};border-radius:5px;line-height:1.3;margin-top:2px;white-space:nowrap;padding:0 2px;" title="${wh} 가용: 풀박스 ${a.boxPcs} + 낱장 ${Math.max(0,a.loose)} = ${a.total} pcs · 이 라인 필요 ${need}">${a.total.toLocaleString()}</div>`;
+}
+function lineIsShort(l){
+  const cur = String((l&&l.wh)||'').toUpperCase();
+  if(cur!=='SC' && cur!=='CA') return false;
+  const need = Number(l.qty)||0; if(need<=0) return false;
+  const a = lineAvailPcs(l, cur);
+  return a.loaded && a.total < need;
+}
+function allocOpen(i){
+  _lineAvailCache = {};
+  const l = poLines[i]; if(!l) return;
+  const need = Number(l.qty)||0;
+  const cur = String(l.wh||'SC').toUpperCase();
+  const other = cur==='CA' ? 'SC' : 'CA';
+  const sc = lineAvailPcs(l,'SC'), ca = lineAvailPcs(l,'CA');
+  const curAv = (cur==='CA'?ca:sc), othAv = (cur==='CA'?sc:ca);
+  const keep = Math.max(0, Math.min(need, curAv.total));
+  const rest = Math.max(0, need - keep);
+  const ex = document.getElementById('modal-alloc'); if(ex) ex.remove();
+  const whCard = (wh, a, isCur)=>`<div style="flex:1;border:1.5px solid ${isCur?(a.total>=need?'#16a34a':'#dc2626'):'#e2e8f0'};border-radius:9px;padding:8px 10px;background:${isCur?'#f8fafc':'#fff'};">
+      <div style="font-weight:800;font-size:12px;color:${wh==='CA'?'#c2410c':'#1d4ed8'};">${wh}${isCur?' <span style="font-size:9px;color:#64748b;font-weight:600;">(이 라인)</span>':''}</div>
+      <div style="font-family:Consolas,monospace;font-weight:800;font-size:18px;color:${a.total>=need?'#166534':'#b91c1c'};">${a.total.toLocaleString()}<span style="font-size:10px;color:#94a3b8;font-weight:600;"> pcs</span></div>
+      <div style="font-size:9.5px;color:#94a3b8;">풀박스 ${a.boxPcs.toLocaleString()} + 낱장 ${Math.max(0,a.loose).toLocaleString()}</div>
+    </div>`;
+  const div = document.createElement('div');
+  div.id = 'modal-alloc';
+  div.style.cssText='position:fixed;inset:0;background:rgba(15,23,42,.55);z-index:131;display:flex;align-items:center;justify-content:center;padding:12px;';
+  div.onclick = e=>{ if(e.target===div) div.remove(); };
+  div.innerHTML = `<div style="background:#fff;border-radius:13px;width:450px;max-width:95vw;overflow:hidden;box-shadow:0 20px 60px rgba(0,0,0,.35);">
+    <div style="background:#0f2a4a;color:#fff;padding:11px 16px;font-weight:800;">⚖ 재고 배분 — ${esc(String(l.style))} ${esc(String(l.color))} ${esc(String(l.size))}
+      <div style="font-weight:400;font-size:11px;color:#cbd5e1;margin-top:2px;">이 라인 <b>${cur}</b> · 필요 ${need.toLocaleString()} · ${cur} 가용 ${curAv.total.toLocaleString()} → <b style="color:#fca5a5;">부족 ${rest.toLocaleString()}</b></div></div>
+    <div style="padding:14px 16px;display:flex;flex-direction:column;gap:12px;">
+      <div style="display:flex;gap:10px;">${whCard('SC', sc, cur==='SC')}${whCard('CA', ca, cur==='CA')}</div>
+      <div style="font-size:11.5px;color:#475569;line-height:1.45;">${cur}에 있는 <b>${keep.toLocaleString()}</b>개는 ${cur}로 두고, 부족한 <b style="color:#b91c1c;">${rest.toLocaleString()}</b>개를 어떻게 할까요? (섞지 않고 새 라인으로 분리됩니다)</div>
+      <div style="display:flex;flex-direction:column;gap:7px;">
+        <button class="btn" style="justify-content:flex-start;background:${othAv.total>0?'#1d4ed8':'#94a3b8'};color:#fff;border-color:transparent;font-weight:800;text-align:left;padding:9px 12px;" onclick="allocSplit(${i},'${other}')">
+          ${other} 재고 사용 &nbsp;<span style="font-weight:700;font-size:11px;opacity:.92;">${other} 가용 ${othAv.total.toLocaleString()} pcs${othAv.total<rest?' · 여기도 '+(rest-othAv.total).toLocaleString()+' 부족':' · 충분'}</span></button>
+        <button class="btn" style="justify-content:flex-start;background:#dc2626;color:#fff;border-color:transparent;font-weight:800;text-align:left;padding:9px 12px;" onclick="allocSplit(${i},'BO')">⛔ Back Order &nbsp;<span style="font-weight:700;font-size:11px;opacity:.92;">부족 ${rest.toLocaleString()}개를 BO 라인으로</span></button>
+        <button class="btn" style="justify-content:flex-start;background:#6b7280;color:#fff;border-color:transparent;font-weight:800;text-align:left;padding:9px 12px;" onclick="allocSplit(${i},'NA')">✖ N/A &nbsp;<span style="font-weight:700;font-size:11px;opacity:.92;">부족 ${rest.toLocaleString()}개를 NA 라인으로</span></button>
+      </div>
+      <div style="display:flex;gap:8px;justify-content:space-between;align-items:center;border-top:1px solid #eef1f5;padding-top:9px;">
+        <button class="btn btn-sm" onclick="document.getElementById('modal-alloc').remove();openSplitLine(${i});" title="SC/CA/BO/NA로 직접 수량 나누기">✂ 직접 나누기</button>
+        <button class="btn btn-sm" onclick="document.getElementById('modal-alloc').remove()">닫기</button>
+      </div>
+    </div></div>`;
+  document.body.appendChild(div);
+}
+function allocSplit(i, targetWh){
+  _lineAvailCache = {};
+  const l = poLines[i]; if(!l) return;
+  const need = Number(l.qty)||0;
+  const cur = String(l.wh||'SC').toUpperCase();
+  const curAv = lineAvailPcs(l, cur).total;
+  const keep = Math.max(0, Math.min(need, curAv));
+  const rest = need - keep;
+  const m = document.getElementById('modal-alloc'); if(m) m.remove();
+  if(rest<=0){ showToast('✓ '+cur+' 재고로 충분합니다'); return; }
+  const clone = ()=>JSON.parse(JSON.stringify(l));
+  const parts = [];
+  if(keep>0) parts.push(Object.assign(clone(), {qty:keep, wh:cur}));
+  parts.push(Object.assign(clone(), {qty:rest, wh:targetWh}));
+  poLines.splice(i, 1, ...parts);
+  if(typeof renderTable==='function') renderTable();
+  if(typeof updateNumPreview==='function') updateNumPreview();
+  if(typeof renderDocs==='function') renderDocs();
+  if(typeof saveDraft==='function') saveDraft();
+  showToast('✂ '+l.style+' '+l.size+': '+(keep>0?cur+' '+keep.toLocaleString()+' + ':'')+targetWh+' '+rest.toLocaleString());
+}
 function openSplitLine(i){
   const l = poLines[i]; if(!l) return;
   const ex = document.getElementById('modal-split'); if(ex) ex.remove();
@@ -1339,6 +1441,7 @@ function priceCellHtml(l, i){
 }
 function renderTable(){
   const tb = $('lines-body');
+  _lineAvailCache = {};   // 재고 캐시 초기화 — 이번 렌더 동안만 재사용 (v442)
   tb.innerHTML = poLines.map((l,i)=>{
     const b = boxCalc(l);
     return `<tr id="row-${i}" style="${l.wh==='BO'?'background:#fef2f2;':''}">
@@ -1347,14 +1450,14 @@ function renderTable(){
       <td class="tl"><input id="de-${i}" class="tl" value="${esc(l.desc||'')}" onchange="updLine(${i},'desc',this.value)" placeholder="(PO description)" title="${esc(l.rawDesc||'')}" style="min-width:110px;color:#6b7280;font-size:11px;"></td>
       <td class="tl"><input class="tl" value="${esc(l.color)}" onchange="updLine(${i},'color',this.value)" style="min-width:110px;"></td>
       <td><input value="${esc(l.size)}" oninput="this.value=this.value.toUpperCase()" onchange="updLine(${i},'size',this.value)" style="min-width:45px;max-width:70px;text-transform:uppercase;"></td>
-      <td><input class="num" value="${l.qty||''}" onchange="updLine(${i},'qty',this.value)" style="max-width:80px;"></td>
+      <td style="white-space:nowrap;"><input class="num" value="${l.qty||''}" onchange="updLine(${i},'qty',this.value)" style="max-width:66px;">${lineIsShort(l)?`<button class="btn btn-sm" style="border:none;padding:0 2px;color:#dc2626;font-weight:900;font-size:13px;" onclick="allocOpen(${i})" title="재고 부족 — SC/CA/BO 배분 정하기">⚠</button>`:''}</td>
       <td>${priceCellHtml(l,i)}</td>
       <td><input id="ppb-${i}" class="num" value="${l.ppb||DEFAULT_PPB}" onchange="updLine(${i},'ppb',this.value)" style="max-width:65px;"></td>
       <td id="fb-${i}" style="font-family:Consolas,monospace;white-space:nowrap;">${fbCellInner(l,b,i)}</td>
       <td id="ls-${i}" style="font-family:Consolas,monospace;color:${b.loose?'#d97706':'#9ca3af'};white-space:nowrap;">${looseCellInner(l,b,i)}</td>
       <td id="pbox-td-${i}" style="white-space:nowrap;">${b.loose ? `<input class="num" value="${l.pbox||''}" onchange="updLine(${i},'pbox',this.value)" style="max-width:50px;">${pboxBadgeHtml(poLines,l,'pbsum-'+i)}` : ''}</td>
-      <td style="text-align:center;"><input type="checkbox" id="whsc-${i}" ${l.wh==='SC'?'checked':''} onchange="whLineToggle(${i},'SC',this.checked)" style="accent-color:#1d4ed8;width:16px;height:16px;cursor:pointer;"></td>
-      <td style="text-align:center;"><input type="checkbox" id="whca-${i}" ${l.wh==='CA'?'checked':''} onchange="whLineToggle(${i},'CA',this.checked)" style="accent-color:#c2410c;width:16px;height:16px;cursor:pointer;"></td>
+      <td style="text-align:center;vertical-align:top;"><input type="checkbox" id="whsc-${i}" ${l.wh==='SC'?'checked':''} onchange="whLineToggle(${i},'SC',this.checked)" style="accent-color:#1d4ed8;width:16px;height:16px;cursor:pointer;">${whStockMini(l,'SC')}</td>
+      <td style="text-align:center;vertical-align:top;"><input type="checkbox" id="whca-${i}" ${l.wh==='CA'?'checked':''} onchange="whLineToggle(${i},'CA',this.checked)" style="accent-color:#c2410c;width:16px;height:16px;cursor:pointer;">${whStockMini(l,'CA')}</td>
       <td style="text-align:center;"><input type="checkbox" id="whbo-${i}" ${l.wh==='BO'?'checked':''} onchange="whLineToggle(${i},'BO',this.checked)" style="accent-color:#dc2626;width:16px;height:16px;cursor:pointer;"></td>
       <td style="text-align:center;"><input type="checkbox" id="whna-${i}" ${l.wh==='NA'?'checked':''} onchange="whLineToggle(${i},'NA',this.checked)" style="accent-color:#6b7280;width:16px;height:16px;cursor:pointer;"></td>
       <td><button class="btn btn-sm" style="color:var(--bad);border:none;" onclick="delLine(${i})">✕</button></td>
