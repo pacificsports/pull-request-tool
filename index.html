@@ -145,7 +145,7 @@ main{max-width:1100px;margin:0 auto;padding:16px;}
     <button class="btn btn-sm" onclick="doLogout()" style="padding:2px 8px;font-size:10px;" data-i18n="logout">Log out</button>
   </span>
   <select id="lang-sel" onchange="setLang(this.value)" style="font-size:11px;padding:3px 6px;border-radius:5px;border:none;background:#1d3f66;color:#fff;"><option value="ko">한국어</option><option value="en">English</option><option value="es">Español</option></select>
-  <span style="font-size:10px;color:#9fb8d4;">v477 🚚</span>
+  <span style="font-size:10px;color:#9fb8d4;">v478 🚚</span>
 </div>
 <script type="text/javascript" src="https://js.authorize.net/v1/Accept.js" charset="utf-8"></script>
 <div id="po-viewer" style="display:none;position:fixed;top:0;right:0;width:44%;height:100vh;background:#fff;border-left:2px solid var(--border);z-index:60;box-shadow:-6px 0 20px rgba(0,0,0,.15);">
@@ -2420,70 +2420,119 @@ function replaceOrderOpen(base){
   (rec.whs||[]).filter(w=>w==='SC'||w==='CA').forEach(w=>{
     const src = (rec.pl && rec.pl[w] && Array.isArray(rec.pl[w].lines) && rec.pl[w].lines.length)
       ? rec.pl[w].lines : (rec.lines||[]).filter(l=>String(l.wh||'').toUpperCase()===w);
-    src.forEach(l=>{ if((Number(l.qty)||0)>0) items.push({wh:w, style:l.style||'', desc:l.desc||'', color:l.color||'', size:l.size||'', qty:Number(l.qty)||0, ppb:Number(l.ppb)||DEFAULT_PPB, price:Number(l.price)||0}); });
+    src.forEach(l=>{ if((Number(l.qty)||0)>0) items.push({ style:l.style||'', desc:l.desc||'', color:l.color||'', size:l.size||'', shipped:Number(l.qty)||0, ppb:Number(l.ppb)||DEFAULT_PPB, price:Number(l.price)||0 }); });
   });
   if(!items.length){ showToast('⚠ No shipped lines'); return; }
-  window._rpItems = items;
+  window._rpBase = base;
+  window._rpLines = items.map(x=>({ style:x.style, desc:x.desc, color:x.color, size:x.size, shipped:x.shipped, price:x.price, ppb:x.ppb, pbox:'', qty:0, wh:'' }));
   const ex = document.getElementById('modal-replace'); if(ex) ex.remove();
   const div = document.createElement('div');
   div.id = 'modal-replace';
-  div.style.cssText = 'position:fixed;inset:0;background:rgba(15,23,42,.55);z-index:99;display:flex;align-items:center;justify-content:center;padding:20px;';
+  div.style.cssText = 'position:fixed;inset:0;background:rgba(15,23,42,.55);z-index:99;display:flex;align-items:center;justify-content:center;padding:16px;';
   div.onclick = e=>{ if(e.target===div) div.remove(); };
-  div.innerHTML = `<div style="background:#fff;border-radius:12px;max-width:680px;width:100%;max-height:88vh;display:flex;flex-direction:column;overflow:hidden;">
+  div.innerHTML = `<div style="background:#fff;border-radius:12px;max-width:1180px;width:100%;max-height:92vh;display:flex;flex-direction:column;overflow:hidden;">
     <div style="background:#be123c;color:#fff;padding:10px 16px;font-weight:800;">🔁 Replace (defect replacement) · ${esc((rec.meta&&rec.meta.cust)||'')} — PO ${esc((rec.meta&&rec.meta.po)||'')}
-      <div style="font-weight:400;font-size:11px;color:#fecdd3;">Check shipped items to replace and set quantities — loads into the order form as a free replacement (PO# + R). Then set SC/CA/BO/NA, adjust stock/boxes and Save like a normal order (no invoice)</div></div>
-    <div style="overflow-y:auto;padding:10px 16px;">
-      <table class="etbl" style="font-size:12px;">
-        <thead><tr><th></th><th>Style</th><th class="tl">Color</th><th>Size</th><th>WH</th><th>Shipped Qty</th><th>Replace Qty</th></tr></thead>
-        <tbody>${items.map((x,i)=>`<tr>
-          <td><input type="checkbox" class="rp-cb" data-i="${i}" style="width:15px;height:15px;accent-color:#be123c;cursor:pointer;" onchange="const q=document.querySelector('#modal-replace .rp-q[data-i=\\'${i}\\']'); if(q && this.checked && !(parseInt(q.value)>0)) q.focus();"></td>
-          <td style="font-weight:700;">${esc(String(x.style))}</td>
-          <td class="tl">${esc(String(x.color).toUpperCase())}</td>
-          <td style="font-weight:700;">${esc(String(x.size).toUpperCase())}</td>
-          <td><span class="chip chip-${esc(x.wh)}" style="font-size:9.5px;padding:1px 7px;">${esc(x.wh)}</span></td>
-          <td style="font-family:Consolas,monospace;">${x.qty.toLocaleString()}</td>
-          <td><input class="fi num rp-q" data-i="${i}" type="number" min="0" max="${x.qty}" placeholder="0" style="width:80px;font-weight:800;"></td>
-        </tr>`).join('')}</tbody>
+      <div style="font-weight:400;font-size:11px;color:#fecdd3;">Set the replace qty and process every line right here — assign SC / CA / BO / NA (live stock shows under the box). On save, stock is deducted and boxes move to PC Room like a normal order. Free (PO# + R), no invoice.</div></div>
+    <div style="overflow:auto;padding:10px 16px;flex:1;">
+      <table class="etbl" style="font-size:11.5px;white-space:nowrap;">
+        <thead><tr>
+          <th>Style</th><th class="tl">Color</th><th>Size</th><th>Shipped</th>
+          <th style="background:#fff1f2;">Replace</th><th>PPB</th><th>Full Box</th><th>Loose</th><th>P Box#</th>
+          <th style="color:#1d4ed8;">SC</th><th style="color:#c2410c;">CA</th><th style="color:#dc2626;">BO</th><th style="color:#6b7280;">NA</th>
+        </tr></thead>
+        <tbody id="rp-body"></tbody>
       </table>
-      <div class="ff" style="margin-top:10px;"><label>Defect reason (kept in the record)</label>
+      <div class="ff" style="margin-top:10px;max-width:440px;"><label>Defect reason (kept in the record)</label>
         <input class="fi" id="rp-reason" placeholder="e.g. yellow spot defect, wrong size label"></div>
-      <div class="muted" style="font-size:10.5px;margin-top:6px;">New order PO# will be "${esc((rec.meta&&rec.meta.po)||'')}R" — stock is deducted normally and Pull Request/Box Label/Packing List proceed as usual, but no invoice can be created. If goods are being returned, handle that separately via 📝 Credit Memo on the original order.</div>
+      <div class="muted" style="font-size:10.5px;margin-top:6px;">New PO# will be "${esc((rec.meta&&rec.meta.po)||'')}R" — no invoice (override available). If goods are being returned, handle that via 📝 Credit Memo on the original order.</div>
     </div>
-    <div style="padding:10px 16px;border-top:1px solid var(--border);display:flex;gap:8px;justify-content:flex-end;">
+    <div style="padding:10px 16px;border-top:1px solid var(--border);display:flex;gap:8px;justify-content:flex-end;align-items:center;">
+      <span id="rp-sum" class="muted" style="margin-right:auto;font-size:11px;"></span>
       <button class="btn" onclick="document.getElementById('modal-replace').remove()">Cancel</button>
-      <button class="btn btn-primary" style="background:#be123c;border-color:#be123c;" onclick="replaceOrderDo('${esc(base)}')">🔁 Load into order form →</button>
+      <button class="btn btn-primary" id="rp-go" style="background:#be123c;border-color:#be123c;" onclick="replaceOrderDo()">🔁 Create replacement order</button>
     </div></div>`;
   document.body.appendChild(div);
+  rpRender();
+  // stock 표시용 데이터가 아직 없으면 받아와서 다시 그림 (Full Box 재고)
+  if((typeof bxLoaded==='undefined'||!bxLoaded) && typeof bxFetchStore==='function'){ try{ bxFetchStore().then(()=>{ if(document.getElementById('rp-body')) rpRender(); }); }catch(e){} }
 }
-async function replaceOrderDo(base){
+function rpRowHtml(l,i){
+  const b = boxCalc(l);
+  const dot = '<span style="color:#cbd5e1;">·</span>';
+  return `<tr id="rp-row-${i}" style="${l.wh==='BO'?'background:#fef2f2;':''}">
+    <td style="font-weight:700;">${esc(String(l.style))}</td>
+    <td class="tl">${esc(String(l.color).toUpperCase())}</td>
+    <td style="font-weight:700;">${esc(String(l.size).toUpperCase())}</td>
+    <td style="font-family:Consolas,monospace;color:#64748b;">${(l.shipped||0).toLocaleString()}</td>
+    <td style="background:#fff1f2;"><input class="fi num" type="number" min="0" max="${l.shipped}" value="${l.qty||''}" onchange="rpUpd(${i},'qty',this.value)" style="width:66px;font-weight:800;"></td>
+    <td><input class="fi num" value="${l.ppb||DEFAULT_PPB}" onchange="rpUpd(${i},'ppb',this.value)" style="width:52px;"></td>
+    <td id="rp-fb-${i}" style="font-family:Consolas,monospace;">${b.full||dot}</td>
+    <td id="rp-ls-${i}" style="font-family:Consolas,monospace;color:${b.loose?'#d97706':'#9ca3af'};">${b.loose||dot}</td>
+    <td>${b.loose?`<input class="fi num" value="${esc(l.pbox||'')}" onchange="rpUpd(${i},'pbox',this.value)" style="width:48px;">`:''}</td>
+    <td style="text-align:center;vertical-align:top;"><input type="checkbox" ${l.wh==='SC'?'checked':''} onchange="rpWh(${i},'SC',this.checked)" style="accent-color:#1d4ed8;width:16px;height:16px;cursor:pointer;"><div id="rp-sc-${i}">${whStockMini(l,'SC')}</div></td>
+    <td style="text-align:center;vertical-align:top;"><input type="checkbox" ${l.wh==='CA'?'checked':''} onchange="rpWh(${i},'CA',this.checked)" style="accent-color:#c2410c;width:16px;height:16px;cursor:pointer;"><div id="rp-ca-${i}">${whStockMini(l,'CA')}</div></td>
+    <td style="text-align:center;"><input type="checkbox" ${l.wh==='BO'?'checked':''} onchange="rpWh(${i},'BO',this.checked)" style="accent-color:#dc2626;width:16px;height:16px;cursor:pointer;"></td>
+    <td style="text-align:center;"><input type="checkbox" ${l.wh==='NA'?'checked':''} onchange="rpWh(${i},'NA',this.checked)" style="accent-color:#6b7280;width:16px;height:16px;cursor:pointer;"></td>
+  </tr>`;
+}
+function rpRender(){
+  const tb = document.getElementById('rp-body'); if(!tb) return;
+  _lineAvailCache = {};
+  tb.innerHTML = (window._rpLines||[]).map((l,i)=>rpRowHtml(l,i)).join('');
+  rpSum();
+}
+function rpRerenderRow(i){
+  const l=(window._rpLines||[])[i]; if(!l) return;
+  const row=document.getElementById('rp-row-'+i); if(!row) return;
+  const tmp=document.createElement('tbody'); tmp.innerHTML=rpRowHtml(l,i);
+  if(tmp.firstElementChild) row.replaceWith(tmp.firstElementChild);
+}
+function rpUpd(i, field, val){
+  const l=(window._rpLines||[])[i]; if(!l) return;
+  if(field==='qty') l.qty = Math.min(Math.max(0, parseInt(val)||0), l.shipped);
+  else if(field==='ppb') l.ppb = Math.max(1, parseInt(val)||DEFAULT_PPB);
+  else if(field==='pbox'){ l.pbox = String(val||'').trim(); }
+  _lineAvailCache = {};
+  rpRerenderRow(i); rpSum();
+}
+function rpWh(i, wh, checked){
+  const l=(window._rpLines||[])[i]; if(!l) return;
+  l.wh = checked ? wh : (l.wh===wh ? '' : l.wh);
+  rpRerenderRow(i); rpSum();
+}
+function rpSum(){
+  const el=document.getElementById('rp-sum'); if(!el) return;
+  const L=(window._rpLines||[]).filter(l=>(l.qty||0)>0);
+  const np=L.reduce((a,l)=>a+(l.qty||0),0);
+  const noWh=L.filter(l=>!l.wh).length;
+  el.innerHTML = `${L.length} line(s) · ${np.toLocaleString()} pcs`+(noWh?` · <span style="color:#dc2626;font-weight:800;">${noWh} still need SC / CA / BO / NA</span>`:'');
+}
+async function replaceOrderDo(){
+  const base = window._rpBase;
   const rec = savedCache.find(s=>s.base===base); if(!rec) return;
-  const items = window._rpItems||[];
-  const lines2 = [];
-  document.querySelectorAll('#modal-replace .rp-cb:checked').forEach(cb=>{
-    const i = Number(cb.dataset.i);
-    const x = items[i]; if(!x) return;
-    const q = Math.min(parseInt((document.querySelector('#modal-replace .rp-q[data-i="'+i+'"]')||{}).value)||0, x.qty);
-    if(q>0) lines2.push({ style:x.style, desc:x.desc, color:x.color, size:x.size, qty:q, price:x.price, ppb:x.ppb, wh:x.wh });
-  });
-  if(!lines2.length){ alert('⚠ Check items to replace and enter quantities.'); return; }
+  const L = (window._rpLines||[]).filter(l=>(l.qty||0)>0);
+  if(!L.length){ alert('⚠ Enter a replace qty for at least one line.'); return; }
+  const noWh = L.filter(l=>!l.wh);
+  if(noWh.length){ alert('⚠ Assign SC / CA / BO / NA for every line with a replace qty ('+noWh.length+' still unset).'); return; }
+  const lines2 = L.map(l=>({ style:l.style, desc:l.desc, color:l.color, size:l.size, qty:l.qty, price:l.price, ppb:l.ppb, pbox:l.pbox, wh:l.wh }));
   const reason = String((document.getElementById('rp-reason')||{}).value||'').trim();
   let n = 1; while(savedCache.some(s=>s.base===base+'R'+(n>1?n:''))) n++;
   const sfx = 'R' + (n>1?n:'');
   const base2 = base + sfx;
   const by = (SESS&&SESS.email)||'';
+  const meta2 = {...rec.meta, po: String((rec.meta&&rec.meta.po)||'') + sfx, date: todayStr(),
+    _replaceOf: { base: base, po: String((rec.meta&&rec.meta.po)||''), reason: reason, at: new Date().toISOString(), by } };
+  ['_pcAuto','_printed','_hold','_holdOk','_modified','_from','futureShip','confNote'].forEach(k=>delete meta2[k]);
+  const rec2 = { base: base2, meta: meta2, lines: lines2, whs: [...new Set(lines2.map(l=>l.wh||'SC'))],
+    savedAt: new Date().toISOString(), pl:{}, inv:{}, history:[{t:new Date().toISOString(), by, e:'Replace of '+base + (reason?' — '+reason:'')}] };
+  const btn = document.getElementById('rp-go'); if(btn){ btn.disabled=true; btn.textContent='Saving…'; }
+  if(!await upsertRec(rec2)){ alert('⚠ Failed to save replacement order'); if(btn){ btn.disabled=false; btn.textContent='🔁 Create replacement order'; } return; }
+  savedCache.unshift(rec2);
   const m = document.getElementById('modal-replace'); if(m) m.remove();
-  // 🔁 v476 — 교체분을 바로 저장하지 않고, 일반 오더처럼 메인 폼에 로드해서 SC/CA/BO/NA·재고·박스 이동까지 다 진행하게 함
-  if(!(await pcGuard())) return;   // 저장 안 한 박스 이동 보호
-  clearOrderForm();
-  setMeta({...rec.meta, po: String((rec.meta&&rec.meta.po)||'') + sfx, date: todayStr(), futureShip:'', confNote:''});
-  window._forceBase = base2;
-  window._formReplaceOf = { base: base, po: String((rec.meta&&rec.meta.po)||''), reason: reason, at: new Date().toISOString(), by };
-  poLines = normalizeLines(lines2);
-  poLines.forEach(l=>{ if(l) l.pcMoveData = []; });
-  renderTable(); updateNumPreview(); renderDocs();
-  if(typeof showView==='function') showView('orders');
-  window.scrollTo({top:0,behavior:'smooth'});
-  showToast('🔁 Replacement loaded → PO ' + (rec.meta&&rec.meta.po||'') + sfx + ' — set SC/CA/BO/NA, adjust stock/boxes, then Save (free · no invoice)');
+  renderSaved();
+  showToast('🔁 Replacement order created: PO ' + meta2.po + ' — ' + lines2.length + ' line(s) (free · no invoice)');
+  logHist(base, 'Replace order created → ' + base2 + (reason?' ('+reason+')':''));
+  await invSyncOnSave(rec2);   // stock deduction + PC Room moves
 }
 // ══════════ ↩ Customer Return / RMA ══════════
 function recReturns(s){ return (s && s.meta && Array.isArray(s.meta._returns)) ? s.meta._returns : []; }
