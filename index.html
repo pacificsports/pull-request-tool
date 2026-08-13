@@ -145,7 +145,7 @@ main{max-width:1100px;margin:0 auto;padding:16px;}
     <button class="btn btn-sm" onclick="doLogout()" style="padding:2px 8px;font-size:10px;" data-i18n="logout">Log out</button>
   </span>
   <select id="lang-sel" onchange="setLang(this.value)" style="font-size:11px;padding:3px 6px;border-radius:5px;border:none;background:#1d3f66;color:#fff;"><option value="ko">한국어</option><option value="en">English</option><option value="es">Español</option></select>
-  <span style="font-size:10px;color:#9fb8d4;">v497 🚚</span>
+  <span style="font-size:10px;color:#9fb8d4;">v498 🚚</span>
 </div>
 <script type="text/javascript" src="https://js.authorize.net/v1/Accept.js" charset="utf-8"></script>
 <div id="po-viewer" style="display:none;position:fixed;top:0;right:0;width:44%;height:100vh;background:#fff;border-left:2px solid var(--border);z-index:60;box-shadow:-6px 0 20px rgba(0,0,0,.15);">
@@ -790,11 +790,14 @@ function editStylePpb(style){
   const st = String(style||'').trim();
   if(!st){ showToast('Enter a style# first'); return; }
   const SIZE_ORDER = ['2T','3T','4T','5T','XXS','XS','S','M','L','XL','2XL','3XL','4XL','5XL','6XL'];
-  let sizes = (typeof poLines!=='undefined') ? [...new Set(poLines.filter(l=>String(l.style||'').trim()===st).map(l=>String(l.size||'').toUpperCase()).filter(Boolean))] : [];
-  if(!sizes.length && typeof bxStore!=='undefined' && typeof bxLoaded!=='undefined' && bxLoaded){
-    sizes = [...new Set(bxStore.filter(b=>String(b.style).trim()===st).map(b=>String(b.size||'').toUpperCase()).filter(Boolean))];
-  }
-  if(!sizes.length) sizes = ['S','M','L','XL','2XL','3XL'];
+  // 이 스타일에 실제로 존재하는 사이즈(오더/재고/저장된 지정) — 이 값들만 미리 채움
+  const exist = new Set();
+  if(typeof poLines!=='undefined') poLines.forEach(l=>{ if(String(l.style||'').trim()===st){ const z=String(l.size||'').trim().toUpperCase(); if(z) exist.add(z); } });
+  if(typeof bxStore!=='undefined' && typeof bxLoaded!=='undefined' && bxLoaded) bxStore.forEach(b=>{ if(String(b.style).trim()===st){ const z=String(b.size||'').trim().toUpperCase(); if(z) exist.add(z); } });
+  Object.keys(getPpbOvr()).forEach(k=>{ const p=String(k).split('|'); if(p[0]===st && p[1]) exist.add(String(p[1]).toUpperCase()); });
+  // 표준 사이즈는 재고가 없어도 항상 표시 (재고 없는 사이즈가 목록에서 빠지던 문제 해결) (v498)
+  const BASE = ['XS','S','M','L','XL','2XL','3XL'];
+  let sizes = [...new Set([...exist, ...BASE])];
   sizes.sort((a,b)=>{ const ia=SIZE_ORDER.indexOf(a), ib=SIZE_ORDER.indexOf(b); return (ia<0?99:ia)-(ib<0?99:ib) || a.localeCompare(b); });
   const cur = sz => { const o = ppbForStyleSize(st, sz); return o || autoPpb({style:st, size:sz}); };
   const ex = document.getElementById('modal-ppb'); if(ex) ex.remove();
@@ -802,18 +805,25 @@ function editStylePpb(style){
   div.id = 'modal-ppb';
   div.style.cssText = 'position:fixed;inset:0;background:rgba(15,23,42,.55);z-index:140;display:flex;align-items:center;justify-content:center;padding:12px;';
   div.onclick = e=>{ if(e.target===div) div.remove(); };
-  const rows = sizes.map(sz=>`<div style="display:flex;align-items:center;gap:10px;">
-      <div style="width:64px;font-weight:800;font-size:13px;color:#0f2a4a;">${esc(sz)}</div>
-      <input type="number" min="1" class="ppb-sz-input" data-sz="${esc(sz)}" value="${cur(sz)}" style="width:90px;padding:6px 8px;border:1.5px solid #cbd5e1;border-radius:7px;font-size:14px;font-weight:700;text-align:center;">
+  window._ppbExist = exist;   // 저장 시 "no stock" 빈칸은 건너뛰기 판단용
+  const rowHtml = (sz)=>{ const has = exist.has(sz); const val = has ? cur(sz) : ''; const ph = has ? '' : String(autoPpb({style:st, size:sz}));
+    return `<div style="display:flex;align-items:center;gap:10px;">
+      <div style="width:80px;font-weight:800;font-size:13px;color:${has?'#0f2a4a':'#94a3b8'};">${esc(sz)}${has?'':' <span style="font-size:8px;font-weight:600;color:#cbd5e1;">no stock</span>'}</div>
+      <input type="number" min="1" class="ppb-sz-input" data-sz="${esc(sz)}" value="${val}" ${ph?`placeholder="${ph}"`:''} style="width:90px;padding:6px 8px;border:1.5px solid #cbd5e1;border-radius:7px;font-size:14px;font-weight:700;text-align:center;">
       <div style="font-size:11px;color:#94a3b8;">pcs / box</div>
-    </div>`).join('');
+    </div>`; };
+  const rows = sizes.map(rowHtml).join('');
   div.innerHTML = `<div style="background:#fff;border-radius:13px;width:372px;max-width:95vw;overflow:hidden;box-shadow:0 20px 60px rgba(0,0,0,.35);">
     <div style="background:#0f2a4a;color:#fff;padding:12px 16px;font-weight:800;">📦 Box quantity — Style ${esc(st)}
-      <div style="font-weight:400;font-size:11px;color:#cbd5e1;margin-top:3px;line-height:1.4;">Pcs per full box, per size. Saved to the cloud and applied to all lines &amp; future orders (shared with all staff).</div></div>
-    <div style="padding:14px 16px;display:flex;flex-direction:column;gap:9px;">
-      ${rows}
-      <div style="display:flex;align-items:center;gap:10px;border-top:1px dashed #e2e8f0;padding-top:10px;margin-top:2px;">
-        <div style="width:64px;font-size:11px;font-weight:700;color:#0e7490;">All sizes</div>
+      <div style="font-weight:400;font-size:11px;color:#cbd5e1;margin-top:3px;line-height:1.4;">Pcs per full box, per size. Shared with all staff &amp; applied to all orders. Sizes with no current stock show blank — fill only the ones you need, or add a size below.</div></div>
+    <div style="padding:14px 16px;display:flex;flex-direction:column;gap:9px;max-height:70vh;overflow-y:auto;">
+      <div id="ppb-rows" style="display:flex;flex-direction:column;gap:9px;">${rows}</div>
+      <div style="display:flex;align-items:center;gap:8px;border-top:1px dashed #e2e8f0;padding-top:10px;margin-top:2px;">
+        <input id="ppb-addsz" placeholder="+ add size (e.g. 4XL, 2T)" onkeydown="if(event.key==='Enter'){event.preventDefault();ppbAddSizeRow('${esc(st)}');}" style="flex:1;padding:6px 8px;border:1.5px solid #cbd5e1;border-radius:7px;font-size:12px;text-transform:uppercase;">
+        <button class="btn btn-sm" onclick="ppbAddSizeRow('${esc(st)}')">+ Add</button>
+      </div>
+      <div style="display:flex;align-items:center;gap:10px;">
+        <div style="width:80px;font-size:11px;font-weight:700;color:#0e7490;">All sizes</div>
         <input type="number" min="1" id="ppb-all-in" placeholder="—" style="width:90px;padding:6px 8px;border:1.5px solid #a5f3fc;border-radius:7px;font-size:14px;font-weight:700;text-align:center;">
         <button class="btn btn-sm" onclick="ppbFillAll()">Fill ↑</button>
       </div>
@@ -827,6 +837,23 @@ function editStylePpb(style){
 function ppbFillAll(){
   const el = document.getElementById('ppb-all-in'); if(!el || !el.value) return;
   document.querySelectorAll('#modal-ppb .ppb-sz-input').forEach(i=>{ i.value = el.value; });
+}
+// 편집창에 없는 사이즈 직접 추가 (v498)
+function ppbAddSizeRow(style){
+  const st = String(style||'').trim();
+  const inp = document.getElementById('ppb-addsz'); if(!inp) return;
+  const sz = String(inp.value||'').trim().toUpperCase().replace(/"/g,''); if(!sz){ inp.focus(); return; }
+  const cont = document.getElementById('ppb-rows'); if(!cont) return;
+  const dup = Array.from(cont.querySelectorAll('.ppb-sz-input')).some(i=>i.getAttribute('data-sz')===sz);
+  if(dup){ inp.value=''; showToast('Size '+sz+' is already listed'); return; }
+  const suggest = (typeof autoPpb==='function') ? autoPpb({style:st, size:sz}) : '';
+  const row = document.createElement('div');
+  row.style.cssText = 'display:flex;align-items:center;gap:10px;';
+  row.innerHTML = '<div style="width:80px;font-weight:800;font-size:13px;color:#0f2a4a;">'+esc(sz)+'</div>'
+    + '<input type="number" min="1" class="ppb-sz-input" data-sz="'+esc(sz)+'" value="'+suggest+'" style="width:90px;padding:6px 8px;border:1.5px solid #cbd5e1;border-radius:7px;font-size:14px;font-weight:700;text-align:center;">'
+    + '<div style="font-size:11px;color:#94a3b8;">pcs / box</div>';
+  cont.appendChild(row);
+  inp.value=''; inp.focus();
 }
 function saveStylePpbModal(style){
   const st = String(style||'').trim();
