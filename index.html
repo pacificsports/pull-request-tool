@@ -145,7 +145,7 @@ main{max-width:1100px;margin:0 auto;padding:16px;}
     <button class="btn btn-sm" onclick="doLogout()" style="padding:2px 8px;font-size:10px;" data-i18n="logout">Log out</button>
   </span>
   <select id="lang-sel" onchange="setLang(this.value)" style="font-size:11px;padding:3px 6px;border-radius:5px;border:none;background:#1d3f66;color:#fff;"><option value="ko">한국어</option><option value="en">English</option><option value="es">Español</option></select>
-  <span style="font-size:10px;color:#9fb8d4;">v486 🚚</span>
+  <span style="font-size:10px;color:#9fb8d4;">v487 🚚</span>
 </div>
 <script type="text/javascript" src="https://js.authorize.net/v1/Accept.js" charset="utf-8"></script>
 <div id="po-viewer" style="display:none;position:fixed;top:0;right:0;width:44%;height:100vh;background:#fff;border-left:2px solid var(--border);z-index:60;box-shadow:-6px 0 20px rgba(0,0,0,.15);">
@@ -10727,8 +10727,14 @@ async function trBuilderOpen(existingId, route){
           <div><label style="font-size:10px;color:var(--text2);">Driver</label><input class="fi" id="ship-driver" value="${esc(_shipMeta.driver||'')}" placeholder="John Doe" style="width:100%;"></div>
           <div><label style="font-size:10px;color:var(--text2);">Phone</label><input class="fi" id="ship-phone" value="${esc(_shipMeta.phone||'')}" placeholder="(555) 555-1234" style="width:100%;"></div>
           <div><label style="font-size:10px;color:var(--text2);">Truck #</label><input class="fi" id="ship-truck" value="${esc(_shipMeta.truck||'')}" placeholder="123" style="width:100%;"></div>
+          <div><label style="font-size:10px;color:var(--text2);">PRO # / Tracking</label><div style="display:flex;gap:4px;"><input class="fi" id="ship-pro" value="${esc(_shipMeta.pro||'')}" placeholder="PRO / tracking #" style="width:100%;font-family:Consolas,monospace;"><button class="btn btn-sm" style="white-space:nowrap;background:#0f4c8a;color:#fff;border-color:#0f4c8a;" onclick="trTrackOpen()" title="Open carrier tracking page">🔎</button></div></div>
         </div>
         <div style="margin-top:8px;"><label style="font-size:10px;color:var(--text2);">Notes</label><input class="fi" id="ship-notes" value="${esc(_shipMeta.notes||'')}" placeholder="other notes" style="width:100%;"></div>
+        <div style="margin-top:8px;"><label style="font-size:10px;color:var(--text2);">📧 Notify staff on Post (comma-separated — saved as default)</label><input class="fi" id="ship-notify" value="${esc(shipNotifyGet())}" placeholder="email1@..., email2@..." style="width:100%;font-size:11px;"></div>
+        <div style="margin-top:8px;display:flex;align-items:center;gap:8px;flex-wrap:wrap;">
+          <label class="btn btn-sm" style="background:#334155;color:#fff;border-color:#334155;cursor:pointer;white-space:nowrap;">📎 Attach BOL (scan / phone photo → PDF)<input type="file" accept="image/*,application/pdf" multiple style="display:none;" onchange="trBolUpload(this)"></label>
+          <span id="ship-bol-list" style="display:inline-flex;flex-wrap:wrap;align-items:center;">${trBolListHtml()}</span>
+        </div>
       </div>
       <div style="display:flex;gap:10px;margin-bottom:12px;flex-wrap:wrap;align-items:center;">
         <button class="btn" style="background:#1565c0;color:#fff;border-color:#1565c0;" onclick="trScOpen()">${trSrcIsSpec(_shipRoute)?('🏭 Pick from '+trKindShort(trSrcKind(_shipRoute))):('📦 Pick from '+trSrcKind(_shipRoute)+' Inventory')}</button>
@@ -10754,7 +10760,7 @@ async function trBuilderOpen(existingId, route){
 function trCaptureInfo(){
   const v = id=>String((document.getElementById(id)||{}).value||'').trim();
   _shipNo = v('ship-no') || _shipNo || trGenShipNo(_shipRoute);
-  _shipMeta = { route:_shipRoute, ship_date:v('ship-date'), eta:v('ship-eta'), seal:v('ship-seal'), carrier:v('ship-carrier'), driver:v('ship-driver'), phone:v('ship-phone'), truck:v('ship-truck'), notes:v('ship-notes') };
+  _shipMeta = { route:_shipRoute, ship_date:v('ship-date'), eta:v('ship-eta'), seal:v('ship-seal'), carrier:v('ship-carrier'), driver:v('ship-driver'), phone:v('ship-phone'), truck:v('ship-truck'), pro:v('ship-pro'), notes:v('ship-notes'), bolFiles:(_shipMeta&&_shipMeta.bolFiles)||[] };
 }
 async function _trEnsureRow(){
   if(_shipId) return _shipId;
@@ -11435,6 +11441,115 @@ function trBOL(D){
   w.document.close();
 }
 // ── Post (트럭 출발) ──
+// ── Shipment: 직원 알림 수신자 (설정 고정 목록 · localStorage 저장, 기본값 STAFF_EMAILS) ──
+function shipNotifyGet(){ try{ const v=localStorage.getItem('ship_notify'); if(v!=null && String(v).trim()) return v; }catch(e){} return STAFF_EMAILS.join(', '); }
+function shipNotifySet(v){ try{ localStorage.setItem('ship_notify', String(v||'')); }catch(e){} }
+// ── Shipment: 운송사 PRO# 추적 링크 열기 (LTL 우선, plTrackUrl 재사용) ──
+function trTrackOpen(){
+  trCaptureInfo();
+  const pro = String((_shipMeta.pro)||'').trim();
+  if(!pro){ showToast('⚠ Enter a PRO # / tracking number first'); return; }
+  window.open(plTrackUrl(pro, 'LTL', _shipMeta.carrier||''), '_blank');
+}
+// ── Shipment: BOL 첨부 (사진/PDF → PDF 자동변환) · packing list 스캔과 동일 방식 ──
+window._shipBolData = function(i){ const fs=(_shipMeta&&_shipMeta.bolFiles)||[]; return (fs[i]||{}).data||''; };
+function trBolListHtml(){
+  const fs = (_shipMeta&&_shipMeta.bolFiles)||[];
+  if(!fs.length) return '<span class="muted" style="font-size:11px;">No BOL attached yet</span>';
+  return fs.map((f,i)=>`<span style="display:inline-flex;align-items:center;gap:4px;background:#eef2f7;border:1px solid #cbd5e1;border-radius:14px;padding:2px 4px 2px 10px;margin:0 4px 4px 0;font-size:11px;font-weight:700;"><a href="#" onclick="attOpenData('${esc(f.name)}','application/pdf',window._shipBolData(${i}));return false;" style="color:#0f2a4a;text-decoration:none;">📄 ${esc(f.name)}</a><button class="btn btn-sm" style="border:none;padding:0 5px;color:#b91c1c;" onclick="trBolDel(${i})" title="Delete">✕</button></span>`).join('');
+}
+async function trBolUpload(inp){
+  const files = Array.from(inp.files||[]); inp.value='';
+  if(!files.length) return;
+  await _trEnsureRow(); if(!_shipId){ showToast('⚠ Add lines first (draft must exist to attach)'); return; }
+  showToast('📷 Converting BOL... ('+files.length+' file(s))');
+  try{
+    await loadPdfMergeLib();
+    const doc = await PDFLib.PDFDocument.create();
+    for(const f of files){
+      if((f.type||'').includes('pdf')){
+        const src = await PDFLib.PDFDocument.load(new Uint8Array(await f.arrayBuffer()), {ignoreEncryption:true});
+        const pages = await doc.copyPages(src, src.getPageIndices()); pages.forEach(p=>doc.addPage(p));
+      } else {
+        const bytes = await imgFileToJpegBytes(f, 1800);
+        const img = await doc.embedJpg(bytes);
+        const pw=612, ph=792, m=24; const sc=Math.min((pw-m*2)/img.width,(ph-m*2)/img.height);
+        const w2=img.width*sc, h2=img.height*sc; const page=doc.addPage([pw,ph]);
+        page.drawImage(img, {x:(pw-w2)/2, y:(ph-h2)/2, width:w2, height:h2});
+      }
+    }
+    const b64 = await doc.saveAsBase64({dataUri:true});
+    if(b64.length>3500000){ showToast('⚠ File too large — use fewer photos'); return; }
+    trCaptureInfo();
+    _shipMeta.bolFiles = _shipMeta.bolFiles || [];
+    _shipMeta.bolFiles.push({ name:'BOL-'+new Date().toISOString().slice(0,10)+(files.length>1?' ('+files.length+'p)':'')+'.pdf', type:'application/pdf', data:b64 });
+    await trPatchRec(_shipId, {meta:_shipMeta});
+    const el=document.getElementById('ship-bol-list'); if(el) el.innerHTML = trBolListHtml();
+    showToast('✅ BOL attached — '+_shipMeta.bolFiles.length+' file(s)');
+  }catch(e){ console.warn(e); showToast('⚠ BOL conversion failed: '+(e.message||e)); }
+}
+async function trBolDel(i){
+  const fs=(_shipMeta&&_shipMeta.bolFiles)||[]; if(!fs[i]) return;
+  if(!confirm('Delete this BOL attachment?')) return;
+  fs.splice(i,1);
+  if(_shipId) await trPatchRec(_shipId, {meta:_shipMeta});
+  const el=document.getElementById('ship-bol-list'); if(el) el.innerHTML = trBolListHtml();
+  showToast('🗑 BOL removed');
+}
+// ── Shipment: Post 시 직원 이메일 (요약 + 라인 명세 + Packing List PDF + BOL 첨부 + 추적 링크) ──
+async function trSendShipEmail(D, toList){
+  try{
+    const M = D.meta||{}; const P = D.pallets||[];
+    const to = String(toList||'').split(',').map(e=>e.trim()).filter(e=>e.includes('@'));
+    if(!to.length){ showToast('⚠ No staff recipients — email skipped'); return; }
+    const totLines = P.reduce((s,p)=>s+p.lines.length,0);
+    const totPcs = P.reduce((s,p)=>s+p.lines.reduce((a,l)=>a+trLinePcs(l),0),0);
+    const totBox = P.reduce((s,p)=>s+p.lines.reduce((a,l)=>a+trLineBoxes(l),0),0);
+    const nP = P.filter(p=>p.lines.length).length;
+    const routeLabel = (TR_ROUTES[D.route]||TR_ROUTES.SC2CA).label;
+    const pro = String(M.pro||'').trim();
+    const trkHtml = pro ? plTrackLinksHtml([pro], 'LTL', M.carrier||'') : '—';
+    const row=(k,v)=>`<tr><td style="padding:4px 14px 4px 0;color:#666;">${k}</td><td style="font-weight:700;">${v}</td></tr>`;
+    const lineRows = P.filter(p=>p.lines.length).map(p=>p.lines.map(l=>`<tr>
+      <td style="border:1px solid #ddd;padding:4px 8px;">${esc(p.label)}</td>
+      <td style="border:1px solid #ddd;padding:4px 8px;font-weight:700;">${esc(l.style)}</td>
+      <td style="border:1px solid #ddd;padding:4px 8px;">${esc(bxBaseColor(l.color))}</td>
+      <td style="border:1px solid #ddd;padding:4px 8px;text-align:center;">${esc(l.size)}</td>
+      <td style="border:1px solid #ddd;padding:4px 8px;text-align:center;">${esc(l.bin||'—')}</td>
+      <td style="border:1px solid #ddd;padding:4px 8px;text-align:right;font-weight:700;">${trLineBoxes(l).toLocaleString()}</td>
+      <td style="border:1px solid #ddd;padding:4px 8px;text-align:right;font-weight:700;">${trLinePcs(l).toLocaleString()}</td></tr>`).join('')).join('');
+    const bodyHtml = `<div style="font-family:Helvetica,Arial,sans-serif;font-size:14px;color:#111;">
+      <table width="100%" cellpadding="0" cellspacing="0" style="background:#0f2a4a;border-collapse:collapse;"><tr><td style="padding:10px 18px;"><span style="color:#fff;font-size:20px;font-weight:900;letter-spacing:2px;">PACIFIC SPORTS</span></td><td style="padding:10px 18px;text-align:right;color:#fff;font-size:15px;font-weight:800;letter-spacing:1.5px;">SHIPMENT DEPARTED</td></tr></table>
+      <p style="margin-top:16px;">A shipment has just departed. Details below — Packing List PDF${(M.bolFiles||[]).length?' and BOL':''} attached.</p>
+      <table style="border-collapse:collapse;font-size:14px;margin:6px 0;">
+        ${row('Shipment #', esc(D.no||''))}
+        ${row('Route', esc(routeLabel))}
+        ${row('Depart', esc(M.ship_date||'—'))}
+        ${row('ETA', esc(M.eta||'—'))}
+        ${row('Carrier', esc(M.carrier||'—'))}
+        ${row('Seal #', esc(M.seal||'—'))}
+        ${row('PRO / Tracking #', trkHtml)}
+        ${row('Totals', nP+' pallet(s) · '+totLines+' line(s) · '+totBox.toLocaleString()+' box(es) · '+totPcs.toLocaleString()+' pcs')}
+      </table>
+      ${M.notes?`<div style="background:#fffde7;border:1px solid #fbc02d;padding:6px 10px;font-size:12px;margin:8px 0;"><b>Notes:</b> ${esc(M.notes)}</div>`:''}
+      <table style="border-collapse:collapse;font-size:12px;width:100%;margin-top:8px;">
+        <thead><tr style="background:#f3f4f6;"><th style="border:1px solid #ddd;padding:4px 8px;text-align:left;">Pallet</th><th style="border:1px solid #ddd;padding:4px 8px;text-align:left;">Style</th><th style="border:1px solid #ddd;padding:4px 8px;text-align:left;">Color</th><th style="border:1px solid #ddd;padding:4px 8px;">Size</th><th style="border:1px solid #ddd;padding:4px 8px;">Bin</th><th style="border:1px solid #ddd;padding:4px 8px;">Boxes</th><th style="border:1px solid #ddd;padding:4px 8px;">Pcs</th></tr></thead>
+        <tbody>${lineRows}</tbody>
+      </table>
+      <p style="margin-top:16px;"><b>Pacific Sports</b></p>
+    </div>`;
+    const plBlob = await makePdfBlob(trPLHtml(D), []);
+    const plB64 = await blobToB64(plBlob);
+    const atts = [{ filename:(D.no||'shipment')+'-PackingList.pdf', content: plB64 }];
+    (M.bolFiles||[]).forEach(f=>{ const c=String(f.data||''); atts.push({ filename:f.name||'BOL.pdf', content: c.includes(',')?c.split(',')[1]:c }); });
+    const r = await fetch('https://po-confirm-email.hjbae.workers.dev/send-pl', {
+      method:'POST', headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({ to, subject:'Shipment Departed — '+(D.no||'')+' ('+routeLabel+')', html: bodyHtml, reply_to: STAFF_EMAILS, attachments: atts })
+    });
+    if(!r.ok){ const e=await r.json().catch(()=>({})); throw new Error(e.error||e.message||('HTTP '+r.status)); }
+    showToast('📧 Shipment email sent to '+to.length+' staff');
+  }catch(e){ console.warn(e); showToast('⚠ Staff email failed: '+(e.message||e)+' — shipment still posted'); }
+}
 async function trPost(){
   trCaptureInfo();
   if(!_shipMeta.ship_date){ alert('Depart date is required.'); return; }
@@ -11443,7 +11558,11 @@ async function trPost(){
   const nL = _shipPallets.reduce((s,p)=>s+p.lines.length,0);
   const nP = _shipPallets.filter(p=>p.lines.length).length;
   if(!confirm('Post this shipment as departed?\n\n'+nP+' pallet(s), '+nL+' line(s) will change to In Transit.\n\n(SC stock was already reserved/deducted at Draft time.)')) return;
+  const notify = String((document.getElementById('ship-notify')||{}).value||'').trim();
+  shipNotifySet(notify);
+  const D = { no:_shipNo, meta:_shipMeta, pallets:_shipPallets.map(p=>({label:p.label, lines:p.lines.slice()})), route:_shipRoute };
   await trPatchRec(_shipId, { ref:_shipNo, status:'TRANSIT', meta:_shipMeta, lines:trLinesFlat(), departed_at:new Date().toISOString(), departed_by:(SESS&&SESS.email)||'' });
+  await trSendShipEmail(D, notify);   // 직원 알림 이메일 (실패해도 post 는 유지 — 내부에서 catch)
   const m = document.getElementById('modal-trb'); if(m) m.remove();
   _shipId = null; _shipNo = null; _shipMeta = {}; _shipPallets = [];
   showToast('✅ Shipment departed — In Transit');
