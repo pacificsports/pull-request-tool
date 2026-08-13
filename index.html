@@ -145,7 +145,7 @@ main{max-width:1100px;margin:0 auto;padding:16px;}
     <button class="btn btn-sm" onclick="doLogout()" style="padding:2px 8px;font-size:10px;" data-i18n="logout">Log out</button>
   </span>
   <select id="lang-sel" onchange="setLang(this.value)" style="font-size:11px;padding:3px 6px;border-radius:5px;border:none;background:#1d3f66;color:#fff;"><option value="ko">한국어</option><option value="en">English</option><option value="es">Español</option></select>
-  <span style="font-size:10px;color:#9fb8d4;">v478 🚚</span>
+  <span style="font-size:10px;color:#9fb8d4;">v479 🚚</span>
 </div>
 <script type="text/javascript" src="https://js.authorize.net/v1/Accept.js" charset="utf-8"></script>
 <div id="po-viewer" style="display:none;position:fixed;top:0;right:0;width:44%;height:100vh;background:#fff;border-left:2px solid var(--border);z-index:60;box-shadow:-6px 0 20px rgba(0,0,0,.15);">
@@ -2430,10 +2430,10 @@ function replaceOrderOpen(base){
   div.id = 'modal-replace';
   div.style.cssText = 'position:fixed;inset:0;background:rgba(15,23,42,.55);z-index:99;display:flex;align-items:center;justify-content:center;padding:16px;';
   div.onclick = e=>{ if(e.target===div) div.remove(); };
-  div.innerHTML = `<div style="background:#fff;border-radius:12px;max-width:1180px;width:100%;max-height:92vh;display:flex;flex-direction:column;overflow:hidden;">
+  div.innerHTML = `<style>#modal-replace thead th{position:sticky;top:0;z-index:3;background:#eef2f7;box-shadow:inset 0 -1px 0 var(--border);}</style><div style="background:#fff;border-radius:12px;max-width:1180px;width:100%;max-height:92vh;display:flex;flex-direction:column;overflow:hidden;">
     <div style="background:#be123c;color:#fff;padding:10px 16px;font-weight:800;">🔁 Replace (defect replacement) · ${esc((rec.meta&&rec.meta.cust)||'')} — PO ${esc((rec.meta&&rec.meta.po)||'')}
-      <div style="font-weight:400;font-size:11px;color:#fecdd3;">Set the replace qty and process every line right here — assign SC / CA / BO / NA (live stock shows under the box). On save, stock is deducted and boxes move to PC Room like a normal order. Free (PO# + R), no invoice.</div></div>
-    <div style="overflow:auto;padding:10px 16px;flex:1;">
+      <div style="font-weight:400;font-size:11px;color:#fecdd3;">Set the replace qty and process every line right here — assign SC / CA / BO / NA (live stock shows under the box). Use 📍 to pick full-box locations and 📌 to move a box into PC Room, just like a normal order. On save, stock is deducted and boxes move to PC Room. Free (PO# + R), no invoice.</div></div>
+    <div style="overflow:auto;padding:0 16px 10px;flex:1;">
       <table class="etbl" style="font-size:11.5px;white-space:nowrap;">
         <thead><tr>
           <th>Style</th><th class="tl">Color</th><th>Size</th><th>Shipped</th>
@@ -2466,8 +2466,8 @@ function rpRowHtml(l,i){
     <td style="font-family:Consolas,monospace;color:#64748b;">${(l.shipped||0).toLocaleString()}</td>
     <td style="background:#fff1f2;"><input class="fi num" type="number" min="0" max="${l.shipped}" value="${l.qty||''}" onchange="rpUpd(${i},'qty',this.value)" style="width:66px;font-weight:800;"></td>
     <td><input class="fi num" value="${l.ppb||DEFAULT_PPB}" onchange="rpUpd(${i},'ppb',this.value)" style="width:52px;"></td>
-    <td id="rp-fb-${i}" style="font-family:Consolas,monospace;">${b.full||dot}</td>
-    <td id="rp-ls-${i}" style="font-family:Consolas,monospace;color:${b.loose?'#d97706':'#9ca3af'};">${b.loose||dot}</td>
+    <td id="rp-fb-${i}" style="font-family:Consolas,monospace;">${rpFbCellInner(l,b,i)||dot}</td>
+    <td id="rp-ls-${i}" style="font-family:Consolas,monospace;color:${b.loose?'#d97706':'#9ca3af'};">${rpLsCellInner(l,b,i)||dot}</td>
     <td>${b.loose?`<input class="fi num" value="${esc(l.pbox||'')}" onchange="rpUpd(${i},'pbox',this.value)" style="width:48px;">`:''}</td>
     <td style="text-align:center;vertical-align:top;"><input type="checkbox" ${l.wh==='SC'?'checked':''} onchange="rpWh(${i},'SC',this.checked)" style="accent-color:#1d4ed8;width:16px;height:16px;cursor:pointer;"><div id="rp-sc-${i}">${whStockMini(l,'SC')}</div></td>
     <td style="text-align:center;vertical-align:top;"><input type="checkbox" ${l.wh==='CA'?'checked':''} onchange="rpWh(${i},'CA',this.checked)" style="accent-color:#c2410c;width:16px;height:16px;cursor:pointer;"><div id="rp-ca-${i}">${whStockMini(l,'CA')}</div></td>
@@ -2486,6 +2486,72 @@ function rpRerenderRow(i){
   const row=document.getElementById('rp-row-'+i); if(!row) return;
   const tmp=document.createElement('tbody'); tmp.innerHTML=rpRowHtml(l,i);
   if(tmp.firstElementChild) row.replaceWith(tmp.firstElementChild);
+}
+// ── Replace 모달 Full Box/Loose 셀: 일반 오더처럼 📍 위치지정 · 📦 재고 · 📌 PC Room 이동 · 🧺 이동표시 ──
+// bxStockHint(l,b)는 l,b만 쓰는 순수 함수라 그대로 재사용. pcStockHint는 i=null로 호출해 poLines 연동 버튼(B등급/변형전환)만 끄고 재고 숫자는 표시. 📍/📌 는 poLines 대신 window._rpLines 를 다루는 rp 전용 래퍼로 연결.
+function rpFbCellInner(l, b, i){
+  return (b.full||'')
+    + (b.full&&(l.wh==='SC'||l.wh==='CA')?(()=>{ const locked = (l.wh==='SC'||l.wh==='CA') && pcShortFor(l) && !(l.pcMove&&l.pcMove.length) && !l._fbForce; const h = locked ? `onclick="showToast('🔒 Locked — move a box to PC Room first (📌 on Loose), or double-click to override')" ondblclick="rpFbUnlock(${i})"` : `onclick="rpPickFromEditor(${i})"`; return `<button class="btn btn-sm" style="border:none;padding:0 3px;font-size:11px;${locked?'opacity:.3;cursor:help;':''}" ${h} title="${locked?'Locked: PC Room is short for this line — move a box to PC Room first (📌 on Loose), or DOUBLE-CLICK to override.':'Pick which location to pull full boxes from (deducted when you save the replacement)'}">📍</button>`; })():'')
+    + ((l.pickLocs&&l.pickLocs.length)?`<div style="font-size:9px;line-height:1.3;color:#1d4ed8;font-weight:800;white-space:nowrap;">📍 ${l.pickLocs.map(g=>esc(g.loc)+(g.n>1?' ×'+g.n:'')).join(' · ')}</div>`:'')
+    + bxStockHint(l,b);
+}
+function rpLsCellInner(l, b, i){
+  return (b.loose||'')
+    + (b.loose && (l.wh==='SC' || l.wh==='CA') ? `<button class="btn btn-sm" style="border:none;padding:0 3px;font-size:11px;" onclick="rpToPcFromEditor(${i})" title="If PC Room stock is short: move 1 full box (pick a location) into PC Room (deducts full box + receives to PC, immediate)">\u{1F4CD}</button>` : '')
+    + ((l.pcMove&&l.pcMove.length) ? `<div style="font-size:9px;line-height:1.3;color:#7c3aed;font-weight:800;white-space:nowrap;">\u{1F9FA} ${l.pcMove.map(g=>esc(g.loc)+(g.n>1?' ×'+g.n:'')).join(' · ')}${(l.pcMoveData&&l.pcMoveData.length)?`<button class="btn btn-sm" style="border:none;padding:0 3px;font-size:10px;color:#b91c1c;" onclick="rpMoveUndo(${i})" title="Undo this box move — boxes back to full-box stock, PC Room minus">↩</button>`:''}</div>` : '')
+    + pcStockHint(l, b, null);
+}
+function rpFbUnlock(i){ const l=(window._rpLines||[])[i]; if(!l) return; l._fbForce=true; rpRerenderRow(i); showToast('🔓 Full box pick unlocked for this line — 📍 now active'); }
+async function rpPickFromEditor(i){
+  const L=(window._rpLines||[])[i]; if(!L) return;
+  const lwh=String(L.wh||'').trim().toUpperCase();
+  if(lwh!=='SC'&&lwh!=='CA'){ showToast('⚠ Only SC/CA lines can be assigned'); return; }
+  if(!bxLoaded) await bxFetchStore();
+  if((lwh==='SC'||lwh==='CA') && pcShortFor(L) && !(L.pcMove&&L.pcMove.length) && !L._fbForce){
+    showToast('⚠ Move a box to PC Room first — use 📌 on the Loose column (or double-click 📍 on Full Box to override)'); return;
+  }
+  bxOpenPicker(L, lwh, '', res=>{
+    if(res && res.locs){ L.pickLocs = res.locs; _lineAvailCache={}; rpRerenderRow(i); showToast('📍 Assigned — deducted from these locations when you save the replacement'); }
+  }, 'reserve');
+}
+async function rpToPcFromEditor(i){
+  const L=(window._rpLines||[])[i]; if(!L) return;
+  const lwh0=String(L.wh||'').trim().toUpperCase();
+  if(lwh0!=='SC'&&lwh0!=='CA'){ showToast('⚠ PC Room is SC/CA warehouses only'); return; }
+  if(!bxLoaded) await bxFetchStore();
+  const poN=String((((savedCache.find(s=>s.base===window._rpBase)||{}).meta)||{}).po||'').trim();
+  bxOpenPicker(L, lwh0, 'PC ROOM'+(poN?' (PO '+poN+'R)':''), res=>{
+    if(res && res.locs && res.locs.length){
+      L.pcMove = (L.pcMove||[]).concat(res.locs);
+      L.pcMoveData = (L.pcMoveData||[]).concat(res.moved||[]);
+      _lineAvailCache={}; rpRerenderRow(i);
+    }
+  }, 'topc', 1);
+}
+async function rpMoveUndo(i){
+  const l=(window._rpLines||[])[i]; const mv=(l&&l.pcMoveData)||[];
+  if(!mv.length){ showToast('⚠ Nothing to undo on this line (moves made before this session cannot be undone here)'); return; }
+  if(!confirm('Undo box → PC Room move?\n'+mv.length+' box(es) return to full-box stock and the pcs are subtracted from PC Room.')) return;
+  try{ await bxPatch(mv.map(m=>m.id), {status:'IN', out_at:null, out_by:null, out_po:null}); }
+  catch(e){ showToast('⚠ Undo failed — check your connection'); return; }
+  const byKey={};
+  mv.forEach(m=>{ const k2=pcKey(m.style,m.color,m.wh); byKey[k2]=byKey[k2]||{}; byKey[k2][m.size]=(byKey[k2][m.size]||0)+m.pcs; });
+  for(const k2 of Object.keys(byKey)){
+    const row=await pcFetchRowFresh(k2); if(!row) continue;
+    row.qty=row.qty||{};
+    for(const s2 of Object.keys(byKey[k2])){
+      const nv=(Number(row.qty[s2])||0)-byKey[k2][s2];
+      if(nv===0) delete row.qty[s2]; else row.qty[s2]=nv;
+      pcLogMove(row,s2,-byKey[k2][s2],nv,'Undo box move (replace editor)');
+    }
+    await pcSaveRow(row);
+  }
+  l.pcMove=[]; l.pcMoveData=[];
+  await bxRefetch();
+  _lineAvailCache={};
+  rpRerenderRow(i);
+  if($('bx-body')) renderBoxRoom();
+  showToast('↩ '+mv.length+' box(es) restored to full-box stock');
 }
 function rpUpd(i, field, val){
   const l=(window._rpLines||[])[i]; if(!l) return;
