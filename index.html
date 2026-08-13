@@ -145,7 +145,7 @@ main{max-width:1100px;margin:0 auto;padding:16px;}
     <button class="btn btn-sm" onclick="doLogout()" style="padding:2px 8px;font-size:10px;" data-i18n="logout">Log out</button>
   </span>
   <select id="lang-sel" onchange="setLang(this.value)" style="font-size:11px;padding:3px 6px;border-radius:5px;border:none;background:#1d3f66;color:#fff;"><option value="ko">한국어</option><option value="en">English</option><option value="es">Español</option></select>
-  <span style="font-size:10px;color:#9fb8d4;">v471 🚚</span>
+  <span style="font-size:10px;color:#9fb8d4;">v472 🚚</span>
 </div>
 <script type="text/javascript" src="https://js.authorize.net/v1/Accept.js" charset="utf-8"></script>
 <div id="po-viewer" style="display:none;position:fixed;top:0;right:0;width:44%;height:100vh;background:#fff;border-left:2px solid var(--border);z-index:60;box-shadow:-6px 0 20px rgba(0,0,0,.15);">
@@ -410,6 +410,7 @@ main{max-width:1100px;margin:0 auto;padding:16px;}
       <input type="file" id="bx-import-file" accept=".xlsx,.xls,.csv" style="display:none;" onchange="bxImport(this.files[0]);this.value='';">
       <input type="file" id="hi-file" accept=".xlsx,.xls" style="display:none;" onchange="hiUpload(this.files[0]);this.value='';">
     </div>
+    <div id="bx-hibar"></div>
     <div id="bx-sobar"></div>
     <div id="bx-trbar"></div>
     <div id="bx-body"><div class="muted">Loading...</div></div>
@@ -7523,6 +7524,7 @@ async function _bxFetchStore(){
     idbSet('bx', { at: Date.now(), rows: out, inc: window._bxInc||{} });   // 다음 접속 때 즉시 표시용
     soCountUpd();   // 🚚 pending ship out 뱃지 (v388)
     trBarUpd();     // 🚚 pending transfer 패널 (v424)
+    hiBarUpd();     // 🚢 pending Haiti incoming 패널 (v472)
   }catch(e){ console.warn('bxFetchStore', e); }
 }
 async function loadBoxRoom(){
@@ -9317,6 +9319,29 @@ function trBarRender(){
         <span>${lines.length} line · <b>${nb}</b> box · ${np.toLocaleString()} pcs</span>
         <span class="muted" style="font-size:10.5px;">${r.departed_at?('departed '+new Date(r.departed_at).toLocaleDateString()):(r.created_at?new Date(r.created_at).toLocaleDateString():'')}</span>
         <span style="margin-left:auto;display:flex;gap:6px;">${act}</span></div>`;
+    }).join('')}</div>`;
+}
+// 🚢 pending Haiti incoming 패널 — Full Box에서 바로 Receive (v472)
+async function hiPendingFetch(){
+  try{ const r = await sbFetch('/rest/v1/pr_inbound?select=id,ref,status,lines,created_at,created_by&status=eq.PENDING&order=created_at.desc&limit=100'); return r.ok ? await r.json() : []; }catch(e){ return []; }
+}
+async function hiBarUpd(){ try{ window._hiPending = await hiPendingFetch(); hiBarRender(); }catch(e){} }
+function hiBarRender(){
+  const el = $('bx-hibar'); if(!el) return;
+  const list = window._hiPending || [];
+  if(!list.length){ el.innerHTML = ''; return; }
+  el.innerHTML = `<div style="border:1.5px solid #67e8f9;background:#ecfeff;border-radius:10px;padding:10px 14px;margin-bottom:10px;">
+    <div style="font-weight:800;color:#0e7490;font-size:12.5px;margin-bottom:2px;">🚢 Incoming from Haiti (${list.length}) <span style="font-weight:400;color:#0891b2;">— arrived? Receive here to assign 📍 bins & add to SC stock</span></div>
+    ${list.map(r=>{
+      const lines = Array.isArray(r.lines)?r.lines:[];
+      const nb = lines.reduce((a,l)=>a+(Number(l.boxes)||0),0);
+      const np = lines.reduce((a,l)=>a+((Number(l.boxes)||0)*(Number(l.pcs)||0)),0);
+      return `<div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;padding:6px 0;border-top:1px solid #cffafe;font-size:12px;">
+        <b style="font-family:Consolas,monospace;color:#0e7490;">${esc(r.ref||'(no #)')}</b>
+        <span style="background:#cffafe;border-radius:6px;padding:0 8px;font-weight:800;color:#0e7490;">🇭🇹 Haiti</span>
+        <span>${lines.length} line · <b>${nb}</b> box · ${np.toLocaleString()} pcs</span>
+        <span class="muted" style="font-size:10.5px;">${r.created_at?('uploaded '+new Date(r.created_at).toLocaleDateString()):''}</span>
+        <span style="margin-left:auto;display:flex;gap:6px;"><button class="btn btn-sm btn-primary" style="background:#0e7490;border-color:#0e7490;font-weight:800;" onclick="hiReceive('${r.id}')" title="Boxes arrived — verify qty & assign bins, then confirm into SC stock">📦 Receive</button></span></div>`;
     }).join('')}</div>`;
 }
 // ✏️ pending ship out 편집 — SO-# 클릭 시 라인 수량/노트 수정 · 라인 삭제 (v424)
@@ -11924,6 +11949,7 @@ async function hiSaveDraft(ref){
   }catch(e){ alert('⚠ Save failed: '+e.message); return; }
   const m = document.getElementById('modal-hirev'); if(m) m.remove();
   showToast('🇭🇹 '+ref+' saved as incoming — '+lines.length+' line(s)');
+  if(typeof hiBarUpd==='function') hiBarUpd();
   hiOpen();
 }
 async function hiDelete(id){
