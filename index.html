@@ -145,7 +145,7 @@ main{max-width:1100px;margin:0 auto;padding:16px;}
     <button class="btn btn-sm" onclick="doLogout()" style="padding:2px 8px;font-size:10px;" data-i18n="logout">Log out</button>
   </span>
   <select id="lang-sel" onchange="setLang(this.value)" style="font-size:11px;padding:3px 6px;border-radius:5px;border:none;background:#1d3f66;color:#fff;"><option value="ko">한국어</option><option value="en">English</option><option value="es">Español</option></select>
-  <span style="font-size:10px;color:#9fb8d4;">v473 🚚</span>
+  <span style="font-size:10px;color:#9fb8d4;">v474 🚚</span>
 </div>
 <script type="text/javascript" src="https://js.authorize.net/v1/Accept.js" charset="utf-8"></script>
 <div id="po-viewer" style="display:none;position:fixed;top:0;right:0;width:44%;height:100vh;background:#fff;border-left:2px solid var(--border);z-index:60;box-shadow:-6px 0 20px rgba(0,0,0,.15);">
@@ -7483,6 +7483,8 @@ async function bxLoadCached(){
     window._bxRev = (window._bxRev||0)+1;
     window._bxCacheAt = c.at || 0;
     if(c.inc && !window._bxInc) window._bxInc = c.inc;
+    if(c.incR && !window._bxIncR) window._bxIncR = c.incR;
+    if(c.incRefs && !window._bxIncRefs) window._bxIncRefs = c.incRefs;
     return true;
   }catch(e){ return false; }
 }
@@ -7517,17 +7519,18 @@ async function _bxFetchStore(){
     try{
       const ri = await sbFetch('/rest/v1/pr_inbound?status=eq.PENDING&select=ref,lines');
       if(ri.ok){
-        const inc = {}; const refs = [];
-        (await ri.json()).forEach(x=>{ if(x.ref) refs.push(x.ref); (Array.isArray(x.lines)?x.lines:[]).forEach(l=>{
+        const inc = {}; const refs = []; const byRef = {};
+        (await ri.json()).forEach(x=>{ const rf = x.ref || '(no #)'; if(x.ref) refs.push(x.ref); byRef[rf] = byRef[rf] || {}; (Array.isArray(x.lines)?x.lines:[]).forEach(l=>{
           const k = String(l.style)+'|'+bxBaseColor(String(l.color||'').toUpperCase())+'|'+String(l.size||'').toUpperCase();
           const b = Number(l.boxes)||0;
           if(!inc[k]) inc[k] = { boxes:0, pcs:0 };
           inc[k].boxes += b; inc[k].pcs += b*(Number(l.pcs)||0);
+          byRef[rf][k] = (byRef[rf][k]||0) + b;
         }); });
-        window._bxInc = inc; window._bxIncRefs = refs;
+        window._bxInc = inc; window._bxIncRefs = refs; window._bxIncR = byRef;
       }
     }catch(e){}
-    idbSet('bx', { at: Date.now(), rows: out, inc: window._bxInc||{} });   // 다음 접속 때 즉시 표시용
+    idbSet('bx', { at: Date.now(), rows: out, inc: window._bxInc||{}, incR: window._bxIncR||{}, incRefs: window._bxIncRefs||[] });   // 다음 접속 때 즉시 표시용
     soCountUpd();   // 🚚 pending ship out 뱃지 (v388)
     trBarUpd();     // 🚚 pending transfer 패널 (v424)
     hiBarUpd();     // 🚢 pending Haiti incoming 패널 (v472)
@@ -8581,10 +8584,15 @@ function bxGridInner(sty, colGroups){
     const colTot = baseGroups[c].length;
     const expN = (w)=>{ if(!window._bxExp.has(expKey(w))) return 0; return (whVars(w).length>1 ? whVars(w).length : 0) + (spN(w) ? 2 : 0); };
     const expSC = expN('SC'), expCA = expN('CA');
-    const _IN = window._bxInc||{};
-    let _incT = 0;
-    const _incCells = sizes.map(sz=>{ const v=_IN[String(sty)+'|'+c+'|'+sz]; const n=v?v.boxes:0; _incT+=n; return `<td style="text-align:center;padding:1px 3px;">${n?`<span style="display:inline-block;min-width:34px;padding:1px 6px;border-radius:6px;background:#ecfeff;border:1px solid #67e8f9;font-size:11px;font-weight:800;color:#0e7490;" title="Shipped from Haiti — ${n} box(es) on the way to SC">${n}</span>`:`<span style="color:#e8ecf3;">·</span>`}</td>`; }).join('');
-    const incRow = _incT ? `<tr style="background:#ecfeff;"><td style="font-size:9.5px;font-weight:800;color:#0e7490;white-space:nowrap;text-align:left;padding-left:12px;" title="Haiti invoice uploaded (🇭🇹 Haiti Receive) — becomes SC stock when bins are assigned on arrival">🚢 Incoming</td>${_incCells}<td style="font-family:Consolas,monospace;font-weight:800;color:#0e7490;text-align:center;font-size:11px;">${_incT}</td><td></td></tr>` : '';
+    // 🚢 Incoming — 컨테이너(ref)별로 한 줄씩 (여러 컨테이너 들어올 때 수량 비교용, v474)
+    const _byRef = window._bxIncR || {};
+    const _skk = sz => String(sty)+'|'+c+'|'+sz;
+    const _incRefs = Object.keys(_byRef).filter(rf => sizes.some(sz => (_byRef[rf][_skk(sz)]||0) > 0)).sort();
+    const incRow = _incRefs.map(rf=>{
+      let _t = 0;
+      const _cells = sizes.map(sz=>{ const n=_byRef[rf][_skk(sz)]||0; _t+=n; return `<td style="text-align:center;padding:1px 3px;">${n?`<span style="display:inline-block;min-width:34px;padding:1px 6px;border-radius:6px;background:#ecfeff;border:1px solid #67e8f9;font-size:11px;font-weight:800;color:#0e7490;" title="${esc(rf)} — ${n} box(es) on the way from Haiti">${n}</span>`:`<span style="color:#e8ecf3;">·</span>`}</td>`; }).join('');
+      return `<tr style="background:#ecfeff;"><td style="font-size:9.5px;font-weight:800;color:#0e7490;white-space:nowrap;text-align:left;padding-left:12px;cursor:pointer;" onclick="hiOpen()" title="Haiti invoice ${esc(rf)} — click to review / receive · becomes SC stock when bins are assigned on arrival">🚢 ${esc(rf)}</td>${_cells}<td style="font-family:Consolas,monospace;font-weight:800;color:#0e7490;text-align:center;font-size:11px;">${_t}</td><td></td></tr>`;
+    }).join('');
     const rSpan = 3 + expSC + expCA + (incRow?1:0);
     return `<tbody style="border-top:2px solid #dbe4f0;">
       <tr>
