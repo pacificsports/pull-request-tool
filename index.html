@@ -145,7 +145,7 @@ main{max-width:1100px;margin:0 auto;padding:16px;}
     <button class="btn btn-sm" onclick="doLogout()" style="padding:2px 8px;font-size:10px;" data-i18n="logout">Log out</button>
   </span>
   <select id="lang-sel" onchange="setLang(this.value)" style="font-size:11px;padding:3px 6px;border-radius:5px;border:none;background:#1d3f66;color:#fff;"><option value="ko">한국어</option><option value="en">English</option><option value="es">Español</option></select>
-  <span style="font-size:10px;color:#9fb8d4;">v472 🚚</span>
+  <span style="font-size:10px;color:#9fb8d4;">v473 🚚</span>
 </div>
 <script type="text/javascript" src="https://js.authorize.net/v1/Accept.js" charset="utf-8"></script>
 <div id="po-viewer" style="display:none;position:fixed;top:0;right:0;width:44%;height:100vh;background:#fff;border-left:2px solid var(--border);z-index:60;box-shadow:-6px 0 20px rgba(0,0,0,.15);">
@@ -5864,6 +5864,12 @@ function renderTx(){
 let dashPeriod = 'all', dashFrom = '', dashTo = '';
 let _bxSearchT=null, _pcSearchT=null;
 function bxSearchDeb(){ clearTimeout(_bxSearchT); _bxSearchT = setTimeout(renderBoxRoom, 250); }
+// 🚢 Incoming/Haiti 칩 클릭 → 그 스타일로 Full Box 필터 + 스크롤 (v473)
+function bxJumpStyle(style){
+  const s = $('bx-search'); if(s){ s.value = String(style||'').trim(); }
+  if(typeof renderBoxRoom==='function') renderBoxRoom();
+  const b = $('bx-body'); if(b) b.scrollIntoView({behavior:'smooth', block:'start'});
+}
 function pcSearchDeb(){ clearTimeout(_pcSearchT); _pcSearchT = setTimeout(renderPcRoom, 250); }
 function showView(v){
   try{ localStorage.setItem('pr_view', v); }catch(e){}
@@ -7509,16 +7515,16 @@ async function _bxFetchStore(){
     window._bxRev = (window._bxRev||0)+1;
     // 🚢 Incoming (Haiti PENDING) 도 함께 갱신 — Full Box 표시용 (v371)
     try{
-      const ri = await sbFetch('/rest/v1/pr_inbound?status=eq.PENDING&select=lines');
+      const ri = await sbFetch('/rest/v1/pr_inbound?status=eq.PENDING&select=ref,lines');
       if(ri.ok){
-        const inc = {};
-        (await ri.json()).forEach(x=>{ (Array.isArray(x.lines)?x.lines:[]).forEach(l=>{
+        const inc = {}; const refs = [];
+        (await ri.json()).forEach(x=>{ if(x.ref) refs.push(x.ref); (Array.isArray(x.lines)?x.lines:[]).forEach(l=>{
           const k = String(l.style)+'|'+bxBaseColor(String(l.color||'').toUpperCase())+'|'+String(l.size||'').toUpperCase();
           const b = Number(l.boxes)||0;
           if(!inc[k]) inc[k] = { boxes:0, pcs:0 };
           inc[k].boxes += b; inc[k].pcs += b*(Number(l.pcs)||0);
         }); });
-        window._bxInc = inc;
+        window._bxInc = inc; window._bxIncRefs = refs;
       }
     }catch(e){}
     idbSet('bx', { at: Date.now(), rows: out, inc: window._bxInc||{} });   // 다음 접속 때 즉시 표시용
@@ -9336,12 +9342,15 @@ function hiBarRender(){
       const lines = Array.isArray(r.lines)?r.lines:[];
       const nb = lines.reduce((a,l)=>a+(Number(l.boxes)||0),0);
       const np = lines.reduce((a,l)=>a+((Number(l.boxes)||0)*(Number(l.pcs)||0)),0);
+      const stys = [...new Set(lines.map(l=>String(l.style||'').trim()).filter(Boolean))];
+      const chips = stys.length ? `<span style="display:inline-flex;gap:3px;flex-wrap:wrap;max-width:100%;">${stys.map(s=>`<span onclick="bxJumpStyle('${esc(s)}')" title="Jump to ${esc(s)} in the list" style="cursor:pointer;font-size:10px;font-weight:800;font-family:Consolas,monospace;color:#0e7490;background:#fff;border:1px solid #a5f3fc;border-radius:5px;padding:1px 5px;">${esc(s)}</span>`).join('')}</span>` : '';
       return `<div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;padding:6px 0;border-top:1px solid #cffafe;font-size:12px;">
-        <b style="font-family:Consolas,monospace;color:#0e7490;">${esc(r.ref||'(no #)')}</b>
+        <b style="font-family:Consolas,monospace;color:#0e7490;cursor:pointer;text-decoration:underline;" onclick="hiEditDraft('${r.id}')" title="Edit this incoming — fix the name or lines">${esc(r.ref||'(no #)')}</b>
         <span style="background:#cffafe;border-radius:6px;padding:0 8px;font-weight:800;color:#0e7490;">🇭🇹 Haiti</span>
         <span>${lines.length} line · <b>${nb}</b> box · ${np.toLocaleString()} pcs</span>
         <span class="muted" style="font-size:10.5px;">${r.created_at?('uploaded '+new Date(r.created_at).toLocaleDateString()):''}</span>
-        <span style="margin-left:auto;display:flex;gap:6px;"><button class="btn btn-sm btn-primary" style="background:#0e7490;border-color:#0e7490;font-weight:800;" onclick="hiReceive('${r.id}')" title="Boxes arrived — verify qty & assign bins, then confirm into SC stock">📦 Receive</button></span></div>`;
+        <span style="margin-left:auto;display:flex;gap:6px;"><button class="btn btn-sm" onclick="hiEditDraft('${r.id}')" title="Fix the name or lines before receiving">✏️ Edit</button><button class="btn btn-sm btn-primary" style="background:#0e7490;border-color:#0e7490;font-weight:800;" onclick="hiReceive('${r.id}')" title="Boxes arrived — verify qty & assign bins, then confirm into SC stock">📦 Receive</button></span>
+        ${chips?`<div style="flex:1 1 100%;display:flex;gap:5px;align-items:center;padding-top:4px;"><span class="muted" style="font-size:10px;">styles:</span>${chips}</div>`:''}</div>`;
     }).join('')}</div>`;
 }
 // ✏️ pending ship out 편집 — SO-# 클릭 시 라인 수량/노트 수정 · 라인 삭제 (v424)
@@ -9974,10 +9983,16 @@ function renderBoxRoom(){
       ${ca3P.length ? tile({label:'\uD83D\uDD12 3rd Party Warehouse (CA)', list:ca3P, accent:'#7c3aed', sub:'#7c3aed', num:'#5b21b6', bg:'#faf5ff', bd:'#c4b5fd', click:"bxOpenLoc('CA','3p')", tip:'Stock sitting at the 3rd party warehouse (SPECIAL* bins) — goes out on their PO only. Click to list the bins.'}) : ''}
       ${transitList.length ? tile({label:'🚚 In Transit (SC→CA)', list:transitList, accent:'#b45309', sub:'#b45309', num:'#92400e', bg:'#fffbeb', bd:'#fcd34d', click:'trOpen()', tip:'Click to manage transfers'}) : ''}
       ${(()=>{ const IN=window._bxInc||{}; let nb=0,np=0; Object.keys(IN).forEach(k2=>{ nb+=IN[k2].boxes; np+=IN[k2].pcs; });
-        return nb?`<div onclick="hiOpen()" title="Shipped from Haiti (invoice uploaded) — click to review / receive into SC" style="flex:1 1 190px;min-width:190px;max-width:252px;border:1.5px solid #67e8f9;border-radius:10px;padding:9px 14px;background:#ecfeff;cursor:pointer;">
-        <div style="font-size:11px;font-weight:800;color:#0e7490;line-height:1.35;height:30px;overflow:hidden;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;">🚢 Incoming (Haiti→SC) <span style="font-size:10px;color:#94a3b8;">🇭🇹</span></div>
-        <div style="font-size:21px;font-weight:800;color:#0e7490;font-family:Consolas,monospace;line-height:1.2;">${nb.toLocaleString()}<span style="font-size:11px;font-weight:700;"> boxes</span></div>
-        <div style="font-size:11px;color:#0e7490;font-family:Consolas,monospace;">${np.toLocaleString()} pcs</div></div>`:''; })()}
+        if(!nb) return '';
+        const refs = [...new Set(window._bxIncRefs||[])];
+        const stys = [...new Set(Object.keys(IN).map(k2=>String(k2).split('|')[0]).filter(Boolean))].sort();
+        const refLine = refs.length ? `<div style="font-size:10.5px;font-weight:800;color:#0891b2;font-family:Consolas,monospace;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;" title="${esc(refs.join(', '))}">${esc(refs.join(' · '))}</div>` : '';
+        const chips = stys.length ? `<div style="display:flex;gap:4px;overflow-x:auto;padding-top:6px;padding-bottom:2px;">${stys.map(s=>`<span onclick="event.stopPropagation();bxJumpStyle('${esc(s)}')" title="Jump to ${esc(s)} in the list" style="cursor:pointer;flex:0 0 auto;font-size:11px;font-weight:800;font-family:Consolas,monospace;color:#0e7490;background:#fff;border:1px solid #a5f3fc;border-radius:6px;padding:2px 7px;">${esc(s)}</span>`).join('')}</div>` : '';
+        return `<div onclick="hiOpen()" title="Shipped from Haiti (invoice uploaded) — click to review / receive into SC · click a style chip to jump to it" style="flex:1 1 ${stys.length?'100%':'190px'};min-width:190px;${stys.length?'':'max-width:252px;'}border:1.5px solid #67e8f9;border-radius:10px;padding:9px 14px;background:#ecfeff;cursor:pointer;">
+        <div style="display:flex;align-items:baseline;gap:12px;flex-wrap:wrap;">
+          <div><div style="font-size:11px;font-weight:800;color:#0e7490;">🚢 Incoming (Haiti→SC) <span style="font-size:10px;color:#94a3b8;">🇭🇹</span></div>${refLine}</div>
+          <div style="font-size:21px;font-weight:800;color:#0e7490;font-family:Consolas,monospace;line-height:1.1;">${nb.toLocaleString()}<span style="font-size:11px;font-weight:700;"> boxes</span> <span style="font-size:12px;font-weight:700;color:#0891b2;">· ${np.toLocaleString()} pcs</span></div>
+        </div>${chips}</div>`; })()}
     </div>
     <div style="margin-bottom:12px;"><span class="muted" style="font-size:11px;">1 box = 1 record · click a location to edit · ✕ = ship · deductions log which box went to which PO (restorable from 📜) · 🗺 tiles open the bin list</span></div>
     <div style="display:flex;gap:12px;align-items:flex-start;">
@@ -11793,14 +11808,14 @@ async function hiUpload(file){
     const wb = XLSX.read(await file.arrayBuffer());
     const ws = wb.Sheets[wb.SheetNames[0]];
     const aoa = XLSX.utils.sheet_to_json(ws, {header:1, raw:false, defval:''});
-    let refM = String(file.name||'').match(/PSH\s*[- _]*(\d+)/i);
-    let ref = refM ? ('PSH ' + refM[1]) : '';
+    let refM = String(file.name||'').match(/PSH\s*[-_ ]*(\d+(?:[-_ ]*\d+)*)/i);
+    let ref = refM ? ('PSH' + refM[1].replace(/[_ ]+/g,'-')) : '';
     let cur = ''; let sizes = []; const lines = [];
     const orig = [];   // 원본 인보이스 구조 (옆에 나란히 비교용): [{desc, sizes, colors:[{name, cells:{sz:{dz,bx}}}]}]
     let curBlock = null;
     for(let i=0;i<aoa.length;i++){
       const A = String(aoa[i][0]||'').trim();
-      if(!ref){ const m2 = A.match(/PSH\s*[- ]*(\d+)/i); if(m2) ref = 'PSH ' + m2[1]; }
+      if(!ref){ const m2 = A.match(/PSH\s*[-_ ]*(\d+(?:[-_ ]*\d+)*)/i); if(m2) ref = 'PSH' + m2[1].replace(/[_ ]+/g,'-'); }
       if(/^STYLE/i.test(A)){ cur = String(aoa[i][1]||'').trim(); curBlock = null; continue; }
       if(/^COLOR/i.test(A)){ sizes = aoa[i].map(c=>String(c||'').trim().toUpperCase()); continue; }
       const B = String(aoa[i][1]||'').trim().toUpperCase();
@@ -11875,7 +11890,8 @@ function hiReviewModal(ref, lines, orig){
     <td><button class="btn btn-sm" style="border:none;color:#b91c1c;" onclick="this.closest('tr').remove()">✕</button></td>
   </tr>`).join('');
   div.innerHTML = `<div style="background:#fff;border-radius:12px;max-width:1280px;width:100%;max-height:92vh;display:flex;flex-direction:column;overflow:hidden;">
-    <div style="background:#0e7490;color:#fff;padding:10px 16px;font-weight:800;">🇭🇹 Review · ${esc(ref)}
+    <div style="background:#0e7490;color:#fff;padding:10px 16px;font-weight:800;">
+      <span style="display:inline-flex;align-items:center;gap:8px;flex-wrap:wrap;">🇭🇹 Review · <input id="hirev-ref" value="${esc(ref)}" title="Invoice / reference name — this is what shows in Full Box & Incoming" style="font-weight:800;font-size:13px;padding:3px 8px;border-radius:6px;border:none;color:#0e7490;min-width:180px;"></span>
       <div style="font-weight:400;font-size:11px;opacity:.85;">Left = parsed result (editable) · right = original invoice — hover a row to highlight its cell in the original</div></div>
     <div style="display:flex;gap:0;flex:1;min-height:0;">
       <div style="flex:1;overflow-y:auto;padding:10px 16px;min-width:0;">
@@ -11895,6 +11911,7 @@ function hiReviewModal(ref, lines, orig){
       <span class="muted" style="margin-right:auto;font-size:11px;">${lines.length} line(s) · ${lines.reduce((a,l)=>a+l.boxes,0).toLocaleString()} box(es) · ${lines.reduce((a,l)=>a+l.boxes*l.pcs,0).toLocaleString()} pcs</span>
       <button class="btn" onclick="document.getElementById('modal-hirev').remove()">Cancel</button>
       <button class="btn btn-primary" style="background:#0e7490;border-color:#0e7490;" onclick="hiSaveDraft('${esc(ref)}')">💾 Save as Incoming</button>
+      <!-- ref read from #hirev-ref input -->
     </div></div>`;
   document.body.appendChild(div);
   if(!skuLoaded){ skuFetch().then(()=>hiCheckAll('hirev')); } else { hiCheckAll('hirev'); }
@@ -11938,7 +11955,8 @@ function hiCollectRows(prefix){
   });
   return out;
 }
-async function hiSaveDraft(ref){
+async function hiSaveDraft(refArg){
+  const ref = (($('hirev-ref')||{}).value||'').trim() || refArg || ('HAITI ' + new Date().toISOString().slice(0,10));
   const lines = hiCollectRows('hirev');
   if(!lines.length){ alert('⚠ No lines to save.'); return; }
   if(!skuLoaded) await skuFetch();
@@ -11951,6 +11969,67 @@ async function hiSaveDraft(ref){
   showToast('🇭🇹 '+ref+' saved as incoming — '+lines.length+' line(s)');
   if(typeof hiBarUpd==='function') hiBarUpd();
   hiOpen();
+}
+// ✏️ pending Haiti incoming 편집 — 이름(ref)/라인 수정 후 PENDING 유지 저장 (v473)
+async function hiEditDraft(id){
+  let rec = null;
+  try{ const r = await sbFetch('/rest/v1/pr_inbound?id=eq.'+id+'&select=id,ref,lines,status'); if(r.ok) rec = (await r.json())[0]; }catch(e){}
+  if(!rec){ showToast('⚠ Load failed'); return; }
+  const exM = document.getElementById('modal-hi'); if(exM) exM.remove();
+  const ex = document.getElementById('modal-hiedit'); if(ex) ex.remove();
+  const div = document.createElement('div');
+  div.id = 'modal-hiedit';
+  div.style.cssText = 'position:fixed;inset:0;background:rgba(15,23,42,.55);z-index:99;display:flex;align-items:center;justify-content:center;padding:14px;';
+  div.innerHTML = `<div style="background:#fff;border-radius:12px;max-width:880px;width:100%;max-height:90vh;display:flex;flex-direction:column;overflow:hidden;">
+    <div style="background:#0e7490;color:#fff;padding:10px 16px;font-weight:800;display:flex;align-items:center;gap:8px;flex-wrap:wrap;">✏️ Edit Incoming · <input id="hiedit-ref" value="${esc(rec.ref||'')}" title="Reference / invoice name — shows in Full Box & Incoming" style="font-weight:800;font-size:13px;padding:3px 8px;border-radius:6px;border:none;color:#0e7490;min-width:180px;">
+      <span style="font-weight:400;font-size:11px;opacity:.85;margin-left:auto;">Fix the name or any line — stays PENDING (not received yet)</span></div>
+    <div style="overflow-y:auto;padding:10px 16px;flex:1;">
+      <table class="etbl" style="font-size:12px;">
+        <thead><tr><th>Style</th><th class="tl">Color</th><th>Size</th><th>Boxes</th><th>Pcs/Box</th><th>📍 Loc</th><th></th></tr></thead>
+        <tbody id="hiedit-rows">${(rec.lines||[]).map(l=>`<tr>
+          <td><input class="fi hr-style" value="${esc(l.style)}" style="width:70px;font-weight:700;"></td>
+          <td><input class="fi hr-color" value="${esc(l.color)}" style="width:180px;text-transform:uppercase;"></td>
+          <td><input class="fi hr-size" value="${esc(l.size)}" style="width:52px;text-transform:uppercase;"></td>
+          <td><input class="fi num hr-boxes" type="number" min="0" value="${l.boxes}" style="width:56px;font-weight:800;"></td>
+          <td><input class="fi num hr-pcs" type="number" min="1" value="${l.pcs}" style="width:56px;"></td>
+          <td><input class="fi hr-loc" value="${esc(l.loc||'')}" style="width:82px;text-transform:uppercase;"></td>
+          <td><button class="btn btn-sm" style="border:none;color:#b91c1c;" onclick="this.closest('tr').remove()">✕</button></td>
+        </tr>`).join('')}</tbody>
+      </table>
+      <div style="margin-top:8px;"><button class="btn btn-sm" onclick="hiEditAddRow()">＋ Add line</button></div>
+    </div>
+    <div style="padding:10px 16px;border-top:1px solid var(--border);display:flex;gap:8px;justify-content:flex-end;">
+      <button class="btn" onclick="document.getElementById('modal-hiedit').remove()">Cancel</button>
+      <button class="btn btn-primary" style="background:#0e7490;border-color:#0e7490;" onclick="hiSaveEdit('${rec.id}')">💾 Save</button>
+    </div></div>`;
+  document.body.appendChild(div);
+}
+function hiEditAddRow(){
+  const tb = $('hiedit-rows'); if(!tb) return;
+  const tr = document.createElement('tr');
+  tr.innerHTML = `<td><input class="fi hr-style" style="width:70px;font-weight:700;"></td>
+    <td><input class="fi hr-color" style="width:180px;text-transform:uppercase;"></td>
+    <td><input class="fi hr-size" style="width:52px;text-transform:uppercase;"></td>
+    <td><input class="fi num hr-boxes" type="number" min="0" value="0" style="width:56px;font-weight:800;"></td>
+    <td><input class="fi num hr-pcs" type="number" min="1" value="72" style="width:56px;"></td>
+    <td><input class="fi hr-loc" style="width:82px;text-transform:uppercase;"></td>
+    <td><button class="btn btn-sm" style="border:none;color:#b91c1c;" onclick="this.closest('tr').remove()">✕</button></td>`;
+  tb.appendChild(tr);
+}
+async function hiSaveEdit(id){
+  const ref = (($('hiedit-ref')||{}).value||'').trim() || ('HAITI ' + new Date().toISOString().slice(0,10));
+  const lines = hiCollectRows('hiedit');
+  if(!lines.length){ alert('⚠ No lines to save.'); return; }
+  if(!skuLoaded) await skuFetch();
+  if(!(await skuConfirmRegister(skuGateRows(lines)))) return;
+  try{
+    const r = await sbFetch('/rest/v1/pr_inbound?id=eq.'+id, {method:'PATCH', headers:{Prefer:'return=minimal'}, body:JSON.stringify({ref, lines})});
+    if(!r.ok) throw new Error('HTTP '+r.status);
+  }catch(e){ alert('⚠ Save failed: '+e.message); return; }
+  const m = document.getElementById('modal-hiedit'); if(m) m.remove();
+  showToast('🇭🇹 '+ref+' updated — '+lines.length+' line(s)');
+  if(typeof hiBarUpd==='function') hiBarUpd();
+  if(typeof bxRefetch==='function') bxRefetch().then(()=>{ if($('bx-body')) renderBoxRoom(); });
 }
 async function hiDelete(id){
   if(!confirm('Delete this incoming record?')) return;
