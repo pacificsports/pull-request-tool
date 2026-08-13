@@ -145,7 +145,7 @@ main{max-width:1100px;margin:0 auto;padding:16px;}
     <button class="btn btn-sm" onclick="doLogout()" style="padding:2px 8px;font-size:10px;" data-i18n="logout">Log out</button>
   </span>
   <select id="lang-sel" onchange="setLang(this.value)" style="font-size:11px;padding:3px 6px;border-radius:5px;border:none;background:#1d3f66;color:#fff;"><option value="ko">한국어</option><option value="en">English</option><option value="es">Español</option></select>
-  <span style="font-size:10px;color:#9fb8d4;">v476 🚚</span>
+  <span style="font-size:10px;color:#9fb8d4;">v477 🚚</span>
 </div>
 <script type="text/javascript" src="https://js.authorize.net/v1/Accept.js" charset="utf-8"></script>
 <div id="po-viewer" style="display:none;position:fixed;top:0;right:0;width:44%;height:100vh;background:#fff;border-left:2px solid var(--border);z-index:60;box-shadow:-6px 0 20px rgba(0,0,0,.15);">
@@ -2172,6 +2172,7 @@ async function _saveCurrentInner(){
     if(dupe && !confirm('⚠ Possible duplicate!\n' + (dupe.meta.cust||'') + ' PO ' + (dupe.meta.po||'') + ' was already received on ' + fmtDate(dupe.meta.date||dupe.savedAt) + ' (' + dupe.base + ').\n\nSave as a new order anyway?')) return;
   }
   (function(){
+    if(window._formReplaceOf || (existing && existing.meta && existing.meta._replaceOf)) return;   // 🔁 replacement — no credit hold (v477)
     const custV = $('m-cust').value.trim();
     const _cp = custGroupStore(custV);
     const lim = Number(_cp.creditLimit) || 0;
@@ -4204,6 +4205,7 @@ function custOpenOrdersAmt(cust, excludeBase){
   const key = custGroupName(cust); let s = 0;
   (savedCache||[]).forEach(r=>{
     if(!r.meta || custGroupName(r.meta.cust) !== key) return;
+    if(recIsReplace(r)) return;   // 🔁 free replacement — not owed (v477)
     if(excludeBase && r.base === excludeBase) return;
     const orderAmt = (r.lines||[]).filter(l=>l.wh!=='NA').reduce((a,l)=>a+(Number(l.qty)||0)*(Number(l.price)||0),0);
     let invAmt = 0;
@@ -4218,7 +4220,7 @@ function custOpenOrdersAmt(cust, excludeBase){
 }
 function custOutstanding(cust){
   const key = custGroupName(cust); let s = 0;
-  (savedCache||[]).forEach(r=>{ if(r.meta && custGroupName(r.meta.cust)===key) Object.keys(r.inv||{}).forEach(w=>{ s += invBalance(r, w); }); });
+  (savedCache||[]).forEach(r=>{ if(r.meta && !recIsReplace(r) && custGroupName(r.meta.cust)===key) Object.keys(r.inv||{}).forEach(w=>{ s += invBalance(r, w); }); });
   return s;
 }
 function holdBlocked(rec){ return !!(rec && rec.meta && rec.meta._hold && !rec.meta._holdOk); }
@@ -13405,6 +13407,7 @@ function renderDash(){
   let totQ = 0, totAmt = 0, orders = 0;
   let shipQ = 0, shipAmt = 0;
   savedCache.filter(inDashPeriod).forEach(rec=>{
+    if(recIsReplace(rec)) return;   // 🔁 free replacement — excluded from sales (v477)
     orders++;
     const cust = custCanon(rec.meta && rec.meta.cust);
     (rec.whs||[]).forEach(wh=>{
@@ -13424,6 +13427,7 @@ function renderDash(){
   });
   // 출고(Packing List 저장) 기준 매출 — 출고일 기준으로 기간 필터
   (savedCache||[]).forEach(rec=>{
+    if(recIsReplace(rec)) return;   // 🔁 free replacement — excluded from sales (v477)
     Object.keys(rec.pl||{}).forEach(w=>{
       const p = rec.pl[w];
       if(!p || !p.savedAt) return;
@@ -14016,7 +14020,7 @@ function renderSaved(){
     const gBd = allDone ? '#dbe2ea' : '#fde68a';
     const _fmtM = v => '$'+(Number(v)||0).toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2});
     const _dayByCust = {};
-    g.recs.forEach(r=>{ const c=(r.meta&&r.meta.cust)||'(no name)'; _dayByCust[c]=(_dayByCust[c]||0)+(r.lines||[]).reduce((s,l)=>s+(Number(l.qty)||0)*(Number(l.price)||0),0); });
+    g.recs.forEach(r=>{ if(recIsReplace(r)) return; const c=(r.meta&&r.meta.cust)||'(no name)'; _dayByCust[c]=(_dayByCust[c]||0)+(r.lines||[]).reduce((s,l)=>s+(Number(l.qty)||0)*(Number(l.price)||0),0); });
     const _dayTot = Object.values(_dayByCust).reduce((a,b)=>a+b,0);
     const _custTip = 'Total received on this date ('+g.recs.length+' orders): '+_fmtM(_dayTot)+'\n────────────\n'+Object.entries(_dayByCust).sort((a,b)=>b[1]-a[1]).map(([c,a])=>'• '+c+' — '+_fmtM(a)).join('\n');
     const _amtBadge = `<span class="day-amt" style="margin-left:8px;font-size:11.5px;font-weight:800;color:#0f766e;background:#ecfdf5;border:1px solid #a7f3d0;border-radius:8px;padding:2px 8px;white-space:nowrap;" onclick="event.stopPropagation();">💰 ${_fmtM(_dayTot)}<span class="day-tip">${esc(_custTip)}</span></span>`;
