@@ -145,7 +145,7 @@ main{max-width:1100px;margin:0 auto;padding:16px;}
     <button class="btn btn-sm" onclick="doLogout()" style="padding:2px 8px;font-size:10px;" data-i18n="logout">Log out</button>
   </span>
   <select id="lang-sel" onchange="setLang(this.value)" style="font-size:11px;padding:3px 6px;border-radius:5px;border:none;background:#1d3f66;color:#fff;"><option value="ko">한국어</option><option value="en">English</option><option value="es">Español</option></select>
-  <span style="font-size:10px;color:#9fb8d4;">v481 🚚</span>
+  <span style="font-size:10px;color:#9fb8d4;">v482 🚚</span>
 </div>
 <script type="text/javascript" src="https://js.authorize.net/v1/Accept.js" charset="utf-8"></script>
 <div id="po-viewer" style="display:none;position:fixed;top:0;right:0;width:44%;height:100vh;background:#fff;border-left:2px solid var(--border);z-index:60;box-shadow:-6px 0 20px rgba(0,0,0,.15);">
@@ -331,9 +331,11 @@ main{max-width:1100px;margin:0 auto;padding:16px;}
       </span>
     </div>
     <div id="batch-bar" style="display:none;align-items:center;gap:8px;background:#eff6ff;border:1px solid #bfdbfe;border-radius:8px;padding:8px 12px;margin-bottom:10px;flex-wrap:wrap;">
-      <span style="font-size:12px;font-weight:800;color:#1e40af;">🚛 Batch Shipping</span>
-      <span class="muted" style="font-size:11px;">Ship all checked orders at once</span>
+      <span style="font-size:12px;font-weight:800;color:#1e40af;">🚛 Batch</span>
+      <span class="muted" style="font-size:11px;">Ship, invoice, or bulk-print docs for all checked orders</span>
       <span style="margin-left:auto;display:flex;gap:6px;flex-wrap:wrap;">
+      <button id="bb-pr" class="btn btn-sm" style="display:none;background:#0f2a4a;color:#fff;border-color:#0f2a4a;" onclick="batchPrintPRs()">🖨 Print Pull Requests (<span id="bb-pr-n">0</span>)</button>
+      <button id="bb-pl" class="btn btn-sm" style="display:none;background:#0e7490;color:#fff;border-color:#0e7490;" onclick="batchPrintPLs()">📦 Print Packing Lists (<span id="bb-pl-n">0</span>)</button>
       <button id="bb-sc" class="btn btn-sm" style="display:none;background:#1d4ed8;color:#fff;border-color:#1d4ed8;" onclick="openBatchShip('SC')">🚛 SC Batch Ship (<span id="bb-sc-n">0</span>)</button>
       <button id="bb-ca" class="btn btn-sm" style="display:none;background:#c2410c;color:#fff;border-color:#c2410c;" onclick="openBatchShip('CA')">🚛 CA Batch Ship (<span id="bb-ca-n">0</span>)</button>
       <button id="bb-inv" class="btn btn-sm" style="display:none;background:#065f46;color:#fff;border-color:#065f46;" onclick="printBatchInvoices()">🧾 Invoice Print (<span id="bb-inv-n">0</span>)</button>
@@ -13770,6 +13772,12 @@ function updateBatchBar(){
   $('bb-ca').style.display = ca.ship ? 'inline-flex' : 'none'; $('bb-ca-n').textContent = ca.ship;
   const invTot = sc.inv + ca.inv;
   $('bb-inv').style.display = invTot ? 'inline-flex' : 'none'; $('bb-inv-n').textContent = invTot;
+  // 🖨 멀티 프린트: 체크된 SC/CA 행은 모두 Pull Request 인쇄 가능, PL 저장된 행은 Packing List 인쇄 가능
+  const prN = cbs.length;
+  let plN = 0;
+  cbs.forEach(c=>{ const r = savedCache.find(s=>s.base===c.dataset.base); if(r && r.pl && r.pl[c.dataset.wh] && r.pl[c.dataset.wh].savedAt) plN++; });
+  if($('bb-pr')){ $('bb-pr').style.display = prN ? 'inline-flex' : 'none'; $('bb-pr-n').textContent = prN; }
+  if($('bb-pl')){ $('bb-pl').style.display = plN ? 'inline-flex' : 'none'; $('bb-pl-n').textContent = plN; }
 }
 async function printBatchInvoices(){
   const pairs = [...document.querySelectorAll('.bship-cb:checked')].map(c=>({base:c.dataset.base, wh:c.dataset.wh}))
@@ -13795,6 +13803,40 @@ async function printBatchInvoices(){
   printDocHtml(docs.join('<div style="page-break-before:always;break-before:page;"></div>'), 'INVOICES');
   renderSaved();
   showToast('🧾 ' + docs.length + ' invoice(s) printed → marked Complete');
+}
+// 🖨 체크된 주문들의 Pull Request 를 한 번에 인쇄 (페이지 나눔) + pr 인쇄됨 표시
+async function batchPrintPRs(){
+  const pairs = [...document.querySelectorAll('.bship-cb:checked')].map(c=>({base:c.dataset.base, wh:c.dataset.wh}));
+  const docs = [], touched = {};
+  for(const p of pairs){
+    const rec = savedCache.find(s=>s.base===p.base); if(!rec) continue;
+    docs.push('<div>'+buildPRDocFromRec(rec, p.wh)+'</div>');
+  }
+  if(!docs.length){ showToast('🖨 No orders selected — check the box next to an SC/CA row first'); return; }
+  printDocHtml(docs.join('<div style="page-break-before:always;break-before:page;"></div>'), 'PULL REQUESTS ('+docs.length+')');
+  for(const p of pairs){
+    const rec = savedCache.find(s=>s.base===p.base); if(!rec) continue;
+    const mp = { ...((rec.meta && rec.meta._printed) || {}) };
+    mp[p.wh] = { ...(mp[p.wh]||{}), pr: { at:new Date().toISOString(), by:(SESS&&SESS.email)||'' } };
+    rec.meta = { ...(rec.meta||{}), _printed: mp };
+    touched[rec.base] = rec;
+  }
+  for(const b in touched){ try{ await sbFetch('/rest/v1/pr_orders?base=eq.'+encodeURIComponent(b), {method:'PATCH', headers:{Prefer:'return=minimal'}, body:JSON.stringify({meta:touched[b].meta, updated_at:new Date().toISOString()})}); }catch(e){} }
+  renderSaved();
+  showToast('🖨 '+docs.length+' pull request(s) sent to printer — box deduction still via the single 🖨 button or 📍 pre-assign');
+}
+// 📦 체크된 주문들의 (저장된) Packing List 를 한 번에 인쇄
+async function batchPrintPLs(){
+  const pairs = [...document.querySelectorAll('.bship-cb:checked')].map(c=>({base:c.dataset.base, wh:c.dataset.wh}))
+    .filter(p=>{ const r=savedCache.find(s=>s.base===p.base); return r && r.pl && r.pl[p.wh] && r.pl[p.wh].savedAt; });
+  if(!pairs.length){ showToast('📦 No saved packing lists in the selection — open 📦 Packing List and Save first'); return; }
+  const docs = [];
+  for(const p of pairs){
+    const rec = savedCache.find(s=>s.base===p.base); const d = (rec.pl && rec.pl[p.wh]) || {};
+    docs.push('<div>'+buildStageDoc(rec, p.wh, 'packing', d)+'</div>');
+  }
+  printDocHtml(docs.join('<div style="page-break-before:always;break-before:page;"></div>'), 'PACKING LISTS ('+docs.length+')');
+  showToast('📦 '+docs.length+' packing list(s) sent to printer');
 }
 function openBatchShip(wh){
   const bases = [...document.querySelectorAll('.bship-cb:checked')].filter(c=>c.dataset.wh===wh).map(c=>c.dataset.base)
