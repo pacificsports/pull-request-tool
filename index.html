@@ -145,7 +145,7 @@ main{max-width:1100px;margin:0 auto;padding:16px;}
     <button class="btn btn-sm" onclick="doLogout()" style="padding:2px 8px;font-size:10px;" data-i18n="logout">Log out</button>
   </span>
   <select id="lang-sel" onchange="setLang(this.value)" style="font-size:11px;padding:3px 6px;border-radius:5px;border:none;background:#1d3f66;color:#fff;"><option value="ko">한국어</option><option value="en">English</option><option value="es">Español</option></select>
-  <span style="font-size:10px;color:#9fb8d4;">v484 🚚</span>
+  <span style="font-size:10px;color:#9fb8d4;">v485 🚚</span>
 </div>
 <script type="text/javascript" src="https://js.authorize.net/v1/Accept.js" charset="utf-8"></script>
 <div id="po-viewer" style="display:none;position:fixed;top:0;right:0;width:44%;height:100vh;background:#fff;border-left:2px solid var(--border);z-index:60;box-shadow:-6px 0 20px rgba(0,0,0,.15);">
@@ -13831,10 +13831,9 @@ function updateBatchBar(){
   $('bb-ca').style.display = ca.ship ? 'inline-flex' : 'none'; $('bb-ca-n').textContent = ca.ship;
   const invTot = sc.inv + ca.inv;
   $('bb-inv').style.display = invTot ? 'inline-flex' : 'none'; $('bb-inv-n').textContent = invTot;
-  // 🖨 멀티 프린트: 체크된 SC/CA 행은 모두 Pull Request 인쇄 가능, PL 저장된 행은 Packing List 인쇄 가능
+  // 🖨 멀티 프린트: 체크된 SC/CA 행은 모두 Pull Request / Packing List 인쇄 가능 (저장된 PL 있으면 그걸로, 없으면 오더 라인으로)
   const prN = cbs.length;
-  let plN = 0;
-  cbs.forEach(c=>{ const r = savedCache.find(s=>s.base===c.dataset.base); if(r && r.pl && r.pl[c.dataset.wh] && r.pl[c.dataset.wh].savedAt) plN++; });
+  const plN = cbs.length;
   if($('bb-pr')){ $('bb-pr').style.display = prN ? 'inline-flex' : 'none'; $('bb-pr-n').textContent = prN; }
   if($('bb-pl')){ $('bb-pl').style.display = plN ? 'inline-flex' : 'none'; $('bb-pl-n').textContent = plN; }
 }
@@ -13884,18 +13883,21 @@ async function batchPrintPRs(){
   renderSaved();
   showToast('🖨 '+docs.length+' pull request(s) sent to printer — box deduction still via the single 🖨 button or 📍 pre-assign');
 }
-// 📦 체크된 주문들의 (저장된) Packing List 를 한 번에 인쇄
+// 📦 체크된 주문들의 Packing List 를 한 번에 인쇄 — 저장된 PL 있으면 그 데이터로, 없으면 오더 라인으로 생성
 async function batchPrintPLs(){
-  const pairs = [...document.querySelectorAll('.bship-cb:checked')].map(c=>({base:c.dataset.base, wh:c.dataset.wh}))
-    .filter(p=>{ const r=savedCache.find(s=>s.base===p.base); return r && r.pl && r.pl[p.wh] && r.pl[p.wh].savedAt; });
-  if(!pairs.length){ showToast('📦 No saved packing lists in the selection — open 📦 Packing List and Save first'); return; }
-  const docs = [];
+  const pairs = [...document.querySelectorAll('.bship-cb:checked')].map(c=>({base:c.dataset.base, wh:c.dataset.wh}));
+  if(!pairs.length){ showToast('📦 No orders selected — check the box next to an SC/CA row first'); return; }
+  const docs = []; let fromLines = 0;
   for(const p of pairs){
-    const rec = savedCache.find(s=>s.base===p.base); const d = (rec.pl && rec.pl[p.wh]) || {};
+    const rec = savedCache.find(s=>s.base===p.base); if(!rec) continue;
+    const saved = rec.pl && rec.pl[p.wh] && rec.pl[p.wh].savedAt;
+    const d = (rec.pl && rec.pl[p.wh]) || {};       // 저장 PL 없으면 {} → buildStageDoc 가 오더 라인(wh)으로 생성
+    if(!saved) fromLines++;
     docs.push('<div>'+buildStageDoc(rec, p.wh, 'packing', d)+'</div>');
   }
+  if(!docs.length){ showToast('📦 Nothing to print'); return; }
   printDocHtml(docs.join('<div style="page-break-before:always;break-before:page;"></div>'), 'PACKING LISTS ('+docs.length+')');
-  showToast('📦 '+docs.length+' packing list(s) sent to printer');
+  showToast('📦 '+docs.length+' packing list(s) sent to printer'+(fromLines?' · '+fromLines+' generated from order lines (no saved PL yet)':''));
 }
 function openBatchShip(wh){
   const bases = [...document.querySelectorAll('.bship-cb:checked')].filter(c=>c.dataset.wh===wh).map(c=>c.dataset.base)
