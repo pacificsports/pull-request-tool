@@ -145,7 +145,7 @@ main{max-width:1100px;margin:0 auto;padding:16px;}
     <button class="btn btn-sm" onclick="doLogout()" style="padding:2px 8px;font-size:10px;" data-i18n="logout">Log out</button>
   </span>
   <select id="lang-sel" onchange="setLang(this.value)" style="font-size:11px;padding:3px 6px;border-radius:5px;border:none;background:#1d3f66;color:#fff;"><option value="ko">한국어</option><option value="en">English</option><option value="es">Español</option></select>
-  <span style="font-size:10px;color:#9fb8d4;">v475 🚚</span>
+  <span style="font-size:10px;color:#9fb8d4;">v476 🚚</span>
 </div>
 <script type="text/javascript" src="https://js.authorize.net/v1/Accept.js" charset="utf-8"></script>
 <div id="po-viewer" style="display:none;position:fixed;top:0;right:0;width:44%;height:100vh;background:#fff;border-left:2px solid var(--border);z-index:60;box-shadow:-6px 0 20px rgba(0,0,0,.15);">
@@ -2184,6 +2184,12 @@ async function _saveCurrentInner(){
     if(out + openOrd + orderAmt > lim) window.__holdFlag = { at: new Date().toISOString(), outstanding: Math.round(out*100)/100, openOrders: Math.round(openOrd*100)/100, orderAmt: Math.round(orderAmt*100)/100, limit: lim };
   })();
   const rec = { base, meta:getMeta(), lines:poLines, whs:activeWhs(), savedAt:new Date().toISOString(), poPdf: window._poPdfB64 || null };
+  // 🔁 record-identity meta the form doesn't carry — must survive save & modify (v476)
+  if(window._formReplaceOf && !rec.meta._replaceOf) rec.meta._replaceOf = window._formReplaceOf;
+  if(existing && existing.meta){
+    if(existing.meta._replaceOf && !rec.meta._replaceOf) rec.meta._replaceOf = existing.meta._replaceOf;
+    if(existing.meta._returns && !rec.meta._returns) rec.meta._returns = existing.meta._returns;
+  }
   if(window.__holdFlag){ rec.meta._hold = window.__holdFlag; if(existing && existing.meta && existing.meta._holdOk) rec.meta._holdOk = existing.meta._holdOk; }
   window.__holdFlag = null;
   let orderChanges = [];
@@ -2218,6 +2224,7 @@ function clearOrderForm(){
   poLines = [];
   window._poPdfB64 = null;
   window._forceBase = null;
+  window._formReplaceOf = null;
   try{ localStorage.removeItem(LS_DRAFT); }catch(e){}
   togglePoViewer(false);                                  // 뷰어 닫기 + 본문 44% 밀림 원복 (v391)
   const pt = $('po-viewer-tab'); if(pt) pt.style.display = 'none';
@@ -2423,7 +2430,7 @@ function replaceOrderOpen(base){
   div.onclick = e=>{ if(e.target===div) div.remove(); };
   div.innerHTML = `<div style="background:#fff;border-radius:12px;max-width:680px;width:100%;max-height:88vh;display:flex;flex-direction:column;overflow:hidden;">
     <div style="background:#be123c;color:#fff;padding:10px 16px;font-weight:800;">🔁 Replace (defect replacement) · ${esc((rec.meta&&rec.meta.cust)||'')} — PO ${esc((rec.meta&&rec.meta.po)||'')}
-      <div style="font-weight:400;font-size:11px;color:#fecdd3;">Check shipped items to replace and set quantities — a free replacement order with R appended to the PO# is created, with no invoice</div></div>
+      <div style="font-weight:400;font-size:11px;color:#fecdd3;">Check shipped items to replace and set quantities — loads into the order form as a free replacement (PO# + R). Then set SC/CA/BO/NA, adjust stock/boxes and Save like a normal order (no invoice)</div></div>
     <div style="overflow-y:auto;padding:10px 16px;">
       <table class="etbl" style="font-size:12px;">
         <thead><tr><th></th><th>Style</th><th class="tl">Color</th><th>Size</th><th>WH</th><th>Shipped Qty</th><th>Replace Qty</th></tr></thead>
@@ -2443,7 +2450,7 @@ function replaceOrderOpen(base){
     </div>
     <div style="padding:10px 16px;border-top:1px solid var(--border);display:flex;gap:8px;justify-content:flex-end;">
       <button class="btn" onclick="document.getElementById('modal-replace').remove()">Cancel</button>
-      <button class="btn btn-primary" style="background:#be123c;border-color:#be123c;" onclick="replaceOrderDo('${esc(base)}')">🔁 Create replacement order</button>
+      <button class="btn btn-primary" style="background:#be123c;border-color:#be123c;" onclick="replaceOrderDo('${esc(base)}')">🔁 Load into order form →</button>
     </div></div>`;
   document.body.appendChild(div);
 }
@@ -2463,18 +2470,19 @@ async function replaceOrderDo(base){
   const sfx = 'R' + (n>1?n:'');
   const base2 = base + sfx;
   const by = (SESS&&SESS.email)||'';
-  const meta2 = {...rec.meta, po: String((rec.meta&&rec.meta.po)||'') + sfx, date: todayStr(),
-    _replaceOf: { base: base, po: String((rec.meta&&rec.meta.po)||''), reason: reason, at: new Date().toISOString(), by } };
-  delete meta2._pcAuto; delete meta2._printed; delete meta2._hold; delete meta2._holdOk; delete meta2._modified; delete meta2._from; delete meta2.futureShip;
-  const rec2 = { base: base2, meta: meta2, lines: lines2, whs: [...new Set(lines2.map(l=>l.wh||'SC'))],
-    savedAt: new Date().toISOString(), pl:{}, inv:{}, history:[{t:new Date().toISOString(), by, e:'Replace of '+base + (reason?' — '+reason:'')}] };
-  if(!await upsertRec(rec2)){ alert('⚠ Failed to save replacement order'); return; }
-  savedCache.unshift(rec2);
   const m = document.getElementById('modal-replace'); if(m) m.remove();
-  renderSaved();
-  showToast('🔁 Replacement order created: PO ' + meta2.po + ' — ' + lines2.length + ' lines (free · no invoice)');
-  logHist(base, 'Replace order created → ' + base2 + (reason?' ('+reason+')':''));
-  await invSyncOnSave(rec2);   // 교체분 재고 차감
+  // 🔁 v476 — 교체분을 바로 저장하지 않고, 일반 오더처럼 메인 폼에 로드해서 SC/CA/BO/NA·재고·박스 이동까지 다 진행하게 함
+  if(!(await pcGuard())) return;   // 저장 안 한 박스 이동 보호
+  clearOrderForm();
+  setMeta({...rec.meta, po: String((rec.meta&&rec.meta.po)||'') + sfx, date: todayStr(), futureShip:'', confNote:''});
+  window._forceBase = base2;
+  window._formReplaceOf = { base: base, po: String((rec.meta&&rec.meta.po)||''), reason: reason, at: new Date().toISOString(), by };
+  poLines = normalizeLines(lines2);
+  poLines.forEach(l=>{ if(l) l.pcMoveData = []; });
+  renderTable(); updateNumPreview(); renderDocs();
+  if(typeof showView==='function') showView('orders');
+  window.scrollTo({top:0,behavior:'smooth'});
+  showToast('🔁 Replacement loaded → PO ' + (rec.meta&&rec.meta.po||'') + sfx + ' — set SC/CA/BO/NA, adjust stock/boxes, then Save (free · no invoice)');
 }
 // ══════════ ↩ Customer Return / RMA ══════════
 function recReturns(s){ return (s && s.meta && Array.isArray(s.meta._returns)) ? s.meta._returns : []; }
@@ -3872,7 +3880,7 @@ async function openPLWh(base, wh){
 }
 async function openInvoiceWh(base, wh){
   const rec0 = getSaved().find(s=>s.base===base);
-  if(rec0 && recIsReplace(rec0)){ showToast('🔁 Replacement (R) orders are free — no invoice can be created'); return; }
+  if(rec0 && recIsReplace(rec0) && !confirm('🔁 This is a Replacement (R) order — normally free with no invoice.\n\nCreate an invoice anyway? (override)')) return;
   await openPL(base);
   const rec = getSaved().find(s=>s.base===base);
   if(rec && (rec.whs||[]).includes(wh)) plWh = wh;
@@ -3881,7 +3889,7 @@ async function openInvoiceWh(base, wh){
 }
 async function openInvoice(base){
   const rec0 = getSaved().find(s=>s.base===base);
-  if(rec0 && recIsReplace(rec0)){ showToast('🔁 Replacement (R) orders are free — no invoice can be created'); return; }
+  if(rec0 && recIsReplace(rec0) && !confirm('🔁 This is a Replacement (R) order — normally free with no invoice.\n\nCreate an invoice anyway? (override)')) return;
   await openPL(base);
   const rec = getSaved().find(s=>s.base===base);
   if(rec && rec.pl){
