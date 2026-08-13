@@ -145,7 +145,7 @@ main{max-width:1100px;margin:0 auto;padding:16px;}
     <button class="btn btn-sm" onclick="doLogout()" style="padding:2px 8px;font-size:10px;" data-i18n="logout">Log out</button>
   </span>
   <select id="lang-sel" onchange="setLang(this.value)" style="font-size:11px;padding:3px 6px;border-radius:5px;border:none;background:#1d3f66;color:#fff;"><option value="ko">한국어</option><option value="en">English</option><option value="es">Español</option></select>
-  <span style="font-size:10px;color:#9fb8d4;">v495 🚚</span>
+  <span style="font-size:10px;color:#9fb8d4;">v496 🚚</span>
 </div>
 <script type="text/javascript" src="https://js.authorize.net/v1/Accept.js" charset="utf-8"></script>
 <div id="po-viewer" style="display:none;position:fixed;top:0;right:0;width:44%;height:100vh;background:#fff;border-left:2px solid var(--border);z-index:60;box-shadow:-6px 0 20px rgba(0,0,0,.15);">
@@ -692,8 +692,13 @@ async function loadStyleCloud(){
     const rows = await r.json();
     const m = getStyleMap();
     let changed = false;
-    rows.forEach(row=>{ if(row.k && row.style && m[row.k] !== row.style){ m[row.k] = row.style; changed = true; } });
+    const pm = getPpbOvr(); let pmChanged = false;
+    rows.forEach(row=>{
+      if(row.k && String(row.k).slice(0,5)==='@ppb:'){ const kk = row.k.slice(5); const v = Number(row.style)||0; if(kk && v>0 && pm[kk]!==v){ pm[kk] = v; pmChanged = true; } return; }   // 스타일·사이즈별 박스입수 (v496)
+      if(row.k && row.style && m[row.k] !== row.style){ m[row.k] = row.style; changed = true; }
+    });
     if(changed) saveStyleMap(m);
+    if(pmChanged){ savePpbOvrLocal(pm); if(typeof poLines!=='undefined' && poLines.length && typeof applyPpbToLines==='function') applyPpbToLines(); }
     // 로컬에만 있는 학습은 클라우드로 업로드
     const cloudKeys = new Set(rows.map(r2=>r2.k));
     const up = Object.entries(m).filter(([k])=>!cloudKeys.has(k)).map(([k,style])=>({k, style, updated_at:new Date().toISOString()}));
@@ -711,19 +716,125 @@ async function loadStyleCloud(){
     if(dirty) saveStyleMap(m);
   }catch(e){}
 })();
-// 박스입수(PPB): 스타일 마스터 우선 → 없으면 규칙(3XL~=48 · L/S=60 · 그외 72)
+// ═══ 스타일·사이즈별 박스입수(PPB) 수동 지정 — pr_style_map 클라우드에 '@ppb:스타일|사이즈' 키로 저장, 전 직원 공유 (v496) ═══
+const LS_PPB = 'psi_ppb_ovr';
+function getPpbOvr(){ try{ return JSON.parse(localStorage.getItem(LS_PPB)||'{}'); }catch(e){ return {}; } }
+function savePpbOvrLocal(m){ try{ localStorage.setItem(LS_PPB, JSON.stringify(m)); }catch(e){} }
+function ppbForStyleSize(style, size){
+  const m = getPpbOvr();
+  const st = String(style||'').trim(); if(!st) return null;
+  const sz = String(size||'').trim().toUpperCase();
+  let n = sz ? (Number(m[st+'|'+sz])||0) : 0;   // 사이즈별 지정 우선
+  if(!n) n = Number(m[st])||0;                    // 스타일 공통 지정(사이즈 미지정)
+  return n>0 ? n : null;
+}
+function setStylePpb(style, size, n){
+  const st = String(style||'').trim(); const sz = String(size||'').trim().toUpperCase(); const v = Math.round(Number(n)||0);
+  if(!st || v<=0) return;
+  const key = sz ? st+'|'+sz : st;
+  const m = getPpbOvr(); m[key] = v; savePpbOvrLocal(m);
+  try{ if(typeof SESS!=='undefined' && SESS){
+    sbFetch('/rest/v1/pr_style_map?on_conflict=k', {method:'POST', headers:{Prefer:'resolution=merge-duplicates,return=minimal'}, body: JSON.stringify([{k:'@ppb:'+key, style:String(v), updated_at:new Date().toISOString()}])}).catch(()=>{});
+  } }catch(e){}
+}
+// 박스입수(PPB): 수동 지정(사이즈별) override 최우선 → 스타일 마스터 → 실제 재고 박스 pcs → 규칙(3XL~=48 · L/S=60 · 그외 72)
 function autoPpb(l){
   const size = String(l.size||'').toUpperCase();
   const isLarge = ['3XL','4XL','5XL','6XL'].includes(size);
+  const ovr = ppbForStyleSize(l.style, size);   // 사용자가 직접 지정한 값 최우선 (전 직원 공유) (v496)
+  if(ovr) return ovr;
   const m = STYLE_MASTER[String(l.style||'').trim()];
   if(m){
     if(isLarge) return m[3] || m[2] || 48;
     return m[2] || DEFAULT_PPB;
   }
+  // 마스터 미등록 스타일 → 실제 재고 박스의 pcs(박스입수)를 사용 (예: 3260=144). 재고가 실제 소스. (v496)
+  const invPpb = bxCommonPpb(l.style, size);
+  if(invPpb) return invPpb;
   if(isLarge) return 48;
   const d = (String(l.desc||'') + ' ' + String(l.rawDesc||'')).toUpperCase();
   if(/L\/S|LONG\s*SLEEVE|LONGSLEEVE|HOODIE|SWEATSHIRT/.test(d)) return 60;
   return 72;
+}
+// 재고 박스에서 스타일(+사이즈)별 가장 흔한 박스입수(pcs) 반환 — 마스터 미등록 스타일 ppb 자동 보정 (v496)
+function bxCommonPpb(style, size){
+  try{
+    if(typeof bxStore==='undefined' || typeof bxLoaded==='undefined' || !bxLoaded) return null;
+    const st = String(style||'').trim(); if(!st) return null;
+    const sz = String(size||'').trim().toUpperCase();
+    const bySize = {}, byStyle = {};
+    for(let i=0;i<bxStore.length;i++){ const b = bxStore[i];
+      if(String(b.style).trim() !== st) continue;
+      const p = Number(b.pcs)||0; if(p <= 0) continue;
+      byStyle[p] = (byStyle[p]||0) + 1;
+      if(sz && String(b.size||'').toUpperCase() === sz) bySize[p] = (bySize[p]||0) + 1;
+    }
+    const mode = o => { let k=null,n=0; for(const p in o){ if(o[p] > n){ n = o[p]; k = Number(p); } } return k; };
+    return mode(bySize) || mode(byStyle) || null;
+  }catch(e){ return null; }
+}
+// 지정된 스타일·사이즈 ppb를 현재 오더 라인에 재적용 (override 있는 라인만) (v496)
+function applyPpbToLines(){
+  try{
+    if(typeof poLines==='undefined') return;
+    let any=false;
+    poLines.forEach(l=>{
+      const ov = ppbForStyleSize(l.style, l.size);
+      if(ov && Number(l.ppb) !== ov){ l.ppb = ov; l.ppbManual = true; any=true; }
+    });
+    if(any){ if(typeof renderTable==='function') renderTable(); if(typeof renderDocs==='function') renderDocs(); if(typeof saveDraft==='function') saveDraft(); }
+  }catch(e){}
+}
+// 📦 스타일 박스입수(pcs/box) 사이즈별 편집 창 — FULL BOX의 ⚙ 뱃지 클릭 시 (v496)
+function editStylePpb(style){
+  const st = String(style||'').trim();
+  if(!st){ showToast('Enter a style# first'); return; }
+  let sizes = [...new Set(poLines.filter(l=>String(l.style||'').trim()===st).map(l=>String(l.size||'').toUpperCase()).filter(Boolean))];
+  if(!sizes.length) sizes = ['S','M','L','XL','2XL','3XL'];
+  const cur = sz => { const o = ppbForStyleSize(st, sz); return o || autoPpb({style:st, size:sz}); };
+  const ex = document.getElementById('modal-ppb'); if(ex) ex.remove();
+  const div = document.createElement('div');
+  div.id = 'modal-ppb';
+  div.style.cssText = 'position:fixed;inset:0;background:rgba(15,23,42,.55);z-index:140;display:flex;align-items:center;justify-content:center;padding:12px;';
+  div.onclick = e=>{ if(e.target===div) div.remove(); };
+  const rows = sizes.map(sz=>`<div style="display:flex;align-items:center;gap:10px;">
+      <div style="width:64px;font-weight:800;font-size:13px;color:#0f2a4a;">${esc(sz)}</div>
+      <input type="number" min="1" class="ppb-sz-input" data-sz="${esc(sz)}" value="${cur(sz)}" style="width:90px;padding:6px 8px;border:1.5px solid #cbd5e1;border-radius:7px;font-size:14px;font-weight:700;text-align:center;">
+      <div style="font-size:11px;color:#94a3b8;">pcs / box</div>
+    </div>`).join('');
+  div.innerHTML = `<div style="background:#fff;border-radius:13px;width:372px;max-width:95vw;overflow:hidden;box-shadow:0 20px 60px rgba(0,0,0,.35);">
+    <div style="background:#0f2a4a;color:#fff;padding:12px 16px;font-weight:800;">📦 Box quantity — Style ${esc(st)}
+      <div style="font-weight:400;font-size:11px;color:#cbd5e1;margin-top:3px;line-height:1.4;">Pcs per full box, per size. Saved to the cloud and applied to all lines &amp; future orders (shared with all staff).</div></div>
+    <div style="padding:14px 16px;display:flex;flex-direction:column;gap:9px;">
+      ${rows}
+      <div style="display:flex;align-items:center;gap:10px;border-top:1px dashed #e2e8f0;padding-top:10px;margin-top:2px;">
+        <div style="width:64px;font-size:11px;font-weight:700;color:#0e7490;">All sizes</div>
+        <input type="number" min="1" id="ppb-all-in" placeholder="—" style="width:90px;padding:6px 8px;border:1.5px solid #a5f3fc;border-radius:7px;font-size:14px;font-weight:700;text-align:center;">
+        <button class="btn btn-sm" onclick="ppbFillAll()">Fill ↑</button>
+      </div>
+      <div style="display:flex;gap:8px;justify-content:flex-end;border-top:1px solid #eef1f5;padding-top:10px;">
+        <button class="btn btn-sm" onclick="document.getElementById('modal-ppb').remove()">Cancel</button>
+        <button class="btn btn-sm btn-primary" onclick="saveStylePpbModal('${esc(st)}')">💾 Save</button>
+      </div>
+    </div></div>`;
+  document.body.appendChild(div);
+}
+function ppbFillAll(){
+  const el = document.getElementById('ppb-all-in'); if(!el || !el.value) return;
+  document.querySelectorAll('#modal-ppb .ppb-sz-input').forEach(i=>{ i.value = el.value; });
+}
+function saveStylePpbModal(style){
+  const st = String(style||'').trim();
+  const div = document.getElementById('modal-ppb'); if(!div) return;
+  let saved=0;
+  div.querySelectorAll('.ppb-sz-input').forEach(inp=>{
+    const sz = inp.getAttribute('data-sz');
+    const v = Math.round(Number(inp.value)||0);
+    if(sz && v>0){ setStylePpb(st, sz, v); saved++; }
+  });
+  div.remove();
+  applyPpbToLines();
+  showToast('✓ Style '+st+' box quantity saved — applied to all lines & future orders');
 }
 // 스타일# 알면 카테고리·박스입수 자동 적용
 function applyMaster(l){
@@ -1228,7 +1339,8 @@ function fbCellInner(l, b, i){
   return (b.full||'')
     + (b.full&&(l.wh==='SC'||l.wh==='CA')?(()=>{ const locked = (l.wh==='SC'||l.wh==='CA') && pcShortFor(l) && !(l.pcMove&&l.pcMove.length) && !l._fbForce; const h = locked ? `onclick="showToast('🔒 Locked — move a box to PC Room first (📍 on Loose), or double-click to override')" ondblclick="bxFbUnlock(${i})"` : `onclick="bxPickFromEditor(${i})"`; return `<button class="btn btn-sm" style="border:none;padding:0 3px;font-size:11px;${locked?'opacity:.3;cursor:help;':''}" ${h} title="${locked?'Locked: PC Room is short for this line — move a box to PC Room first (📍 on Loose), or DOUBLE-CLICK to override.':'Pick which location to pull full boxes from (deducted when you save the order)'}">📍</button>`; })():'')
     + ((l.pickLocs&&l.pickLocs.length)?`<div style="font-size:9px;line-height:1.3;color:#1d4ed8;font-weight:800;white-space:nowrap;">📍 ${l.pickLocs.map(g=>esc(g.loc)+(g.n>1?' ×'+g.n:'')).join(' · ')}</div>`:'')
-    + bxStockHint(l,b);
+    + bxStockHint(l,b)
+    + (l.style ? `<div onclick="editStylePpb('${esc(String(l.style))}')" title="Box quantity for style ${esc(String(l.style))} — click to set pcs/box per size (applies to all lines & future orders)" style="display:inline-block;margin-top:2px;font-size:9px;font-weight:800;color:#0e7490;background:#ecfeff;border:1px solid #a5f3fc;border-radius:5px;padding:0 4px;cursor:pointer;white-space:nowrap;">⚙ ${l.ppb||autoPpb(l)}/box</div>` : '');
 }
 function looseCellInner(l, b, i){
   return (b.loose||'')
