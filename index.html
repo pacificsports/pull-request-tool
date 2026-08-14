@@ -145,7 +145,7 @@ main{max-width:1100px;margin:0 auto;padding:16px;}
     <button class="btn btn-sm" onclick="doLogout()" style="padding:2px 8px;font-size:10px;" data-i18n="logout">Log out</button>
   </span>
   <select id="lang-sel" onchange="setLang(this.value)" style="font-size:11px;padding:3px 6px;border-radius:5px;border:none;background:#1d3f66;color:#fff;"><option value="ko">한국어</option><option value="en">English</option><option value="es">Español</option></select>
-  <span style="font-size:10px;color:#9fb8d4;">v512 🚚</span>
+  <span style="font-size:10px;color:#9fb8d4;">v513 🚚</span>
 </div>
 <script type="text/javascript" src="https://js.authorize.net/v1/Accept.js" charset="utf-8"></script>
 <div id="po-viewer" style="display:none;position:fixed;top:0;right:0;width:44%;height:100vh;background:#fff;border-left:2px solid var(--border);z-index:60;box-shadow:-6px 0 20px rgba(0,0,0,.15);">
@@ -4496,6 +4496,26 @@ async function _invSyncOnSaveInner(rec){
       const key = bxStyleFor(L)+'|'+bxColorFor(L)+'|'+String(L.size||'').trim().toUpperCase() + (whL==='CA' ? '|CA' : '') + (L.useB ? '|B' : '');
       cur[key] = (cur[key]||0) + loose;
     });
+    // 이 PO가 이미 PC Room에서 auto-deduct 한 양을 DB(pr_pcmoves)에서 집계 → 중복 차감 방지.
+    // order meta 스냅샷(_pcAuto.lines)은 오더 수정(modified) 때 지워질 수 있어 신뢰 불가 → DB 기준으로 idempotent 하게. (v513)
+    let poMoves = [], poFetched = false;
+    try{
+      const rmv = await sbFetch('/rest/v1/pr_pcmoves?select=style,color,size,wh,delta,note&note=ilike.'+encodeURIComponent(po+' %'));
+      if(rmv.ok){ poMoves = await rmv.json(); poFetched = true; }
+    }catch(e){}
+    const alreadyDeducted = (st,col,sz,whv)=>{
+      let s=0; const bc=bxBaseColor(String(col||'').toUpperCase()), szU=String(sz||'').trim().toUpperCase();
+      poMoves.forEach(m=>{ const nt=String(m.note||'');
+        if(nt.indexOf(po+' ')!==0) return;                       // 정확히 이 PO
+        if(!/auto-deduct/i.test(nt) || /B-grade/i.test(nt)) return; // A-grade auto-deduct(및 복구)만
+        if(String(m.style||'').trim().toUpperCase()!==String(st||'').trim().toUpperCase()) return;
+        if(String(m.size||'').trim().toUpperCase()!==szU) return;
+        if(((String(m.wh||'SC').toUpperCase()==='CA')?'CA':'SC')!==whv) return;
+        if(bxBaseColor(String(m.color||'').toUpperCase())!==bc) return;
+        s += -(Number(m.delta)||0);                              // 차감 delta는 음수 → 양수 누적, 복구(+)는 상쇄
+      });
+      return Math.max(0, s);
+    };
     const keys = new Set(Object.keys(prev).concat(Object.keys(cur)));
     let pcN = 0;
     if(keys.size){
@@ -4504,12 +4524,14 @@ async function _invSyncOnSaveInner(rec){
         if(r3.ok){ pcStore = await r3.json(); pcLoaded = true; }
       }
       for(const key of keys){
-        const delta = (cur[key]||0) - (prev[key]||0);
-        if(!delta) continue;
         const parts = key.split('|');
         const st = parts[0], col = parts[1], sz = parts[2];
         const isB = parts.includes('B');
         const whv = parts.includes('CA') ? 'CA' : 'SC';
+        // baseline: A-grade는 DB 기준 이미-차감량(중복 방지), B-grade는 기존 스냅샷 유지. DB 조회 실패 시 스냅샷 폴백.
+        const baseline = isB ? (prev[key]||0) : (poFetched ? alreadyDeducted(st,col,sz,whv) : (prev[key]||0));
+        const delta = (cur[key]||0) - baseline;
+        if(!delta) continue;
         const k = pcKey(st, col, whv);
         let row = await pcFetchRowFresh(k) || pcStore.find(x=>x.k===k);
         if(!row){ row = { k, style: st, color: col, wh: whv, qty: {} }; pcStore.push(row); }
@@ -4603,12 +4625,25 @@ async function printSavedPRWh(base, wh){
             const r3 = await sbFetch('/rest/v1/pr_pcroom?select=k,style,color,qty,bqty,bnote,sizes,wh,locs,updated_at,updated_by');
             if(r3.ok){ pcStore = await r3.json(); pcLoaded = true; }
           }
+          // 이 PO가 이미 PC Room에서 뺀 양(DB 기준) → 중복 차감 방지 (v513)
+          let poMoves = [];
+          try{ const rmv = await sbFetch('/rest/v1/pr_pcmoves?select=style,color,size,wh,delta,note&note=ilike.'+encodeURIComponent(po+' %')); if(rmv.ok) poMoves = await rmv.json(); }catch(e){}
+          const alreadyDeductedPr = (st,col,sz)=>{ let s=0; const bc=bxBaseColor(String(col||'').toUpperCase()), szU=String(sz||'').trim().toUpperCase();
+            poMoves.forEach(m=>{ const nt=String(m.note||''); if(nt.indexOf(po+' ')!==0) return; if(!/auto-deduct/i.test(nt) || /B-grade/i.test(nt)) return;
+              if(String(m.style||'').trim().toUpperCase()!==String(st||'').trim().toUpperCase()) return;
+              if(String(m.size||'').trim().toUpperCase()!==szU) return;
+              if(((String(m.wh||'SC').toUpperCase()==='CA')?'CA':'SC')!==wh) return;
+              if(bxBaseColor(String(m.color||'').toUpperCase())!==bc) return;
+              s += -(Number(m.delta)||0); });
+            return Math.max(0, s); };
           let cnt = 0;
           for(const L of looseL){
-            const loose = boxCalc(L).loose;
+            const loose0 = boxCalc(L).loose;
             const st = bxStyleFor(L);
             const col = bxColorFor(L);
             const sz = String(L.size||'').trim().toUpperCase();
+            const loose = loose0 - alreadyDeductedPr(st, col, sz);   // 이미 뺀 만큼 제외
+            if(loose <= 0) continue;
             const k = pcKey(st, col);
             let row = pcStore.find(r=>r.k===k);
             if(!row){ row = { k, style: st, color: col, qty: {} }; pcStore.push(row); }
