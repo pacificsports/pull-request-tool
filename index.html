@@ -145,7 +145,7 @@ main{max-width:1100px;margin:0 auto;padding:16px;}
     <button class="btn btn-sm" onclick="doLogout()" style="padding:2px 8px;font-size:10px;" data-i18n="logout">Log out</button>
   </span>
   <select id="lang-sel" onchange="setLang(this.value)" style="font-size:11px;padding:3px 6px;border-radius:5px;border:none;background:#1d3f66;color:#fff;"><option value="ko">한국어</option><option value="en">English</option><option value="es">Español</option></select>
-  <span style="font-size:10px;color:#9fb8d4;">v505 🚚</span>
+  <span style="font-size:10px;color:#9fb8d4;">v506 🚚</span>
 </div>
 <script type="text/javascript" src="https://js.authorize.net/v1/Accept.js" charset="utf-8"></script>
 <div id="po-viewer" style="display:none;position:fixed;top:0;right:0;width:44%;height:100vh;background:#fff;border-left:2px solid var(--border);z-index:60;box-shadow:-6px 0 20px rgba(0,0,0,.15);">
@@ -750,6 +750,18 @@ function reservedBoxes(style,color,size,wh){ const r=getRsv()[rsvKey(style,color
 function physBoxes(style,color,size,wh){ try{ return (typeof bxFindAll==='function'?(bxFindAll(style,color,size,wh)||[]):[]).length; }catch(e){ return 0; } }
 function availBoxes(style,color,size,wh){ return Math.max(0, physBoxes(style,color,size,wh) - reservedBoxes(style,color,size,wh)); }
 function reserveRefill(style,color,size,wh){ return Math.max(0, reservedBoxes(style,color,size,wh) - physBoxes(style,color,size,wh)); }
+// 예약 잠금 — 이 조합에서 removeCount개를 빼면 예약분을 침범하는지 검사. 침범하면 안내 메시지, 아니면 null (v506)
+function reserveBlock(style,color,size,wh,removeCount){
+  try{
+    const rsv=reservedBoxes(style,color,size,wh); if(rsv<=0) return null;
+    const phys=physBoxes(style,color,size,wh);
+    const free=Math.max(0, phys-rsv);
+    if((Number(removeCount)||0) > free){ const r=reserveFor(style,color,size,wh);
+      return '🔒 '+rsv+' box(es) of '+String(style)+' '+String(color)+' '+String(size)+' ['+wh+'] are RESERVED'+(r&&r.cust?(' for '+r.cust):'')+(r&&r.note?(' — '+r.note):'')+'.\nOnly '+free+' box(es) are free to use here.\n\nRelease or reduce the reserve first (🔒 button on this color in Full Box).';
+    }
+  }catch(e){}
+  return null;
+}
 function setReserve(style,color,size,wh,n,cust,note){
   const k=rsvKey(style,color,size,wh); const m=getRsv();
   n=Math.max(0,Math.round(Number(n)||0));
@@ -8626,6 +8638,7 @@ async function bxLocShip(style,color,size,wh,loc){
     n = parseInt(window.prompt('['+wh+'] '+style+' '+color+' '+size+' @'+loc+' — '+list.length+' box(es)\nHow many boxes to ship?', '1'))||0;
     if(n<1) return; n = Math.min(n, list.length);
   }else if(!confirm('['+wh+'] '+style+' '+color+' '+size+' @'+loc+' — ship this 1 box?')) return;
+  const _rblk = reserveBlock(style,color,size,wh,n); if(_rblk){ alert(_rblk); return; }
   const take = list.slice(0,n);
   try{ await bxPatch(take.map(b=>b.id), {status:'OUT', out_at:new Date().toISOString(), out_by:(SESS&&SESS.email)||'', out_po:'Manual ship'}); }
   catch(e){ showToast('⚠ Failed'); return; }
@@ -8646,7 +8659,7 @@ function bxLocModal(style, color, size, wh, loc){
   div.onclick = e=>{ if(e.target===div){ div.remove(); window._blmCtx = null; } };
   div.innerHTML = `<div style="background:#fff;border-radius:12px;max-width:560px;width:100%;overflow:hidden;">
     <div style="background:${bxSpecLoc(loc,wh)?'#b45309':(wh==='CA'?'#9a3412':'#1d4ed8')};color:#fff;padding:10px 16px;font-weight:800;">${bxSpecLoc(loc,wh)?bxSpecMeta(bxSpecLoc(loc,wh)).icon:'📍'} ${esc(loc)} · [${wh}] ${esc(String(style))} ${esc(String(color))} ${esc(String(size))}
-      <div style="font-weight:400;font-size:11px;opacity:.9;">Currently ${list.length} box(es) · ${pcs} pcs/box${bxSpecLoc(loc,wh)?' &nbsp;·&nbsp; ⚠ '+esc(bxSpecMeta(bxSpecLoc(loc,wh)).note):''}</div></div>
+      <div style="font-weight:400;font-size:11px;opacity:.9;">Currently ${list.length} box(es) · ${pcs} pcs/box${bxSpecLoc(loc,wh)?' &nbsp;·&nbsp; ⚠ '+esc(bxSpecMeta(bxSpecLoc(loc,wh)).note):''}${(()=>{ const rsv=(typeof reservedBoxes==='function')?reservedBoxes(style,color,size,wh):0; if(rsv<=0) return ''; const r=reserveFor(style,color,size,wh); return ' &nbsp;·&nbsp; 🔒 '+rsv+' RESERVED'+(r&&r.cust?(' ('+esc(r.cust)+')'):'')+' — locked'; })()}</div></div>
     <div style="padding:14px 16px;display:flex;flex-direction:column;gap:12px;">
       <div style="display:flex;align-items:center;gap:8px;font-size:12px;background:#f8fafc;border:1px solid var(--border);border-radius:8px;padding:8px 10px;">
         <span style="font-weight:800;">Stock Count</span>${stBadge('BX', style, color, wh+'|'+loc)}
@@ -8697,6 +8710,7 @@ async function bxLocSet(){
       await bxInsert(rows);
       showToast('✅ +'+diff+' box(es) added @'+c.loc);
     }else{
+      const _rblk = reserveBlock(c.style,c.color,c.size,c.wh,-diff); if(_rblk){ alert(_rblk); if($('blm-set')) $('blm-set').value=list.length; return; }
       const take = list.slice(0, -diff);
       await bxPatch(take.map(b=>b.id), {status:'OUT', out_at:new Date().toISOString(), out_by:by, out_po:'Stock count adjustment'});
       showToast('✅ '+(-diff)+' box(es) deducted @'+c.loc);
@@ -8720,6 +8734,7 @@ async function bxLocRowSet(style, color, size, wh, loc, val, el){
       const pcs = list.length ? (Number(list[0].pcs)||72) : autoPpb({style, size});
       await bxInsert(Array.from({length:diff}, ()=>({style, color, size, pcs, loc, wh, status:'IN', in_by:by, note:'Stock count adjustment'})));
     }else{
+      const _rblk = reserveBlock(style,color,size,wh,-diff); if(_rblk){ alert(_rblk); if(el){ el.disabled=false; el.value=list.length; } return; }
       const take = list.slice(0, -diff);
       await bxPatch(take.map(b=>b.id), {status:'OUT', out_at:new Date().toISOString(), out_by:by, out_po:'Stock count adjustment'});
     }
