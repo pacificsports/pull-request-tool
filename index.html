@@ -145,7 +145,7 @@ main{max-width:1100px;margin:0 auto;padding:16px;}
     <button class="btn btn-sm" onclick="doLogout()" style="padding:2px 8px;font-size:10px;" data-i18n="logout">Log out</button>
   </span>
   <select id="lang-sel" onchange="setLang(this.value)" style="font-size:11px;padding:3px 6px;border-radius:5px;border:none;background:#1d3f66;color:#fff;"><option value="ko">한국어</option><option value="en">English</option><option value="es">Español</option></select>
-  <span style="font-size:10px;color:#9fb8d4;">v515 🚚</span>
+  <span style="font-size:10px;color:#9fb8d4;">v516 🚚</span>
 </div>
 <script type="text/javascript" src="https://js.authorize.net/v1/Accept.js" charset="utf-8"></script>
 <div id="po-viewer" style="display:none;position:fixed;top:0;right:0;width:44%;height:100vh;background:#fff;border-left:2px solid var(--border);z-index:60;box-shadow:-6px 0 20px rgba(0,0,0,.15);">
@@ -10662,7 +10662,32 @@ async function bxBoxesToTransfer(boxes, route){
   const ok = await _trAddLinesBulk(items);
   if(auto) _shipPallets = _shipPallets.filter(p=>p.lines.length);
   await trSaveDraftLines(); trRenderPallets();
+  // 🏷️ 회수 종이 표시용: 이 팔레트 bin에서 최근 오더용으로 지정돼 빠진 박스(OUT)를 찾아 태그로 첨부 (기록엔 영향 없음, 표시 전용)
+  if(trIsSpecKind(trSrcKind(route))){
+    try{ await bxAttachDesignated([...new Set(groups.map(g=>g.loc))]); }catch(e){}
+  }
   showToast('✅ Recall draft ready — '+ok+' line(s). Post & Receive to bring into '+trWhOfKind(trDstKind(route))+'.');
+}
+function _desigDest(po){ const s=String(po||''); if(/PC ROOM/i.test(s)) return '🧺 PC Room'; if(/^PO /i.test(s)) return '📦 Full Box · '+s; if(/manual ship|stock count|removed|adjustment/i.test(s)) return 'Ship-out / adjust'; return s||'—'; }
+// 표시 전용: 지정돼 빠진 박스를 _shipMeta.designatedByPallet 에 저장 → 회수 pull request 종이에 태그로 나옴
+async function bxAttachDesignated(bins){
+  const map = {}; const cutoff = Date.now() - 30*864e5;
+  for(const bin of bins){
+    try{
+      const rr = await sbFetch('/rest/v1/pr_boxes?select=style,color,size,pcs,out_po,out_at&status=eq.OUT&loc=eq.'+encodeURIComponent(bin));
+      if(!rr.ok) continue;
+      const outs = await rr.json();
+      const gm = {};
+      outs.forEach(b=>{ const t = b.out_at ? Date.parse(b.out_at) : 0; if(!t || t < cutoff) return;
+        const dest = _desigDest(b.out_po);
+        const k = String(b.style)+'|'+String(b.color).toUpperCase()+'|'+String(b.size).toUpperCase()+'|'+dest;
+        if(!gm[k]) gm[k] = { style:String(b.style), color:String(b.color).toUpperCase(), size:String(b.size).toUpperCase(), dest, boxes:0 };
+        gm[k].boxes++; });
+      const arr = Object.values(gm).sort((a,b)=>a.style.localeCompare(b.style)||a.color.localeCompare(b.color)||bxSizeCmp(a.size,b.size));
+      if(arr.length) map[bin] = arr;
+    }catch(e){}
+  }
+  if(Object.keys(map).length){ _shipMeta = _shipMeta||{}; _shipMeta.designatedByPallet = map; if(_shipId){ try{ await trPatchRec(_shipId, {meta:_shipMeta}); }catch(e){} } }
 }
 // 피커에서 3rd party 팔레트 클릭 → 그 팔레트 회수 Transfer 초안 (오더 지정은 취소하고 회수 먼저)
 function bxPullRecall3P(gi){
@@ -12196,6 +12221,28 @@ function trPRPalletHtml(D, p){
         <td style="border:1px solid #333;padding:6px 8px;"></td>
       </tr></tfoot>
     </table>
+    ${(()=>{ const desig = ((_M.designatedByPallet)||{})[p.label] || []; if(!desig.length) return '';
+      const dBox = desig.reduce((s,d)=>s+d.boxes,0); const physTot = pBox + dBox;
+      return `<div style="margin-top:12px;border:2px dashed #b45309;border-radius:6px;overflow:hidden;">
+        <div style="background:#fffbeb;color:#92400e;font-weight:800;font-size:12px;padding:7px 12px;">🏷️ ALSO ON THIS PALLET — already designated for orders · route as tagged (do NOT add to the transfer)</div>
+        <table style="width:100%;border-collapse:collapse;font-size:11px;">
+          <thead><tr style="background:#fef3c7;">
+            <th style="border:1px solid #d6a45f;padding:5px 8px;text-align:left;">Style#</th>
+            <th style="border:1px solid #d6a45f;padding:5px 8px;text-align:left;">Color</th>
+            <th style="border:1px solid #d6a45f;padding:5px 8px;">Size</th>
+            <th style="border:1px solid #d6a45f;padding:5px 8px;">Boxes</th>
+            <th style="border:1px solid #d6a45f;padding:5px 8px;text-align:left;">→ Route to</th>
+            <th style="border:1px solid #d6a45f;padding:5px 8px;width:56px;">✔</th></tr></thead>
+          <tbody>${desig.map(d=>`<tr>
+            <td style="border:1px solid #d6a45f;padding:5px 8px;font-weight:700;">${esc(d.style)}</td>
+            <td style="border:1px solid #d6a45f;padding:5px 8px;">${esc(bxBaseColor(d.color))}</td>
+            <td style="border:1px solid #d6a45f;padding:5px 8px;text-align:center;">${esc(d.size)}</td>
+            <td style="border:1px solid #d6a45f;padding:5px 8px;text-align:right;font-weight:700;">${d.boxes}</td>
+            <td style="border:1px solid #d6a45f;padding:5px 8px;font-weight:700;color:#92400e;">${esc(d.dest)}</td>
+            <td style="border:1px solid #d6a45f;padding:5px 8px;text-align:center;"><div style="width:14px;height:14px;border:1.5px solid #333;margin:0 auto;"></div></td></tr>`).join('')}</tbody>
+        </table>
+        <div style="background:#0f2a4a;color:#fff;font-weight:800;font-size:12.5px;padding:8px 12px;">📦 PHYSICAL BOXES ON PALLET ${esc(p.label)}: ${physTot} &nbsp;<span style="font-weight:500;color:#cbd5e1;">( ${pBox} to ${esc(toLbl)} + ${dBox} already designated )</span></div>
+      </div>`; })()}
     ${_M.notes?`<div style="background:#fffde7;border:1px solid #fbc02d;padding:6px 10px;font-size:11px;margin-top:10px;"><b>Notes:</b> ${esc(_M.notes)}</div>`:''}
     <div style="font-size:10.5px;margin-top:12px;color:#333;">Pull the boxes listed above from their bins and load onto <b>${esc(p.label)}</b>. Check off each line as it is pulled.</div>
     <div style="margin-top:34px;display:grid;grid-template-columns:1fr 1fr;gap:30px;font-size:11px;">
