@@ -145,7 +145,7 @@ main{max-width:1100px;margin:0 auto;padding:16px;}
     <button class="btn btn-sm" onclick="doLogout()" style="padding:2px 8px;font-size:10px;" data-i18n="logout">Log out</button>
   </span>
   <select id="lang-sel" onchange="setLang(this.value)" style="font-size:11px;padding:3px 6px;border-radius:5px;border:none;background:#1d3f66;color:#fff;"><option value="ko">한국어</option><option value="en">English</option><option value="es">Español</option></select>
-  <span style="font-size:10px;color:#9fb8d4;">v534 ↩</span>
+  <span style="font-size:10px;color:#9fb8d4;">v535 ↩</span>
 </div>
 <script type="text/javascript" src="https://js.authorize.net/v1/Accept.js" charset="utf-8"></script>
 <div id="po-viewer" style="display:none;position:fixed;top:0;right:0;width:44%;height:100vh;background:#fff;border-left:2px solid var(--border);z-index:60;box-shadow:-6px 0 20px rgba(0,0,0,.15);">
@@ -1934,12 +1934,16 @@ function altCombos(styleQ){
   return Object.values(map);
 }
 // 재고 인덱스 1회 생성: style|color|size|wh -> pcs (박스 12만개도 한 번만 순회) (v524)
+// 재고 인덱스: key -> {box: 풀박스 pcs, pc: PC Room pcs} (v535 — 풀박스/PC 분리)
 function altBuildIdx(){
-  const idx={}; const bump=(k,n)=>{ idx[k]=(idx[k]||0)+n; };
-  (typeof bxStore!=='undefined'?bxStore:[]).forEach(b=>{ const st=String(b.style||'').trim().toUpperCase(), co=String(b.color||'').trim().toUpperCase(), sz=String(b.size||'').trim().toUpperCase(); if(!st||!sz) return; bump(st+'|'+co+'|'+sz+'|'+(bxWh(b)==='CA'?'CA':'SC'), Number(b.pcs)||0); });
-  (typeof pcStore!=='undefined'?pcStore:[]).forEach(r=>{ const st=String(r.style||'').trim().toUpperCase(), co=String(r.color||'').trim().toUpperCase(), wh=((typeof pcWhOf==='function'?pcWhOf(r):'SC')==='CA'?'CA':'SC'); const qm=r.qty||{}; Object.keys(qm).forEach(s0=>{ const sz=String(s0).trim().toUpperCase(); const n=Number(qm[s0])||0; if(!st||!sz||n<=0) return; bump(st+'|'+co+'|'+sz+'|'+wh, n); }); });
+  const idx={}; const cell=(k)=>{ if(!idx[k]) idx[k]={box:0,pc:0}; return idx[k]; };
+  (typeof bxStore!=='undefined'?bxStore:[]).forEach(b=>{ const st=String(b.style||'').trim().toUpperCase(), co=String(b.color||'').trim().toUpperCase(), sz=String(b.size||'').trim().toUpperCase(); if(!st||!sz) return; cell(st+'|'+co+'|'+sz+'|'+(bxWh(b)==='CA'?'CA':'SC')).box += Number(b.pcs)||0; });
+  (typeof pcStore!=='undefined'?pcStore:[]).forEach(r=>{ const st=String(r.style||'').trim().toUpperCase(), co=String(r.color||'').trim().toUpperCase(), wh=((typeof pcWhOf==='function'?pcWhOf(r):'SC')==='CA'?'CA':'SC'); const qm=r.qty||{}; Object.keys(qm).forEach(s0=>{ const sz=String(s0).trim().toUpperCase(); const n=Number(qm[s0])||0; if(!st||!sz||n<=0) return; cell(st+'|'+co+'|'+sz+'|'+wh).pc += n; }); });
   return idx;
 }
+function _altTot(idx,k){ const c=idx[k]; return c?(c.box+c.pc):0; }
+function _altBox(idx,k){ const c=idx[k]; return c?c.box:0; }
+function _altPc(idx,k){ const c=idx[k]; return c?c.pc:0; }
 function _altV(id){ const e=document.getElementById(id); return e?String(e.value||''):''; }
 // 스타일/칼라/사이즈 입력 → 그 조합의 재고 표시 (칼라 비우면 그 스타일·사이즈의 재고 있는 칼라들 나열)
 function altStockCheck(){
@@ -1949,21 +1953,28 @@ function altStockCheck(){
   if(!st){ box.innerHTML='<span style="color:#9ca3af;">Enter a style# above to see stock.</span>'; return; }
   if(!co && !sz){ box.innerHTML='<div style="color:#6b7280;font-size:12px;line-height:1.6;">Enter a <b>color</b> and <b>size</b> above to see its SC / CA stock.<br>Or enter just a <b>size</b> (leave color blank) to list the in-stock colors for that size.</div>'; return; }
   if(co && sz){
-    const scv=idx[st+'|'+co+'|'+sz+'|SC']||0, cav=idx[st+'|'+co+'|'+sz+'|CA']||0;
-    box.innerHTML = `<div style="font-size:14px;font-weight:800;">${esc(st)} · ${esc(co)} · ${esc(sz)}</div>
-      <div style="margin-top:4px;">SC <b style="color:${scv>0?'#166534':'#9ca3af'};font-size:16px;">${scv.toLocaleString()}</b> pcs &nbsp;·&nbsp; CA <b style="color:${cav>0?'#166534':'#9ca3af'};font-size:16px;">${cav.toLocaleString()}</b> pcs</div>
-      ${(scv+cav)<=0?'<div style="color:#dc2626;font-weight:700;margin-top:3px;">⚠ No stock for this exact combo — check the color/size spelling.</div>':''}`;
+    const scBox=_altBox(idx,st+'|'+co+'|'+sz+'|SC'), scPc=_altPc(idx,st+'|'+co+'|'+sz+'|SC'), scv=scBox+scPc;
+    const caBox=_altBox(idx,st+'|'+co+'|'+sz+'|CA'), caPc=_altPc(idx,st+'|'+co+'|'+sz+'|CA'), cav=caBox+caPc;
+    const whCard=(name,tot,bx,pc,pick)=>`<div style="flex:1;min-width:150px;border:1.5px solid ${tot>0?'#86efac':'#e5e7eb'};border-radius:8px;padding:8px 12px;background:${tot>0?'#f0fdf4':'#fafafa'};cursor:pointer;" onclick="altPickWh('${pick}')">
+        <div style="font-size:11px;font-weight:800;color:#374151;">${name} <span style="font-weight:400;color:#9ca3af;">(click to pick)</span></div>
+        <div style="font-size:20px;font-weight:900;color:${tot>0?'#166534':'#9ca3af'};line-height:1.1;">${tot.toLocaleString()} <span style="font-size:11px;font-weight:700;">pcs</span></div>
+        <div style="font-size:11px;color:#4b5563;margin-top:2px;">📦 Full Box <b>${bx.toLocaleString()}</b> &nbsp;·&nbsp; 🧺 PC Room <b>${pc.toLocaleString()}</b></div>
+      </div>`;
+    box.innerHTML = `<div style="font-size:14px;font-weight:800;margin-bottom:6px;">${esc(st)} · ${esc(co)} · ${esc(sz)}</div>
+      <div style="display:flex;gap:10px;flex-wrap:wrap;">${whCard('SC',scv,scBox,scPc,'SC')}${whCard('CA',cav,caBox,caPc,'CA')}</div>
+      ${(scv+cav)<=0?'<div style="color:#dc2626;font-weight:700;margin-top:6px;">⚠ No stock for this exact combo — check the color/size spelling.</div>':'<div style="font-size:11px;color:#6b7280;margin-top:6px;">After you Replace, pull whole boxes or transfer to PC Room from the order line — same as a normal order line (this stays on the same order, no new order card).</div>'}`;
     return;
   }
   // 스타일(+사이즈)만 있음 → 재고 있는 칼라/사이즈 나열
   const rows={};
-  Object.keys(idx).forEach(k=>{ const p=k.split('|'); if(p[0]!==st) return; if(sz && p[2]!==sz) return; const rk=p[1]+'|'+p[2]; (rows[rk]=rows[rk]||{color:p[1],size:p[2],sc:0,ca:0}); if(p[3]==='CA') rows[rk].ca+=idx[k]; else rows[rk].sc+=idx[k]; });
+  Object.keys(idx).forEach(k=>{ const p=k.split('|'); if(p[0]!==st) return; if(sz && p[2]!==sz) return; const rk=p[1]+'|'+p[2]; (rows[rk]=rows[rk]||{color:p[1],size:p[2],sc:0,ca:0}); if(p[3]==='CA') rows[rk].ca+=_altTot(idx,k); else rows[rk].sc+=_altTot(idx,k); });
   const list=Object.values(rows).filter(r=>r.sc+r.ca>0).sort((a,b)=>a.color.localeCompare(b.color)||bxSizeCmp(a.size,b.size)).slice(0,120);
   if(!list.length){ box.innerHTML='<span style="color:#dc2626;">No in-stock colors/sizes for this style.</span>'; return; }
   box.innerHTML = `<div style="font-size:11px;color:#6b7280;margin-bottom:4px;">In stock for <b>${esc(st)}</b>${sz?(' · '+esc(sz)):''} — click a row to fill it in:</div>
     <table class="etbl" style="font-size:12px;width:100%;"><thead><tr><th class="tl">Color</th><th>Size</th><th>SC</th><th>CA</th></tr></thead><tbody>${list.map(r=>`<tr style="cursor:pointer;" onclick="altFill('${esc(r.color)}','${esc(r.size)}')"><td class="tl">${esc(r.color)}</td><td style="text-align:center;font-weight:700;">${esc(r.size)}</td><td style="text-align:center;color:${r.sc>0?'#166534':'#9ca3af'};">${r.sc?r.sc.toLocaleString():'—'}</td><td style="text-align:center;color:${r.ca>0?'#166534':'#9ca3af'};">${r.ca?r.ca.toLocaleString():'—'}</td></tr>`).join('')}</tbody></table>`;
 }
 function altFill(color,size){ const c=document.getElementById('alt-color'); if(c)c.value=color; const s=document.getElementById('alt-size'); if(s)s.value=size; altStockCheck(); }
+function altPickWh(wh){ const s=document.getElementById('alt-wh'); if(s){ s.value=(String(wh).toUpperCase()==='CA'?'CA':'SC'); } }
 // 이 오더의 모든 백오더(BO) 라인을 한눈에 — 클릭하면 그 라인을 교체 대상으로 (v534)
 function altBoSummaryHtml(){
   const sel=(window._altSel||{}).i;
@@ -2032,8 +2043,8 @@ function altApplyForm(){
   if(!sz){ alert('⚠ Enter a size'); return; }
   if(qty<=0){ alert('⚠ Enter a quantity'); return; }
   const idx=window._altIdx||{}; const STU=st.toUpperCase();
-  const avail = co ? (idx[STU+'|'+co+'|'+sz+'|'+wh]||0)
-                   : (()=>{ let s=0; Object.keys(idx).forEach(k=>{ const p=k.split('|'); if(p[0]===STU&&p[2]===sz&&p[3]===wh) s+=idx[k]; }); return s; })();
+  const avail = co ? _altTot(idx, STU+'|'+co+'|'+sz+'|'+wh)
+                   : (()=>{ let s=0; Object.keys(idx).forEach(k=>{ const p=k.split('|'); if(p[0]===STU&&p[2]===sz&&p[3]===wh) s+=_altTot(idx,k); }); return s; })();
   if(qty>avail && !confirm(`선택 창고(${wh}) 재고 ${avail.toLocaleString()}pcs 보다 많은 ${qty.toLocaleString()}pcs 예요. 그래도 진행할까요?`)) return;
   const orig={style:l.style,color:l.color,size:l.size,qty:l.qty,wh:'BO'};
   l._altFrom=orig;
