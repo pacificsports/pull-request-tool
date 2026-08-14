@@ -145,7 +145,7 @@ main{max-width:1100px;margin:0 auto;padding:16px;}
     <button class="btn btn-sm" onclick="doLogout()" style="padding:2px 8px;font-size:10px;" data-i18n="logout">Log out</button>
   </span>
   <select id="lang-sel" onchange="setLang(this.value)" style="font-size:11px;padding:3px 6px;border-radius:5px;border:none;background:#1d3f66;color:#fff;"><option value="ko">한국어</option><option value="en">English</option><option value="es">Español</option></select>
-  <span style="font-size:10px;color:#9fb8d4;">v500 🚚</span>
+  <span style="font-size:10px;color:#9fb8d4;">v501 🚚</span>
 </div>
 <script type="text/javascript" src="https://js.authorize.net/v1/Accept.js" charset="utf-8"></script>
 <div id="po-viewer" style="display:none;position:fixed;top:0;right:0;width:44%;height:100vh;background:#fff;border-left:2px solid var(--border);z-index:60;box-shadow:-6px 0 20px rgba(0,0,0,.15);">
@@ -3141,6 +3141,18 @@ async function returnCancel(base, ra){
   showToast('🗑 '+ra+' cancelled');
 }
 // ═══ 📦 Receive & Confirm → 재고 복구 + 📝 Credit Memo 발행 (v500) ═══
+// PC Room B-grade(bqty) 에 수량 추가 — 반품 B-grade 복구용 (v501)
+async function pcAddB(k, size, addN, note){
+  addN = Math.round(Number(addN)||0); if(!addN) return;
+  let row = await pcFetchRowFresh(k) || pcStore.find(r=>r.k===k);
+  if(!row){ const p=String(k).split('|'); row={ k, style:p[0], color:p[1], wh:(p[2]==='CA'?'CA':'SC'), qty:{}, bqty:{}, sizes:(typeof pcSizesFor==='function'?pcSizesFor(p[0]):[]) }; pcStore.push(row); }
+  row.bqty = row.bqty || {};
+  const oldB = Number(row.bqty[size])||0;
+  const nB = oldB + addN;
+  if(nB<=0) delete row.bqty[size]; else row.bqty[size]=nB;
+  await pcSaveRow(row);
+  try{ pcLogMove(row, size, 0, Number((row.qty||{})[size])||0, '[B '+(addN>=0?'+':'')+addN+' → '+nB+'] '+(note||'')); }catch(e){}
+}
 function openReturnReceive(base, ra){
   const rec = savedCache.find(s=>s.base===base); if(!rec) return;
   const ret = recReturns(rec).find(r=>r.ra===ra); if(!ret){ showToast('⚠ Return not found'); return; }
@@ -3154,7 +3166,8 @@ function openReturnReceive(base, ra){
       <td style="border:1px solid #e5e7eb;padding:5px 8px;font-size:10.5px;color:#9a3412;">${esc(l.reason||'')}</td>
       <td style="border:1px solid #e5e7eb;padding:5px 8px;text-align:right;color:#888;">${rq.toLocaleString()}</td>
       <td style="border:1px solid #e5e7eb;padding:4px 6px;text-align:right;background:#f0fdf4;"><input class="fi num rr-recv" data-i="${i}" type="number" min="0" value="${rq}" oninput="rrRecalc('${esc(base)}','${esc(ra)}')" style="width:70px;font-weight:800;text-align:right;"></td>
-      <td style="border:1px solid #e5e7eb;padding:4px 6px;text-align:right;white-space:nowrap;background:#eff6ff;"><input class="fi num rr-rest" data-i="${i}" type="number" min="0" value="${rq}" oninput="rrRecalc('${esc(base)}','${esc(ra)}')" style="width:60px;font-weight:800;text-align:right;"> <span class="chip chip-${toWh}" style="font-size:9px;padding:1px 5px;">${toWh}</span></td>
+      <td style="border:1px solid #e5e7eb;padding:4px 6px;text-align:right;white-space:nowrap;background:#eff6ff;"><input class="fi num rr-restA" data-i="${i}" type="number" min="0" value="${rq}" oninput="rrRecalc('${esc(base)}','${esc(ra)}')" style="width:54px;font-weight:800;text-align:right;"> <span class="chip chip-${toWh}" style="font-size:9px;padding:1px 5px;">${toWh}</span></td>
+      <td style="border:1px solid #e5e7eb;padding:4px 6px;text-align:right;background:#fffbeb;"><input class="fi num rr-restB" data-i="${i}" type="number" min="0" value="0" oninput="rrRecalc('${esc(base)}','${esc(ra)}')" style="width:52px;font-weight:800;text-align:right;color:#b45309;"></td>
       <td style="border:1px solid #e5e7eb;padding:4px 6px;text-align:right;"><input class="fi num rr-price" data-i="${i}" type="number" min="0" step="0.01" value="${price.toFixed(2)}" oninput="rrRecalc('${esc(base)}','${esc(ra)}')" style="width:64px;text-align:right;"></td>
       <td style="border:1px solid #e5e7eb;padding:5px 8px;text-align:right;font-weight:800;" class="rr-amt" data-i="${i}">$${(rq*price).toFixed(2)}</td>
     </tr>`; }).join('');
@@ -3164,15 +3177,15 @@ function openReturnReceive(base, ra){
   div.innerHTML=`<div style="background:#fff;border-radius:12px;max-width:900px;width:100%;max-height:90vh;display:flex;flex-direction:column;overflow:hidden;">
     <div style="background:#16a34a;color:#fff;padding:10px 16px;font-weight:800;">📦 Receive &amp; Confirm — ${esc(ret.ra)} · ${esc((rec.meta&&rec.meta.cust)||'')}
       ${ret.cc?'<span style="background:#fff;color:#b91c1c;font-size:10px;font-weight:900;padding:2px 8px;border-radius:20px;margin-left:8px;">💳 CREDIT CARD</span>':''}
-      <div style="font-weight:400;font-size:11px;color:#dcfce7;margin-top:2px;"><b>Received</b> = credited to the customer. <b>Restock</b> = added back to PC Room stock (set lower to exclude damaged pcs).</div></div>
+      <div style="font-weight:400;font-size:11px;color:#dcfce7;margin-top:2px;"><b>Received</b> = credited to the customer. <b>Restock A</b> = back to normal PC Room stock · <b>Restock B</b> = B-grade stock. Leftover (received − A − B) is scrapped.</div></div>
     <div style="overflow-y:auto;padding:12px 16px;">
       <table style="border-collapse:collapse;font-size:12px;width:100%;">
         <thead><tr style="background:#f3f4f6;">
           <th style="border:1px solid #e5e7eb;padding:5px 8px;text-align:left;">Style</th><th style="border:1px solid #e5e7eb;padding:5px 8px;text-align:left;">Color</th><th style="border:1px solid #e5e7eb;padding:5px 8px;">Size</th><th style="border:1px solid #e5e7eb;padding:5px 8px;text-align:left;">Reason</th>
-          <th style="border:1px solid #e5e7eb;padding:5px 8px;">Return</th><th style="border:1px solid #e5e7eb;padding:5px 8px;background:#dcfce7;">Received ✓</th><th style="border:1px solid #e5e7eb;padding:5px 8px;background:#dbeafe;">Restock → WH</th><th style="border:1px solid #e5e7eb;padding:5px 8px;">Unit $</th><th style="border:1px solid #e5e7eb;padding:5px 8px;">Credit</th>
+          <th style="border:1px solid #e5e7eb;padding:5px 8px;">Return</th><th style="border:1px solid #e5e7eb;padding:5px 8px;background:#dcfce7;">Received ✓</th><th style="border:1px solid #e5e7eb;padding:5px 8px;background:#dbeafe;">Restock A → WH</th><th style="border:1px solid #e5e7eb;padding:5px 8px;background:#fef3c7;">Restock B<br><span style="font-weight:400;font-size:9px;">(B-grade)</span></th><th style="border:1px solid #e5e7eb;padding:5px 8px;">Unit $</th><th style="border:1px solid #e5e7eb;padding:5px 8px;">Credit</th>
         </tr></thead>
         <tbody>${rows}</tbody>
-        <tfoot><tr style="background:#f0fdf4;font-weight:800;"><td colspan="8" style="border:1px solid #e5e7eb;padding:6px 8px;text-align:right;">CREDIT MEMO TOTAL</td><td style="border:1px solid #e5e7eb;padding:6px 8px;text-align:right;color:#166534;font-size:14px;" id="rr-total">$0.00</td></tr></tfoot>
+        <tfoot><tr style="background:#f0fdf4;font-weight:800;"><td colspan="9" style="border:1px solid #e5e7eb;padding:6px 8px;text-align:right;">CREDIT MEMO TOTAL</td><td style="border:1px solid #e5e7eb;padding:6px 8px;text-align:right;color:#166534;font-size:14px;" id="rr-total">$0.00</td></tr></tfoot>
       </table>
       ${ret.cc?'<div class="muted" style="font-size:10.5px;margin-top:8px;color:#b91c1c;">💳 Credit-card customer — the credit memo will be marked "refund to card required".</div>':''}
     </div>
@@ -3192,7 +3205,10 @@ function rrRecalc(base, ra){
     const price=Number((div.querySelector('.rr-price[data-i="'+i+'"]')||{}).value)||0;
     const amt=recv*price; total+=amt;
     const cell=div.querySelector('.rr-amt[data-i="'+i+'"]'); if(cell) cell.textContent='$'+amt.toFixed(2);
-    const rest=div.querySelector('.rr-rest[data-i="'+i+'"]'); if(rest && (parseInt(rest.value)||0)>recv) rest.value=recv;
+    const aEl=div.querySelector('.rr-restA[data-i="'+i+'"]'), bEl=div.querySelector('.rr-restB[data-i="'+i+'"]');
+    let a=aEl?Math.max(0,parseInt(aEl.value)||0):0, b=bEl?Math.max(0,parseInt(bEl.value)||0):0;
+    if(a>recv){ a=recv; if(aEl) aEl.value=a; }        // A ≤ 받은 수량
+    if(a+b>recv){ b=Math.max(0, recv-a); if(bEl) bEl.value=b; }   // A+B ≤ 받은 수량
   });
   const tt=document.getElementById('rr-total'); if(tt) tt.textContent='$'+total.toFixed(2);
 }
@@ -3200,30 +3216,34 @@ async function returnReceiveConfirm(base, ra){
   const rec=savedCache.find(s=>s.base===base); if(!rec) return;
   const ret=recReturns(rec).find(r=>r.ra===ra); if(!ret || ret.status==='received') return;
   const div=document.getElementById('modal-rareceive'); if(!div) return;
-  const recvLines=[]; let creditAmt=0, restockTot=0;
+  const recvLines=[]; let creditAmt=0, restockA=0, restockB=0;
   (ret.lines||[]).forEach((l,i)=>{
     const recv=Math.max(0, parseInt((div.querySelector('.rr-recv[data-i="'+i+'"]')||{}).value)||0);
-    let rest=Math.max(0, parseInt((div.querySelector('.rr-rest[data-i="'+i+'"]')||{}).value)||0); if(rest>recv) rest=recv;
+    let a=Math.max(0, parseInt((div.querySelector('.rr-restA[data-i="'+i+'"]')||{}).value)||0);
+    let b=Math.max(0, parseInt((div.querySelector('.rr-restB[data-i="'+i+'"]')||{}).value)||0);
+    if(a>recv) a=recv;
+    if(a+b>recv) b=Math.max(0, recv-a);
     const price=Number((div.querySelector('.rr-price[data-i="'+i+'"]')||{}).value)||Number(l.price)||0;
-    creditAmt+=recv*price; restockTot+=rest;
-    recvLines.push(Object.assign({}, l, {receivedQty:recv, restockQty:rest, price:price}));
+    creditAmt+=recv*price; restockA+=a; restockB+=b;
+    recvLines.push(Object.assign({}, l, {receivedQty:recv, restockA:a, restockB:b, restockQty:a+b, price:price}));
   });
   creditAmt=Math.round(creditAmt*100)/100;
+  const restockTot=restockA+restockB;
   const cm=ra.replace(/^RA-/, 'CM-');
-  if(!confirm('Confirm receipt of '+ra+'?\n\n• Credit memo '+cm+':  $'+creditAmt.toFixed(2)+'\n• Restock '+restockTot.toLocaleString()+' pcs → PC Room\n\nThis cannot be edited afterward.')) return;
+  if(!confirm('Confirm receipt of '+ra+'?\n\n• Credit memo '+cm+':  $'+creditAmt.toFixed(2)+'\n• Restock → normal(A): '+restockA.toLocaleString()+' pcs · B-grade(B): '+restockB.toLocaleString()+' pcs\n\nThis cannot be edited afterward.')) return;
   for(const l of recvLines){
-    if(l.restockQty>0){
-      const toWh=(l.toWh||l.wh)==='CA'?'CA':'SC';
-      try{ await pcCellChange(pcKey(l.style, l.color, toWh), String(l.size).toUpperCase(), '+'+l.restockQty, null, '↩ Return '+ra+' received'); }catch(e){}
-    }
+    const toWh=(l.toWh||l.wh)==='CA'?'CA':'SC';
+    const k=pcKey(l.style, l.color, toWh), sz=String(l.size).toUpperCase();
+    if(l.restockA>0){ try{ await pcCellChange(k, sz, '+'+l.restockA, null, '↩ Return '+ra+' received (A)'); }catch(e){} }
+    if(l.restockB>0){ try{ await pcAddB(k, sz, l.restockB, '↩ Return '+ra+' received (B-grade)'); }catch(e){} }
   }
   ret.status='received';
-  ret.received={ at:new Date().toISOString(), by:(SESS&&SESS.email)||'', lines:recvLines, creditAmount:creditAmt, restockTotal:restockTot, cm:cm };
+  ret.received={ at:new Date().toISOString(), by:(SESS&&SESS.email)||'', lines:recvLines, creditAmount:creditAmt, restockTotal:restockTot, restockA:restockA, restockB:restockB, cm:cm };
   rec.meta=rec.meta||{};
   rec.meta._returns=recReturns(rec).map(r=>r.ra===ra?ret:r);
   try{ await sbFetch('/rest/v1/pr_orders?base=eq.'+encodeURIComponent(base), {method:'PATCH', headers:{Prefer:'return=minimal'}, body:JSON.stringify({meta:rec.meta, updated_at:new Date().toISOString()})}); }
   catch(e){ alert('⚠ Failed to save: '+(e.message||e)); return; }
-  logHist(base, '↩ Return received — '+ra+' · '+cm+' $'+creditAmt.toFixed(2)+' · restock '+restockTot+' pcs');
+  logHist(base, '↩ Return received — '+ra+' · '+cm+' $'+creditAmt.toFixed(2)+' · restock A '+restockA+' / B '+restockB+' pcs');
   div.remove();
   const dd=document.getElementById('modal-radetail'); if(dd) dd.remove();
   renderSaved();
