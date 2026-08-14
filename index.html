@@ -145,7 +145,7 @@ main{max-width:1100px;margin:0 auto;padding:16px;}
     <button class="btn btn-sm" onclick="doLogout()" style="padding:2px 8px;font-size:10px;" data-i18n="logout">Log out</button>
   </span>
   <select id="lang-sel" onchange="setLang(this.value)" style="font-size:11px;padding:3px 6px;border-radius:5px;border:none;background:#1d3f66;color:#fff;"><option value="ko">한국어</option><option value="en">English</option><option value="es">Español</option></select>
-  <span style="font-size:10px;color:#9fb8d4;">v514 🚚</span>
+  <span style="font-size:10px;color:#9fb8d4;">v515 🚚</span>
 </div>
 <script type="text/javascript" src="https://js.authorize.net/v1/Accept.js" charset="utf-8"></script>
 <div id="po-viewer" style="display:none;position:fixed;top:0;right:0;width:44%;height:100vh;background:#fff;border-left:2px solid var(--border);z-index:60;box-shadow:-6px 0 20px rgba(0,0,0,.15);">
@@ -9178,7 +9178,9 @@ function bxOpenPicker(L, lwh, po, onDone, mode, needOverride){
           <td class="tl"><span style="font-size:10px;font-weight:800;color:${vc};background:${vl==='Tubular'?'#f1f5f9':(/US/.test(vl)?'#fff7ed':'#f5f3ff')};padding:1px 7px;border-radius:10px;white-space:nowrap;">${esc(vl)}</span></td>
           <td style="font-family:Consolas,monospace;">${g.boxes.length}</td>
           <td style="font-size:11px;color:var(--text2);">${g.oldest?String(g.oldest).slice(0,10):''}</td>
-          <td><input class="fi bp-take" data-gi="${gi}" type="number" min="0" max="${g.boxes.length}" value="${g.take}" style="width:60px;font-weight:800;" oninput="bxPullSum()"></td>
+          <td>${bxSpecLoc(g.loc, lwh)
+            ? `<button class="btn btn-sm" style="background:#b45309;color:#fff;border-color:#b45309;font-weight:800;white-space:nowrap;" onclick="bxPullRecall3P(${gi})" title="3rd Party bin — can't pull directly. Click to start a recall Transfer (${lwh==='CA'?'3rd Party→CA':'3rd Party→SC'}) for this pallet, then Post & Receive to bring it in.">🏭→${lwh} Recall</button>`
+            : `<input class="fi bp-take" data-gi="${gi}" type="number" min="0" max="${g.boxes.length}" value="${g.take}" style="width:60px;font-weight:800;" oninput="bxPullSum()">`}</td>
         </tr>`;}).join('')}</tbody>
       </table>
     </div>
@@ -10640,6 +10642,37 @@ async function bxLocToTransfer(route){
   await trSaveDraftLines();
   trRenderPallets();
   showToast('✅ '+ok+' line(s) → new '+TR_ROUTES[route].label+' draft — set the truck info and Post when ready');
+}
+// 🏭→SC 회수: 주어진 박스들로 회수 Transfer 초안 생성 (팔레트=bin, H2SC/LK2CA)
+async function bxBoxesToTransfer(boxes, route){
+  if(!boxes || !boxes.length){ showToast('⚠ No boxes to recall'); return; }
+  const gm = {};
+  boxes.forEach(b=>{ const loc=String(b.loc||'?').toUpperCase(); const k=loc+'|'+String(b.style)+'|'+String(b.color).toUpperCase()+'|'+String(b.size).toUpperCase()+'|'+(Number(b.pcs)||0);
+    if(!gm[k]) gm[k]={loc, style:String(b.style), color:String(b.color).toUpperCase(), size:String(b.size).toUpperCase(), ppb:Number(b.pcs)||0, ids:[]};
+    gm[k].ids.push(b.id); });
+  const groups = Object.values(gm).sort((a,b)=>a.loc.localeCompare(b.loc,undefined,{numeric:true})||a.style.localeCompare(b.style)||a.color.localeCompare(b.color)||bxSizeCmp(a.size,b.size));
+  showToast('🏭→ Building '+TR_ROUTES[route].label+' recall — '+groups.length+' line(s) · '+boxes.length+' box(es)...');
+  await trBuilderOpen(null, route);
+  const auto = trSrcAutoPallet(route); const items=[];
+  for(const g of groups){ let target;
+    if(auto){ let p=_shipPallets.find(x=>x.label===g.loc); if(!p){ p={id:'p_'+Math.random().toString(36).slice(2,9), label:g.loc, lines:[]}; _shipPallets.push(p); } target=p.id; }
+    else { if(!_shipPallets.length) _shipPallets.push({id:'p_'+Math.random().toString(36).slice(2,9), label:'Pallet 1', lines:[]}); target=_shipPallets[0].id; }
+    items.push({ pid:target, line:{ is_manual:false, style:g.style, color:g.color, size:g.size, bin:g.loc, ppb:g.ppb, ids:g.ids } });
+  }
+  const ok = await _trAddLinesBulk(items);
+  if(auto) _shipPallets = _shipPallets.filter(p=>p.lines.length);
+  await trSaveDraftLines(); trRenderPallets();
+  showToast('✅ Recall draft ready — '+ok+' line(s). Post & Receive to bring into '+trWhOfKind(trDstKind(route))+'.');
+}
+// 피커에서 3rd party 팔레트 클릭 → 그 팔레트 회수 Transfer 초안 (오더 지정은 취소하고 회수 먼저)
+function bxPullRecall3P(gi){
+  const ctx = bxPullCtx; if(!ctx) return;
+  const g = ctx.groups[gi]; if(!g || !g.boxes || !g.boxes.length){ showToast('⚠ No boxes on this pallet'); return; }
+  const boxes = g.boxes.slice();
+  const route = ctx.lwh==='CA' ? 'LK2CA' : 'H2SC';
+  const m = document.getElementById('modal-bxpull'); if(m) m.remove();
+  const cb = ctx.onDone; bxPullCtx = null; if(cb) cb(false);
+  bxBoxesToTransfer(boxes, route);
 }
 async function bxLocBulk(action){
   const wh = window._bxLocWh || 'SC';
