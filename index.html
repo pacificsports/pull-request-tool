@@ -145,7 +145,7 @@ main{max-width:1100px;margin:0 auto;padding:16px;}
     <button class="btn btn-sm" onclick="doLogout()" style="padding:2px 8px;font-size:10px;" data-i18n="logout">Log out</button>
   </span>
   <select id="lang-sel" onchange="setLang(this.value)" style="font-size:11px;padding:3px 6px;border-radius:5px;border:none;background:#1d3f66;color:#fff;"><option value="ko">한국어</option><option value="en">English</option><option value="es">Español</option></select>
-  <span style="font-size:10px;color:#9fb8d4;">v499 🚚</span>
+  <span style="font-size:10px;color:#9fb8d4;">v500 🚚</span>
 </div>
 <script type="text/javascript" src="https://js.authorize.net/v1/Accept.js" charset="utf-8"></script>
 <div id="po-viewer" style="display:none;position:fixed;top:0;right:0;width:44%;height:100vh;background:#fff;border-left:2px solid var(--border);z-index:60;box-shadow:-6px 0 20px rgba(0,0,0,.15);">
@@ -3071,7 +3071,9 @@ function openReturnDetail(base, ra, edit){
       </table>
       <div class="ff" style="margin-top:12px;"><label>Customer email</label>
         <input class="fi" id="rad-email" type="email" value="${esc(ret.custEmail||'')}" placeholder="customer@example.com"></div>
-      ${ret.status==='received'?'<div class="muted" style="font-size:10.5px;margin-top:8px;color:#166534;">✓ Received & confirmed — stock returned and credit memo issued.</div>':'<div class="muted" style="font-size:10.5px;margin-top:8px;">⏳ Awaiting goods. When the return arrives, use “Receive & Confirm” (coming next) to add stock back and issue the credit memo.</div>'}
+      ${ret.status==='received'
+        ? `<div class="muted" style="font-size:10.5px;margin-top:8px;color:#166534;">✓ Received &amp; confirmed — restocked ${Number((ret.received&&ret.received.restockTotal)||0).toLocaleString()} pcs · Credit Memo <b>${esc((ret.received&&ret.received.cm)||'')}</b> $${Number((ret.received&&ret.received.creditAmount)||0).toFixed(2)} issued.</div>`
+        : '<div class="muted" style="font-size:10.5px;margin-top:8px;">⏳ Awaiting goods. When the return arrives, press <b>📦 Receive &amp; Confirm</b> below to confirm quantities, add stock back, and issue the credit memo.</div>'}
     </div>
     <div style="padding:10px 16px;border-top:1px solid var(--border);display:flex;gap:8px;justify-content:flex-end;flex-wrap:wrap;">
       ${edit
@@ -3079,8 +3081,11 @@ function openReturnDetail(base, ra, edit){
            <button class="btn btn-primary" style="background:#16a34a;border-color:#16a34a;" onclick="returnDetailSave('${esc(base)}','${esc(ret.ra)}')">💾 Save changes</button>`
         : `${ret.status!=='received'?`<button class="btn" style="color:#b91c1c;border-color:#fca5a5;margin-right:auto;" onclick="returnCancel('${esc(base)}','${esc(ret.ra)}')">🗑 Cancel RA</button>`:''}
            ${ret.status!=='received'?`<button class="btn" style="background:#f5f3ff;color:#6d28d9;border-color:#c4b5fd;font-weight:700;" onclick="openReturnDetail('${esc(base)}','${esc(ret.ra)}',true)">✏ Edit</button>`:''}
+           ${ret.status!=='received'?`<button class="btn" style="background:#fff7ed;color:#ea580c;border-color:#fdba74;" onclick="returnResendEmail('${esc(base)}','${esc(ret.ra)}')">📧 ${ret.emailedAt?'Resend':'Send'} email</button>`:''}
            <button class="btn" onclick="document.getElementById('modal-radetail').remove()">Close</button>
-           <button class="btn btn-primary" style="background:#0e7490;border-color:#0e7490;" onclick="returnResendEmail('${esc(base)}','${esc(ret.ra)}')">📧 ${ret.emailedAt?'Resend':'Send'} email to customer</button>`}
+           ${ret.status==='received'
+             ? `<button class="btn btn-primary" style="background:#0f2a4a;border-color:#0f2a4a;font-weight:800;" onclick="openCreditMemo('${esc(base)}','${esc(ret.ra)}')">📝 Credit Memo</button>`
+             : `<button class="btn btn-primary" style="background:#16a34a;border-color:#16a34a;font-weight:800;" onclick="openReturnReceive('${esc(base)}','${esc(ret.ra)}')">📦 Receive &amp; Confirm</button>`}`}
     </div></div>`;
   document.body.appendChild(div);
 }
@@ -3134,6 +3139,176 @@ async function returnCancel(base, ra){
   const m=document.getElementById('modal-radetail'); if(m) m.remove();
   renderSaved();
   showToast('🗑 '+ra+' cancelled');
+}
+// ═══ 📦 Receive & Confirm → 재고 복구 + 📝 Credit Memo 발행 (v500) ═══
+function openReturnReceive(base, ra){
+  const rec = savedCache.find(s=>s.base===base); if(!rec) return;
+  const ret = recReturns(rec).find(r=>r.ra===ra); if(!ret){ showToast('⚠ Return not found'); return; }
+  if(ret.status==='received'){ openCreditMemo(base, ra); return; }
+  const ex=document.getElementById('modal-rareceive'); if(ex) ex.remove();
+  const rows=(ret.lines||[]).map((l,i)=>{ const rq=Number(l.qty)||0, price=Number(l.price)||0, toWh=(l.toWh||l.wh)==='CA'?'CA':'SC';
+    return `<tr>
+      <td style="border:1px solid #e5e7eb;padding:5px 8px;font-weight:700;">${esc(l.style)}</td>
+      <td style="border:1px solid #e5e7eb;padding:5px 8px;">${esc(String(l.color).toUpperCase())}</td>
+      <td style="border:1px solid #e5e7eb;padding:5px 8px;text-align:center;">${esc(l.size)}</td>
+      <td style="border:1px solid #e5e7eb;padding:5px 8px;font-size:10.5px;color:#9a3412;">${esc(l.reason||'')}</td>
+      <td style="border:1px solid #e5e7eb;padding:5px 8px;text-align:right;color:#888;">${rq.toLocaleString()}</td>
+      <td style="border:1px solid #e5e7eb;padding:4px 6px;text-align:right;background:#f0fdf4;"><input class="fi num rr-recv" data-i="${i}" type="number" min="0" value="${rq}" oninput="rrRecalc('${esc(base)}','${esc(ra)}')" style="width:70px;font-weight:800;text-align:right;"></td>
+      <td style="border:1px solid #e5e7eb;padding:4px 6px;text-align:right;white-space:nowrap;background:#eff6ff;"><input class="fi num rr-rest" data-i="${i}" type="number" min="0" value="${rq}" oninput="rrRecalc('${esc(base)}','${esc(ra)}')" style="width:60px;font-weight:800;text-align:right;"> <span class="chip chip-${toWh}" style="font-size:9px;padding:1px 5px;">${toWh}</span></td>
+      <td style="border:1px solid #e5e7eb;padding:4px 6px;text-align:right;"><input class="fi num rr-price" data-i="${i}" type="number" min="0" step="0.01" value="${price.toFixed(2)}" oninput="rrRecalc('${esc(base)}','${esc(ra)}')" style="width:64px;text-align:right;"></td>
+      <td style="border:1px solid #e5e7eb;padding:5px 8px;text-align:right;font-weight:800;" class="rr-amt" data-i="${i}">$${(rq*price).toFixed(2)}</td>
+    </tr>`; }).join('');
+  const div=document.createElement('div'); div.id='modal-rareceive';
+  div.style.cssText='position:fixed;inset:0;background:rgba(15,23,42,.55);z-index:101;display:flex;align-items:center;justify-content:center;padding:20px;';
+  div.onclick=e=>{ if(e.target===div) div.remove(); };
+  div.innerHTML=`<div style="background:#fff;border-radius:12px;max-width:900px;width:100%;max-height:90vh;display:flex;flex-direction:column;overflow:hidden;">
+    <div style="background:#16a34a;color:#fff;padding:10px 16px;font-weight:800;">📦 Receive &amp; Confirm — ${esc(ret.ra)} · ${esc((rec.meta&&rec.meta.cust)||'')}
+      ${ret.cc?'<span style="background:#fff;color:#b91c1c;font-size:10px;font-weight:900;padding:2px 8px;border-radius:20px;margin-left:8px;">💳 CREDIT CARD</span>':''}
+      <div style="font-weight:400;font-size:11px;color:#dcfce7;margin-top:2px;"><b>Received</b> = credited to the customer. <b>Restock</b> = added back to PC Room stock (set lower to exclude damaged pcs).</div></div>
+    <div style="overflow-y:auto;padding:12px 16px;">
+      <table style="border-collapse:collapse;font-size:12px;width:100%;">
+        <thead><tr style="background:#f3f4f6;">
+          <th style="border:1px solid #e5e7eb;padding:5px 8px;text-align:left;">Style</th><th style="border:1px solid #e5e7eb;padding:5px 8px;text-align:left;">Color</th><th style="border:1px solid #e5e7eb;padding:5px 8px;">Size</th><th style="border:1px solid #e5e7eb;padding:5px 8px;text-align:left;">Reason</th>
+          <th style="border:1px solid #e5e7eb;padding:5px 8px;">Return</th><th style="border:1px solid #e5e7eb;padding:5px 8px;background:#dcfce7;">Received ✓</th><th style="border:1px solid #e5e7eb;padding:5px 8px;background:#dbeafe;">Restock → WH</th><th style="border:1px solid #e5e7eb;padding:5px 8px;">Unit $</th><th style="border:1px solid #e5e7eb;padding:5px 8px;">Credit</th>
+        </tr></thead>
+        <tbody>${rows}</tbody>
+        <tfoot><tr style="background:#f0fdf4;font-weight:800;"><td colspan="8" style="border:1px solid #e5e7eb;padding:6px 8px;text-align:right;">CREDIT MEMO TOTAL</td><td style="border:1px solid #e5e7eb;padding:6px 8px;text-align:right;color:#166534;font-size:14px;" id="rr-total">$0.00</td></tr></tfoot>
+      </table>
+      ${ret.cc?'<div class="muted" style="font-size:10.5px;margin-top:8px;color:#b91c1c;">💳 Credit-card customer — the credit memo will be marked "refund to card required".</div>':''}
+    </div>
+    <div style="padding:10px 16px;border-top:1px solid var(--border);display:flex;gap:8px;justify-content:flex-end;">
+      <button class="btn" onclick="document.getElementById('modal-rareceive').remove()">Cancel</button>
+      <button class="btn btn-primary" style="background:#16a34a;border-color:#16a34a;" onclick="returnReceiveConfirm('${esc(base)}','${esc(ra)}')">✓ Confirm receipt &amp; issue credit memo</button>
+    </div></div>`;
+  document.body.appendChild(div);
+  rrRecalc(base, ra);
+}
+function rrRecalc(base, ra){
+  const div=document.getElementById('modal-rareceive'); if(!div) return;
+  let total=0;
+  div.querySelectorAll('.rr-recv').forEach(inp=>{
+    const i=inp.dataset.i;
+    const recv=Math.max(0, parseInt(inp.value)||0);
+    const price=Number((div.querySelector('.rr-price[data-i="'+i+'"]')||{}).value)||0;
+    const amt=recv*price; total+=amt;
+    const cell=div.querySelector('.rr-amt[data-i="'+i+'"]'); if(cell) cell.textContent='$'+amt.toFixed(2);
+    const rest=div.querySelector('.rr-rest[data-i="'+i+'"]'); if(rest && (parseInt(rest.value)||0)>recv) rest.value=recv;
+  });
+  const tt=document.getElementById('rr-total'); if(tt) tt.textContent='$'+total.toFixed(2);
+}
+async function returnReceiveConfirm(base, ra){
+  const rec=savedCache.find(s=>s.base===base); if(!rec) return;
+  const ret=recReturns(rec).find(r=>r.ra===ra); if(!ret || ret.status==='received') return;
+  const div=document.getElementById('modal-rareceive'); if(!div) return;
+  const recvLines=[]; let creditAmt=0, restockTot=0;
+  (ret.lines||[]).forEach((l,i)=>{
+    const recv=Math.max(0, parseInt((div.querySelector('.rr-recv[data-i="'+i+'"]')||{}).value)||0);
+    let rest=Math.max(0, parseInt((div.querySelector('.rr-rest[data-i="'+i+'"]')||{}).value)||0); if(rest>recv) rest=recv;
+    const price=Number((div.querySelector('.rr-price[data-i="'+i+'"]')||{}).value)||Number(l.price)||0;
+    creditAmt+=recv*price; restockTot+=rest;
+    recvLines.push(Object.assign({}, l, {receivedQty:recv, restockQty:rest, price:price}));
+  });
+  creditAmt=Math.round(creditAmt*100)/100;
+  const cm=ra.replace(/^RA-/, 'CM-');
+  if(!confirm('Confirm receipt of '+ra+'?\n\n• Credit memo '+cm+':  $'+creditAmt.toFixed(2)+'\n• Restock '+restockTot.toLocaleString()+' pcs → PC Room\n\nThis cannot be edited afterward.')) return;
+  for(const l of recvLines){
+    if(l.restockQty>0){
+      const toWh=(l.toWh||l.wh)==='CA'?'CA':'SC';
+      try{ await pcCellChange(pcKey(l.style, l.color, toWh), String(l.size).toUpperCase(), '+'+l.restockQty, null, '↩ Return '+ra+' received'); }catch(e){}
+    }
+  }
+  ret.status='received';
+  ret.received={ at:new Date().toISOString(), by:(SESS&&SESS.email)||'', lines:recvLines, creditAmount:creditAmt, restockTotal:restockTot, cm:cm };
+  rec.meta=rec.meta||{};
+  rec.meta._returns=recReturns(rec).map(r=>r.ra===ra?ret:r);
+  try{ await sbFetch('/rest/v1/pr_orders?base=eq.'+encodeURIComponent(base), {method:'PATCH', headers:{Prefer:'return=minimal'}, body:JSON.stringify({meta:rec.meta, updated_at:new Date().toISOString()})}); }
+  catch(e){ alert('⚠ Failed to save: '+(e.message||e)); return; }
+  logHist(base, '↩ Return received — '+ra+' · '+cm+' $'+creditAmt.toFixed(2)+' · restock '+restockTot+' pcs');
+  div.remove();
+  const dd=document.getElementById('modal-radetail'); if(dd) dd.remove();
+  renderSaved();
+  showToast('✅ '+ra+' received — credit memo '+cm+' $'+creditAmt.toFixed(2));
+  openCreditMemo(base, ra);
+}
+function buildCreditMemoHtml(rec, ret){
+  const meta=rec.meta||{}; const rc=ret.received||{}; const cm=rc.cm||ret.ra.replace(/^RA-/,'CM-');
+  const wh=(ret.lines&&ret.lines[0]&&(ret.lines[0].toWh||ret.lines[0].wh))||'SC';
+  const dt=rc.at?new Date(rc.at):new Date();
+  const src=(rc.lines&&rc.lines.length)?rc.lines:(ret.lines||[]);
+  const rows=src.map(l=>{ const q=Number(l.receivedQty!=null?l.receivedQty:l.qty)||0; const price=Number(l.price)||0; const amt=q*price;
+    return `<tr><td style="font-weight:700;">${esc(l.style)}</td><td class="tl">${esc(String(l.color).toUpperCase())}</td><td>${esc(l.size)}</td><td class="tl" style="font-size:10.5px;">${esc(l.reason||'')}</td><td style="text-align:right;font-weight:700;">${q.toLocaleString()}</td><td style="text-align:right;">$${price.toFixed(2)}</td><td style="text-align:right;font-weight:800;">$${amt.toFixed(2)}</td></tr>`; }).join('');
+  const total=Number(rc.creditAmount!=null?rc.creditAmount:src.reduce((a,l)=>a+(Number(l.receivedQty!=null?l.receivedQty:l.qty)||0)*(Number(l.price)||0),0));
+  return `<div class="inv-doc">
+    <div style="background:#0f2a4a;padding:12px 20px;display:flex;justify-content:space-between;align-items:center;">
+      <img src="${LOGO_B64}" style="height:42px;width:auto;">
+      <div style="color:#fff;font-size:24px;font-weight:800;letter-spacing:3px;">CREDIT MEMO</div>
+    </div>
+    <div style="display:flex;justify-content:space-between;gap:16px;background:#f5f7fa;border:1px solid var(--border);border-top:none;padding:10px 20px;margin-bottom:14px;">
+      <div><div style="font-weight:700;font-size:11px;color:var(--header);">PEACE TEXTILE AMERICA, INC. <span style="font-weight:400;color:#555;">d.b.a Pacific Sports</span></div>
+        <div class="inv-co-addr">${esc(WH_ADDR[wh]||'')}</div></div>
+      <div style="min-width:230px;">
+        <div class="inv-meta-row"><span>Credit Memo #</span><span style="font-weight:800;">${esc(cm)}</span></div>
+        <div class="inv-meta-row"><span>Date</span><span>${dt.toLocaleDateString('en-US')}</span></div>
+        <div class="inv-meta-row"><span>RA #</span><span>${esc(ret.ra)}</span></div>
+        <div class="inv-meta-row"><span>Ref Order</span><span>${esc(rec.base)}</span></div>
+        <div class="inv-meta-row"><span>PO #</span><span>${esc(meta.po||'')}</span></div>
+      </div>
+    </div>
+    <div class="inv-addr-row" style="grid-template-columns:1fr 1.6fr;">
+      <div><div class="inv-addr-label">Customer</div><div class="inv-addr-val">${esc(meta.cust||'')}</div></div>
+      <div><div class="inv-addr-label">Bill To</div><div class="inv-addr-val">${esc(joinAddr('bill'))}</div></div>
+    </div>
+    <table class="inv-tbl">
+      <thead><tr><th>Style#</th><th class="tl">Color</th><th>Size</th><th class="tl">Reason</th><th>Credit Qty</th><th>Unit Price</th><th>Amount</th></tr></thead>
+      <tbody>${rows}</tbody>
+      <tfoot><tr><td colspan="6" class="tl" style="text-align:right;font-weight:700;padding-right:12px;">TOTAL CREDIT</td><td style="text-align:right;font-weight:900;font-size:15px;background:#0f2a4a;color:#fff;">$${total.toFixed(2)}</td></tr></tfoot>
+    </table>
+    ${ret.cc?`<div style="margin-top:12px;padding:9px 14px;background:#fef2f2;border:1px solid #fecaca;border-radius:5px;font-size:12.5px;color:#b91c1c;font-weight:800;">💳 CREDIT CARD CUSTOMER — REFUND TO CARD REQUIRED: $${total.toFixed(2)}</div>`:`<div style="margin-top:12px;font-size:12.5px;color:#333;">This credit of <b>$${total.toFixed(2)}</b> has been applied to the customer's account.</div>`}
+    <p style="margin-top:14px;font-size:11px;color:#666;">Issued against Return Authorization ${esc(ret.ra)}. Reason(s): ${esc(ret.reason||'—')}.</p>
+  </div>`;
+}
+function printCreditMemo(base, ra){
+  const rec=savedCache.find(s=>s.base===base); if(!rec) return;
+  const ret=recReturns(rec).find(r=>r.ra===ra); if(!ret) return;
+  const cm=(ret.received&&ret.received.cm)||ra.replace(/^RA-/,'CM-');
+  printDocHtml(buildCreditMemoHtml(rec, ret), cm);
+}
+function openCreditMemo(base, ra){
+  const rec=savedCache.find(s=>s.base===base); if(!rec) return;
+  const ret=recReturns(rec).find(r=>r.ra===ra); if(!ret) return;
+  const cm=(ret.received&&ret.received.cm)||ra.replace(/^RA-/,'CM-');
+  const ex=document.getElementById('modal-cm'); if(ex) ex.remove();
+  const div=document.createElement('div'); div.id='modal-cm';
+  div.style.cssText='position:fixed;inset:0;background:rgba(15,23,42,.6);z-index:102;display:flex;align-items:center;justify-content:center;padding:20px;';
+  div.onclick=e=>{ if(e.target===div) div.remove(); };
+  div.innerHTML=`<div style="background:#fff;border-radius:12px;max-width:840px;width:100%;max-height:92vh;display:flex;flex-direction:column;overflow:hidden;">
+    <div style="background:#0f2a4a;color:#fff;padding:10px 16px;font-weight:800;display:flex;align-items:center;gap:10px;">📝 Credit Memo ${esc(cm)}
+      <button class="btn btn-sm" style="margin-left:auto;background:transparent;color:#cbd5e1;border-color:#475569;" onclick="document.getElementById('modal-cm').remove()">✕</button></div>
+    <div style="overflow-y:auto;padding:16px;background:#eef2f7;">${buildCreditMemoHtml(rec, ret)}</div>
+    <div style="padding:10px 16px;border-top:1px solid var(--border);display:flex;gap:8px;justify-content:flex-end;flex-wrap:wrap;align-items:center;">
+      <input class="fi" id="cm-email" type="email" value="${esc(ret.custEmail||custEmailFor(rec.meta&&rec.meta.cust)||'')}" placeholder="customer@example.com" style="flex:1;min-width:180px;">
+      <button class="btn" onclick="printCreditMemo('${esc(base)}','${esc(ra)}')">🖨 Print / PDF</button>
+      <button class="btn btn-primary" style="background:#0e7490;border-color:#0e7490;" onclick="creditMemoEmail('${esc(base)}','${esc(ra)}')">📧 Email to customer</button>
+    </div></div>`;
+  document.body.appendChild(div);
+}
+async function creditMemoEmail(base, ra){
+  const rec=savedCache.find(s=>s.base===base); if(!rec) return;
+  const ret=recReturns(rec).find(r=>r.ra===ra); if(!ret) return;
+  const email=String((document.getElementById('cm-email')||{}).value||ret.custEmail||'').trim();
+  if(!email.includes('@')){ alert('⚠ Enter a valid customer email.'); return; }
+  const cm=(ret.received&&ret.received.cm)||ra.replace(/^RA-/,'CM-');
+  const html=buildCreditMemoHtml(rec, ret);
+  try{
+    const r=await fetch('https://po-confirm-email.hjbae.workers.dev/send-pl', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({ to:email, subject:'Credit Memo '+cm+' — '+((rec.meta&&rec.meta.cust)||'')+' PO '+((rec.meta&&rec.meta.po)||''), html })});
+    if(!r.ok) throw new Error('HTTP '+r.status);
+    ret.custEmail=email;
+    if(ret.received) ret.received.cmEmailedAt=new Date().toISOString();
+    rec.meta=rec.meta||{}; rec.meta._returns=recReturns(rec).map(x=>x.ra===ra?ret:x);
+    await sbFetch('/rest/v1/pr_orders?base=eq.'+encodeURIComponent(base), {method:'PATCH', headers:{Prefer:'return=minimal'}, body:JSON.stringify({meta:rec.meta})});
+    logHist(base, '📝 Credit memo '+cm+' emailed → '+email);
+    showToast('✅ Credit memo '+cm+' emailed → '+email);
+  }catch(e){ alert('📧 Email failed: '+(e.message||e)); }
 }
 async function delSaved(base){
   if(!confirm(t('a_delete',{b:base}) + '\n\n(Moves to trash — restorable within 30 days)')) return;
