@@ -145,7 +145,7 @@ main{max-width:1100px;margin:0 auto;padding:16px;}
     <button class="btn btn-sm" onclick="doLogout()" style="padding:2px 8px;font-size:10px;" data-i18n="logout">Log out</button>
   </span>
   <select id="lang-sel" onchange="setLang(this.value)" style="font-size:11px;padding:3px 6px;border-radius:5px;border:none;background:#1d3f66;color:#fff;"><option value="ko">한국어</option><option value="en">English</option><option value="es">Español</option></select>
-  <span style="font-size:10px;color:#9fb8d4;">v517 🚚</span>
+  <span style="font-size:10px;color:#9fb8d4;">v518 🚚</span>
 </div>
 <script type="text/javascript" src="https://js.authorize.net/v1/Accept.js" charset="utf-8"></script>
 <div id="po-viewer" style="display:none;position:fixed;top:0;right:0;width:44%;height:100vh;background:#fff;border-left:2px solid var(--border);z-index:60;box-shadow:-6px 0 20px rgba(0,0,0,.15);">
@@ -10687,7 +10687,9 @@ async function bxAttachDesignated(bins){
       if(arr.length) map[bin] = arr;
     }catch(e){}
   }
-  if(Object.keys(map).length){ _shipMeta = _shipMeta||{}; _shipMeta.designatedByPallet = map; if(_shipId){ try{ await trPatchRec(_shipId, {meta:_shipMeta}); }catch(e){} } }
+  _shipMeta = _shipMeta||{};
+  _shipMeta.designatedByPallet = Object.assign({}, _shipMeta.designatedByPallet||{}, map);   // 기존 것과 병합
+  if(_shipId){ try{ await trPatchRec(_shipId, {meta:_shipMeta}); }catch(e){} }
 }
 // 피커에서 3rd party 팔레트 클릭 → 그 팔레트 회수 Transfer 초안 (오더 지정은 취소하고 회수 먼저)
 function bxPullRecall3P(gi){
@@ -11996,6 +11998,8 @@ async function trScAdd(){
   }
   const ok = await _trAddLinesBulk(items);
   if(_is3Psrc){ const _n0 = _shipPallets.length; _shipPallets = _shipPallets.filter(p=>p.lines.length); if(_shipPallets.length!==_n0) await trSaveDraftLines(); }
+  // 🏷️ 회수 종이용: 3rd party 회수면 이 bin들에서 지정돼 빠진 박스를 태그로 첨부 (표시 전용)
+  if(trIsSpecKind(trSrcKind(_shipRoute))){ try{ await bxAttachDesignated([...new Set(es.map(e=>e.g.loc))]); }catch(e){} }
   showToast('✅ '+ok+'/'+es.length+' line(s) added (reserved from '+trKindShort(trSrcKind(_shipRoute))+')');
   trRenderPallets();
   if($('bx-body')) setTimeout(renderBoxRoom, 0);   // 큰 표는 나중에 — 모듈이 먼저 반응하도록
@@ -12270,14 +12274,37 @@ function trPRPrintOne(idx){
   trPrintHtml(trPRPalletHtml(_trPRD, p), 'Pull Request — '+p.label);
 }
 // print the Pull Request for a single pallet (from the builder, by pallet id)
-function trPRPallet(pid){
+async function trPRPallet(pid){
   const D = trPRResolveD(null);
   const p = (D.pallets||[]).find(x=>x.id===pid);
   if(!p || !p.lines || !p.lines.length){ alert('This pallet has no lines yet.'); return; }
+  await trEnsureDesignated(D);
   trPrintHtml(trPRPalletHtml(D, p), 'Pull Request — '+p.label);
 }
-function trPR(D){
+// 🏷️ 인쇄 시점에 각 팔레트 bin의 지정돼 빠진(OUT) 박스를 조회해 D.meta 에 붙임 (3rd party 회수 전용, 표시 전용)
+async function trEnsureDesignated(D){
+  try{
+    const route = D.route || _shipRoute;
+    if(!trIsSpecKind(trSrcKind(route))) return;
+    const bins = [...new Set((D.pallets||[]).filter(p=>p.lines&&p.lines.length).map(p=>String(p.label).toUpperCase()))];
+    if(!bins.length) return;
+    const map = {}; const cutoff = Date.now() - 45*864e5;
+    for(const bin of bins){
+      const rr = await sbFetch('/rest/v1/pr_boxes?select=style,color,size,out_po,out_at&status=eq.OUT&loc=eq.'+encodeURIComponent(bin));
+      if(!rr.ok) continue; const outs = await rr.json();
+      const gm = {};
+      outs.forEach(b=>{ const t=b.out_at?Date.parse(b.out_at):0; if(!t||t<cutoff) return;
+        const dest=_desigDest(b.out_po); const k=String(b.style)+'|'+String(b.color).toUpperCase()+'|'+String(b.size).toUpperCase()+'|'+dest;
+        if(!gm[k]) gm[k]={style:String(b.style),color:String(b.color).toUpperCase(),size:String(b.size).toUpperCase(),dest,boxes:0}; gm[k].boxes++; });
+      const arr=Object.values(gm).sort((a,b)=>a.style.localeCompare(b.style)||a.color.localeCompare(b.color)||bxSizeCmp(a.size,b.size));
+      if(arr.length) map[bin]=arr;
+    }
+    D.meta = D.meta||{}; D.meta.designatedByPallet = Object.assign({}, D.meta.designatedByPallet||{}, map);
+  }catch(e){}
+}
+async function trPR(D){
   D = trPRResolveD(D);
+  await trEnsureDesignated(D);
   const pals = (D.pallets||[]).filter(p=>p.lines&&p.lines.length);
   if(!pals.length){ alert('No lines.'); return; }
   _trPRD = D;
