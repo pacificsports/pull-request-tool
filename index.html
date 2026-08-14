@@ -145,7 +145,7 @@ main{max-width:1100px;margin:0 auto;padding:16px;}
     <button class="btn btn-sm" onclick="doLogout()" style="padding:2px 8px;font-size:10px;" data-i18n="logout">Log out</button>
   </span>
   <select id="lang-sel" onchange="setLang(this.value)" style="font-size:11px;padding:3px 6px;border-radius:5px;border:none;background:#1d3f66;color:#fff;"><option value="ko">한국어</option><option value="en">English</option><option value="es">Español</option></select>
-  <span style="font-size:10px;color:#9fb8d4;">v537 ↩</span>
+  <span style="font-size:10px;color:#9fb8d4;">v538 ↩</span>
 </div>
 <script type="text/javascript" src="https://js.authorize.net/v1/Accept.js" charset="utf-8"></script>
 <div id="po-viewer" style="display:none;position:fixed;top:0;right:0;width:44%;height:100vh;background:#fff;border-left:2px solid var(--border);z-index:60;box-shadow:-6px 0 20px rgba(0,0,0,.15);">
@@ -11763,6 +11763,31 @@ function trLinesFlat(){ return _shipPallets.reduce((a,p)=>a.concat(p.lines.map(l
 async function trSaveDraftLines(){ if(_shipId) await trPatchRec(_shipId, {lines: trLinesFlat()}); }
 function trLineBoxes(l){ return l.is_manual ? (Number(l.boxes)||0) : (l.ids||[]).length; }
 function trLinePcs(l){ return trLineBoxes(l) * (Number(l.ppb)||Number(l.pcs)||0); }
+function trLinePpb(l){ return Number(l.ppb)||Number(l.pcs)||0; }
+// 처리(받은/출고) 후에도 박스 수 보이게 — 이미 처리된 라인은 _doneN 사용 (ids는 처리 후 비므로 0이 됨) (v538)
+function trLineRecvBoxes(l){ const dn=Number(l._doneN)||0; return dn>0 ? dn : trLineBoxes(l); }
+function trLineRecvPcs(l){ return trLineRecvBoxes(l) * trLinePpb(l); }
+// 이 라인이 받을 때 어디로 갔는지 요약: 📍bin / 🚚Ship Out→memo / 🧺PC / 🗑Damage / ↩Return, 각각 박스수
+function trDoneSummary(l){
+  const done = Array.isArray(l._done) ? l._done : [];
+  if(done.length){
+    const map={}, order=[];
+    done.forEach(d=>{
+      const act=d.act||'sc'; let key, lbl;
+      if(act==='sc'){ key='sc|'+(d.bin||''); lbl='📍 '+(d.bin||'?'); }
+      else if(act==='so'){ const m=String(d.memo||'').trim(); key='so|'+m; lbl='🚚 Ship Out'+(m?(' → '+m):''); }
+      else if(act==='pc'){ key='pc'; lbl='🧺 PC Room'; }
+      else if(act==='dmg'){ key='dmg'; lbl='🗑 Damage'; }
+      else if(act==='ret'){ key='ret'; lbl='↩ Returned'; }
+      else { key=act; lbl=act; }
+      if(!map[key]){ map[key]={lbl, n:0}; order.push(key); }
+      map[key].n += Number(d.n)||0;
+    });
+    return order.map(k=>({lbl:map[k].lbl, n:map[k].n}));
+  }
+  if(Array.isArray(l._log) && l._log.length) return l._log.map(x=>({lbl:String(x), n:null}));
+  return l.ca_bin ? [{lbl:'📍 '+l.ca_bin, n:null}] : [];
+}
 function trStatusChip(s){
   const m = { LOADING:{label:'Draft',c:'#92400e',b:'#fef3c7'}, TRANSIT:{label:'In Transit',c:'#b45309',b:'#fef3c7'}, RECEIVED:{label:'Received',c:'#15803d',b:'#dcfce7'} }[s] || {label:s,c:'#475467',b:'#f2f4f7'};
   return `<span style="padding:2px 10px;border-radius:20px;font-size:10.5px;font-weight:700;background:${m.b};color:${m.c};border:1px solid ${m.c}33;">${m.label}</span>`;
@@ -12775,7 +12800,11 @@ async function trView(id){
   const lines = Array.isArray(rec.lines)?rec.lines:[];
   const palletMap = {};
   lines.forEach(l=>{ const lbl = l.pallet||'Pallet 1'; (palletMap[lbl] = palletMap[lbl]||[]).push(l); });
-  const totP = lines.reduce((s,l)=>s+trLinePcs(l),0);
+  const _rcv = rec.status==='RECEIVED';
+  const _lb = l=> _rcv ? trLineRecvBoxes(l) : trLineBoxes(l);
+  const _lp = l=> _rcv ? trLineRecvPcs(l) : trLinePcs(l);
+  const totP = lines.reduce((s,l)=>s+_lp(l),0);
+  const totB = lines.reduce((s,l)=>s+_lb(l),0);
   const ex = document.getElementById('modal-trv'); if(ex) ex.remove();
   const div = document.createElement('div');
   div.id = 'modal-trv';
@@ -12795,22 +12824,22 @@ async function trView(id){
         <div><span class="muted">ETA</span><br><b>${esc(M.eta||'—')}</b></div>
         ${rec.received_at?`<div><span class="muted">Arrived</span><br><b>${String(rec.received_at).slice(0,10)}</b></div>`:''}
       </div>
-      <div style="font-size:12px;font-weight:700;color:var(--text2);margin-bottom:8px;">Total ${lines.length} line(s) · ${totP.toLocaleString()} pcs</div>
+      <div style="font-size:12px;font-weight:700;color:var(--text2);margin-bottom:8px;">Total ${lines.length} line(s) · ${totB.toLocaleString()} box(es) · ${totP.toLocaleString()} pcs${_rcv?' <span style="color:#15803d;">(received)</span>':''}</div>
       ${Object.keys(palletMap).map(lbl=>{
         const pls = palletMap[lbl];
-        const pPcs = pls.reduce((s,l)=>s+trLinePcs(l),0);
+        const pPcs = pls.reduce((s,l)=>s+_lp(l),0);
         return `<div style="border:1px solid var(--border);border-radius:6px;margin-bottom:10px;overflow:hidden;">
         <div style="background:#f3eefc;padding:7px 12px;font-weight:700;color:#6d28d9;font-size:12.5px;">📦 ${esc(lbl)} <span style="font-weight:400;color:var(--text2);font-size:11px;">· ${pls.length} line(s) · ${pPcs.toLocaleString()} pcs</span></div>
         <table class="etbl" style="font-size:12px;">
-          <thead><tr><th class="tl">Style</th><th class="tl">Color</th><th>Size</th><th>From Bin</th><th>Boxes</th><th>Qty</th>${rec.status==='RECEIVED'?'<th>To Bin</th>':''}</tr></thead>
+          <thead><tr><th class="tl">Style</th><th class="tl">Color</th><th>Size</th><th>From Bin</th><th>Boxes</th><th>Qty</th>${_rcv?'<th>Received → Destination</th>':''}</tr></thead>
           <tbody>${pls.slice().sort((a,b)=>String(a.style||'').localeCompare(String(b.style||''))||String(bxBaseColor(a.color)||'').localeCompare(String(bxBaseColor(b.color)||''))||bxSizeCmp(a.size,b.size)).map(l=>`<tr>
             <td class="tl" style="font-weight:700;">${esc(l.style)}</td>
             <td class="tl">${esc(bxBaseColor(l.color))}</td>
             <td style="text-align:center;">${esc(l.size)}</td>
             <td style="text-align:center;"><span style="background:#e8f0fb;color:#1a56a0;padding:1px 8px;border-radius:8px;font-size:10.5px;font-weight:700;">${esc(l.bin||'?')}</span></td>
-            <td style="text-align:center;font-family:Consolas,monospace;font-weight:700;">${trLineBoxes(l)}</td>
-            <td style="text-align:right;font-family:Consolas,monospace;font-weight:700;">${trLinePcs(l).toLocaleString()}</td>
-            ${rec.status==='RECEIVED'?`<td style="text-align:center;">${l.ca_bin?`<span style="background:#dcfce7;color:#15803d;padding:1px 8px;border-radius:8px;font-size:10.5px;font-weight:700;">${esc(l.ca_bin)}</span>`:'—'}</td>`:''}
+            <td style="text-align:center;font-family:Consolas,monospace;font-weight:700;">${_lb(l)}</td>
+            <td style="text-align:right;font-family:Consolas,monospace;font-weight:700;">${_lp(l).toLocaleString()}</td>
+            ${_rcv?`<td style="text-align:center;">${(()=>{ const ds=trDoneSummary(l); if(!ds.length) return '—'; return ds.map(x=>{ const c = x.lbl.indexOf('🚚')===0?'#b45309':(x.lbl.indexOf('🧺')===0?'#6d28d9':(x.lbl.indexOf('🗑')===0?'#b91c1c':(x.lbl.indexOf('↩')===0?'#9a3412':'#15803d'))); const bg = x.lbl.indexOf('🚚')===0?'#fef3c7':(x.lbl.indexOf('🧺')===0?'#f3e8ff':(x.lbl.indexOf('🗑')===0?'#fee2e2':(x.lbl.indexOf('↩')===0?'#ffedd5':'#dcfce7'))); return `<span style="display:inline-block;background:${bg};color:${c};padding:1px 8px;border-radius:8px;font-size:10.5px;font-weight:700;margin:1px 2px;white-space:nowrap;">${esc(x.lbl)}${x.n!=null?(' ×'+x.n):''}</span>`; }).join(''); })()}</td>`:''}
           </tr>`).join('')}</tbody></table></div>`;
       }).join('') || '<div class="muted">No lines</div>'}
     </div>
