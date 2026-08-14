@@ -145,7 +145,7 @@ main{max-width:1100px;margin:0 auto;padding:16px;}
     <button class="btn btn-sm" onclick="doLogout()" style="padding:2px 8px;font-size:10px;" data-i18n="logout">Log out</button>
   </span>
   <select id="lang-sel" onchange="setLang(this.value)" style="font-size:11px;padding:3px 6px;border-radius:5px;border:none;background:#1d3f66;color:#fff;"><option value="ko">한국어</option><option value="en">English</option><option value="es">Español</option></select>
-  <span style="font-size:10px;color:#9fb8d4;">v501 🚚</span>
+  <span style="font-size:10px;color:#9fb8d4;">v502 🚚</span>
 </div>
 <script type="text/javascript" src="https://js.authorize.net/v1/Accept.js" charset="utf-8"></script>
 <div id="po-viewer" style="display:none;position:fixed;top:0;right:0;width:44%;height:100vh;background:#fff;border-left:2px solid var(--border);z-index:60;box-shadow:-6px 0 20px rgba(0,0,0,.15);">
@@ -3037,7 +3037,7 @@ async function sendReturnEmail(rec, ret){
 function openReturnDetail(base, ra, edit){
   const rec = savedCache.find(s=>s.base===base); if(!rec) return;
   const ret = recReturns(rec).find(r=>r.ra===ra); if(!ret){ showToast('⚠ Return not found'); return; }
-  edit = !!edit && ret.status!=='received';   // received 된 RA 는 편집 불가 (재고 이미 복구됨)
+  edit = !!edit && ret.status!=='received' && ret.status!=='arrived';   // 물건 도착(arrived)·확정(received) 후엔 편집 불가
   const totQty = (ret.lines||[]).reduce((a,l)=>a+(Number(l.qty)||0),0);
   const rows = (ret.lines||[]).map((l,i)=>`<tr>
     <td style="border:1px solid #e5e7eb;padding:5px 8px;font-weight:700;">${esc(l.style)}</td>
@@ -3048,8 +3048,10 @@ function openReturnDetail(base, ra, edit){
     <td style="border:1px solid #e5e7eb;padding:5px 8px;">${esc(l.reason||ret.reason||'')}</td>
   </tr>`).join('');
   const statusBadge = ret.status==='received'
-    ? '<span style="background:#dcfce7;color:#166534;padding:2px 10px;border-radius:20px;font-size:11px;font-weight:800;">✓ RECEIVED</span>'
-    : '<span style="background:#fff7ed;color:#ea580c;padding:2px 10px;border-radius:20px;font-size:11px;font-weight:800;">⏳ PENDING</span>';
+    ? '<span style="background:#dcfce7;color:#166534;padding:2px 10px;border-radius:20px;font-size:11px;font-weight:800;">✓ CONFIRMED</span>'
+    : ret.status==='arrived'
+      ? '<span style="background:#dbeafe;color:#1d4ed8;padding:2px 10px;border-radius:20px;font-size:11px;font-weight:800;">📥 GOODS IN — inspecting</span>'
+      : '<span style="background:#fff7ed;color:#ea580c;padding:2px 10px;border-radius:20px;font-size:11px;font-weight:800;">⏳ PENDING</span>';
   const ex=document.getElementById('modal-radetail'); if(ex) ex.remove();
   const div=document.createElement('div'); div.id='modal-radetail';
   div.style.cssText='position:fixed;inset:0;background:rgba(15,23,42,.55);z-index:100;display:flex;align-items:center;justify-content:center;padding:20px;';
@@ -3072,20 +3074,26 @@ function openReturnDetail(base, ra, edit){
       <div class="ff" style="margin-top:12px;"><label>Customer email</label>
         <input class="fi" id="rad-email" type="email" value="${esc(ret.custEmail||'')}" placeholder="customer@example.com"></div>
       ${ret.status==='received'
-        ? `<div class="muted" style="font-size:10.5px;margin-top:8px;color:#166534;">✓ Received &amp; confirmed — restocked ${Number((ret.received&&ret.received.restockTotal)||0).toLocaleString()} pcs · Credit Memo <b>${esc((ret.received&&ret.received.cm)||'')}</b> $${Number((ret.received&&ret.received.creditAmount)||0).toFixed(2)} issued.</div>`
-        : '<div class="muted" style="font-size:10.5px;margin-top:8px;">⏳ Awaiting goods. When the return arrives, press <b>📦 Receive &amp; Confirm</b> below to confirm quantities, add stock back, and issue the credit memo.</div>'}
+        ? `<div class="muted" style="font-size:10.5px;margin-top:8px;color:#166534;">✓ Confirmed — A ${Number((ret.received&&ret.received.restockA)||0).toLocaleString()} / B ${Number((ret.received&&ret.received.restockB)||0).toLocaleString()} restocked · Failed ${Number((ret.received&&ret.received.failedTotal)||0).toLocaleString()} · Credit Memo <b>${esc((ret.received&&ret.received.cm)||'')}</b> $${Number((ret.received&&ret.received.creditAmount)||0).toFixed(2)}.</div>`
+        : ret.status==='arrived'
+          ? `<div class="muted" style="font-size:10.5px;margin-top:8px;color:#1d4ed8;">📥 Goods received ${ret.arrivedAt?('· '+new Date(ret.arrivedAt).toLocaleDateString()):''} — inspection sheet printed${ret.receivedEmailedAt?' · customer emailed':''}. When the sheet comes back, press <b>✓ Confirm &amp; Credit Memo</b> and enter the A / B / Failed counts.</div>`
+          : '<div class="muted" style="font-size:10.5px;margin-top:8px;">⏳ Awaiting goods. When the return arrives, press <b>📥 Received</b> below to print the inspection sheet and email the customer.</div>'}
     </div>
     <div style="padding:10px 16px;border-top:1px solid var(--border);display:flex;gap:8px;justify-content:flex-end;flex-wrap:wrap;">
       ${edit
         ? `<button class="btn" style="margin-right:auto;" onclick="openReturnDetail('${esc(base)}','${esc(ret.ra)}',false)">← Cancel edit</button>
            <button class="btn btn-primary" style="background:#16a34a;border-color:#16a34a;" onclick="returnDetailSave('${esc(base)}','${esc(ret.ra)}')">💾 Save changes</button>`
-        : `${ret.status!=='received'?`<button class="btn" style="color:#b91c1c;border-color:#fca5a5;margin-right:auto;" onclick="returnCancel('${esc(base)}','${esc(ret.ra)}')">🗑 Cancel RA</button>`:''}
-           ${ret.status!=='received'?`<button class="btn" style="background:#f5f3ff;color:#6d28d9;border-color:#c4b5fd;font-weight:700;" onclick="openReturnDetail('${esc(base)}','${esc(ret.ra)}',true)">✏ Edit</button>`:''}
-           ${ret.status!=='received'?`<button class="btn" style="background:#fff7ed;color:#ea580c;border-color:#fdba74;" onclick="returnResendEmail('${esc(base)}','${esc(ret.ra)}')">📧 ${ret.emailedAt?'Resend':'Send'} email</button>`:''}
+        : `${ret.status==='pending'?`<button class="btn" style="color:#b91c1c;border-color:#fca5a5;margin-right:auto;" onclick="returnCancel('${esc(base)}','${esc(ret.ra)}')">🗑 Cancel RA</button>`:''}
+           ${ret.status==='arrived'?`<button class="btn" style="color:#b91c1c;border-color:#fca5a5;margin-right:auto;" onclick="returnCancel('${esc(base)}','${esc(ret.ra)}')">🗑 Cancel RA</button>`:''}
+           ${ret.status==='pending'?`<button class="btn" style="background:#f5f3ff;color:#6d28d9;border-color:#c4b5fd;font-weight:700;" onclick="openReturnDetail('${esc(base)}','${esc(ret.ra)}',true)">✏ Edit</button>`:''}
+           ${ret.status==='pending'?`<button class="btn" style="background:#fff7ed;color:#ea580c;border-color:#fdba74;" onclick="returnResendEmail('${esc(base)}','${esc(ret.ra)}')">📧 ${ret.emailedAt?'Resend':'Send'} RA email</button>`:''}
+           ${ret.status==='arrived'?`<button class="btn" style="background:#374151;color:#fff;border-color:#374151;" onclick="printReturnInspection('${esc(base)}','${esc(ret.ra)}')">🖨 Reprint sheet</button>`:''}
            <button class="btn" onclick="document.getElementById('modal-radetail').remove()">Close</button>
            ${ret.status==='received'
              ? `<button class="btn btn-primary" style="background:#0f2a4a;border-color:#0f2a4a;font-weight:800;" onclick="openCreditMemo('${esc(base)}','${esc(ret.ra)}')">📝 Credit Memo</button>`
-             : `<button class="btn btn-primary" style="background:#16a34a;border-color:#16a34a;font-weight:800;" onclick="openReturnReceive('${esc(base)}','${esc(ret.ra)}')">📦 Receive &amp; Confirm</button>`}`}
+             : ret.status==='arrived'
+               ? `<button class="btn btn-primary" style="background:#16a34a;border-color:#16a34a;font-weight:800;" onclick="openReturnReceive('${esc(base)}','${esc(ret.ra)}')">✓ Confirm &amp; Credit Memo</button>`
+               : `<button class="btn btn-primary" style="background:#16a34a;border-color:#16a34a;font-weight:800;" onclick="returnMarkReceived('${esc(base)}','${esc(ret.ra)}')">📥 Received (print sheet + email)</button>`}`}
     </div></div>`;
   document.body.appendChild(div);
 }
@@ -3153,6 +3161,86 @@ async function pcAddB(k, size, addN, note){
   await pcSaveRow(row);
   try{ pcLogMove(row, size, 0, Number((row.qty||{})[size])||0, '[B '+(addN>=0?'+':'')+addN+' → '+nB+'] '+(note||'')); }catch(e){}
 }
+// 📥 물건 도착 표시 — 검품 시트 인쇄 + 거래처에 "수령" 이멜 (v502)
+async function returnMarkReceived(base, ra){
+  const rec=savedCache.find(s=>s.base===base); if(!rec) return;
+  const ret=recReturns(rec).find(r=>r.ra===ra); if(!ret) return;
+  if(ret.status==='received'){ showToast('Already confirmed'); return; }
+  ret.status='arrived'; ret.arrivedAt=ret.arrivedAt||new Date().toISOString(); ret.arrivedBy=ret.arrivedBy||((SESS&&SESS.email)||'');
+  rec.meta=rec.meta||{}; rec.meta._returns=recReturns(rec).map(r=>r.ra===ra?ret:r);
+  try{ await sbFetch('/rest/v1/pr_orders?base=eq.'+encodeURIComponent(base), {method:'PATCH', headers:{Prefer:'return=minimal'}, body:JSON.stringify({meta:rec.meta, updated_at:new Date().toISOString()})}); }
+  catch(e){ alert('⚠ Save failed: '+(e.message||e)); return; }
+  logHist(base, '📥 Return goods received — '+ra+' (inspection sheet printed)');
+  const email=String(ret.custEmail||custEmailFor(rec.meta&&rec.meta.cust)||'').trim();
+  if(email.includes('@')){
+    try{ await sendReturnReceivedEmail(rec, ret, email); ret.receivedEmailedAt=new Date().toISOString();
+      await sbFetch('/rest/v1/pr_orders?base=eq.'+encodeURIComponent(base), {method:'PATCH', headers:{Prefer:'return=minimal'}, body:JSON.stringify({meta:rec.meta})});
+      showToast('📧 "Items received" emailed → '+email);
+    }catch(e){ showToast('⚠ Received saved — email failed'); }
+  }
+  const m=document.getElementById('modal-radetail'); if(m) m.remove();
+  renderSaved();
+  printReturnInspection(base, ra);
+}
+async function sendReturnReceivedEmail(rec, ret, email){
+  const meta=rec.meta||{};
+  const lineRows=(ret.lines||[]).map(l=>`<tr><td style="border:1px solid #ddd;padding:5px 8px;font-weight:700;">${esc(l.style)}</td><td style="border:1px solid #ddd;padding:5px 8px;">${esc(bxBaseColor(l.color))}</td><td style="border:1px solid #ddd;padding:5px 8px;text-align:center;">${esc(l.size)}</td><td style="border:1px solid #ddd;padding:5px 8px;text-align:right;font-weight:700;">${(Number(l.qty)||0).toLocaleString()}</td></tr>`).join('');
+  const html=`<div style="font-family:Helvetica,Arial,sans-serif;font-size:14px;color:#111;">
+    <table width="100%" cellpadding="0" cellspacing="0" style="background:#0f2a4a;border-collapse:collapse;"><tr><td style="padding:12px 18px;"><span style="color:#fff;font-size:19px;font-weight:900;letter-spacing:2px;">PACIFIC SPORTS</span></td><td style="padding:12px 18px;text-align:right;color:#fff;font-size:15px;font-weight:800;letter-spacing:1.5px;white-space:nowrap;">RETURN RECEIVED</td></tr></table>
+    <p style="margin-top:16px;">Hello,</p>
+    <p>We have <b>received</b> your returned items for <b>RA ${esc(ret.ra)}</b> (PO ${esc(meta.po||'')}). Our team is now inspecting them and a credit memo will be issued shortly.</p>
+    <table style="border-collapse:collapse;font-size:13px;margin-top:6px;"><thead><tr style="background:#f3f4f6;"><th style="border:1px solid #ddd;padding:5px 8px;text-align:left;">Style</th><th style="border:1px solid #ddd;padding:5px 8px;text-align:left;">Color</th><th style="border:1px solid #ddd;padding:5px 8px;">Size</th><th style="border:1px solid #ddd;padding:5px 8px;">Qty</th></tr></thead><tbody>${lineRows}</tbody></table>
+    <p style="margin-top:16px;">Thank you.</p></div>`;
+  const r=await fetch('https://po-confirm-email.hjbae.workers.dev/send-pl', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({ to:email, subject:'Return Received — RA '+ret.ra+' · '+((meta.cust)||'')+' PO '+((meta.po)||''), html })});
+  if(!r.ok) throw new Error('HTTP '+r.status);
+}
+function printReturnInspection(base, ra){
+  const rec=savedCache.find(s=>s.base===base); if(!rec) return;
+  const ret=recReturns(rec).find(r=>r.ra===ra); if(!ret) return;
+  printDocHtml(buildReturnInspectionHtml(rec, ret), 'INSPECT-'+ra);
+}
+function buildReturnInspectionHtml(rec, ret){
+  const meta=rec.meta||{};
+  const REAS=(typeof RR_REASONS!=='undefined'?RR_REASONS:['Shade','Stains','Hole','Wrong Size','Other']);
+  const box='<span style="display:inline-block;width:15px;height:15px;border:1.5px solid #333;border-radius:3px;vertical-align:-3px;"></span>';
+  const rows=(ret.lines||[]).map(l=>{
+    const chk=REAS.map(r=>`<span style="white-space:nowrap;margin-right:9px;font-size:9.5px;display:inline-block;">${box} ${esc(r)}</span>`).join('');
+    return `<tr>
+      <td style="border:1px solid #333;padding:6px 6px;font-weight:700;">${esc(l.style)}</td>
+      <td style="border:1px solid #333;padding:6px 6px;">${esc(String(l.color).toUpperCase())}</td>
+      <td style="border:1px solid #333;padding:6px 6px;text-align:center;">${esc(l.size)}</td>
+      <td style="border:1px solid #333;padding:6px 6px;text-align:right;font-weight:800;">${(Number(l.qty)||0).toLocaleString()}</td>
+      <td style="border:1px solid #333;padding:6px 6px;font-size:10px;">${esc(l.reason||'')}</td>
+      <td style="border:1px solid #333;padding:6px 6px;background:#f0fdf4;"></td>
+      <td style="border:1px solid #333;padding:6px 6px;background:#fffbeb;"></td>
+      <td style="border:1px solid #333;padding:6px 6px;background:#fef2f2;"></td>
+      <td style="border:1px solid #333;padding:6px 6px;">${chk}</td>
+    </tr>`;
+  }).join('');
+  const totQty=(ret.lines||[]).reduce((a,l)=>a+(Number(l.qty)||0),0);
+  return `<div class="inv-doc">
+    <div style="background:#0f2a4a;padding:12px 20px;display:flex;justify-content:space-between;align-items:center;">
+      <img src="${LOGO_B64}" style="height:40px;width:auto;">
+      <div style="color:#fff;font-size:21px;font-weight:800;letter-spacing:2px;">RETURN INSPECTION SHEET</div>
+    </div>
+    <div style="display:flex;justify-content:space-between;gap:16px;background:#f5f7fa;border:1px solid #333;border-top:none;padding:9px 20px;margin-bottom:12px;font-size:12px;">
+      <div><b>RA #:</b> ${esc(ret.ra)} &nbsp;·&nbsp; <b>Customer:</b> ${esc(meta.cust||'')} &nbsp;·&nbsp; <b>PO:</b> ${esc(meta.po||'')}</div>
+      <div><b>Total Return Qty:</b> ${totQty.toLocaleString()} pcs</div>
+    </div>
+    <div style="font-size:11px;color:#444;margin-bottom:6px;">Warehouse: count each item into <b>A Grade / B Grade / Failed</b>, write the quantity, and for B Grade tick the reason. Hand back to the manager to enter &amp; confirm in the system.</div>
+    <table class="inv-tbl" style="font-size:11px;">
+      <thead><tr>
+        <th style="border:1px solid #333;">Style#</th><th style="border:1px solid #333;" class="tl">Color</th><th style="border:1px solid #333;">Size</th><th style="border:1px solid #333;">Return Qty</th><th style="border:1px solid #333;" class="tl">Return Reason</th>
+        <th style="border:1px solid #333;background:#dcfce7;width:56px;">A Grade</th><th style="border:1px solid #333;background:#fef3c7;width:52px;">B Grade</th><th style="border:1px solid #333;background:#fee2e2;width:52px;">Failed</th><th style="border:1px solid #333;" class="tl">B-Grade Reason (tick)</th>
+      </tr></thead>
+      <tbody>${rows}</tbody>
+    </table>
+    <div style="margin-top:26px;display:grid;grid-template-columns:1fr 1fr;gap:30px;">
+      <div><div style="border-bottom:1.5px solid #111;height:32px;"></div><div style="font-size:11px;font-weight:700;margin-top:4px;">Inspected by</div></div>
+      <div><div style="border-bottom:1.5px solid #111;height:32px;"></div><div style="font-size:11px;font-weight:700;margin-top:4px;">Date</div></div>
+    </div>
+  </div>`;
+}
 function openReturnReceive(base, ra){
   const rec = savedCache.find(s=>s.base===base); if(!rec) return;
   const ret = recReturns(rec).find(r=>r.ra===ra); if(!ret){ showToast('⚠ Return not found'); return; }
@@ -3165,10 +3253,11 @@ function openReturnReceive(base, ra){
       <td style="border:1px solid #e5e7eb;padding:5px 8px;text-align:center;">${esc(l.size)}</td>
       <td style="border:1px solid #e5e7eb;padding:5px 8px;font-size:10.5px;color:#9a3412;">${esc(l.reason||'')}</td>
       <td style="border:1px solid #e5e7eb;padding:5px 8px;text-align:right;color:#888;">${rq.toLocaleString()}</td>
-      <td style="border:1px solid #e5e7eb;padding:4px 6px;text-align:right;background:#f0fdf4;"><input class="fi num rr-recv" data-i="${i}" type="number" min="0" value="${rq}" oninput="rrRecalc('${esc(base)}','${esc(ra)}')" style="width:70px;font-weight:800;text-align:right;"></td>
-      <td style="border:1px solid #e5e7eb;padding:4px 6px;text-align:right;white-space:nowrap;background:#eff6ff;"><input class="fi num rr-restA" data-i="${i}" type="number" min="0" value="${rq}" oninput="rrRecalc('${esc(base)}','${esc(ra)}')" style="width:54px;font-weight:800;text-align:right;"> <span class="chip chip-${toWh}" style="font-size:9px;padding:1px 5px;">${toWh}</span></td>
-      <td style="border:1px solid #e5e7eb;padding:4px 6px;text-align:right;background:#fffbeb;"><input class="fi num rr-restB" data-i="${i}" type="number" min="0" value="0" oninput="rrRecalc('${esc(base)}','${esc(ra)}')" style="width:52px;font-weight:800;text-align:right;color:#b45309;"></td>
-      <td style="border:1px solid #e5e7eb;padding:4px 6px;text-align:right;"><input class="fi num rr-price" data-i="${i}" type="number" min="0" step="0.01" value="${price.toFixed(2)}" oninput="rrRecalc('${esc(base)}','${esc(ra)}')" style="width:64px;text-align:right;"></td>
+      <td style="border:1px solid #e5e7eb;padding:4px 6px;text-align:right;white-space:nowrap;background:#f0fdf4;"><input class="fi num rr-a" data-i="${i}" type="number" min="0" value="${rq}" oninput="rrRecalc('${esc(base)}','${esc(ra)}')" style="width:50px;font-weight:800;text-align:right;color:#166534;"> <span class="chip chip-${toWh}" style="font-size:9px;padding:1px 5px;">${toWh}</span></td>
+      <td style="border:1px solid #e5e7eb;padding:4px 6px;text-align:right;background:#fffbeb;"><input class="fi num rr-b" data-i="${i}" type="number" min="0" value="0" oninput="rrRecalc('${esc(base)}','${esc(ra)}')" style="width:46px;font-weight:800;text-align:right;color:#b45309;"></td>
+      <td style="border:1px solid #e5e7eb;padding:4px 6px;text-align:right;background:#fef2f2;"><input class="fi num rr-f" data-i="${i}" type="number" min="0" value="0" oninput="rrRecalc('${esc(base)}','${esc(ra)}')" style="width:46px;font-weight:800;text-align:right;color:#b91c1c;"></td>
+      <td style="border:1px solid #e5e7eb;padding:4px 6px;text-align:right;"><input class="fi num rr-price" data-i="${i}" type="number" min="0" step="0.01" value="${price.toFixed(2)}" oninput="rrRecalc('${esc(base)}','${esc(ra)}')" style="width:60px;text-align:right;"></td>
+      <td style="border:1px solid #e5e7eb;padding:5px 8px;text-align:right;color:#374151;font-weight:700;" class="rr-recv" data-i="${i}">${rq.toLocaleString()}</td>
       <td style="border:1px solid #e5e7eb;padding:5px 8px;text-align:right;font-weight:800;" class="rr-amt" data-i="${i}">$${(rq*price).toFixed(2)}</td>
     </tr>`; }).join('');
   const div=document.createElement('div'); div.id='modal-rareceive';
@@ -3177,15 +3266,15 @@ function openReturnReceive(base, ra){
   div.innerHTML=`<div style="background:#fff;border-radius:12px;max-width:900px;width:100%;max-height:90vh;display:flex;flex-direction:column;overflow:hidden;">
     <div style="background:#16a34a;color:#fff;padding:10px 16px;font-weight:800;">📦 Receive &amp; Confirm — ${esc(ret.ra)} · ${esc((rec.meta&&rec.meta.cust)||'')}
       ${ret.cc?'<span style="background:#fff;color:#b91c1c;font-size:10px;font-weight:900;padding:2px 8px;border-radius:20px;margin-left:8px;">💳 CREDIT CARD</span>':''}
-      <div style="font-weight:400;font-size:11px;color:#dcfce7;margin-top:2px;"><b>Received</b> = credited to the customer. <b>Restock A</b> = back to normal PC Room stock · <b>Restock B</b> = B-grade stock. Leftover (received − A − B) is scrapped.</div></div>
+      <div style="font-weight:400;font-size:11px;color:#dcfce7;margin-top:2px;">Enter counts from the inspection sheet. <b>A Grade</b> → normal stock · <b>B Grade</b> → B-grade stock · <b>Failed</b> → scrapped. Received = A+B+Failed = credited to customer.</div></div>
     <div style="overflow-y:auto;padding:12px 16px;">
       <table style="border-collapse:collapse;font-size:12px;width:100%;">
         <thead><tr style="background:#f3f4f6;">
           <th style="border:1px solid #e5e7eb;padding:5px 8px;text-align:left;">Style</th><th style="border:1px solid #e5e7eb;padding:5px 8px;text-align:left;">Color</th><th style="border:1px solid #e5e7eb;padding:5px 8px;">Size</th><th style="border:1px solid #e5e7eb;padding:5px 8px;text-align:left;">Reason</th>
-          <th style="border:1px solid #e5e7eb;padding:5px 8px;">Return</th><th style="border:1px solid #e5e7eb;padding:5px 8px;background:#dcfce7;">Received ✓</th><th style="border:1px solid #e5e7eb;padding:5px 8px;background:#dbeafe;">Restock A → WH</th><th style="border:1px solid #e5e7eb;padding:5px 8px;background:#fef3c7;">Restock B<br><span style="font-weight:400;font-size:9px;">(B-grade)</span></th><th style="border:1px solid #e5e7eb;padding:5px 8px;">Unit $</th><th style="border:1px solid #e5e7eb;padding:5px 8px;">Credit</th>
+          <th style="border:1px solid #e5e7eb;padding:5px 8px;">Return</th><th style="border:1px solid #e5e7eb;padding:5px 8px;background:#dcfce7;">A Grade → WH</th><th style="border:1px solid #e5e7eb;padding:5px 8px;background:#fef3c7;">B Grade</th><th style="border:1px solid #e5e7eb;padding:5px 8px;background:#fee2e2;">Failed</th><th style="border:1px solid #e5e7eb;padding:5px 8px;">Unit $</th><th style="border:1px solid #e5e7eb;padding:5px 8px;">Received</th><th style="border:1px solid #e5e7eb;padding:5px 8px;">Credit</th>
         </tr></thead>
         <tbody>${rows}</tbody>
-        <tfoot><tr style="background:#f0fdf4;font-weight:800;"><td colspan="9" style="border:1px solid #e5e7eb;padding:6px 8px;text-align:right;">CREDIT MEMO TOTAL</td><td style="border:1px solid #e5e7eb;padding:6px 8px;text-align:right;color:#166534;font-size:14px;" id="rr-total">$0.00</td></tr></tfoot>
+        <tfoot><tr style="background:#f0fdf4;font-weight:800;"><td colspan="10" style="border:1px solid #e5e7eb;padding:6px 8px;text-align:right;">CREDIT MEMO TOTAL</td><td style="border:1px solid #e5e7eb;padding:6px 8px;text-align:right;color:#166534;font-size:14px;" id="rr-total">$0.00</td></tr></tfoot>
       </table>
       ${ret.cc?'<div class="muted" style="font-size:10.5px;margin-top:8px;color:#b91c1c;">💳 Credit-card customer — the credit memo will be marked "refund to card required".</div>':''}
     </div>
@@ -3199,16 +3288,16 @@ function openReturnReceive(base, ra){
 function rrRecalc(base, ra){
   const div=document.getElementById('modal-rareceive'); if(!div) return;
   let total=0;
-  div.querySelectorAll('.rr-recv').forEach(inp=>{
+  div.querySelectorAll('.rr-a').forEach(inp=>{
     const i=inp.dataset.i;
-    const recv=Math.max(0, parseInt(inp.value)||0);
+    const a=Math.max(0, parseInt(inp.value)||0);
+    const b=Math.max(0, parseInt((div.querySelector('.rr-b[data-i="'+i+'"]')||{}).value)||0);
+    const f=Math.max(0, parseInt((div.querySelector('.rr-f[data-i="'+i+'"]')||{}).value)||0);
+    const recv=a+b+f;
     const price=Number((div.querySelector('.rr-price[data-i="'+i+'"]')||{}).value)||0;
     const amt=recv*price; total+=amt;
+    const rc=div.querySelector('.rr-recv[data-i="'+i+'"]'); if(rc) rc.textContent=recv.toLocaleString();
     const cell=div.querySelector('.rr-amt[data-i="'+i+'"]'); if(cell) cell.textContent='$'+amt.toFixed(2);
-    const aEl=div.querySelector('.rr-restA[data-i="'+i+'"]'), bEl=div.querySelector('.rr-restB[data-i="'+i+'"]');
-    let a=aEl?Math.max(0,parseInt(aEl.value)||0):0, b=bEl?Math.max(0,parseInt(bEl.value)||0):0;
-    if(a>recv){ a=recv; if(aEl) aEl.value=a; }        // A ≤ 받은 수량
-    if(a+b>recv){ b=Math.max(0, recv-a); if(bEl) bEl.value=b; }   // A+B ≤ 받은 수량
   });
   const tt=document.getElementById('rr-total'); if(tt) tt.textContent='$'+total.toFixed(2);
 }
@@ -3216,29 +3305,28 @@ async function returnReceiveConfirm(base, ra){
   const rec=savedCache.find(s=>s.base===base); if(!rec) return;
   const ret=recReturns(rec).find(r=>r.ra===ra); if(!ret || ret.status==='received') return;
   const div=document.getElementById('modal-rareceive'); if(!div) return;
-  const recvLines=[]; let creditAmt=0, restockA=0, restockB=0;
+  const recvLines=[]; let creditAmt=0, totA=0, totB=0, totF=0;
   (ret.lines||[]).forEach((l,i)=>{
-    const recv=Math.max(0, parseInt((div.querySelector('.rr-recv[data-i="'+i+'"]')||{}).value)||0);
-    let a=Math.max(0, parseInt((div.querySelector('.rr-restA[data-i="'+i+'"]')||{}).value)||0);
-    let b=Math.max(0, parseInt((div.querySelector('.rr-restB[data-i="'+i+'"]')||{}).value)||0);
-    if(a>recv) a=recv;
-    if(a+b>recv) b=Math.max(0, recv-a);
+    const a=Math.max(0, parseInt((div.querySelector('.rr-a[data-i="'+i+'"]')||{}).value)||0);
+    const b=Math.max(0, parseInt((div.querySelector('.rr-b[data-i="'+i+'"]')||{}).value)||0);
+    const f=Math.max(0, parseInt((div.querySelector('.rr-f[data-i="'+i+'"]')||{}).value)||0);
+    const recv=a+b+f;
     const price=Number((div.querySelector('.rr-price[data-i="'+i+'"]')||{}).value)||Number(l.price)||0;
-    creditAmt+=recv*price; restockA+=a; restockB+=b;
-    recvLines.push(Object.assign({}, l, {receivedQty:recv, restockA:a, restockB:b, restockQty:a+b, price:price}));
+    creditAmt+=recv*price; totA+=a; totB+=b; totF+=f;
+    recvLines.push(Object.assign({}, l, {receivedQty:recv, gradeA:a, gradeB:b, failed:f, restockA:a, restockB:b, restockQty:a+b, price:price}));
   });
   creditAmt=Math.round(creditAmt*100)/100;
-  const restockTot=restockA+restockB;
+  const restockA=totA, restockB=totB, restockTot=totA+totB;
   const cm=ra.replace(/^RA-/, 'CM-');
-  if(!confirm('Confirm receipt of '+ra+'?\n\n• Credit memo '+cm+':  $'+creditAmt.toFixed(2)+'\n• Restock → normal(A): '+restockA.toLocaleString()+' pcs · B-grade(B): '+restockB.toLocaleString()+' pcs\n\nThis cannot be edited afterward.')) return;
+  if(!confirm('Confirm receipt of '+ra+'?\n\n• Credit memo '+cm+':  $'+creditAmt.toFixed(2)+' ('+(totA+totB+totF).toLocaleString()+' pcs)\n• A Grade: '+totA.toLocaleString()+' → stock · B Grade: '+totB.toLocaleString()+' → B-grade · Failed: '+totF.toLocaleString()+' → scrap\n\nThis cannot be edited afterward.')) return;
   for(const l of recvLines){
     const toWh=(l.toWh||l.wh)==='CA'?'CA':'SC';
     const k=pcKey(l.style, l.color, toWh), sz=String(l.size).toUpperCase();
-    if(l.restockA>0){ try{ await pcCellChange(k, sz, '+'+l.restockA, null, '↩ Return '+ra+' received (A)'); }catch(e){} }
-    if(l.restockB>0){ try{ await pcAddB(k, sz, l.restockB, '↩ Return '+ra+' received (B-grade)'); }catch(e){} }
+    if(l.gradeA>0){ try{ await pcCellChange(k, sz, '+'+l.gradeA, null, '↩ Return '+ra+' received (A grade)'); }catch(e){} }
+    if(l.gradeB>0){ try{ await pcAddB(k, sz, l.gradeB, '↩ Return '+ra+' received (B grade)'); }catch(e){} }
   }
   ret.status='received';
-  ret.received={ at:new Date().toISOString(), by:(SESS&&SESS.email)||'', lines:recvLines, creditAmount:creditAmt, restockTotal:restockTot, restockA:restockA, restockB:restockB, cm:cm };
+  ret.received={ at:new Date().toISOString(), by:(SESS&&SESS.email)||'', lines:recvLines, creditAmount:creditAmt, restockTotal:restockTot, restockA:restockA, restockB:restockB, failedTotal:totF, cm:cm };
   rec.meta=rec.meta||{};
   rec.meta._returns=recReturns(rec).map(r=>r.ra===ra?ret:r);
   try{ await sbFetch('/rest/v1/pr_orders?base=eq.'+encodeURIComponent(base), {method:'PATCH', headers:{Prefer:'return=minimal'}, body:JSON.stringify({meta:rec.meta, updated_at:new Date().toISOString()})}); }
