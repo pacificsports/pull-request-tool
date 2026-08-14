@@ -145,7 +145,7 @@ main{max-width:1100px;margin:0 auto;padding:16px;}
     <button class="btn btn-sm" onclick="doLogout()" style="padding:2px 8px;font-size:10px;" data-i18n="logout">Log out</button>
   </span>
   <select id="lang-sel" onchange="setLang(this.value)" style="font-size:11px;padding:3px 6px;border-radius:5px;border:none;background:#1d3f66;color:#fff;"><option value="ko">한국어</option><option value="en">English</option><option value="es">Español</option></select>
-  <span style="font-size:10px;color:#9fb8d4;">v513 🚚</span>
+  <span style="font-size:10px;color:#9fb8d4;">v514 🚚</span>
 </div>
 <script type="text/javascript" src="https://js.authorize.net/v1/Accept.js" charset="utf-8"></script>
 <div id="po-viewer" style="display:none;position:fixed;top:0;right:0;width:44%;height:100vh;background:#fff;border-left:2px solid var(--border);z-index:60;box-shadow:-6px 0 20px rgba(0,0,0,.15);">
@@ -14844,13 +14844,57 @@ async function batchPrintPLs(){
   showToast('📦 '+docs.length+' packing list(s) sent to printer'+(fromLines?' · '+fromLines+' generated from order lines (no saved PL yet)':''));
 }
 // 🖨📦 체크된 주문들 — 각 PR의 1페이지(전체 수량 요약)만 먼저 전부 인쇄, 그다음 Packing List 전부 인쇄 (pull 확인용)
+// 📦 배치 프린트 1장 요약: 선택 오더별 총 박스 수 + 무게(박스수 × 33 lbs)
+const BATCH_LB_PER_BOX = 33;
+function _recWhBoxes(rec, wh){
+  const lines = (rec.lines||[]).filter(l=> (String(l.wh||'SC').trim().toUpperCase()||'SC')===wh && (l.qty||0)>0);
+  let full=0; const pset=new Set();
+  lines.forEach(l=>{ const b=boxCalc(l); full+=b.full||0; if((b.loose||0)>0 && l.pbox) pset.add(String(l.pbox).trim()); });
+  return full + pset.size;
+}
+function buildBatchPullSummary(rows, totalBoxes){
+  const totalWeight = totalBoxes * BATCH_LB_PER_BOX;
+  const dateStr = new Date().toLocaleDateString('en-US',{weekday:'short',year:'numeric',month:'long',day:'numeric'});
+  const trs = rows.map((r,i)=>`<tr>
+    <td style="text-align:center;">${i+1}</td>
+    <td style="font-weight:700;">${esc(r.po||'')}</td>
+    <td class="tl">${esc(r.cust||'')}</td>
+    <td style="text-align:center;"><span class="chip chip-${r.wh}" style="font-size:10px;padding:1px 7px;">${esc(r.wh)}</span></td>
+    <td style="text-align:center;font-weight:800;">${r.boxes}</td>
+    <td style="text-align:right;">${(r.boxes*BATCH_LB_PER_BOX).toLocaleString()} lbs</td>
+  </tr>`).join('');
+  return `<div class="inv-doc">
+    <div style="background:#0f2a4a;padding:14px 20px;display:flex;justify-content:space-between;align-items:center;">
+      <img src="${LOGO_B64}" style="height:42px;width:auto;">
+      <div style="color:#fff;font-size:22px;font-weight:800;letter-spacing:2px;">📦 PULL SUMMARY</div>
+    </div>
+    <div style="padding:8px 20px;color:#555;font-size:12px;background:#f5f7fa;border:1px solid var(--border);border-top:none;">${dateStr} &nbsp;·&nbsp; ${rows.length} order(s) selected &nbsp;·&nbsp; weight = boxes × ${BATCH_LB_PER_BOX} lbs</div>
+    <table class="inv-tbl" style="margin-top:14px;">
+      <thead><tr><th>#</th><th>PO</th><th class="tl">Customer</th><th>WH</th><th style="background:#1d4ed8;">📦 Boxes</th><th>Weight</th></tr></thead>
+      <tbody>${trs}</tbody>
+      <tfoot><tr>
+        <td colspan="4" class="tl" style="font-weight:800;">TOTAL — ${rows.length} order(s)</td>
+        <td style="text-align:center;font-weight:900;background:#1d4ed8;color:#fff;font-size:15px;">${totalBoxes}</td>
+        <td style="text-align:right;font-weight:900;background:#0f2a4a;color:#fff;font-size:15px;">${totalWeight.toLocaleString()} lbs</td>
+      </tr></tfoot>
+    </table>
+    <div style="margin-top:18px;padding:16px;background:#f1f5f9;border:1px solid var(--border);border-radius:10px;display:flex;justify-content:space-around;text-align:center;">
+      <div><div style="font-size:11px;font-weight:800;color:#64748b;letter-spacing:.5px;">TOTAL BOXES</div><div style="font-size:34px;font-weight:900;color:#1d4ed8;line-height:1.1;">${totalBoxes}</div></div>
+      <div style="border-left:1px solid #cbd5e1;"></div>
+      <div><div style="font-size:11px;font-weight:800;color:#64748b;letter-spacing:.5px;">TOTAL WEIGHT</div><div style="font-size:34px;font-weight:900;color:#0f2a4a;line-height:1.1;">${totalWeight.toLocaleString()} <span style="font-size:17px;">lbs</span></div></div>
+    </div>
+  </div>`;
+}
 async function batchPrintPRandPL(){
   const pairs = [...document.querySelectorAll('.bship-cb:checked')].map(c=>({base:c.dataset.base, wh:c.dataset.wh}));
   if(!pairs.length){ showToast('🖨📦 No orders selected — check the box next to an SC/CA row first'); return; }
   const prDocs = [], plDocs = []; let fromLines = 0; const touched = {};
+  const summaryRows = []; let totalBoxes = 0;
   // 1) Pull Request 1페이지만 (전부 먼저)
   for(const p of pairs){
     const rec = savedCache.find(s=>s.base===p.base); if(!rec) continue;
+    const bx = _recWhBoxes(rec, p.wh); totalBoxes += bx;
+    summaryRows.push({ po:(rec.meta&&rec.meta.po)||'', cust:(rec.meta&&rec.meta.cust)||'', wh:p.wh, boxes:bx });
     prDocs.push('<div>'+buildPRDocFromRec(rec, p.wh, {page1Only:true})+'</div>');
     const mp = { ...((rec.meta && rec.meta._printed) || {}) };
     mp[p.wh] = { ...(mp[p.wh]||{}), pr: { at:new Date().toISOString(), by:(SESS&&SESS.email)||'' } };
@@ -14867,8 +14911,9 @@ async function batchPrintPRandPL(){
   }
   if(!prDocs.length && !plDocs.length){ showToast('🖨📦 Nothing to print'); return; }
   const brk = '<div style="page-break-before:always;break-before:page;"></div>';
-  const allDocs = prDocs.concat(plDocs);
-  printDocHtml(allDocs.join(brk), 'PR (1st page) + PACKING LISTS ('+pairs.length+' order'+(pairs.length===1?'':'s')+')');
+  const cover = '<div>'+buildBatchPullSummary(summaryRows, totalBoxes)+'</div>';   // 맨 첫장: 총 박스수 + 무게
+  const allDocs = [cover].concat(prDocs, plDocs);
+  printDocHtml(allDocs.join(brk), 'PULL SUMMARY + PR (1st page) + PACKING LISTS ('+pairs.length+' order'+(pairs.length===1?'':'s')+')');
   for(const b in touched){ try{ await sbFetch('/rest/v1/pr_orders?base=eq.'+encodeURIComponent(b), {method:'PATCH', headers:{Prefer:'return=minimal'}, body:JSON.stringify({meta:touched[b].meta, updated_at:new Date().toISOString()})}); }catch(e){} }
   renderSaved();
   const want = new Set(pairs.map(p=>p.base+'|'+p.wh));
