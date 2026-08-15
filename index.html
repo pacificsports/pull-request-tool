@@ -154,7 +154,7 @@ main{max-width:1100px;margin:0 auto;padding:16px;}
     <button class="btn btn-sm" onclick="doLogout()" style="padding:2px 8px;font-size:10px;" data-i18n="logout">Log out</button>
   </span>
   <select id="lang-sel" onchange="setLang(this.value)" style="font-size:11px;padding:3px 6px;border-radius:5px;border:none;background:#1d3f66;color:#fff;"><option value="ko">한국어</option><option value="en">English</option><option value="es">Español</option></select>
-  <span style="font-size:10px;color:#9fb8d4;">v559 ↩</span>
+  <span style="font-size:10px;color:#9fb8d4;">v560 ↩</span>
 </div>
 <script type="text/javascript" src="https://js.authorize.net/v1/Accept.js" charset="utf-8"></script>
 <div id="po-viewer" style="display:none;position:fixed;top:0;right:0;width:44%;height:100vh;background:#fff;border-left:2px solid var(--border);z-index:60;box-shadow:-6px 0 20px rgba(0,0,0,.15);">
@@ -420,6 +420,7 @@ main{max-width:1100px;margin:0 auto;padding:16px;}
       <button class="btn btn-sm" onclick="bxExport()">⬇ Excel</button>
       <button class="btn btn-sm" onclick="bxAuditOpen()" style="background:#0f2a4a;color:#fff;border-color:#0f2a4a;" title="Boxes/qty by location per Style+Color — print or Excel for a physical stock count">🔍 Stock Count</button>
       <button class="btn btn-sm" onclick="pchkOpen()" style="background:#0891b2;color:#fff;border-color:#0891b2;" title="Physical check with photos — take pallet photos, AI reads labels, compares to system">📸 Photo Check</button>
+      <button class="btn btn-sm" onclick="pchkReviewOpen()" style="background:#155e75;color:#fff;border-color:#155e75;" title="Review physical checks submitted by staff (staff link: psflowx.com/#check)">🔍 Check reviews<span id="pchk-review-badge" style="font-weight:800;"></span></button>
       <button class="btn btn-sm" onclick="hiOpen()" style="background:#0e7490;color:#fff;border-color:#0e7490;" title="Upload Haiti invoice → review → assign locations on arrival">🇭🇹 Haiti Receive</button>
       <button class="btn btn-sm" onclick="trOpen()" style="background:#b45309;color:#fff;border-color:#b45309;" title="SC → CA box transfer (build batch → depart → assign CA locations on arrival)">🚚 Transfer</button>
       <button class="btn btn-sm" onclick="dvcOpen()" style="background:#334155;color:#fff;border-color:#334155;" title="Drop the DaVinci 'Inventory By Location' Excel exports here to compare against our stock, line by line">⚖ DV Compare</button>
@@ -2517,6 +2518,7 @@ function normalizeLines(lines){
 }
 // ═══════════════ 로그인 (웹사이트와 동일: Supabase 이메일+암호) ═══════════════
 const PCHK_WORKER = 'https://parse-po.hjbae.workers.dev/vision';   // 📸 vision — parse-po 워커에 /vision 경로 (기존 ANTHROPIC_API_KEY 재사용) (v556)
+const PCHECK_PIN = '4321';   // 🔒 직원 무로그인 촬영 링크(psflowx.com/#check) 공용 암호 — 바꾸려면 이 값만 수정 (v560)
 const SB_URL = 'https://ypjnhhtfwyrwcjakjcgc.supabase.co';
 const SB_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Inlwam5oaHRmd3lyd2NqYWtqY2djIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzIyMDMxOTAsImV4cCI6MjA4Nzc3OTE5MH0.ADl8rXCeu9Z0fLAYR0d1wxOOkvT30eo47ahpss9yJq8';
 let SESS = null;
@@ -2625,8 +2627,10 @@ async function enterApp(){
   sbFetch('/rest/v1/pr_pcroom?select=k,style,color,qty,bqty,bnote,sizes,wh,locs').then(async r=>{
     if(r.ok){ pcStore = await r.json(); pcLoaded = true; if(poLines.length) renderTable(); }
   }).catch(()=>{});
+  if(typeof pchkReviewBadge==='function') pchkReviewBadge();
 }
 async function initAuth(){
+  if(pchkIsEmpMode()){ pchkEmpBoot(); return; }   // 🔒 무로그인 직원 촬영 모드 (#check) — 로그인 건너뜀
   if(checkRecoveryHash()){ $('reset-page').style.display = 'flex'; setTimeout(()=>{ const f=$('reset-pw1'); if(f) f.focus(); },150); return; }
   loadSess();
   if(SESS){
@@ -7208,6 +7212,206 @@ function pchkRenderMatch(detected){
     </div>
     <div style="font-size:10.5px;color:#64748b;text-align:center;line-height:1.5;">⚠ TO REVIEW 항목은 직원이 다시 확인. (재고 자동수정·사진 저장은 테스트 후 다음 단계에서 추가)</div>
   </div>`;
+}
+// ═══════════════ 🔒 무로그인 직원 촬영 (Physical Check submit-only) — psflowx.com/#check (v560) ═══════════════
+let _pchkLastDetected = null;
+function pchkIsEmpMode(){ return (location.hash||'').replace(/^#/,'').split(/[?&]/)[0] === 'check'; }
+function pchkEmpEl(){ let ov=document.getElementById('pchk-emp');
+  if(!ov){ ov=document.createElement('div'); ov.id='pchk-emp'; ov.style.cssText='position:fixed;inset:0;background:#0f172a;z-index:300;display:flex;flex-direction:column;overflow-y:auto;'; document.body.appendChild(ov); }
+  return ov; }
+function pchkEmpBoot(){
+  ['login-page','reset-page','app-main'].forEach(id=>{ const e=document.getElementById(id); if(e) e.style.display='none'; });
+  const ov=pchkEmpEl();
+  let okPin=false; try{ okPin = localStorage.getItem('pchk_pin_ok')==='1'; }catch(e){}
+  if(okPin){ _pchkWh='SC'; _pchkBin=''; _pchkImgs=[]; _pchkLastDetected=null; pchkEmpCapture(); } else pchkEmpGate();
+}
+function pchkEmpHeader(sub){ return `<div style="background:#0891b2;color:#fff;padding:14px 16px;display:flex;align-items:center;gap:10px;position:sticky;top:0;z-index:5;">
+    <span style="font-size:17px;font-weight:800;">📸 Physical Check</span>${sub?`<span style="font-size:12px;opacity:.85;">${sub}</span>`:''}</div>`; }
+function pchkEmpGate(){
+  const ov=pchkEmpEl();
+  ov.innerHTML=pchkEmpHeader('Staff')+`<div style="flex:1;background:#f1f5f9;padding:24px 14px;">
+    <div style="max-width:420px;margin:40px auto 0;background:#fff;border-radius:14px;padding:26px 22px;box-shadow:0 2px 8px rgba(0,0,0,.1);text-align:center;">
+      <div style="font-size:34px;margin-bottom:8px;">🔒</div>
+      <div style="font-size:15px;font-weight:800;color:#0f2a4a;margin-bottom:4px;">Enter passcode</div>
+      <div style="font-size:12px;color:#64748b;margin-bottom:18px;">Ask your manager for the 4-digit code.</div>
+      <input id="pchk-pin" type="tel" inputmode="numeric" maxlength="8" autocomplete="off" placeholder="••••" onkeydown="if(event.key==='Enter')pchkEmpUnlock()" style="width:160px;text-align:center;letter-spacing:8px;font-size:26px;padding:12px;border:2px solid #cbd5e1;border-radius:12px;box-sizing:border-box;">
+      <div id="pchk-pin-err" style="color:#dc2626;font-size:12px;font-weight:700;height:16px;margin-top:8px;"></div>
+      <button onclick="pchkEmpUnlock()" style="width:100%;margin-top:12px;background:#0891b2;color:#fff;border:none;border-radius:10px;padding:13px;font-size:16px;font-weight:800;">Unlock →</button>
+    </div></div>`;
+  const f=document.getElementById('pchk-pin'); if(f) setTimeout(()=>f.focus(),120);
+}
+function pchkEmpUnlock(){
+  const v=String((document.getElementById('pchk-pin')||{}).value||'').trim();
+  if(v!==PCHECK_PIN){ const e=document.getElementById('pchk-pin-err'); if(e) e.textContent='Wrong passcode.'; return; }
+  try{ localStorage.setItem('pchk_pin_ok','1'); }catch(e){}
+  _pchkWh='SC'; _pchkBin=''; _pchkImgs=[]; _pchkLastDetected=null; pchkEmpCapture();
+}
+function pchkEmpSetWh(w){ const c=document.getElementById('pchk-bin'); if(c) _pchkBin=c.value;
+  const wn=document.getElementById('pchk-who'); if(wn) _pchkWho=wn.value; _pchkWh=w; pchkEmpCapture(); }
+let _pchkWho='';
+function pchkEmpCapture(){
+  const ov=pchkEmpEl();
+  const on='background:#0f2a4a;color:#fff;border-color:#0f2a4a;', off='background:#fff;color:#64748b;border-color:#cbd5e1;';
+  ov.innerHTML=pchkEmpHeader()+`<div style="flex:1;background:#f1f5f9;padding:14px;">
+    <div style="max-width:640px;margin:0 auto;display:flex;flex-direction:column;gap:12px;">
+      <div style="background:#fff;border-radius:12px;padding:16px;">
+        <div style="font-size:13px;font-weight:800;color:#0f2a4a;margin-bottom:8px;">1️⃣ Warehouse</div>
+        <div style="display:flex;gap:8px;margin-bottom:14px;">
+          <button onclick="pchkEmpSetWh('SC')" style="flex:1;border:2px solid;border-radius:10px;padding:12px;font-size:16px;font-weight:800;${_pchkWh==='SC'?on:off}">SC</button>
+          <button onclick="pchkEmpSetWh('CA')" style="flex:1;border:2px solid;border-radius:10px;padding:12px;font-size:16px;font-weight:800;${_pchkWh==='CA'?on:off}">CA</button>
+        </div>
+        <div style="font-size:13px;font-weight:800;color:#0f2a4a;margin-bottom:8px;">2️⃣ Which pallet / bin?</div>
+        <input id="pchk-bin" value="${esc(_pchkBin)}" placeholder="e.g. 1A-1 or 1043" autocomplete="off" style="width:100%;font-size:18px;padding:12px;border:2px solid #cbd5e1;border-radius:10px;text-transform:uppercase;box-sizing:border-box;">
+        <div style="font-size:13px;font-weight:800;color:#0f2a4a;margin:14px 0 8px;">3️⃣ Your name / initials <span style="font-weight:500;color:#94a3b8;">(optional)</span></div>
+        <input id="pchk-who" value="${esc(_pchkWho)}" placeholder="e.g. Robert" autocomplete="off" style="width:100%;font-size:15px;padding:10px;border:2px solid #cbd5e1;border-radius:10px;box-sizing:border-box;">
+      </div>
+      <div style="background:#fff;border-radius:12px;padding:14px;">
+        <div style="font-size:13px;font-weight:800;color:#0f2a4a;margin-bottom:8px;">4️⃣ Take photos (front · left · right · back — labels facing out)</div>
+        <input type="file" id="pchk-cam" accept="image/*" capture="environment" multiple style="display:none;" onchange="pchkAddPhotos(this.files)">
+        <button onclick="document.getElementById('pchk-cam').click()" style="width:100%;background:#0f2a4a;color:#fff;border:none;border-radius:10px;padding:14px;font-size:16px;font-weight:800;">📷 Add photo(s)</button>
+        <div id="pchk-thumbs" style="display:flex;flex-wrap:wrap;gap:8px;margin-top:10px;"></div>
+      </div>
+      <button id="pchk-analyze" onclick="pchkEmpAnalyze()" disabled style="background:#94a3b8;color:#fff;border:none;border-radius:12px;padding:16px;font-size:17px;font-weight:800;opacity:.6;">🔍 Check photos</button>
+    </div></div>`;
+  pchkRenderThumbs();
+}
+async function pchkEmpAnalyze(){
+  if(!_pchkImgs.length) return;
+  const bin=String((document.getElementById('pchk-bin')||{}).value||'').trim().toUpperCase();
+  if(!bin){ showToast('⚠ Enter a bin'); return; }
+  _pchkBin=bin; const wn=document.getElementById('pchk-who'); if(wn) _pchkWho=wn.value;
+  const btn=document.getElementById('pchk-analyze'); if(btn){ btn.disabled=true; btn.textContent='🔍 Reading labels… (10-20s)'; btn.style.opacity='.7'; }
+  let res;
+  try{
+    const r=await fetch(PCHK_WORKER,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({ images:_pchkImgs.map(i=>i.dataUrl) })});
+    res=await r.json();
+    if(res.error) throw new Error(res.error+(res.raw?(' — '+String(res.raw).slice(0,120)):''));
+  }catch(e){ if(btn){ btn.disabled=false; btn.textContent='🔍 Check photos'; btn.style.opacity='1'; } showToast('⚠ Failed: '+(e.message||e)); return; }
+  _pchkLastDetected=res.detected||[];
+  pchkEmpReview();
+}
+function pchkEmpReview(){
+  const ov=pchkEmpEl(); const det=_pchkLastDetected||[];
+  const rows=det.slice().sort((a,b)=>String(a.style).localeCompare(String(b.style))||String(a.color).localeCompare(String(b.color))||bxSizeCmp(a.size,b.size));
+  const total=rows.reduce((a,d)=>a+(Number(d.count)||0),0);
+  const body=rows.length?rows.map(d=>`<tr><td style="padding:6px 8px;font-weight:700;">${esc(d.style)}</td><td style="padding:6px 8px;">${esc(d.color)}</td><td style="padding:6px 8px;text-align:center;">${esc(d.size)}</td><td style="padding:6px 8px;text-align:center;font-weight:800;">${esc(String(d.count))}</td></tr>`).join(''):`<tr><td colspan="4" style="padding:12px;color:#64748b;text-align:center;">No labels read — retake with labels clearly visible.</td></tr>`;
+  ov.innerHTML=pchkEmpHeader('['+_pchkWh+'] '+esc(_pchkBin))+`<div style="flex:1;background:#f1f5f9;padding:14px;">
+    <div style="max-width:640px;margin:0 auto;display:flex;flex-direction:column;gap:12px;">
+      <div style="background:#fff;border-radius:12px;padding:14px;">
+        <div style="font-size:13px;font-weight:800;color:#0f2a4a;margin-bottom:4px;">📷 What the photos show — [${_pchkWh}] bin ${esc(_pchkBin)}</div>
+        <div style="font-size:11.5px;color:#64748b;margin-bottom:8px;">Check this looks right. If labels are missing/blurry, retake. This goes to your manager to compare with the system.</div>
+        <table style="width:100%;font-size:12.5px;border-collapse:collapse;"><thead><tr style="background:#f1f5f9;"><th style="padding:5px 8px;text-align:left;">Style</th><th style="padding:5px 8px;text-align:left;">Color</th><th style="padding:5px 8px;">Size</th><th style="padding:5px 8px;">Boxes</th></tr></thead><tbody>${body}</tbody></table>
+        <div style="font-size:11px;color:#64748b;margin-top:6px;">Total read: ${total} boxes · ${_pchkImgs.length} photo(s)</div>
+      </div>
+      <div style="display:flex;flex-wrap:wrap;gap:8px;">${_pchkImgs.map(im=>`<img src="${im.dataUrl}" style="width:64px;height:64px;object-fit:cover;border-radius:8px;border:1px solid #cbd5e1;">`).join('')}</div>
+      <div style="display:flex;gap:8px;">
+        <button onclick="pchkEmpCapture()" style="flex:1;background:#e2e8f0;color:#0f2a4a;border:none;border-radius:10px;padding:14px;font-weight:800;">← Retake / add</button>
+        <button id="pchk-submit" onclick="pchkEmpSubmit()" style="flex:2;background:#16a34a;color:#fff;border:none;border-radius:10px;padding:14px;font-size:16px;font-weight:800;">✅ Submit to manager</button>
+      </div>
+    </div></div>`;
+}
+async function pchkEmpSubmit(){
+  const btn=document.getElementById('pchk-submit'); if(btn){ btn.disabled=true; btn.textContent='Submitting…'; btn.style.opacity='.7'; }
+  const row={ wh:_pchkWh, bin:_pchkBin, submitter:(_pchkWho||'').trim()||null, detected:_pchkLastDetected||[], status:'pending' };
+  try{
+    const r=await fetch(SB_URL+'/rest/v1/pr_physcheck',{method:'POST',headers:{apikey:SB_KEY,Authorization:'Bearer '+SB_KEY,'Content-Type':'application/json',Prefer:'return=minimal'},body:JSON.stringify([row])});
+    if(!r.ok){ const t=await r.text(); throw new Error('HTTP '+r.status+' '+t.slice(0,140)); }
+  }catch(e){ if(btn){ btn.disabled=false; btn.textContent='✅ Submit to manager'; btn.style.opacity='1'; } showToast('⚠ Submit failed: '+(e.message||e)); return; }
+  pchkEmpDone();
+}
+function pchkEmpDone(){
+  const ov=pchkEmpEl();
+  ov.innerHTML=pchkEmpHeader()+`<div style="flex:1;background:#f1f5f9;padding:14px;">
+    <div style="max-width:420px;margin:40px auto 0;background:#fff;border-radius:14px;padding:30px 22px;text-align:center;box-shadow:0 2px 8px rgba(0,0,0,.1);">
+      <div style="font-size:44px;margin-bottom:10px;">✅</div>
+      <div style="font-size:17px;font-weight:800;color:#15803d;margin-bottom:6px;">Submitted!</div>
+      <div style="font-size:13px;color:#64748b;margin-bottom:22px;">[${_pchkWh}] bin ${esc(_pchkBin)} sent to your manager for review.</div>
+      <button onclick="_pchkBin='';_pchkImgs=[];_pchkLastDetected=null;pchkEmpCapture()" style="width:100%;background:#0891b2;color:#fff;border:none;border-radius:10px;padding:14px;font-size:16px;font-weight:800;">📸 Check another pallet</button>
+    </div></div>`;
+}
+
+// ═══════════════ 🧑‍💼 매니저 검토함 (Physical Check review) (v560) ═══════════════
+function pchkCompare(bin, wh, detected){
+  const b=String(bin||'').trim().toUpperCase(); const map={};
+  (typeof bxStore!=='undefined'?bxStore:[]).forEach(x=>{ if(String(x.loc||'').toUpperCase()!==b) return; if(bxWh(x)!==wh) return;
+    const k=pchkNorm(x.style)+'|'+pchkNorm(x.color)+'|'+pchkNorm(x.size);
+    if(!map[k]) map[k]={style:x.style,color:String(x.color).toUpperCase(),size:String(x.size).toUpperCase(),sys:0,photo:0}; map[k].sys++; });
+  (detected||[]).forEach(d=>{ const k=pchkNorm(d.style)+'|'+pchkNorm(d.color)+'|'+pchkNorm(d.size); if(!map[k]) map[k]={style:d.style||'?',color:d.color||'?',size:d.size||'?',sys:0,photo:0}; map[k].photo+=(Number(d.count)||0); });
+  const rows=Object.values(map).sort((a,b2)=>String(a.style).localeCompare(String(b2.style))||String(a.color).localeCompare(String(b2.color))||bxSizeCmp(a.size,b2.size));
+  let okN=0,diffN=0; rows.forEach(r=>{ if(r.sys===r.photo) okN++; else diffN++; });
+  return {rows, okN, diffN};
+}
+async function pchkReviewBadge(){
+  try{ const r=await sbFetch('/rest/v1/pr_physcheck?select=id&status=eq.pending'); if(!r.ok) return;
+    const n=(await r.json()).length; const b=document.getElementById('pchk-review-badge'); if(b) b.textContent=n?(' '+n):''; }catch(e){}
+}
+async function pchkReviewOpen(){
+  const ex=document.getElementById('modal-pchkrev'); if(ex) ex.remove();
+  const div=document.createElement('div'); div.id='modal-pchkrev';
+  div.style.cssText='position:fixed;inset:0;background:rgba(15,23,42,.55);z-index:210;display:flex;align-items:flex-start;justify-content:center;padding:20px 12px;overflow-y:auto;';
+  div.innerHTML=`<div style="background:#fff;border-radius:14px;max-width:820px;width:100%;max-height:92vh;display:flex;flex-direction:column;overflow:hidden;">
+    <div style="background:#0f2a4a;color:#fff;padding:14px 18px;display:flex;align-items:center;gap:10px;">
+      <span style="font-size:16px;font-weight:800;">🔍 Physical Check reviews</span>
+      <button onclick="pchkReviewOpen()" title="Refresh" style="background:rgba(255,255,255,.15);color:#fff;border:none;border-radius:8px;padding:5px 10px;font-size:13px;">🔄</button>
+      <button onclick="document.getElementById('modal-pchkrev').remove()" style="margin-left:auto;background:rgba(255,255,255,.2);color:#fff;border:none;border-radius:8px;padding:6px 12px;font-size:15px;font-weight:800;">✕</button>
+    </div>
+    <div id="pchkrev-body" style="flex:1;overflow-y:auto;background:#f1f5f9;padding:14px;"><div style="text-align:center;color:#64748b;padding:30px;">Loading…</div></div>
+  </div>`;
+  document.body.appendChild(div);
+  let rows=[];
+  try{ const r=await sbFetch('/rest/v1/pr_physcheck?select=*&order=created_at.desc&limit=100'); if(!r.ok) throw new Error('HTTP '+r.status); rows=await r.json(); }
+  catch(e){ const b=document.getElementById('pchkrev-body'); if(b) b.innerHTML=`<div style="padding:20px;color:#b91c1c;">Load failed: ${esc(e.message||String(e))}</div>`; return; }
+  pchkReviewRender(rows);
+}
+function pchkReviewRender(rows){
+  const b=document.getElementById('pchkrev-body'); if(!b) return;
+  const pend=rows.filter(r=>r.status==='pending'), done=rows.filter(r=>r.status!=='pending');
+  const card=r=>{
+    const cmp=pchkCompare(r.bin, r.wh, r.detected||[]);
+    const when=(r.created_at||'').replace('T',' ').slice(5,16);
+    const body=cmp.rows.map(x=>{ let st,bg;
+      if(x.sys===x.photo){ st='✅'; bg='#f0fdf4'; }
+      else if(x.photo===0){ st='➖ missing in photo'; bg='#fef2f2'; }
+      else if(x.sys===0){ st='➕ not in system'; bg='#eff6ff'; }
+      else { st=`⚠ ${x.sys}→${x.photo}`; bg='#fffbeb'; }
+      return `<tr style="background:${bg};"><td style="padding:4px 7px;font-weight:700;">${esc(x.style)}</td><td style="padding:4px 7px;">${esc(x.color)}</td><td style="padding:4px 7px;text-align:center;">${esc(x.size)}</td><td style="padding:4px 7px;text-align:center;">${x.sys}</td><td style="padding:4px 7px;text-align:center;font-weight:800;">${x.photo}</td><td style="padding:4px 7px;font-size:11px;font-weight:700;white-space:nowrap;">${st}</td></tr>`; }).join('');
+    const statusChip = r.status==='pending' ? `<span style="background:#fef3c7;color:#92400e;font-size:10px;font-weight:800;padding:2px 8px;border-radius:20px;">PENDING</span>`
+      : r.status==='resolved' ? `<span style="background:#dcfce7;color:#166534;font-size:10px;font-weight:800;padding:2px 8px;border-radius:20px;">RESOLVED</span>`
+      : `<span style="background:#e2e8f0;color:#475569;font-size:10px;font-weight:800;padding:2px 8px;border-radius:20px;">DISMISSED</span>`;
+    const acts = r.status==='pending' ? `<div style="display:flex;gap:6px;margin-top:8px;flex-wrap:wrap;">
+        <button onclick="pchkReviewJump('${esc(r.bin)}','${esc(r.wh)}')" style="background:#0f2a4a;color:#fff;border:none;border-radius:8px;padding:7px 12px;font-size:12px;font-weight:700;">📍 Open bin to fix</button>
+        <button onclick="pchkReviewSet(${r.id},'resolved')" style="background:#16a34a;color:#fff;border:none;border-radius:8px;padding:7px 12px;font-size:12px;font-weight:700;">✓ Resolve</button>
+        <button onclick="pchkReviewSet(${r.id},'dismissed')" style="background:#e2e8f0;color:#334155;border:none;border-radius:8px;padding:7px 12px;font-size:12px;font-weight:700;">Dismiss</button>
+      </div>` : `<div style="font-size:11px;color:#94a3b8;margin-top:6px;">${r.reviewed_by?('by '+esc(r.reviewed_by)+' · '):''}${(r.reviewed_at||'').replace('T',' ').slice(5,16)}</div>`;
+    return `<div style="background:#fff;border-radius:12px;padding:14px;margin-bottom:12px;${r.status==='pending'&&cmp.diffN?'border:1.5px solid #fcd34d;':'border:1px solid #e2e8f0;'}">
+      <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-bottom:8px;">
+        <span style="font-size:15px;font-weight:800;color:#0891b2;">📍 [${esc(r.wh)}] ${esc(r.bin)}</span>
+        ${statusChip}
+        <span style="font-size:11px;color:#64748b;margin-left:auto;">${r.submitter?esc(r.submitter)+' · ':''}${when}</span>
+      </div>
+      <div style="display:flex;gap:6px;margin-bottom:8px;">
+        <span style="background:#f0fdf4;color:#15803d;font-size:11px;font-weight:800;padding:3px 10px;border-radius:8px;">✅ ${cmp.okN} match</span>
+        <span style="background:${cmp.diffN?'#fffbeb':'#f1f5f9'};color:${cmp.diffN?'#b45309':'#94a3b8'};font-size:11px;font-weight:800;padding:3px 10px;border-radius:8px;">⚠ ${cmp.diffN} to review</span>
+      </div>
+      <div style="overflow-x:auto;"><table style="width:100%;font-size:11.5px;border-collapse:collapse;"><thead><tr style="background:#0f2a4a;color:#fff;"><th style="padding:4px 7px;text-align:left;">Style</th><th style="padding:4px 7px;text-align:left;">Color</th><th style="padding:4px 7px;">Sz</th><th style="padding:4px 7px;">Sys</th><th style="padding:4px 7px;">Photo</th><th style="padding:4px 7px;text-align:left;">Status</th></tr></thead><tbody>${body||'<tr><td colspan=6 style="padding:8px;color:#64748b;">no data</td></tr>'}</tbody></table></div>
+      ${acts}
+    </div>`;
+  };
+  b.innerHTML = (pend.length?`<div style="font-size:12px;font-weight:800;color:#92400e;margin-bottom:8px;">🟡 Pending (${pend.length})</div>`+pend.map(card).join(''):`<div style="text-align:center;color:#64748b;padding:24px;">No pending checks. 🎉</div>`)
+    + (done.length?`<div style="font-size:12px;font-weight:800;color:#64748b;margin:14px 0 8px;">Recently handled</div>`+done.slice(0,20).map(card).join(''):'');
+}
+async function pchkReviewSet(id, status){
+  try{ const r=await sbFetch('/rest/v1/pr_physcheck?id=eq.'+id,{method:'PATCH',headers:{Prefer:'return=minimal'},body:JSON.stringify({status, reviewed_by:(SESS&&SESS.email)||null, reviewed_at:new Date().toISOString()})});
+    if(!r.ok) throw new Error('HTTP '+r.status); }
+  catch(e){ showToast('⚠ Update failed: '+(e.message||e)); return; }
+  showToast(status==='resolved'?'✓ Resolved':'Dismissed'); pchkReviewBadge(); pchkReviewOpen();
+}
+function pchkReviewJump(bin, wh){
+  const m=document.getElementById('modal-pchkrev'); if(m) m.remove();
+  if(typeof showView==='function') showView('box');
+  const s=document.getElementById('bx-search'); if(s){ s.value=String(bin||''); }
+  if(typeof renderBoxRoom==='function') renderBoxRoom();
+  const bd=document.getElementById('bx-body'); if(bd) bd.scrollIntoView({behavior:'smooth',block:'start'});
 }
 let _bxSearchT=null, _pcSearchT=null;
 // 🔎 자동완성용 style+color 조합 목록 (박스 변동 시에만 재생성) (v552)
