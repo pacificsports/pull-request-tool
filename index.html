@@ -145,7 +145,7 @@ main{max-width:1100px;margin:0 auto;padding:16px;}
     <button class="btn btn-sm" onclick="doLogout()" style="padding:2px 8px;font-size:10px;" data-i18n="logout">Log out</button>
   </span>
   <select id="lang-sel" onchange="setLang(this.value)" style="font-size:11px;padding:3px 6px;border-radius:5px;border:none;background:#1d3f66;color:#fff;"><option value="ko">한국어</option><option value="en">English</option><option value="es">Español</option></select>
-  <span style="font-size:10px;color:#9fb8d4;">v554 ↩</span>
+  <span style="font-size:10px;color:#9fb8d4;">v555 ↩</span>
 </div>
 <script type="text/javascript" src="https://js.authorize.net/v1/Accept.js" charset="utf-8"></script>
 <div id="po-viewer" style="display:none;position:fixed;top:0;right:0;width:44%;height:100vh;background:#fff;border-left:2px solid var(--border);z-index:60;box-shadow:-6px 0 20px rgba(0,0,0,.15);">
@@ -410,6 +410,7 @@ main{max-width:1100px;margin:0 auto;padding:16px;}
       <button class="btn btn-sm" onclick="bxTemplate()" title="Download Excel import template">📄 Template</button>
       <button class="btn btn-sm" onclick="bxExport()">⬇ Excel</button>
       <button class="btn btn-sm" onclick="bxAuditOpen()" style="background:#0f2a4a;color:#fff;border-color:#0f2a4a;" title="Boxes/qty by location per Style+Color — print or Excel for a physical stock count">🔍 Stock Count</button>
+      <button class="btn btn-sm" onclick="pchkOpen()" style="background:#0891b2;color:#fff;border-color:#0891b2;" title="Physical check with photos — take pallet photos, AI reads labels, compares to system">📸 Photo Check</button>
       <button class="btn btn-sm" onclick="hiOpen()" style="background:#0e7490;color:#fff;border-color:#0e7490;" title="Upload Haiti invoice → review → assign locations on arrival">🇭🇹 Haiti Receive</button>
       <button class="btn btn-sm" onclick="trOpen()" style="background:#b45309;color:#fff;border-color:#b45309;" title="SC → CA box transfer (build batch → depart → assign CA locations on arrival)">🚚 Transfer</button>
       <button class="btn btn-sm" onclick="dvcOpen()" style="background:#334155;color:#fff;border-color:#334155;" title="Drop the DaVinci 'Inventory By Location' Excel exports here to compare against our stock, line by line">⚖ DV Compare</button>
@@ -2506,6 +2507,7 @@ function normalizeLines(lines){
   });
 }
 // ═══════════════ 로그인 (웹사이트와 동일: Supabase 이메일+암호) ═══════════════
+const PCHK_WORKER = 'https://pallet-vision.hjbae.workers.dev';   // 📸 사진→라벨 비전 worker (배포 후 이 URL 맞는지 확인) (v555)
 const SB_URL = 'https://ypjnhhtfwyrwcjakjcgc.supabase.co';
 const SB_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Inlwam5oaHRmd3lyd2NqYWtqY2djIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzIyMDMxOTAsImV4cCI6MjA4Nzc3OTE5MH0.ADl8rXCeu9Z0fLAYR0d1wxOOkvT30eo47ahpss9yJq8';
 let SESS = null;
@@ -7040,6 +7042,124 @@ function renderTx(){
   </div>`;
 }
 let dashPeriod = 'all', dashFrom = '', dashTo = '';
+// ═══ 📸 Physical Inventory Check — 사진으로 pallet 대조 (모바일) (v555) ═══
+let _pchkImgs = [];   // {name, dataUrl}
+let _pchkBin = '';
+function pchkOpen(){
+  const ex=document.getElementById('modal-pchk'); if(ex) ex.remove();
+  _pchkImgs=[]; _pchkBin='';
+  const div=document.createElement('div');
+  div.id='modal-pchk';
+  div.style.cssText='position:fixed;inset:0;background:#0f172a;z-index:200;display:flex;flex-direction:column;overflow-y:auto;';
+  div.innerHTML=`<div style="background:#0891b2;color:#fff;padding:14px 16px;display:flex;align-items:center;gap:10px;position:sticky;top:0;z-index:5;">
+      <span style="font-size:17px;font-weight:800;">📸 Physical Check</span>
+      <button onclick="document.getElementById('modal-pchk').remove()" style="margin-left:auto;background:rgba(255,255,255,.2);color:#fff;border:none;border-radius:8px;padding:6px 12px;font-size:15px;font-weight:800;">✕</button></div>
+    <div id="pchk-body" style="flex:1;background:#f1f5f9;padding:14px;"></div>`;
+  document.body.appendChild(div);
+  pchkStep1();
+}
+function pchkStep1(){
+  const el=document.getElementById('pchk-body'); if(!el) return;
+  el.innerHTML=`<div style="max-width:640px;margin:0 auto;">
+    <div style="background:#fff;border-radius:12px;padding:16px;box-shadow:0 1px 4px rgba(0,0,0,.08);">
+      <div style="font-size:13px;font-weight:800;color:#0f2a4a;margin-bottom:8px;">1️⃣ Which pallet / bin?</div>
+      <input id="pchk-bin" value="${esc(_pchkBin)}" placeholder="e.g. 1043" autocomplete="off" style="width:100%;font-size:18px;padding:12px;border:2px solid #cbd5e1;border-radius:10px;text-transform:uppercase;box-sizing:border-box;">
+      <button onclick="pchkLoad()" style="width:100%;margin-top:10px;background:#0891b2;color:#fff;border:none;border-radius:10px;padding:13px;font-size:16px;font-weight:800;">Load system inventory →</button>
+    </div></div>`;
+  const inp=document.getElementById('pchk-bin'); if(inp) inp.focus();
+}
+function pchkSysList(bin){
+  const b=String(bin||'').trim().toUpperCase(); const g={};
+  (typeof bxStore!=='undefined'?bxStore:[]).forEach(x=>{ if(String(x.loc||'').toUpperCase()!==b) return;
+    const k=x.style+'|'+String(x.color).toUpperCase()+'|'+String(x.size).toUpperCase();
+    if(!g[k]) g[k]={style:x.style,color:String(x.color).toUpperCase(),size:String(x.size).toUpperCase(),n:0}; g[k].n++; });
+  return Object.values(g).sort((a,b2)=>String(a.style).localeCompare(b2.style)||a.color.localeCompare(b2.color)||bxSizeCmp(a.size,b2.size));
+}
+function pchkLoad(){
+  const bin=String((document.getElementById('pchk-bin')||{}).value||'').trim().toUpperCase();
+  if(!bin){ showToast('⚠ Enter a bin'); return; }
+  _pchkBin=bin; _pchkImgs=[]; pchkStep2();
+}
+function pchkStep2(){
+  const el=document.getElementById('pchk-body'); if(!el) return;
+  const sys=pchkSysList(_pchkBin);
+  const sysRows=sys.length?sys.map(s=>`<tr><td style="padding:5px 8px;font-weight:700;">${esc(s.style)}</td><td style="padding:5px 8px;">${esc(s.color)}</td><td style="padding:5px 8px;text-align:center;">${esc(s.size)}</td><td style="padding:5px 8px;text-align:center;font-weight:800;">${s.n}</td></tr>`).join(''):`<tr><td colspan="4" style="padding:10px;color:#64748b;">Our system shows nothing at ${esc(_pchkBin)} (new/empty pallet)</td></tr>`;
+  el.innerHTML=`<div style="max-width:640px;margin:0 auto;display:flex;flex-direction:column;gap:12px;">
+    <div style="background:#fff;border-radius:12px;padding:14px;">
+      <div style="display:flex;align-items:center;gap:8px;margin-bottom:8px;"><span style="font-size:13px;font-weight:800;color:#0f2a4a;">📦 System says — bin ${esc(_pchkBin)}</span><button onclick="pchkStep1()" style="margin-left:auto;background:#e2e8f0;border:none;border-radius:8px;padding:5px 10px;font-size:12px;">change</button></div>
+      <table style="width:100%;font-size:12.5px;border-collapse:collapse;"><thead><tr style="background:#f1f5f9;"><th style="padding:5px 8px;text-align:left;">Style</th><th style="padding:5px 8px;text-align:left;">Color</th><th style="padding:5px 8px;">Size</th><th style="padding:5px 8px;">Boxes</th></tr></thead><tbody>${sysRows}</tbody></table>
+      <div style="font-size:11px;color:#64748b;margin-top:6px;">Total: ${sys.reduce((a,s)=>a+s.n,0)} boxes</div>
+    </div>
+    <div style="background:#fff;border-radius:12px;padding:14px;">
+      <div style="font-size:13px;font-weight:800;color:#0f2a4a;margin-bottom:8px;">2️⃣ Take photos (front · left · right · back — labels facing out)</div>
+      <input type="file" id="pchk-cam" accept="image/*" capture="environment" multiple style="display:none;" onchange="pchkAddPhotos(this.files)">
+      <button onclick="document.getElementById('pchk-cam').click()" style="width:100%;background:#0f2a4a;color:#fff;border:none;border-radius:10px;padding:14px;font-size:16px;font-weight:800;">📷 Add photo(s)</button>
+      <div id="pchk-thumbs" style="display:flex;flex-wrap:wrap;gap:8px;margin-top:10px;"></div>
+    </div>
+    <button id="pchk-analyze" onclick="pchkAnalyze()" disabled style="background:#94a3b8;color:#fff;border:none;border-radius:12px;padding:16px;font-size:17px;font-weight:800;opacity:.6;">🔍 Analyze photos</button>
+  </div>`;
+}
+function pchkAddPhotos(files){
+  const arr=Array.from(files||[]); if(!arr.length) return; let pending=arr.length;
+  arr.forEach(f=>{ const reader=new FileReader();
+    reader.onload=e=>{ const img=new Image();
+      img.onload=()=>{ const max=1600; let w=img.width,h=img.height;
+        if(Math.max(w,h)>max){ const r=max/Math.max(w,h); w=Math.round(w*r); h=Math.round(h*r); }
+        const c=document.createElement('canvas'); c.width=w; c.height=h; c.getContext('2d').drawImage(img,0,0,w,h);
+        _pchkImgs.push({name:f.name,dataUrl:c.toDataURL('image/jpeg',0.82)});
+        if(--pending<=0) pchkRenderThumbs(); };
+      img.onerror=()=>{ if(--pending<=0) pchkRenderThumbs(); };
+      img.src=e.target.result; };
+    reader.readAsDataURL(f); });
+}
+function pchkRenderThumbs(){
+  const el=document.getElementById('pchk-thumbs'); if(!el) return;
+  el.innerHTML=_pchkImgs.map((im,i)=>`<div style="position:relative;"><img src="${im.dataUrl}" style="width:70px;height:70px;object-fit:cover;border-radius:8px;border:1px solid #cbd5e1;"><button onclick="_pchkImgs.splice(${i},1);pchkRenderThumbs()" style="position:absolute;top:-6px;right:-6px;background:#dc2626;color:#fff;border:none;border-radius:50%;width:20px;height:20px;font-size:12px;font-weight:800;line-height:1;">×</button></div>`).join('');
+  const btn=document.getElementById('pchk-analyze'); if(btn){ const on=_pchkImgs.length>0; btn.disabled=!on; btn.style.opacity=on?'1':'.6'; btn.style.background=on?'#0891b2':'#94a3b8'; }
+}
+async function pchkAnalyze(){
+  if(!_pchkImgs.length) return;
+  const btn=document.getElementById('pchk-analyze'); if(btn){ btn.disabled=true; btn.textContent='🔍 Analyzing… (10-20s)'; btn.style.opacity='.7'; }
+  const expected=pchkSysList(_pchkBin).map(s=>({style:s.style,color:s.color,size:s.size,qty:s.n}));
+  let res;
+  try{
+    const r=await fetch(PCHK_WORKER,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({ images:_pchkImgs.map(i=>i.dataUrl), expected })});
+    res=await r.json();
+    if(res.error) throw new Error(res.error+(res.raw?(' — '+String(res.raw).slice(0,120)):''));
+  }catch(e){ if(btn){ btn.disabled=false; btn.textContent='🔍 Analyze photos'; btn.style.opacity='1'; } showToast('⚠ Analyze failed: '+(e.message||e)); return; }
+  pchkRenderMatch(res.detected||[]);
+}
+function pchkNorm(s){ return String(s||'').toUpperCase().replace(/\s+/g,' ').trim(); }
+function pchkRenderMatch(detected){
+  const sys=pchkSysList(_pchkBin); const map={};
+  sys.forEach(s=>{ map[pchkNorm(s.style)+'|'+pchkNorm(s.color)+'|'+pchkNorm(s.size)]={style:s.style,color:s.color,size:s.size,sys:s.n,photo:0}; });
+  (detected||[]).forEach(d=>{ const k=pchkNorm(d.style)+'|'+pchkNorm(d.color)+'|'+pchkNorm(d.size); if(!map[k]) map[k]={style:d.style||'?',color:d.color||'?',size:d.size||'?',sys:0,photo:0}; map[k].photo+=(Number(d.count)||0); });
+  const rows=Object.values(map).sort((a,b)=>String(a.style).localeCompare(b.style)||String(a.color).localeCompare(b.color)||bxSizeCmp(a.size,b.size));
+  let okN=0,diffN=0;
+  const body=rows.map(r=>{ let st,bg;
+    if(r.sys===r.photo){ st='✅ Confirmed'; bg='#f0fdf4'; okN++; }
+    else if(r.photo===0){ st='➖ Missing in photo'; bg='#fef2f2'; diffN++; }
+    else if(r.sys===0){ st='➕ Not in system'; bg='#eff6ff'; diffN++; }
+    else { st=`⚠ ${r.sys} → ${r.photo}`; bg='#fffbeb'; diffN++; }
+    return `<tr style="background:${bg};"><td style="padding:6px 8px;font-weight:700;">${esc(r.style)}</td><td style="padding:6px 8px;">${esc(r.color)}</td><td style="padding:6px 8px;text-align:center;">${esc(r.size)}</td><td style="padding:6px 8px;text-align:center;">${r.sys}</td><td style="padding:6px 8px;text-align:center;font-weight:800;">${r.photo}</td><td style="padding:6px 8px;font-size:11.5px;font-weight:700;white-space:nowrap;">${st}</td></tr>`; }).join('');
+  const el=document.getElementById('pchk-body'); if(!el) return;
+  el.innerHTML=`<div style="max-width:640px;margin:0 auto;display:flex;flex-direction:column;gap:12px;">
+    <div style="display:flex;gap:8px;">
+      <div style="flex:1;background:#f0fdf4;border:1px solid #86efac;border-radius:10px;padding:10px;text-align:center;"><div style="font-size:22px;font-weight:900;color:#15803d;">${okN}</div><div style="font-size:10px;font-weight:800;color:#166534;">CONFIRMED</div></div>
+      <div style="flex:1;background:#fffbeb;border:1px solid #fcd34d;border-radius:10px;padding:10px;text-align:center;"><div style="font-size:22px;font-weight:900;color:#b45309;">${diffN}</div><div style="font-size:10px;font-weight:800;color:#92400e;">TO REVIEW</div></div>
+    </div>
+    <div style="background:#fff;border-radius:12px;padding:12px;overflow-x:auto;">
+      <div style="font-size:13px;font-weight:800;color:#0f2a4a;margin-bottom:8px;">🔍 System vs Photos — bin ${esc(_pchkBin)}</div>
+      <table style="width:100%;font-size:12px;border-collapse:collapse;"><thead><tr style="background:#0f2a4a;color:#fff;"><th style="padding:6px 8px;text-align:left;">Style</th><th style="padding:6px 8px;text-align:left;">Color</th><th style="padding:6px 8px;">Sz</th><th style="padding:6px 8px;">Sys</th><th style="padding:6px 8px;">Photo</th><th style="padding:6px 8px;text-align:left;">Status</th></tr></thead><tbody>${body}</tbody></table>
+    </div>
+    <div style="display:flex;flex-wrap:wrap;gap:8px;">${_pchkImgs.map(im=>`<img src="${im.dataUrl}" style="width:64px;height:64px;object-fit:cover;border-radius:8px;border:1px solid #cbd5e1;">`).join('')}</div>
+    <div style="display:flex;gap:8px;">
+      <button onclick="pchkStep2()" style="flex:1;background:#e2e8f0;color:#0f2a4a;border:none;border-radius:10px;padding:13px;font-weight:800;">← Retake / add</button>
+      <button onclick="document.getElementById('modal-pchk').remove()" style="flex:1;background:#0891b2;color:#fff;border:none;border-radius:10px;padding:13px;font-weight:800;">Done</button>
+    </div>
+    <div style="font-size:10.5px;color:#64748b;text-align:center;line-height:1.5;">⚠ TO REVIEW 항목은 직원이 다시 확인. (재고 자동수정·사진 저장은 테스트 후 다음 단계에서 추가)</div>
+  </div>`;
+}
 let _bxSearchT=null, _pcSearchT=null;
 // 🔎 자동완성용 style+color 조합 목록 (박스 변동 시에만 재생성) (v552)
 function bxAcList(){
