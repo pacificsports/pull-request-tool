@@ -145,7 +145,7 @@ main{max-width:1100px;margin:0 auto;padding:16px;}
     <button class="btn btn-sm" onclick="doLogout()" style="padding:2px 8px;font-size:10px;" data-i18n="logout">Log out</button>
   </span>
   <select id="lang-sel" onchange="setLang(this.value)" style="font-size:11px;padding:3px 6px;border-radius:5px;border:none;background:#1d3f66;color:#fff;"><option value="ko">한국어</option><option value="en">English</option><option value="es">Español</option></select>
-  <span style="font-size:10px;color:#9fb8d4;">v547 ↩</span>
+  <span style="font-size:10px;color:#9fb8d4;">v548 ↩</span>
 </div>
 <script type="text/javascript" src="https://js.authorize.net/v1/Accept.js" charset="utf-8"></script>
 <div id="po-viewer" style="display:none;position:fixed;top:0;right:0;width:44%;height:100vh;background:#fff;border-left:2px solid var(--border);z-index:60;box-shadow:-6px 0 20px rgba(0,0,0,.15);">
@@ -7077,6 +7077,7 @@ const ACT_KINDS = {
   out: { icon:'📤', label:'Box OUT',     color:'#b91c1c', bg:'#fef2f2' },
   pc:  { icon:'🧺', label:'PC Room',     color:'#6d28d9', bg:'#faf5ff' },
   so:  { icon:'🚚', label:'Ship Out',    color:'#b45309', bg:'#fffbeb' },
+  mv:  { icon:'📍', label:'Bin Move',    color:'#0891b2', bg:'#ecfeff' },
   ord: { icon:'📝', label:'Order',       color:'#1d4ed8', bg:'#eff6ff' },
   st:  { icon:'📅', label:'Stock Count', color:'#0e7490', bg:'#ecfeff' }
 };
@@ -7128,6 +7129,12 @@ async function actLoad(){
         text:'SO-'+q.id+' '+(q.status==='DONE'?('confirmed — '+na+' of '+nb+' box(es) shipped'):'canceled')+(q.note?' → '+q.note:'') });
     });
   }).catch(()=>{}));
+  // 📍 박스 bin→bin 이동
+  jobs.push(sbFetch('/rest/v1/pr_boxmoves?select=style,color,size,wh,from_loc,to_loc,boxes,pcs,at,by_email&at=gte.'+encodeURIComponent(since)+'&order=at.desc&limit=2000').then(async r=>{
+    if(!r.ok) return;
+    (await r.json()).forEach(m=>rows.push({ at:m.at, by:m.by_email||'', kind:'mv',
+      text:(m.boxes||0)+' box(es) '+m.style+' '+String(m.color).toUpperCase()+' '+String(m.size).toUpperCase()+' ['+(m.wh||'SC')+'] moved '+(m.from_loc||'?')+' → '+(m.to_loc||'?') }));
+  }).catch(()=>{}));
   // 📅 실사 (stock count)
   jobs.push(sbFetch('/rest/v1/pr_stocktake?select=k,at,by_email&at=gte.'+encodeURIComponent(since)+'&order=at.desc&limit=500').then(async r=>{
     if(!r.ok) return;
@@ -7149,7 +7156,7 @@ async function actLoad(){
   rows.sort((a,b)=>String(b.at).localeCompare(String(a.at)));
   window._actRows = rows;
   window._actAt = Date.now();
-  if(!window._actOn) window._actOn = { in:true, out:true, pc:true, so:true, ord:true, st:true };
+  if(!window._actOn) window._actOn = { in:true, out:true, pc:true, so:true, mv:true, ord:true, st:true };
   actRender();
 }
 function actTgl(k){ window._actOn[k] = !window._actOn[k]; actRender(); }
@@ -7411,6 +7418,23 @@ function pcLogMove(row, size, delta, bal, note){
     sbFetch('/rest/v1/pr_pcmoves', {method:'POST', headers:{Prefer:'return=minimal'}, body:JSON.stringify([{
       by_email: (SESS&&SESS.email)||'', style: String(row.style), color: String(row.color), size: size,
       delta: delta, bal: bal, note: note||'', wh: pcWhOf(row) }])}).catch(()=>{});
+  }catch(e){}
+}
+// 📍 박스 bin→bin 이동 로그 (pr_boxmoves) — Activity Log & Bin history 에서 사용. 테이블 없으면 조용히 무시 (v548)
+function bxLogMove(boxes, fromLoc, toLoc, style, color, size, wh){
+  try{
+    if(!boxes || !boxes.length) return;
+    const from = String(fromLoc||'').toUpperCase();
+    const to   = String(toLoc||'').toUpperCase();
+    if(!to || from===to) return;
+    const pcs = boxes.reduce((a,b)=>a+(Number(b.pcs)||0),0);
+    sbFetch('/rest/v1/pr_boxmoves', {method:'POST', headers:{Prefer:'return=minimal'}, body:JSON.stringify([{
+      by_email:(SESS&&SESS.email)||'',
+      wh:(String(wh||'SC').trim().toUpperCase()==='CA'?'CA':'SC'),
+      style:String(style), color:String(color), size:String(size),
+      from_loc:from, to_loc:to, boxes:boxes.length, pcs,
+      box_ids: boxes.map(b=>b.id)
+    }])}).catch(()=>{});
   }catch(e){}
 }
 async function pcCellChange(k, size, val, inputEl, note){
@@ -8935,8 +8959,11 @@ async function bxEditLoc(id){
   const b = bxStore.find(x=>x.id===id); if(!b) return;
   const loc = window.prompt(b.style+' '+b.color+' '+b.size+' — new location', b.loc||'');
   if(loc==null) return;
-  try{ await bxPatch([id], {loc:String(loc).trim().toUpperCase()}); }catch(e){ showToast('⚠ Save failed'); return; }
-  b.loc = String(loc).trim().toUpperCase();
+  const _oldL = String(b.loc||'').toUpperCase();
+  const _newL = String(loc).trim().toUpperCase();
+  try{ await bxPatch([id], {loc:_newL}); }catch(e){ showToast('⚠ Save failed'); return; }
+  bxLogMove([b], _oldL, _newL, b.style, b.color, b.size, bxWh(b));
+  b.loc = _newL;
   renderBoxRoom();
 }
 async function bxShipOne(id){
@@ -8963,6 +8990,7 @@ async function bxLocEdit(style,color,size,wh,loc){
   const take = list.slice(0,n);
   const L = String(nl).trim().toUpperCase();
   try{ await bxPatch(take.map(b=>b.id), {loc:L}); }catch(e){ showToast('⚠ Save failed'); return; }
+  bxLogMove(take, loc, L, style, color, size, wh);
   take.forEach(b=>{ b.loc = L; });
   showToast('📍 '+n+' box(es) → '+(L||'?'));
   renderBoxRoom();
@@ -9063,16 +9091,30 @@ async function bxBinHist(style, color, size, wh, loc){
       && String(b.loc||'').toUpperCase()===LOC );
   // 같은 시각+종류+대상+담당자 이벤트를 하나로 묶어 박스 합산
   const evm = {}; const evs = [];
-  const add = (at, kind, label, by, pcs)=>{
+  const add = (at, kind, label, by, pcs, cnt)=>{
     if(!at) return;
+    const c = (cnt==null ? 1 : cnt);
     const k = String(at).slice(0,16)+'|'+kind+'|'+label+'|'+(by||'');
     let ev = evm[k]; if(!ev){ ev = evm[k] = {at, kind, label, by:by||'', n:0, pcs:0}; evs.push(ev); }
-    ev.n++; ev.pcs += Number(pcs)||0;
+    ev.n += c; ev.pcs += Number(pcs)||0;
   };
   let curN = 0, curPcs = 0;
   rows.forEach(b=>{
     if(b.status==='IN'){ curN++; curPcs += Number(b.pcs)||0; add(b.in_at, 'IN', 'Received into bin', b.in_by, b.pcs); }
     else if(b.status==='OUT' && b.out_at){ add(b.out_at, 'OUT', String(b.out_po||'OUT'), b.out_by, b.pcs); }
+  });
+  // 📍 이 bin 에서 나갔거나 이 bin 으로 들어온 bin→bin 이동 (pr_boxmoves) — 테이블 없으면 조용히 무시
+  let moves = [];
+  try{
+    const rm = await sbFetch('/rest/v1/pr_boxmoves?select=from_loc,to_loc,boxes,pcs,at,by_email,wh&style=eq.'+encodeURIComponent(String(style))+'&'+pgColorEq(color)+'&size=eq.'+encodeURIComponent(SZ)+'&order=at.desc&limit=1000');
+    if(rm.ok) moves = await rm.json();
+  }catch(e){}
+  moves.forEach(m=>{
+    if(((String(m.wh||'SC').trim().toUpperCase()==='CA')?'CA':'SC')!==W) return;
+    const f = String(m.from_loc||'').toUpperCase(), t = String(m.to_loc||'').toUpperCase();
+    const nb = Number(m.boxes)||0;
+    if(t===LOC && f!==LOC) add(m.at, 'MVIN', 'from '+f, m.by_email, m.pcs, nb);
+    else if(f===LOC && t!==LOC) add(m.at, 'MVOUT', 'to '+t, m.by_email, m.pcs, nb);
   });
   evs.sort((a,b)=>String(b.at||'').localeCompare(String(a.at||'')));
   const evRow = ev=>{
@@ -9080,6 +9122,8 @@ async function bxBinHist(style, color, size, wh, loc){
     const ds = d.toLocaleString('en-US',{month:'numeric',day:'numeric'}) + ' ' + d.toLocaleTimeString('en-US',{hour:'numeric',minute:'2-digit'});
     let icon, what, tone;
     if(ev.kind==='IN'){ icon='📥'; what='Received into bin'; tone='#166534'; }
+    else if(ev.kind==='MVIN'){ icon='📍←'; what='Moved in ('+esc(ev.label)+')'; tone='#0891b2'; }
+    else if(ev.kind==='MVOUT'){ icon='📍→'; what='Moved out ('+esc(ev.label)+')'; tone='#0891b2'; }
     else{
       const lab = ev.label;
       if(/PC\s*ROOM|BREAK\s*DOWN/i.test(lab)){ icon='🧺'; what='Opened → PC Room'; tone='#6d28d9'; }
@@ -9096,8 +9140,10 @@ async function bxBinHist(style, color, size, wh, loc){
         what = (cust?esc(cust):esc(lab)) + (poNum?` <span style="font-size:10px;font-weight:900;color:#1e3a8a;background:#dbeafe;border-radius:4px;padding:0 5px;white-space:nowrap;">PO ${esc(poNum)}</span>`:'');
       }
     }
-    const sign = ev.kind==='IN' ? '+' : '−';
-    const col  = ev.kind==='IN' ? '#15803d' : '#dc2626';
+    const _inK = (ev.kind==='IN' || ev.kind==='MVIN');
+    const _mvK = (ev.kind==='MVIN' || ev.kind==='MVOUT');
+    const sign = _inK ? '+' : '−';
+    const col  = _mvK ? '#0891b2' : (_inK ? '#15803d' : '#dc2626');
     return `<tr>
       <td style="white-space:nowrap;font-weight:700;font-size:11px;">${ds}</td>
       <td style="color:${tone};font-weight:700;">${icon} ${what}</td>
@@ -9119,7 +9165,7 @@ async function bxBinHist(style, color, size, wh, loc){
         <thead><tr><th class="tl">Date</th><th class="tl">Event</th><th>Boxes</th><th class="tl">Staff</th></tr></thead>
         <tbody>${evs.slice(0,200).map(evRow).join('')}</tbody></table>
         ${evs.length>200?`<div class="muted" style="font-size:10px;margin-top:3px;">showing latest 200 of ${evs.length} events</div>`:''}
-        <div class="muted" style="font-size:10px;margin-top:9px;line-height:1.55;">📥 green = boxes now sitting here (date received into the warehouse). Red = boxes that left <b>this</b> bin, with where they went. Note: plain bin→bin moves aren't logged yet, so a box relocated to another bin appears only under its current bin.</div>`
+        <div class="muted" style="font-size:10px;margin-top:9px;line-height:1.55;">📥 green = boxes received here · <span style="color:#0891b2;font-weight:700;">📍 cyan = bin→bin moves</span> (in / out) · red = boxes that left the warehouse from this bin (order · PC Room · ship · damage). Bin→bin moves are recorded from this update on — relocations done before it won't appear.</div>`
         : `<div class="muted" style="font-size:12px;padding:18px 4px;">No box records for this bin.</div>`}
     </div></div>`;
   document.body.appendChild(div);
@@ -9199,6 +9245,7 @@ async function bxLocMoveDo(){
   const _rblk = reserveBlock(c.style,c.color,c.size,c.wh,n); if(_rblk){ alert(_rblk); return; }
   const take = list.slice(0, n);
   try{ await bxPatch(take.map(b=>b.id), {loc:nl}); }catch(e){ showToast('⚠ Save failed'); return; }
+  bxLogMove(take, c.loc, nl, c.style, c.color, c.size, c.wh);
   take.forEach(b=>{ b.loc = nl; });
   showToast('📍 '+n+' box(es) '+c.loc+' → '+nl);
   renderBoxRoom();
@@ -10587,6 +10634,7 @@ async function bxLocBulkExec(){
     try{
       if(l.act==='move'){
         for(const ch of trChunk(ids)) await bxPatch(ch, {loc:l.bin});
+        bxLogMove(sel, l.loc, l.bin, l.style, l.color, l.size, wh);
       }else if(l.act==='ship'){
         // v388: 즉시 차감하지 않음 — PENDING 요청으로 만들고 직원이 뽑은 뒤 Confirm 때 차감
         shipped.push({loc:l.loc, style:l.style, color:l.color, size:l.size, ppb:l.ppb, take:l.take, note:l.note});
