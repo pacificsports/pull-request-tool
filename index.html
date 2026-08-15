@@ -145,7 +145,7 @@ main{max-width:1100px;margin:0 auto;padding:16px;}
     <button class="btn btn-sm" onclick="doLogout()" style="padding:2px 8px;font-size:10px;" data-i18n="logout">Log out</button>
   </span>
   <select id="lang-sel" onchange="setLang(this.value)" style="font-size:11px;padding:3px 6px;border-radius:5px;border:none;background:#1d3f66;color:#fff;"><option value="ko">한국어</option><option value="en">English</option><option value="es">Español</option></select>
-  <span style="font-size:10px;color:#9fb8d4;">v553 ↩</span>
+  <span style="font-size:10px;color:#9fb8d4;">v554 ↩</span>
 </div>
 <script type="text/javascript" src="https://js.authorize.net/v1/Accept.js" charset="utf-8"></script>
 <div id="po-viewer" style="display:none;position:fixed;top:0;right:0;width:44%;height:100vh;background:#fff;border-left:2px solid var(--border);z-index:60;box-shadow:-6px 0 20px rgba(0,0,0,.15);">
@@ -7072,7 +7072,7 @@ function bxSearchDeb(){
   bxAcRender();                                        // 드롭다운은 즉시
   clearTimeout(_bxSearchT);
   const v=(($('bx-search')||{}).value||'').trim();
-  _bxSearchT=setTimeout(renderBoxRoom, v?180:0);       // 지울 땐 즉시 반영
+  _bxSearchT=setTimeout(renderBoxRoom, v?200:120);     // 키 입력 순간엔 렌더 안 돌게(살짝 유예) → 입력이 안 얼어
 }
 // 🚢 Incoming/Haiti 칩 클릭 → 그 스타일로 Full Box 필터 + 스크롤 (v473)
 function bxJumpStyle(style){
@@ -10050,6 +10050,18 @@ function bxGridInner(sty, colGroups){
     </div>`;
 }
 // 🔍 스마트 검색 공용 — "1368 black" / "1368black" 모두 매칭 (토큰 전부 일치)
+// 검색어를 한 번만 파싱(토큰·숫자 정규식 미리 컴파일)해서 재사용하는 빠른 매처 — 12만 박스 루프 최적화 (v554)
+function bxMakeMatcher(q){
+  q = String(q==null?'':q).trim().toLowerCase();
+  if(!q) return null;
+  const toks = q.split(/\s+/).filter(Boolean).map(t=>({ t, re: /^\d+$/.test(t) ? new RegExp('(^|[^0-9a-z])'+t+'([^0-9a-z]|$)') : null }));
+  return function(hay){
+    hay = String(hay).toLowerCase();
+    const c = hay.replace(/[\s()]/g,'');
+    for(let i=0;i<toks.length;i++){ const o=toks[i]; if(o.re){ if(!o.re.test(hay)) return false; } else if(!(hay.includes(o.t)||c.includes(o.t))) return false; }
+    return true;
+  };
+}
 function bxSearchMatch(q, ...parts){
   if(!q) return true;
   const hay = parts.map(p=>String(p||'')).join(' ').toLowerCase();
@@ -11221,17 +11233,12 @@ function bxRenderByLoc(el, q){
   const p3All = allWh.filter(b=>bxSpecLoc(b.loc, wh));
   const pcsOf = arr=>arr.reduce((s2,b)=>s2+(Number(b.pcs)||0),0);
   const byLoc = {};
+  const _m = bxMakeMatcher(q);   // 검색어 1회 파싱 후 재사용 (v554)
   allWh.forEach(b=>{
     const loc = String(b.loc||'?').toUpperCase();
     if(flt==='3p' && !bxSpecLoc(loc, wh)) return;
     if(flt==='own' && bxSpecLoc(loc, wh)) return;
-    if(q){
-      // 스마트 검색: "1368 black" / "1368black" / loc 등 — 토큰 전부 일치해야 표시
-      const hay = (loc+' '+String(b.style)+' '+String(b.color)+' '+String(b.size)).toLowerCase();
-      const compact = (String(b.style)+String(b.color)+String(b.size)).toLowerCase().replace(/[\s()]/g,'');
-      const toks = q.split(/\s+/).filter(Boolean);
-      if(!toks.every(t=>hay.includes(t) || compact.includes(t))) return;
-    }
+    if(_m && !_m(loc+' '+String(b.style)+' '+String(b.color)+' '+String(b.size))) return;
     (byLoc[loc] = byLoc[loc] || []).push(b);
   });
   const locs = Object.keys(byLoc).sort((a,b)=>a.localeCompare(b, undefined, {numeric:true}));
@@ -11428,11 +11435,12 @@ function renderBoxRoom(){
   const q = (($('bx-search')||{}).value||'').trim().toLowerCase();
   if(window._bxLocMode){ const _sy = window.scrollY; bxRenderByLoc(el, q); window.scrollTo(0, _sy); return; }
   const gridMode = window._bxView !== 'detail';
+  const _bxm = bxMakeMatcher(q);
   const groups = {};   // style → color → [boxes] (SC·CA 함께 · In Transit 제외)
   bxStore.forEach(b=>{
     if(bxWh(b)==='TRANSIT') return;   // 🚚 이동중 — Transfer 화면에서 관리
     if(window._bxUSOnly && !bxIsUS(b)) return;   // 🇺🇸 US만 (v415)
-    if(!bxSearchMatch(q, b.style, b.color, b.size, b.loc)) return;
+    if(_bxm && !_bxm(String(b.style)+' '+String(b.color)+' '+String(b.size)+' '+String(b.loc||''))) return;
     const s = String(b.style), c = String(b.color).toUpperCase();
     ((groups[s] = groups[s] || {})[c] = groups[s][c] || []).push(b);
   });
@@ -11440,7 +11448,7 @@ function renderBoxRoom(){
   if((gridMode || ($('bx-showall')||{}).checked) && skuLoaded && !window._bxUSOnly){
     skuStore.forEach(k=>{
       const s = String(k.style), c = String(k.color).toUpperCase();
-      if(!bxSearchMatch(q, s, c)) return;
+      if(_bxm && !_bxm(s+' '+c)) return;
       (groups[s] = groups[s] || {});
       if(!groups[s][c]) groups[s][c] = [];
     });
