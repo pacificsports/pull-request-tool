@@ -154,7 +154,7 @@ main{max-width:1100px;margin:0 auto;padding:16px;}
     <button class="btn btn-sm" onclick="doLogout()" style="padding:2px 8px;font-size:10px;" data-i18n="logout">Log out</button>
   </span>
   <select id="lang-sel" onchange="setLang(this.value)" style="font-size:11px;padding:3px 6px;border-radius:5px;border:none;background:#1d3f66;color:#fff;"><option value="ko">한국어</option><option value="en">English</option><option value="es">Español</option></select>
-  <span style="font-size:10px;color:#9fb8d4;">v569 ↩</span>
+  <span style="font-size:10px;color:#9fb8d4;">v570 ↩</span>
 </div>
 <script type="text/javascript" src="https://js.authorize.net/v1/Accept.js" charset="utf-8"></script>
 <div id="po-viewer" style="display:none;position:fixed;top:0;right:0;width:44%;height:100vh;background:#fff;border-left:2px solid var(--border);z-index:60;box-shadow:-6px 0 20px rgba(0,0,0,.15);">
@@ -12497,7 +12497,7 @@ async function bxAuditExcel(){
   }catch(e){ console.warn('bxAuditExcel', e); showToast('⚠ Excel generation failed'); }
 }
 // ═══ Inventory Aging (v569) — 각 박스가 재고에 얼마나 오래 있었나(in_at 기준) ═══
-let _bxAgeRows = [], _bxAgeTitle = '', _bxAgeSumm = null, _bxAgeNoDate = 0, _bxAgeGrp = 'scs';
+let _bxAgeRows = [], _bxAgeBoxRows = [], _bxAgeTitle = '', _bxAgeSumm = null, _bxAgeNoDate = 0, _bxAgeGrp = 'scs';
 const BXAGE_BUCKETS = [
   { k:'b1', label:'0–90 days',    sh:'0–90',     color:'#15803d', bg:'#dcfce7' },
   { k:'b2', label:'91–180 days',  sh:'91–180',   color:'#a16207', bg:'#fef9c3' },
@@ -12523,7 +12523,7 @@ async function bxAgingOpen(){
     <div style="display:flex;gap:8px;align-items:flex-end;padding:12px 16px;border-bottom:1px solid var(--border);flex-wrap:wrap;">
       <div class="ff" style="margin:0;"><label>Warehouse</label><select class="fi" id="bxage-wh" style="width:92px;" onchange="bxAgingRun()"><option value="">SC+CA</option><option value="SC">SC only</option><option value="CA">CA only</option></select></div>
       <div class="ff" style="margin:0;"><label>Show items aged</label><select class="fi" id="bxage-min" style="width:132px;" onchange="bxAgingRun()"><option value="0">All ages</option><option value="91">91+ days</option><option value="181" selected>181+ days</option><option value="366">365+ days</option></select></div>
-      <div class="ff" style="margin:0;"><label>Group by</label><select class="fi" id="bxage-grp" style="width:152px;" onchange="bxAgingRun()"><option value="scs">Style · Color · Size</option><option value="sc">Style · Color</option></select></div>
+      <div class="ff" style="margin:0;"><label>Group by</label><select class="fi" id="bxage-grp" style="width:172px;" onchange="bxAgingRun()"><option value="scs">Style · Color · Size</option><option value="sc">Style · Color</option><option value="box">Each box (individual)</option></select></div>
       <span style="flex:1;"></span>
       <button class="btn btn-sm" style="color:#166534;border-color:#86efac;" onclick="bxAgingExcel()">⬇ Excel</button>
       <button class="btn btn-sm" style="background:#16a34a;color:#fff;border-color:#16a34a;font-weight:800;" onclick="bxAgingPrint()">🖨 Print</button>
@@ -12561,6 +12561,31 @@ function bxAgingRun(){
   </div>`;}).join('');
   const sumHtml=`<div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:6px;">${tiles}</div>
     <div style="font-size:11px;color:var(--text2);margin-bottom:12px;">Total ${totN.toLocaleString()} boxes · ${totP.toLocaleString()} pcs${noDate? ' · <span style="color:#b45309;">'+noDate.toLocaleString()+' box(es) have no receive date (not aged)</span>':''}</div>`;
+  // ── 박스 하나하나 모드 ──
+  if(grp==='box'){
+    _bxAgeRows=[];
+    let list=boxes.map(b=>{ const d=bxAgeDaysOf(b); return { style:b.style, color:bxBaseColor(b.color), size:b.size, loc:b.loc||'', wh:bxWh(b), pcs:Number(b.pcs)||0, in_at:b.in_at, in_by:b.in_by||'', id:b.id, age:d }; }).filter(x=>x.age!=null);
+    if(minD>0) list=list.filter(x=> x.age>=minD);
+    list.sort((a,b)=> b.age-a.age || String(a.loc).localeCompare(String(b.loc),undefined,{numeric:true}));
+    _bxAgeBoxRows=list;
+    const CAP=1500, shown=list.slice(0,CAP);
+    const head=`<tr><th class="tl">Style</th><th class="tl">Color</th><th>Size</th><th>Location</th><th>WH</th><th>Pcs</th><th>Received</th><th class="tl">By</th><th>Age</th></tr>`;
+    const body= list.length? shown.map(r=>{ const bk=BXAGE_BUCKETS.find(x=>x.k===bxAgeBucketOf(r.age)); return `<tr>
+      <td class="tl" style="font-weight:800;">${esc(String(r.style))}</td>
+      <td class="tl">${esc(r.color)}</td>
+      <td>${esc(r.size)}</td>
+      <td style="font-family:Consolas,monospace;font-weight:700;">${esc(r.loc||'(none)')}</td>
+      <td>${esc(r.wh)}</td>
+      <td style="font-family:Consolas,monospace;">${r.pcs.toLocaleString()}</td>
+      <td style="white-space:nowrap;">${bxAgeFmtD(r.in_at)}</td>
+      <td class="tl" style="color:var(--text2);font-size:11px;">${esc(r.in_by||'')}</td>
+      <td style="font-weight:800;color:${bk?bk.color:'#111'};background:${bk?bk.bg:'transparent'};">${r.age}d</td>
+    </tr>`;}).join('') : `<tr><td colspan="9" class="muted" style="padding:18px;text-align:center;">No boxes in this range 🎉</td></tr>`;
+    const cap= list.length>CAP? `<div style="font-size:11px;color:#b45309;margin-top:8px;">Showing the oldest ${CAP.toLocaleString()} of ${list.length.toLocaleString()} boxes on screen — narrow with the filters, or use ⬇ Excel for the full list.</div>`:'';
+    out.innerHTML=sumHtml+`<table class="etbl" style="width:100%;"><thead>${head}</thead><tbody>${body}</tbody></table>`+cap;
+    return;
+  }
+  _bxAgeBoxRows=[];
   const showSize= grp!=='sc';
   const head=`<tr><th class="tl">Style</th><th class="tl">Color</th>${showSize?'<th>Size</th>':''}<th>Boxes</th><th>Pcs</th>${BXAGE_BUCKETS.map(bk=>`<th style="background:${bk.bg};color:${bk.color};">${bk.sh}</th>`).join('')}<th>Oldest in</th><th>Max age</th></tr>`;
   const body= rows.length? rows.map(r=>{
@@ -12581,13 +12606,18 @@ function bxAgingRun(){
 }
 
 function bxAgingPrint(){
-  if(!_bxAgeRows.length){ showToast('⚠ Nothing to print'); return; }
+  const boxMode=_bxAgeGrp==='box';
+  if(boxMode ? !_bxAgeBoxRows.length : !_bxAgeRows.length){ showToast('⚠ Nothing to print'); return; }
   const showSize=_bxAgeGrp!=='sc';
   const s=_bxAgeSumm||{b1:{n:0,p:0},b2:{n:0,p:0},b3:{n:0,p:0},b4:{n:0,p:0}};
   const dateStr=new Date().toLocaleString('en-US');
   const sumRow=BXAGE_BUCKETS.map(bk=>`<td><b>${bk.sh}</b><br>${s[bk.k].n.toLocaleString()} box · ${s[bk.k].p.toLocaleString()} pcs</td>`).join('');
-  const head=`<tr><th>Style</th><th style="text-align:left;">Color</th>${showSize?'<th>Size</th>':''}<th>Boxes</th><th>Pcs</th>${BXAGE_BUCKETS.map(bk=>`<th>${bk.sh}</th>`).join('')}<th>Oldest in</th><th>Max age</th></tr>`;
-  const body=_bxAgeRows.map(r=>`<tr><td>${esc(String(r.style))}</td><td style="text-align:left;">${esc(r.color)}</td>${showSize?`<td>${esc(r.size)}</td>`:''}<td style="font-weight:700;">${r.n}</td><td>${r.pcs.toLocaleString()}</td>${BXAGE_BUCKETS.map(bk=>`<td>${r[bk.k]||''}</td>`).join('')}<td>${bxAgeFmtD(r.oldestDate)}</td><td><b>${r.oldest}d</b></td></tr>`).join('');
+  const head= boxMode
+    ? `<tr><th>Style</th><th style="text-align:left;">Color</th><th>Size</th><th>Location</th><th>WH</th><th>Pcs</th><th>Received</th><th style="text-align:left;">By</th><th>Age</th></tr>`
+    : `<tr><th>Style</th><th style="text-align:left;">Color</th>${showSize?'<th>Size</th>':''}<th>Boxes</th><th>Pcs</th>${BXAGE_BUCKETS.map(bk=>`<th>${bk.sh}</th>`).join('')}<th>Oldest in</th><th>Max age</th></tr>`;
+  const body= boxMode
+    ? _bxAgeBoxRows.map(r=>`<tr><td>${esc(String(r.style))}</td><td style="text-align:left;">${esc(r.color)}</td><td>${esc(r.size)}</td><td style="font-weight:700;">${esc(r.loc||'(none)')}</td><td>${esc(r.wh)}</td><td>${r.pcs.toLocaleString()}</td><td>${bxAgeFmtD(r.in_at)}</td><td style="text-align:left;">${esc(r.in_by||'')}</td><td><b>${r.age}d</b></td></tr>`).join('')
+    : _bxAgeRows.map(r=>`<tr><td>${esc(String(r.style))}</td><td style="text-align:left;">${esc(r.color)}</td>${showSize?`<td>${esc(r.size)}</td>`:''}<td style="font-weight:700;">${r.n}</td><td>${r.pcs.toLocaleString()}</td>${BXAGE_BUCKETS.map(bk=>`<td>${r[bk.k]||''}</td>`).join('')}<td>${bxAgeFmtD(r.oldestDate)}</td><td><b>${r.oldest}d</b></td></tr>`).join('');
   const doc=`<!DOCTYPE html><html><head><meta charset="utf-8"><title>Inventory Aging — ${esc(_bxAgeTitle)}</title>
   <style>body{font-family:'Malgun Gothic',Arial,sans-serif;font-size:11px;margin:24px;color:#111;}
   h2{margin:0 0 2px;} .sub{color:#555;font-size:10.5px;margin-bottom:10px;}
@@ -12603,18 +12633,28 @@ function bxAgingPrint(){
 }
 
 async function bxAgingExcel(){
-  if(!_bxAgeRows.length){ showToast('⚠ Nothing to export'); return; }
+  const boxMode=_bxAgeGrp==='box';
+  if(boxMode ? !_bxAgeBoxRows.length : !_bxAgeRows.length){ showToast('⚠ Nothing to export'); return; }
   showToast('📥 Building Excel…');
   try{
     await loadXlsxLib();
-    const showSize=_bxAgeGrp!=='sc';
-    const header=['Style','Color'].concat(showSize?['Size']:[]).concat(['Boxes','Pcs','0-90','91-180','181-365','365+','Oldest In','Max Age (days)']);
-    const aoa=[['Inventory Aging — '+_bxAgeTitle],['Printed: '+new Date().toLocaleString()],[], header];
-    _bxAgeRows.forEach(r=>{ const row=[isNaN(+r.style)?r.style:+r.style, r.color]; if(showSize) row.push(r.size); row.push(r.n, r.pcs, r.b1, r.b2, r.b3, r.b4, bxAgeFmtD(r.oldestDate), r.oldest); aoa.push(row); });
+    let aoa, cols;
+    if(boxMode){
+      const header=['Style','Color','Size','Location','WH','Pcs','Received','Received By','Age (days)'];
+      aoa=[['Inventory Aging (each box) — '+_bxAgeTitle],['Printed: '+new Date().toLocaleString()],[], header];
+      _bxAgeBoxRows.forEach(r=>aoa.push([isNaN(+r.style)?r.style:+r.style, r.color, r.size, r.loc||'(none)', r.wh, r.pcs, bxAgeFmtD(r.in_at), r.in_by||'', r.age]));
+      cols=[{wch:9},{wch:20},{wch:7},{wch:12},{wch:6},{wch:7},{wch:12},{wch:14},{wch:11}];
+    }else{
+      const showSize=_bxAgeGrp!=='sc';
+      const header=['Style','Color'].concat(showSize?['Size']:[]).concat(['Boxes','Pcs','0-90','91-180','181-365','365+','Oldest In','Max Age (days)']);
+      aoa=[['Inventory Aging — '+_bxAgeTitle],['Printed: '+new Date().toLocaleString()],[], header];
+      _bxAgeRows.forEach(r=>{ const row=[isNaN(+r.style)?r.style:+r.style, r.color]; if(showSize) row.push(r.size); row.push(r.n, r.pcs, r.b1, r.b2, r.b3, r.b4, bxAgeFmtD(r.oldestDate), r.oldest); aoa.push(row); });
+      cols=[{wch:9},{wch:20}].concat(showSize?[{wch:7}]:[]).concat([{wch:7},{wch:9},{wch:7},{wch:8},{wch:9},{wch:7},{wch:12},{wch:13}]);
+    }
     const ws=XLSX.utils.aoa_to_sheet(aoa);
-    ws['!cols']=[{wch:9},{wch:20}].concat(showSize?[{wch:7}]:[]).concat([{wch:7},{wch:9},{wch:7},{wch:8},{wch:9},{wch:7},{wch:12},{wch:13}]);
+    ws['!cols']=cols;
     const wb=XLSX.utils.book_new(); XLSX.utils.book_append_sheet(wb,ws,'Aging');
-    XLSX.writeFile(wb,'InventoryAging_'+_bxAgeTitle.replace(/[^A-Za-z0-9._-]+/g,'_')+'_'+todayStr()+'.xlsx');
+    XLSX.writeFile(wb,'InventoryAging_'+(boxMode?'boxes_':'')+_bxAgeTitle.replace(/[^A-Za-z0-9._-]+/g,'_')+'_'+todayStr()+'.xlsx');
     showToast('✅ Excel downloaded');
   }catch(e){ console.warn('bxAgingExcel',e); showToast('⚠ Excel generation failed'); }
 }
