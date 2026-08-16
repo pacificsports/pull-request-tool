@@ -154,7 +154,7 @@ main{max-width:1100px;margin:0 auto;padding:16px;}
     <button class="btn btn-sm" onclick="doLogout()" style="padding:2px 8px;font-size:10px;" data-i18n="logout">Log out</button>
   </span>
   <select id="lang-sel" onchange="setLang(this.value)" style="font-size:11px;padding:3px 6px;border-radius:5px;border:none;background:#1d3f66;color:#fff;"><option value="ko">한국어</option><option value="en">English</option><option value="es">Español</option></select>
-  <span style="font-size:10px;color:#9fb8d4;">v570 ↩</span>
+  <span style="font-size:10px;color:#9fb8d4;">v571 ↩</span>
 </div>
 <script type="text/javascript" src="https://js.authorize.net/v1/Accept.js" charset="utf-8"></script>
 <div id="po-viewer" style="display:none;position:fixed;top:0;right:0;width:44%;height:100vh;background:#fff;border-left:2px solid var(--border);z-index:60;box-shadow:-6px 0 20px rgba(0,0,0,.15);">
@@ -421,6 +421,7 @@ main{max-width:1100px;margin:0 auto;padding:16px;}
       <button class="btn btn-sm" onclick="bkupRun()" style="background:#334155;color:#fff;border-color:#334155;" title="Download a full backup of ALL data (orders, inventory, movements, checks) as one JSON file — keep it safe off-system">💾 Backup</button>
       <button class="btn btn-sm" onclick="bxAuditOpen()" style="background:#0f2a4a;color:#fff;border-color:#0f2a4a;" title="Boxes/qty by location per Style+Color — print or Excel for a physical stock count">🔍 Stock Count</button>
       <button class="btn btn-sm" onclick="bxAgingOpen()" style="background:#7c2d12;color:#fff;border-color:#7c2d12;" title="Inventory aging — how long each box has sat in stock (by receive date), oldest first">⏳ Aging</button>
+      <button class="btn btn-sm" id="bx-costbtn" onclick="costOpen()" style="display:none;background:#065f46;color:#fff;border-color:#065f46;" title="Cost per style/size + margin — owner & accounting only. Fill gaps, edit, and see inventory value">💲 Cost</button>
       <button class="btn btn-sm" onclick="pchkOpen()" style="background:#0891b2;color:#fff;border-color:#0891b2;" title="Physical check with photos — take pallet photos, AI reads labels, compares to system">📸 Photo Check</button>
       <button class="btn btn-sm" onclick="pchkReviewOpen()" style="background:#155e75;color:#fff;border-color:#155e75;" title="Review physical checks submitted by staff (staff link: psflowx.com/#check)">🔍 Check reviews<span id="pchk-review-badge" style="font-weight:800;"></span></button>
       <button class="btn btn-sm" onclick="hiOpen()" style="background:#0e7490;color:#fff;border-color:#0e7490;" title="Upload Haiti invoice → review → assign locations on arrival">🇭🇹 Haiti Receive</button>
@@ -2552,9 +2553,13 @@ async function checkStaff(){
     const r = await sbFetch('/rest/v1/user_roles?select=role&user_id=eq.'+SESS.userId);
     if(!r.ok) return false;
     const rows = await r.json();
-    return Array.isArray(rows) && rows[0] && ['owner','accounting','sales','warehouse'].indexOf(rows[0].role) >= 0;
+    const role = (Array.isArray(rows) && rows[0]) ? rows[0].role : null;
+    window._myRole = role; if(SESS) SESS.role = role;
+    return ['owner','accounting','sales','warehouse'].indexOf(role) >= 0;
   }catch(e){ return false; }
 }
+// 원가(cost)는 owner/accounting 역할만 볼 수 있음 — 실제 보호는 서버(RLS), 이건 화면 표시용 게이트
+function canSeeCost(){ return ['owner','accounting'].indexOf(window._myRole) >= 0; }
 async function doLogin(){
   const email = $('auth-email').value.trim(), pw = $('auth-pw').value;
   const errEl = $('auth-err'); errEl.textContent = '';
@@ -2622,6 +2627,7 @@ async function enterApp(){
   $('app-main').style.display = 'block';
   $('user-info').style.display = 'inline-flex';
   $('user-email').textContent = SESS.email || '';
+  try{ const cb=document.getElementById('bx-costbtn'); if(cb) cb.style.display = canSeeCost() ? '' : 'none'; }catch(e){}
   await migrateLocal();
   await loadSavedList();
   // 오더 파싱 화면에서 재고 힌트(📦풀박스+location · PC자투리)가 바로 보이도록 백그라운드 로드
@@ -12657,6 +12663,95 @@ async function bxAgingExcel(){
     XLSX.writeFile(wb,'InventoryAging_'+(boxMode?'boxes_':'')+_bxAgeTitle.replace(/[^A-Za-z0-9._-]+/g,'_')+'_'+todayStr()+'.xlsx');
     showToast('✅ Excel downloaded');
   }catch(e){ console.warn('bxAgingExcel',e); showToast('⚠ Excel generation failed'); }
+}
+
+// ═══ Cost & Margin editor (v571) — owner/accounting 전용. styles 테이블의 사이즈별 원가+최소마진 편집 ═══
+let _costRows = [], _costEdits = {};
+const COST_ADULT_SIZES = [['XS','cost_xs'],['S','cost_s'],['M','cost_m'],['L','cost_l'],['XL','cost_xl'],['2XL','cost_2xl'],['3XL','cost_3xl'],['4XL','cost_4xl'],['5XL','cost_5xl']];
+function costEff(r,col){ const sn=String(r.style_number); const e=_costEdits[sn]; if(e && e[col]!==undefined){ const v=e[col]; return (v===''||v==null)?null:Number(v); } const v=r[col]; return (v==null||v==='')?null:Number(v); }
+function oncost(idx,col,val){ const r=_costRows[idx]; if(!r) return; const sn=String(r.style_number); (_costEdits[sn]=_costEdits[sn]||{})[col]=val; const b=document.getElementById('cost-save'); if(b){ b.disabled=false; } }
+async function costFetch(){
+  const sel='style_number,description,category,min_margin_pct,cost_xs,cost_s,cost_m,cost_l,cost_xl,cost_2xl,cost_3xl,cost_4xl,cost_5xl';
+  try{ const r=await sbFetch('/rest/v1/styles?select='+sel+'&order=style_number.asc'); _costRows = r.ok ? await r.json() : []; }
+  catch(e){ _costRows=[]; }
+}
+function costValuation(){
+  if(!bxLoaded) return null;
+  const byStyle={}; _costRows.forEach(r=> byStyle[String(r.style_number).trim()]=r);
+  const colOf={}; COST_ADULT_SIZES.forEach(([lab,col])=> colOf[lab]=col);
+  let val=0, valued=0, un=0;
+  bxStore.forEach(b=>{ if(bxWh(b)==='TRANSIT') return; const r=byStyle[String(b.style).trim()]; const col=colOf[String(b.size||'').toUpperCase()]; const c=(r&&col)?costEff(r,col):null; if(c==null||!(c>0)){ un++; return; } val+=c*(Number(b.pcs)||0); valued++; });
+  return {val, valuedBoxes:valued, unvaluedBoxes:un};
+}
+async function costOpen(){
+  if(!canSeeCost()){ showToast('⚠ Owner / Accounting only'); return; }
+  const ex=document.getElementById('modal-cost'); if(ex) ex.remove();
+  const div=document.createElement('div'); div.id='modal-cost';
+  div.style.cssText='position:fixed;inset:0;background:rgba(0,0,0,.55);z-index:9999;display:flex;align-items:center;justify-content:center;';
+  div.innerHTML=`<div style="background:#fff;border-radius:12px;width:1200px;max-width:97vw;max-height:92vh;display:flex;flex-direction:column;overflow:hidden;box-shadow:0 20px 60px rgba(0,0,0,.35);">
+    <div style="background:#065f46;color:#fff;padding:11px 16px;font-weight:800;font-size:13.5px;display:flex;align-items:center;gap:10px;">💲 Cost &amp; Margin <span style="font-size:11px;font-weight:600;color:#a7f3d0;">Per style / size cost + min margin — owner &amp; accounting only</span>
+      <input id="cost-search" placeholder="🔍 style / desc" oninput="costRender(this.value)" style="margin-left:auto;font-size:12px;padding:5px 10px;border-radius:7px;border:1px solid #34d399;width:170px;">
+      <button class="btn btn-sm" id="cost-save" onclick="costSave()" style="background:#f59e0b;color:#fff;border-color:#f59e0b;font-weight:800;" disabled>💾 Save changes</button>
+      <button class="btn btn-sm" style="background:transparent;color:#a7f3d0;border-color:#34d399;" onclick="document.getElementById('modal-cost').remove()">✕</button>
+    </div>
+    <div id="cost-summary" style="padding:8px 16px;border-bottom:1px solid var(--border);font-size:12px;"></div>
+    <div id="cost-body" style="flex:1;overflow:auto;padding:8px 12px;"><div class="muted">Loading…</div></div>
+  </div>`;
+  document.body.appendChild(div); try{ initModalDrag(div); }catch(e){}
+  _costEdits={};
+  await costFetch();
+  if(!bxLoaded){ try{ await bxFetchStore(); }catch(e){} }
+  costRender('');
+}
+function costRender(filter){
+  const body=document.getElementById('cost-body'); if(!body) return;
+  const f=String(filter||'').trim().toLowerCase();
+  const rows=_costRows.filter(r=> !f || String(r.style_number).toLowerCase().indexOf(f)>=0 || String(r.description||'').toLowerCase().indexOf(f)>=0);
+  const head=`<tr><th class="tl" style="position:sticky;left:0;background:#f1f5f9;z-index:2;">Style</th><th class="tl">Description</th><th>Cat</th><th style="background:#ecfdf5;">Margin %</th>${COST_ADULT_SIZES.map(s=>`<th>${s[0]}</th>`).join('')}</tr>`;
+  const bodyRows=rows.map(r=>{
+    const idx=_costRows.indexOf(r);
+    const nonAdult=/kid|youth|tod/i.test(String(r.category||''));
+    const cells=COST_ADULT_SIZES.map(([lab,col])=>{ const v=costEff(r,col); const empty=(v==null||!(v>0)); return `<td style="padding:1px;${empty?'background:#fef9c3;':''}"><input class="num" value="${v!=null?v:''}" oninput="oncost(${idx},'${col}',this.value)" style="width:52px;text-align:right;font-family:Consolas,monospace;" placeholder="—"></td>`; }).join('');
+    const m=costEff(r,'min_margin_pct');
+    const bg=nonAdult?'#fdf2f8':'#fff';
+    return `<tr${nonAdult?' style="background:#fdf2f8;"':''}>
+      <td class="tl" style="font-weight:800;position:sticky;left:0;background:${bg};z-index:1;">${esc(String(r.style_number))}</td>
+      <td class="tl" style="font-size:11px;color:#6b7280;max-width:170px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;" title="${esc(r.description||'')}">${esc(r.description||'')}</td>
+      <td style="font-size:10px;color:#9ca3af;">${esc(r.category||'')}</td>
+      <td style="padding:1px;background:#ecfdf5;"><input class="num" value="${m!=null?m:''}" oninput="oncost(${idx},'min_margin_pct',this.value)" style="width:52px;text-align:right;font-family:Consolas,monospace;" placeholder="—"></td>
+      ${cells}
+    </tr>`;
+  }).join('');
+  body.innerHTML=`<table class="etbl" style="width:100%;font-size:12px;"><thead>${head}</thead><tbody>${bodyRows||'<tr><td class="muted" style="padding:16px;">No styles</td></tr>'}</tbody></table>`;
+  costSummary();
+}
+function costSummary(){
+  const el=document.getElementById('cost-summary'); if(!el) return;
+  const total=_costRows.length;
+  const withCost=_costRows.filter(r=> COST_ADULT_SIZES.some(([lab,col])=> costEff(r,col)>0)).length;
+  const nonAdult=_costRows.filter(r=>/kid|youth|tod/i.test(String(r.category||''))).length;
+  const v=costValuation();
+  const valHtml = v ? ` &nbsp;·&nbsp; <b style="color:#065f46;">Inventory value @ cost: $${Math.round(v.val).toLocaleString()}</b> <span style="color:#6b7280;">(${v.valuedBoxes.toLocaleString()} boxes valued${v.unvaluedBoxes?`, ${v.unvaluedBoxes.toLocaleString()} no cost`:''})</span>`
+    : ' &nbsp;·&nbsp; <span style="color:#9ca3af;">inventory value: open Full Box once to load stock</span>';
+  el.innerHTML=`<b>${withCost}</b>/${total} styles have cost${nonAdult?` &nbsp;·&nbsp; <span style="color:#be185d;">${nonAdult} kids/youth style(s) — 분홍줄, 사이즈 체계 달라 adult 칸만 편집됨</span>`:''}${valHtml} &nbsp;·&nbsp; <span style="color:#9ca3af;">노란칸 = 원가 없음</span>`;
+}
+async function costSave(){
+  const sns=Object.keys(_costEdits); if(!sns.length){ showToast('No changes'); return; }
+  const btn=document.getElementById('cost-save'); if(btn){ btn.disabled=true; btn.textContent='Saving…'; }
+  let ok=0, fail=0, firstErr='';
+  for(const sn of sns){
+    const e=_costEdits[sn]; const patch={};
+    Object.keys(e).forEach(col=>{ const v=e[col]; patch[col]=(v===''||v==null)?null:Number(v); });
+    try{
+      const r=await sbFetch('/rest/v1/styles?style_number=eq.'+encodeURIComponent(sn), {method:'PATCH', headers:{Prefer:'return=minimal'}, body:JSON.stringify(patch)});
+      if(r.ok) ok++; else { fail++; if(!firstErr){ let tx=''; try{ tx=await r.text(); }catch(_){} firstErr='HTTP '+r.status+' '+String(tx).slice(0,140); } }
+    }catch(err){ fail++; if(!firstErr) firstErr=String(err.message||err); }
+  }
+  _costEdits={};
+  try{ await loadPriceList(); }catch(e){}   // 주문화면 최소가 경고가 새 원가를 쓰도록 갱신
+  await costFetch(); costRender((document.getElementById('cost-search')||{}).value||'');
+  if(btn){ btn.textContent='💾 Save changes'; btn.disabled=true; }
+  showToast(fail ? ('⚠ Saved '+ok+', failed '+fail+(firstErr?(' — '+firstErr):'')) : ('✅ Saved '+ok+' style(s)'));
 }
 
 async function bxExport(){
