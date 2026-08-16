@@ -154,7 +154,7 @@ main{max-width:1100px;margin:0 auto;padding:16px;}
     <button class="btn btn-sm" onclick="doLogout()" style="padding:2px 8px;font-size:10px;" data-i18n="logout">Log out</button>
   </span>
   <select id="lang-sel" onchange="setLang(this.value)" style="font-size:11px;padding:3px 6px;border-radius:5px;border:none;background:#1d3f66;color:#fff;"><option value="ko">한국어</option><option value="en">English</option><option value="es">Español</option></select>
-  <span style="font-size:10px;color:#9fb8d4;">v563 ↩</span>
+  <span style="font-size:10px;color:#9fb8d4;">v564 ↩</span>
 </div>
 <script type="text/javascript" src="https://js.authorize.net/v1/Accept.js" charset="utf-8"></script>
 <div id="po-viewer" style="display:none;position:fixed;top:0;right:0;width:44%;height:100vh;background:#fff;border-left:2px solid var(--border);z-index:60;box-shadow:-6px 0 20px rgba(0,0,0,.15);">
@@ -7257,6 +7257,36 @@ function pchkEmpGrab(){   // 재렌더 전에 현재 입력값 보존
   if((v=g('pchk-color'))!=null)_pchkColor=v; if((v=g('pchk-size'))!=null)_pchkSize=v; if((v=g('pchk-who'))!=null)_pchkWho=v;
 }
 function pchkEmpItem(){ return [_pchkStyle,_pchkColor,_pchkSize].map(s=>String(s||'').trim()).filter(Boolean).join(' '); }
+// 📦 그 팔렛(bin)에 시스템상 뭐가 있어야 하는지 — 직원이 눈으로 대조 (bin 하나만 조회하는 RPC)
+async function pchkEmpShowBin(){
+  pchkEmpGrab();
+  const bin=String(_pchkBin||'').trim().toUpperCase(); _pchkBin=bin;
+  const el=document.getElementById('pchk-bincontents'); if(!el) return;
+  if(!bin){ el.innerHTML='<div style="color:#94a3b8;font-size:12px;padding:4px 2px;">Enter a bin first, then press Enter.</div>'; return; }
+  el.innerHTML='<div style="color:#64748b;font-size:12px;padding:8px 2px;">Loading pallet contents…</div>';
+  let rows=[];
+  try{
+    const r=await fetch(SB_URL+'/rest/v1/rpc/pchk_bin_contents',{method:'POST',headers:{apikey:SB_KEY,Authorization:'Bearer '+SB_KEY,'Content-Type':'application/json'},body:JSON.stringify({p_bin:bin})});
+    if(!r.ok){ const t=await r.text(); throw new Error('HTTP '+r.status+' '+t.slice(0,120)); }
+    rows=await r.json();
+  }catch(e){ el.innerHTML='<div style="color:#b91c1c;font-size:12px;padding:6px 2px;">Could not load pallet: '+esc(e.message||String(e))+'</div>'; return; }
+  window._pchkBinData={bin, wh:_pchkWh, rows};
+  el.innerHTML=pchkEmpBinCardHtml();
+}
+function pchkEmpBinCardHtml(){
+  const d=window._pchkBinData; if(!d) return '';
+  if(String(d.bin).toUpperCase()!==String(_pchkBin||'').trim().toUpperCase() || d.wh!==_pchkWh) return '';
+  const rows=(d.rows||[]).filter(x=>String(x.wh||'').toUpperCase()===_pchkWh)
+    .sort((a,b)=>String(a.style).localeCompare(String(b.style))||String(a.color).localeCompare(String(b.color))||bxSizeCmp(a.size,b.size));
+  const total=rows.reduce((a,x)=>a+(Number(x.n)||0),0);
+  if(!rows.length) return `<div style="background:#fff;border-radius:12px;padding:12px 14px;font-size:12.5px;color:#64748b;">📦 System shows <b>nothing</b> at [${_pchkWh}] ${esc(d.bin)} — new/empty pallet, or double-check the bin.</div>`;
+  const body=rows.map(x=>`<tr><td style="padding:5px 8px;font-weight:700;">${esc(x.style)}</td><td style="padding:5px 8px;">${esc(x.color)}</td><td style="padding:5px 8px;text-align:center;">${esc(x.size)}</td><td style="padding:5px 8px;text-align:center;font-weight:800;">${x.n}</td></tr>`).join('');
+  return `<div style="background:#fff;border-radius:12px;padding:12px 14px;">
+    <div style="font-size:13px;font-weight:800;color:#0f2a4a;margin-bottom:6px;">📦 System says this pallet has — [${_pchkWh}] ${esc(d.bin)}</div>
+    <table style="width:100%;font-size:12.5px;border-collapse:collapse;"><thead><tr style="background:#f1f5f9;"><th style="padding:5px 8px;text-align:left;">Style</th><th style="padding:5px 8px;text-align:left;">Color</th><th style="padding:5px 8px;">Size</th><th style="padding:5px 8px;">Boxes</th></tr></thead><tbody>${body}</tbody></table>
+    <div style="font-size:11px;color:#64748b;margin-top:6px;">Total: ${total} boxes · eyeball-check this against the pallet</div>
+  </div>`;
+}
 function pchkEmpSetWh(w){ pchkEmpGrab(); _pchkWh=w; pchkEmpCapture(); }
 // 📷 고정 4칸 촬영 (Front / Left / Right / Back) — 직원이 헷갈리지 않게
 const PCHK_SLOTS=['front','left','right','back'];
@@ -7296,17 +7326,19 @@ function pchkEmpCapture(){
           <button onclick="pchkEmpSetWh('SC')" style="flex:1;border:2px solid;border-radius:10px;padding:12px;font-size:16px;font-weight:800;${_pchkWh==='SC'?on:off}">SC</button>
           <button onclick="pchkEmpSetWh('CA')" style="flex:1;border:2px solid;border-radius:10px;padding:12px;font-size:16px;font-weight:800;${_pchkWh==='CA'?on:off}">CA</button>
         </div>
-        <div style="font-size:13px;font-weight:800;color:#0f2a4a;margin-bottom:8px;">2️⃣ Which pallet / bin?</div>
-        <input id="pchk-bin" value="${esc(_pchkBin)}" placeholder="e.g. 1A-1 or 1043" autocomplete="off" style="width:100%;font-size:18px;padding:12px;border:2px solid #cbd5e1;border-radius:10px;text-transform:uppercase;box-sizing:border-box;">
+        <div style="font-size:13px;font-weight:800;color:#0f2a4a;margin-bottom:8px;">2️⃣ Which pallet / bin? <span style="font-weight:500;color:#94a3b8;">(press Enter to see contents)</span></div>
+        <input id="pchk-bin" value="${esc(_pchkBin)}" placeholder="e.g. 1A-1 or 1043" autocomplete="off" onkeydown="if(event.key==='Enter'){event.preventDefault();pchkEmpShowBin();}" style="width:100%;font-size:18px;padding:12px;border:2px solid #cbd5e1;border-radius:10px;text-transform:uppercase;box-sizing:border-box;">
         <div style="font-size:13px;font-weight:800;color:#0f2a4a;margin:14px 0 8px;">3️⃣ Style#</div>
-        <input id="pchk-style" value="${esc(_pchkStyle)}" placeholder="e.g. 1315" autocomplete="off" style="width:100%;font-size:16px;padding:11px;border:2px solid #cbd5e1;border-radius:10px;box-sizing:border-box;">
+        <input id="pchk-style" value="${esc(_pchkStyle)}" placeholder="e.g. 1315" autocomplete="off" onkeydown="if(event.key==='Enter'){event.preventDefault();pchkEmpShowBin();}" style="width:100%;font-size:16px;padding:11px;border:2px solid #cbd5e1;border-radius:10px;box-sizing:border-box;">
         <div style="font-size:13px;font-weight:800;color:#0f2a4a;margin:14px 0 8px;">4️⃣ Color</div>
-        <input id="pchk-color" value="${esc(_pchkColor)}" placeholder="e.g. SILVER" autocomplete="off" style="width:100%;font-size:16px;padding:11px;border:2px solid #cbd5e1;border-radius:10px;text-transform:uppercase;box-sizing:border-box;">
+        <input id="pchk-color" value="${esc(_pchkColor)}" placeholder="e.g. SILVER" autocomplete="off" onkeydown="if(event.key==='Enter'){event.preventDefault();pchkEmpShowBin();}" style="width:100%;font-size:16px;padding:11px;border:2px solid #cbd5e1;border-radius:10px;text-transform:uppercase;box-sizing:border-box;">
         <div style="font-size:13px;font-weight:800;color:#0f2a4a;margin:14px 0 8px;">5️⃣ Size</div>
-        <input id="pchk-size" value="${esc(_pchkSize)}" placeholder="e.g. M" autocomplete="off" style="width:100%;font-size:16px;padding:11px;border:2px solid #cbd5e1;border-radius:10px;text-transform:uppercase;box-sizing:border-box;">
+        <input id="pchk-size" value="${esc(_pchkSize)}" placeholder="e.g. M" autocomplete="off" onkeydown="if(event.key==='Enter'){event.preventDefault();pchkEmpShowBin();}" style="width:100%;font-size:16px;padding:11px;border:2px solid #cbd5e1;border-radius:10px;text-transform:uppercase;box-sizing:border-box;">
+        <button onclick="pchkEmpShowBin()" style="width:100%;margin-top:12px;background:#e0f2fe;color:#075985;border:1px solid #7dd3fc;border-radius:10px;padding:11px;font-size:14px;font-weight:800;">📦 Show what's in this pallet</button>
         <div style="font-size:13px;font-weight:800;color:#0f2a4a;margin:14px 0 8px;">6️⃣ Your name / initials <span style="font-weight:500;color:#94a3b8;">(optional)</span></div>
         <input id="pchk-who" value="${esc(_pchkWho)}" placeholder="e.g. Robert" autocomplete="off" style="width:100%;font-size:15px;padding:10px;border:2px solid #cbd5e1;border-radius:10px;box-sizing:border-box;">
       </div>
+      <div id="pchk-bincontents">${pchkEmpBinCardHtml()}</div>
       <div style="background:#fff;border-radius:12px;padding:14px;">
         <div style="font-size:13px;font-weight:800;color:#0f2a4a;margin-bottom:4px;">7️⃣ Take 4 photos — labels facing out</div>
         <div style="font-size:11px;color:#64748b;margin-bottom:10px;">Tap each box, photograph that side of the pallet. Retake by tapping ×.</div>
@@ -7367,7 +7399,7 @@ async function pchkEmpSave(detected){
   _pchkDone.unshift({ wh:_pchkWh, bin:_pchkBin, item, total, t:new Date().toISOString() }); pchkDoneSave();
   _pchkBin=''; _pchkStyle=''; _pchkColor=''; _pchkSize='';
   _pchkSlots={front:null,left:null,right:null,back:null};
-  window._pchkRetake=[]; window._pchkRetakeMsg=''; window._pchkPendingDetected=null;
+  window._pchkRetake=[]; window._pchkRetakeMsg=''; window._pchkPendingDetected=null; window._pchkBinData=null;
   pchkEmpCapture();
   showToast('✅ Analyze complete — saved ('+total+' boxes). Next pallet ready.');
 }
