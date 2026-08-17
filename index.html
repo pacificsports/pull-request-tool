@@ -154,7 +154,7 @@ main{max-width:1100px;margin:0 auto;padding:16px;}
     <button class="btn btn-sm" onclick="doLogout()" style="padding:2px 8px;font-size:10px;" data-i18n="logout">Log out</button>
   </span>
   <select id="lang-sel" onchange="setLang(this.value)" style="font-size:11px;padding:3px 6px;border-radius:5px;border:none;background:#1d3f66;color:#fff;"><option value="ko">한국어</option><option value="en">English</option><option value="es">Español</option></select>
-  <span style="font-size:10px;color:#9fb8d4;">v596 ↩</span>
+  <span style="font-size:10px;color:#9fb8d4;">v597 ↩</span>
 </div>
 <script type="text/javascript" src="https://js.authorize.net/v1/Accept.js" charset="utf-8"></script>
 <div id="po-viewer" style="display:none;position:fixed;top:0;right:0;width:44%;height:100vh;background:#fff;border-left:2px solid var(--border);z-index:60;box-shadow:-6px 0 20px rgba(0,0,0,.15);">
@@ -16838,6 +16838,23 @@ async function shipDraftOpen(){
   document.body.appendChild(div);
 }
 function icResumeDraft(){ shipDraftOpen(); }   // 툴바 버튼 호환
+// 🚚 batch ship 완료 후 — 나간 오더를 모든 draft에서 제거하고, 빈 draft는 삭제
+async function shipDraftAfterShip(shipped){
+  if(!shipped || !shipped.length) return;
+  const shipSet=new Set(shipped.map(p=>p.base+'|'+p.wh));
+  const list=await shipDraftList(); if(!list || !list.length){ shipDraftRefreshBtn(); return; }
+  let cleared=0, deleted=0;
+  for(const d of list){
+    const sel=Array.isArray(d.sel)?d.sel:[];
+    const remain=sel.filter(s=>!shipSet.has(s.base+'|'+s.wh));
+    if(remain.length===sel.length) continue;   // 이 draft엔 방금 나간 오더 없음
+    if(remain.length===0){ try{ const r=await sbFetch(SHIPDRAFT_EP+'?id=eq.'+d.id,{method:'DELETE',headers:{Prefer:'return=minimal'}}); if(r.ok) deleted++; }catch(e){} }
+    else { try{ const r=await sbFetch(SHIPDRAFT_EP+'?id=eq.'+d.id,{method:'PATCH',headers:{Prefer:'return=minimal'},body:JSON.stringify({sel:remain, updated_at:new Date().toISOString()})}); if(r.ok) cleared++; }catch(e){} }
+  }
+  window._shipDraftActive=null;
+  shipDraftRefreshBtn();
+  if(deleted||cleared) showToast('📄 Ship draft updated — '+(deleted?deleted+' completed & removed':'')+(deleted&&cleared?', ':'')+(cleared?cleared+' updated':''));
+}
 function icEmailText(){
   const s=window._ic||{}; const pal=s.pallets||[]; const P=pal.length;
   const dims=pal.map((p,i)=>`${p.l} in X ${p.w} in X ${p.h} in for Pallet ${i+1}`).join('\n');
@@ -17188,13 +17205,14 @@ async function submitBatchShip(){
   }
   const wantSend = $('bship-sendpl') && $('bship-sendpl').checked;
   const sendQueue = [];
-  let okCnt = 0, fails = [];
+  let okCnt = 0, fails = []; const shipped = [];
   for(let i=0; i<bs.bases.length; i++){
     const base = bs.bases[i];
     let rec = savedCache.find(s=>s.base===base); if(!rec){ fails.push(base); continue; }
     if(rec._lite){ await refreshRec(base); rec = savedCache.find(s=>s.base===base); if(!rec){ fails.push(base); continue; } }
     const trk = (document.getElementById('bship-trk-'+i)||{}).value || '';
-    const em = ((document.getElementById('bship-em-'+i)||{}).value || '').trim();
+    let em = ((document.getElementById('bship-em-'+i)||{}).value || '').trim();
+    if(!em && wantSend && typeof custEmailFor==='function'){ em = String(custEmailFor((rec.meta&&rec.meta.cust))||'').trim(); }   // 이메일칸 비어도 거래처 저장 이메일로 폴백
     if(em && em.includes('@')) rec.meta = {...(rec.meta||{}), custEmail: em};
     const lines = (rec.lines||[]).filter(l=>l.wh===bs.wh && (l.qty||0)>0).map(l=>({style:l.style||'', desc:l.desc||'', color:l.color||'', size:l.size||'', qty:l.qty||0, price:l.price||0, ppb:l.ppb||72, pbox:l.pbox||''}));
     rec.pl = rec.pl || {};
@@ -17206,13 +17224,15 @@ async function submitBatchShip(){
     }
     try{
       const r = await sbFetch('/rest/v1/pr_orders?base=eq.'+encodeURIComponent(base), {method:'PATCH', headers:{Prefer:'return=minimal'}, body:JSON.stringify({pl:rec.pl, inv:rec.inv, meta:rec.meta, updated_at:new Date().toISOString()})});
-      if(r.ok){ okCnt++; logHist(rec.base, 'Batch shipped — ' + bs.wh + ' (' + rec.pl[bs.wh].serial + ')'); if(em && em.includes('@')) sendQueue.push({rec, em}); }
+      if(r.ok){ okCnt++; shipped.push({base:base, wh:bs.wh}); logHist(rec.base, 'Batch shipped — ' + bs.wh + ' (' + rec.pl[bs.wh].serial + ')'); if(em && em.includes('@')) sendQueue.push({rec, em}); }
       else fails.push(base);
     }catch(e){ fails.push(base); }
   }
   const m = document.getElementById('modal-batch-ship'); if(m) m.remove();
   renderSaved();
   showToast('🚛 ' + okCnt + ' order(s) shipped' + (fails.length ? ' · ' + fails.length + ' failed' : ''));
+  if(typeof shipDraftAfterShip==='function' && shipped.length) shipDraftAfterShip(shipped);   // 출고된 오더는 batch ship draft에서 제거 (전부 나가면 draft 삭제)
+  if(wantSend && okCnt>0 && sendQueue.length<okCnt){ showToast('⚠ '+(okCnt-sendQueue.length)+' shipped order(s) had NO customer email — Packing List not emailed for those. Add the email and use per-order Resend.'); }
   if(wantSend && sendQueue.length){
     const _emList = [...new Set(sendQueue.map(q=>q.em))].join('\n→ ');
     if(!confirm('📧 Packing Lists will be emailed to customers.\n→ ' + _emList + '\n\nContinue? (Cancel ships without emailing)')) { return; }
