@@ -154,7 +154,7 @@ main{max-width:1100px;margin:0 auto;padding:16px;}
     <button class="btn btn-sm" onclick="doLogout()" style="padding:2px 8px;font-size:10px;" data-i18n="logout">Log out</button>
   </span>
   <select id="lang-sel" onchange="setLang(this.value)" style="font-size:11px;padding:3px 6px;border-radius:5px;border:none;background:#1d3f66;color:#fff;"><option value="ko">한국어</option><option value="en">English</option><option value="es">Español</option></select>
-  <span style="font-size:10px;color:#9fb8d4;">v593 ↩</span>
+  <span style="font-size:10px;color:#9fb8d4;">v594 ↩</span>
 </div>
 <script type="text/javascript" src="https://js.authorize.net/v1/Accept.js" charset="utf-8"></script>
 <div id="po-viewer" style="display:none;position:fixed;top:0;right:0;width:44%;height:100vh;background:#fff;border-left:2px solid var(--border);z-index:60;box-shadow:-6px 0 20px rgba(0,0,0,.15);">
@@ -347,6 +347,7 @@ main{max-width:1100px;margin:0 auto;padding:16px;}
       <button id="bb-pr" class="btn btn-sm" style="display:none;background:#0f2a4a;color:#fff;border-color:#0f2a4a;" onclick="batchPrintPRs()">🖨 Print Pull Requests (<span id="bb-pr-n">0</span>)</button>
       <button id="bb-pl" class="btn btn-sm" style="display:none;background:#0e7490;color:#fff;border-color:#0e7490;" onclick="batchPrintPLs()">📦 Print Packing Lists (<span id="bb-pl-n">0</span>)</button>
       <button id="bb-prpl" class="btn btn-sm" style="display:none;background:#4338ca;color:#fff;border-color:#4338ca;" onclick="batchPrintPRandPL()" title="Print the 1st page of each selected Pull Request (order total summary), then all Packing Lists — Pull Requests first, Packing Lists after">🖨📦 Print PR (1st) &amp; Packing List (<span id="bb-prpl-n">0</span>)</button>
+      <button id="bb-savedraft" class="btn btn-sm" style="display:none;background:#f0f9ff;color:#0369a1;border-color:#7dd3fc;font-weight:700;" onclick="shipDraftSave()" title="Save these checked orders as a batch-ship draft — work on other orders, then resume later without re-selecting">💾 Save draft (<span id="bb-savedraft-n">0</span>)</button>
       <button id="bb-inform" class="btn btn-sm" style="display:none;background:#0891b2;color:#fff;border-color:#0891b2;" onclick="openInformCustomer()" title="Draft a 'ready to ship' email to the customer (POs, pallets, boxes, weight) — copy &amp; send to request the shipping label + BOL">📧 Inform Customer (<span id="bb-inform-n">0</span>)</button>
       <button id="bb-sc" class="btn btn-sm" style="display:none;background:#1d4ed8;color:#fff;border-color:#1d4ed8;" onclick="openBatchShip('SC')">🚛 SC Batch Ship (<span id="bb-sc-n">0</span>)</button>
       <button id="bb-ca" class="btn btn-sm" style="display:none;background:#c2410c;color:#fff;border-color:#c2410c;" onclick="openBatchShip('CA')">🚛 CA Batch Ship (<span id="bb-ca-n">0</span>)</button>
@@ -16739,6 +16740,7 @@ function updateBatchBar(){
   if($('bb-pl')){ $('bb-pl').style.display = plN ? 'inline-flex' : 'none'; $('bb-pl-n').textContent = plN; }
   if($('bb-prpl')){ $('bb-prpl').style.display = cbs.length ? 'inline-flex' : 'none'; $('bb-prpl-n').textContent = cbs.length; }
   if($('bb-inform')){ const uniq=new Set(cbs.map(c=>c.dataset.base)).size; $('bb-inform').style.display = cbs.length ? 'inline-flex' : 'none'; $('bb-inform-n').textContent = uniq; }
+  if($('bb-savedraft')){ const uniq=new Set(cbs.map(c=>c.dataset.base)).size; $('bb-savedraft').style.display = cbs.length ? 'inline-flex' : 'none'; $('bb-savedraft-n').textContent = uniq; }
 }
 // ══ 📧 Inform Customer — 출고 준비 알림 이메일 (선택된 PO + pallet 치수 + 박스/무게) 초안 만들어 copy ══
 function openInformCustomer(){
@@ -16756,28 +16758,39 @@ function openInformCustomer(){
   const custs=[...new Set(orders.map(r=>String((r.meta&&r.meta.cust)||'').trim()).filter(Boolean))];
   const pos=orders.map(r=>{ const po=String((r.meta&&r.meta.po)||r.base); const rep=(typeof recIsReplace==='function'&&recIsReplace(r)); return po+(rep?' (replacement)':''); });
   window._ic={ cust: custs.length===1?custs[0]:'', time:'3pm', pos:pos.join('\n'), boxes, lbsPer:33, pallets:[{l:48,w:43,h:84}] };
+  // 저장된 draft가 지금 선택과 같은 오더면, 그때 입력했던 설정(pallet/무게/문구)을 되살림
+  const d=icGetDraft();
+  if(d && d.ic && Array.isArray(d.sel)){
+    const cur=new Set(cbs.map(c=>c.dataset.base+'|'+c.dataset.wh));
+    const dset=new Set(d.sel.map(s=>s.base+'|'+s.wh));
+    const same = cur.size===dset.size && [...cur].every(k=>dset.has(k));
+    if(same){ const s=d.ic; if(s.time!=null)window._ic.time=s.time; if(s.cust!=null)window._ic.cust=s.cust; if(s.pos!=null)window._ic.pos=s.pos; if(s.lbsPer!=null)window._ic.lbsPer=s.lbsPer; if(s.boxes!=null)window._ic.boxes=s.boxes; if(Array.isArray(s.pallets)&&s.pallets.length)window._ic.pallets=s.pallets; }
+  }
   icBuild();
 }
 // 💾 Ship draft — 선택한 오더 + pallet/박스/무게 설정을 저장해두고 나중에 이어서 (브라우저 보관)
 function icDraftKey(){ return 'psi_ic_draft'; }
 function icGetDraft(){ try{ const s=localStorage.getItem(icDraftKey()); return s?JSON.parse(s):null; }catch(e){ return null; } }
 function icRenderDraftBtn(){ const b=document.getElementById('ship-draft-btn'); if(!b) return; const d=icGetDraft(); if(d){ b.style.display='inline-flex'; const w=document.getElementById('ship-draft-when'); if(w){ const n=(d.sel||[]).length; const dt=d.savedAt?new Date(d.savedAt):null; w.textContent=' ('+n+(dt?(' · '+(dt.getMonth()+1)+'/'+dt.getDate()):'')+')'; } } else { b.style.display='none'; } }
-function icSaveDraft(){
-  if(!window._ic) return; icSyncPallets();
+// 💾 Batch ship draft 저장 — 지금 체크된 오더들(+Inform Customer 설정이 있으면 그것도) 보관
+function shipDraftSave(){
   const sel=[...document.querySelectorAll('.bship-cb:checked')].map(c=>({base:c.dataset.base, wh:c.dataset.wh}));
-  const draft={ ic:window._ic, sel, savedAt:new Date().toISOString() };
+  if(!sel.length){ showToast('⚠ Check the orders to save as a draft first'); return; }
+  if(window._ic && typeof icSyncPallets==='function' && document.getElementById('ic-pallets')) icSyncPallets();
+  const draft={ sel, ic: window._ic||null, savedAt:new Date().toISOString() };
   try{ localStorage.setItem(icDraftKey(), JSON.stringify(draft)); }catch(e){ showToast('⚠ Could not save draft'); return; }
-  showToast('💾 Ship draft saved — resume it anytime from 📄 Ship Draft'); icRenderDraftBtn();
+  showToast('💾 Batch ship draft saved ('+sel.length+' orders) — resume from 📄 Ship Draft'); icRenderDraftBtn();
 }
+function icSaveDraft(){ shipDraftSave(); }   // Inform Customer 모달 안의 Save draft 버튼도 동일 동작
 function icDiscardDraft(){ if(!confirm('Discard the saved ship draft?')) return; try{ localStorage.removeItem(icDraftKey()); }catch(e){} showToast('🗑 Ship draft discarded'); icRenderDraftBtn(); const m=document.getElementById('modal-ic'); if(m) m.remove(); }
+// 📄 Batch ship draft 복원 — 저장했던 오더들을 다시 체크 (모달은 안 열고 선택만 되살림)
 function icResumeDraft(){
   const d=icGetDraft(); if(!d){ showToast('No saved ship draft'); return; }
   document.querySelectorAll('.bship-cb').forEach(cb=>{ cb.checked=false; });
-  let missing=0;
-  (d.sel||[]).forEach(s=>{ let cb=null; try{ cb=document.querySelector('.bship-cb[data-base="'+(window.CSS&&CSS.escape?CSS.escape(s.base):s.base)+'"][data-wh="'+s.wh+'"]'); }catch(e){} if(cb) cb.checked=true; else missing++; });
+  let restored=0, missing=0;
+  (d.sel||[]).forEach(s=>{ let cb=null; try{ cb=document.querySelector('.bship-cb[data-base="'+(window.CSS&&CSS.escape?CSS.escape(s.base):s.base)+'"][data-wh="'+s.wh+'"]'); }catch(e){} if(cb){ cb.checked=true; restored++; } else missing++; });
   if(typeof updateBatchBar==='function') updateBatchBar();
-  window._ic=d.ic||{}; icBuild();
-  if(missing) showToast('📄 Draft resumed — '+missing+' order(s) not in the current list (email draft kept)');
+  showToast('📄 Batch ship draft resumed — '+restored+' order(s) re-selected'+(missing?(' · '+missing+' not in current list'):''));
 }
 function icEmailText(){
   const s=window._ic||{}; const pal=s.pallets||[]; const P=pal.length;
