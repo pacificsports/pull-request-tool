@@ -154,7 +154,7 @@ main{max-width:1100px;margin:0 auto;padding:16px;}
     <button class="btn btn-sm" onclick="doLogout()" style="padding:2px 8px;font-size:10px;" data-i18n="logout">Log out</button>
   </span>
   <select id="lang-sel" onchange="setLang(this.value)" style="font-size:11px;padding:3px 6px;border-radius:5px;border:none;background:#1d3f66;color:#fff;"><option value="ko">한국어</option><option value="en">English</option><option value="es">Español</option></select>
-  <span style="font-size:10px;color:#9fb8d4;">v579 ↩</span>
+  <span style="font-size:10px;color:#9fb8d4;">v580 ↩</span>
 </div>
 <script type="text/javascript" src="https://js.authorize.net/v1/Accept.js" charset="utf-8"></script>
 <div id="po-viewer" style="display:none;position:fixed;top:0;right:0;width:44%;height:100vh;background:#fff;border-left:2px solid var(--border);z-index:60;box-shadow:-6px 0 20px rgba(0,0,0,.15);">
@@ -7292,10 +7292,14 @@ function pchkEmpUsePallet(){
 const PCHK_COLOR_ABBR={HTR:'HEATHER',HEATHR:'HEATHER',HEATH:'HEATHER',HTHR:'HEATHER',LT:'LIGHT',DK:'DARK',GRY:'GREY',GRAY:'GREY',BLU:'BLUE',GRN:'GREEN',YLW:'YELLOW',ORG:'ORANGE',PPL:'PURPLE',CHAR:'CHARCOAL',CHRCL:'CHARCOAL',NVY:'NAVY',BLK:'BLACK',WHT:'WHITE',MRN:'MAROON',BRN:'BROWN',SLV:'SILVER',GLD:'GOLD'};
 // AI 사진 카운트는 박스가 가려지면 놓치므로 대략치 — 이 차이 이하는 "정상"으로 처리 (오탐 방지)
 const PCHK_AI_TOL=1;
+// 라벨의 프로그램/밀 코드 — 매칭 시 무시 (RT, BCI, SS 등)
+const PCHK_IGNORE_TOK={RT:1,BCI:1,SS:1,BCI2:1};
 function pchkColorNorm(c){
   let s=String(c||'').toUpperCase().replace(/\([^)]*\)/g,' ').replace(/[^A-Z0-9 ]/g,' ').replace(/\s+/g,' ').trim();
-  return s.split(' ').map(w=>PCHK_COLOR_ABBR[w]||w).join(' ').replace(/\s+/g,' ').trim();
+  return s.split(' ').filter(w=>w && !PCHK_IGNORE_TOK[w]).map(w=>PCHK_COLOR_ABBR[w]||w).join(' ').replace(/\s+/g,' ').trim();
 }
+// 스타일은 숫자만 뽑아서 매칭 (예: "1368 BCI", "1368 SS" -> "1368")
+function pchkStyleNorm(s){ const m=String(s||'').match(/\d+/); return m?m[0]:String(s||'').toUpperCase().trim(); }
 // 직원 눈-체크 상태 (줄 index 기준)
 let _pchkMarks={};
 function pchkBinRowsSorted(){ const d=window._pchkBinData; if(!d) return []; return (d.rows||[]).filter(x=>String(x.wh||'').toUpperCase()===_pchkWh).sort((a,b)=>String(a.style).localeCompare(String(b.style))||String(a.color).localeCompare(String(b.color))||bxSizeCmp(a.size,b.size)); }
@@ -7542,20 +7546,23 @@ function pchkCompare(bin, wh, detected, staffCheck){
   const b=String(bin||'').trim().toUpperCase(); const map={};
   // 시스템/직원 줄은 "정확한 색" 그대로 (MONACO BLUE vs MONACO BLUE (SIDE SEAM) 구분 유지)
   const exactKey=(style,color,size)=> pchkNorm(style)+'|'+pchkNorm(color)+'|'+pchkNorm(size);
-  // AI가 읽은 색은 (SIDE SEAM)·약어 무시하고 "느슨하게" — 시스템 줄에 근사 매칭용
-  const looseKey=(style,color,size)=> pchkNorm(style)+'|'+pchkColorNorm(color)+'|'+pchkNorm(size);
+  // AI가 읽은 라벨은 코드(RT/BCI/SS)·(SIDE SEAM)·약어 무시하고 "느슨하게" — 시스템 줄에 근사 매칭용
+  const matchKey=(style,color,size)=> pchkStyleNorm(style)+'|'+pchkColorNorm(color)+'|'+pchkNorm(size);
   const blank=(style,color,size)=>({style:style||'?',color:String(color||'?').toUpperCase(),size:String(size||'?').toUpperCase(),sys:0,photo:0,staffMark:null,staffCount:null,hasStaff:false});
+  // 시스템 bin 내용 (location 검색과 동일) — 이게 기준 줄
   (typeof bxStore!=='undefined'?bxStore:[]).forEach(x=>{ if(String(x.loc||'').toUpperCase()!==b) return; if(bxWh(x)!==wh) return;
     const k=exactKey(x.style,x.color,x.size);
     if(!map[k]) map[k]=blank(x.style,x.color,x.size); map[k].sys++; });
+  // 직원 눈체크 (시스템 색 그대로 봤으므로 정확 매칭)
   (staffCheck||[]).forEach(s=>{ const k=exactKey(s.style,s.color,s.size); if(!map[k]) map[k]=blank(s.style,s.color,s.size); map[k].staffMark=s.mark||null; map[k].staffCount=(s.count!=null?s.count:null); map[k].hasStaff=true; });
-  // 기존(시스템+직원) 줄들의 loose색 → exact키 index (근사 매칭용)
-  const looseIdx={};
-  Object.keys(map).forEach(k=>{ const r=map[k]; const lk=looseKey(r.style,r.color,r.size); (looseIdx[lk]=looseIdx[lk]||[]).push(k); });
-  // AI 판독: loose색이 딱 하나의 시스템 줄과 매칭되면 거기 붙이고, 아니면(0개/여러개) 별도 줄
-  (detected||[]).forEach(d=>{ const lk=looseKey(d.style,d.color,d.size); const hits=looseIdx[lk]||[];
-    if(hits.length===1){ map[hits[0]].photo+=(Number(d.count)||0); }
-    else { const k=exactKey(d.style,d.color,d.size); if(!map[k]) map[k]=blank(d.style,d.color,d.size); map[k].photo+=(Number(d.count)||0); } });
+  // 기존 줄들의 matchKey → exact키 index
+  const mIdx={};
+  Object.keys(map).forEach(k=>{ const r=map[k]; const mk=matchKey(r.style,r.color,r.size); (mIdx[mk]=mIdx[mk]||[]).push(k); });
+  // AI 판독: 딱 하나의 시스템 줄과 매칭되면 그 줄에 채우고, 못 맞추면 줄 안 만들고 별도 집계(지저분 방지)
+  let aiUnmatched=0;
+  (detected||[]).forEach(d=>{ const cnt=Number(d.count)||0; const mk=matchKey(d.style,d.color,d.size); const hits=mIdx[mk]||[];
+    if(hits.length===1){ map[hits[0]].photo+=cnt; }
+    else { aiUnmatched+=cnt; } });
   const rows=Object.values(map).sort((a,b2)=>String(a.style).localeCompare(String(b2.style))||String(a.color).localeCompare(String(b2.color))||bxSizeCmp(a.size,b2.size));
   let okN=0,aiFlags=0; rows.forEach(r=>{
     if(r.sys>0 && r.photo>0 && Math.abs(r.sys-r.photo)<=PCHK_AI_TOL) okN++;
@@ -7564,7 +7571,7 @@ function pchkCompare(bin, wh, detected, staffCheck){
     // 사진에 안 보임(photo 0)은 가려졌을 뿐일 수 있어 경보 안 함
   });
   const staffOff=rows.filter(r=>r.staffMark==='off').length;
-  return {rows, okN, diffN:aiFlags, staffOff, aiFlags};
+  return {rows, okN, diffN:aiFlags, staffOff, aiFlags, aiUnmatched};
 }
 async function pchkReviewBadge(){
   try{ const r=await sbFetch('/rest/v1/pr_physcheck?select=wh&status=eq.pending'); if(!r.ok) return;
@@ -7783,7 +7790,7 @@ function pchkReviewRender(rows){
         ${hasAI?`<span style="background:#f5f3ff;color:#6d28d9;font-size:11px;font-weight:800;padding:3px 10px;border-radius:8px;">🔍 AI read (approx)</span>`:`<span style="background:#f5f3ff;color:#6d28d9;font-size:11px;font-weight:800;padding:3px 10px;border-radius:8px;">AI not run — tap Analyze</span>`}
       </div>
       <div style="overflow-x:auto;"><table style="width:100%;font-size:11.5px;border-collapse:collapse;"><thead><tr style="background:#0f2a4a;color:#fff;"><th style="padding:4px 7px;text-align:left;">Style</th><th style="padding:4px 7px;text-align:left;">Color</th><th style="padding:4px 7px;">Sz</th><th style="padding:4px 7px;">Sys</th><th style="padding:4px 7px;">Staff</th><th style="padding:4px 7px;">AI</th>${pending?'<th style="padding:4px 7px;">Action</th>':''}</tr></thead><tbody id="pchktbody-${r.id}">${body||`<tr><td colspan=${pending?7:6} style="padding:8px;color:#64748b;">no data</td></tr>`}</tbody></table></div>
-      ${hasAI?`<div style="font-size:10.5px;color:#94a3b8;margin-top:6px;line-height:1.4;"><b>Sys</b>=시스템 재고 · <b>Staff</b>=직원 눈체크 · <b>AI</b>=사진판독(대략치, 가려진 박스는 놓침). 틀리면 <b>✏ Fix</b>로 실제 수량 입력, 다 맞으면 <b>Confirm all</b>.</div>`:''}
+      ${hasAI?`<div style="font-size:10.5px;color:#94a3b8;margin-top:6px;line-height:1.4;"><b>Sys</b>=시스템 재고 · <b>Staff</b>=직원 눈체크 · <b>AI</b>=사진판독(대략치, 가려진 박스는 놓침). 틀리면 <b>✏ Fix</b>로 실제 수량 입력, 다 맞으면 <b>Confirm all</b>.${cmp.aiUnmatched?` <span style="color:#b45309;">· AI가 시스템 줄에 못 맞춘 ~${cmp.aiUnmatched}박스 있음 — 📷 사진으로 확인.</span>`:''}</div>`:''}
       ${acts}
     </div>`;
   };
