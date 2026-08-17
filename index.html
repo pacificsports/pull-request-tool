@@ -154,7 +154,7 @@ main{max-width:1100px;margin:0 auto;padding:16px;}
     <button class="btn btn-sm" onclick="doLogout()" style="padding:2px 8px;font-size:10px;" data-i18n="logout">Log out</button>
   </span>
   <select id="lang-sel" onchange="setLang(this.value)" style="font-size:11px;padding:3px 6px;border-radius:5px;border:none;background:#1d3f66;color:#fff;"><option value="ko">한국어</option><option value="en">English</option><option value="es">Español</option></select>
-  <span style="font-size:10px;color:#9fb8d4;">v578 ↩</span>
+  <span style="font-size:10px;color:#9fb8d4;">v579 ↩</span>
 </div>
 <script type="text/javascript" src="https://js.authorize.net/v1/Accept.js" charset="utf-8"></script>
 <div id="po-viewer" style="display:none;position:fixed;top:0;right:0;width:44%;height:100vh;background:#fff;border-left:2px solid var(--border);z-index:60;box-shadow:-6px 0 20px rgba(0,0,0,.15);">
@@ -7540,13 +7540,22 @@ function pchkDoneRender(){
 // ═══════════════ 🧑‍💼 매니저 검토함 (Physical Check review) (v560) ═══════════════
 function pchkCompare(bin, wh, detected, staffCheck){
   const b=String(bin||'').trim().toUpperCase(); const map={};
-  const keyOf=(style,color,size)=> pchkNorm(style)+'|'+pchkColorNorm(color)+'|'+pchkNorm(size);
+  // 시스템/직원 줄은 "정확한 색" 그대로 (MONACO BLUE vs MONACO BLUE (SIDE SEAM) 구분 유지)
+  const exactKey=(style,color,size)=> pchkNorm(style)+'|'+pchkNorm(color)+'|'+pchkNorm(size);
+  // AI가 읽은 색은 (SIDE SEAM)·약어 무시하고 "느슨하게" — 시스템 줄에 근사 매칭용
+  const looseKey=(style,color,size)=> pchkNorm(style)+'|'+pchkColorNorm(color)+'|'+pchkNorm(size);
   const blank=(style,color,size)=>({style:style||'?',color:String(color||'?').toUpperCase(),size:String(size||'?').toUpperCase(),sys:0,photo:0,staffMark:null,staffCount:null,hasStaff:false});
   (typeof bxStore!=='undefined'?bxStore:[]).forEach(x=>{ if(String(x.loc||'').toUpperCase()!==b) return; if(bxWh(x)!==wh) return;
-    const k=keyOf(x.style,x.color,x.size);
+    const k=exactKey(x.style,x.color,x.size);
     if(!map[k]) map[k]=blank(x.style,x.color,x.size); map[k].sys++; });
-  (detected||[]).forEach(d=>{ const k=keyOf(d.style,d.color,d.size); if(!map[k]) map[k]=blank(d.style,d.color,d.size); map[k].photo+=(Number(d.count)||0); });
-  (staffCheck||[]).forEach(s=>{ const k=keyOf(s.style,s.color,s.size); if(!map[k]) map[k]=blank(s.style,s.color,s.size); map[k].staffMark=s.mark||null; map[k].staffCount=(s.count!=null?s.count:null); map[k].hasStaff=true; });
+  (staffCheck||[]).forEach(s=>{ const k=exactKey(s.style,s.color,s.size); if(!map[k]) map[k]=blank(s.style,s.color,s.size); map[k].staffMark=s.mark||null; map[k].staffCount=(s.count!=null?s.count:null); map[k].hasStaff=true; });
+  // 기존(시스템+직원) 줄들의 loose색 → exact키 index (근사 매칭용)
+  const looseIdx={};
+  Object.keys(map).forEach(k=>{ const r=map[k]; const lk=looseKey(r.style,r.color,r.size); (looseIdx[lk]=looseIdx[lk]||[]).push(k); });
+  // AI 판독: loose색이 딱 하나의 시스템 줄과 매칭되면 거기 붙이고, 아니면(0개/여러개) 별도 줄
+  (detected||[]).forEach(d=>{ const lk=looseKey(d.style,d.color,d.size); const hits=looseIdx[lk]||[];
+    if(hits.length===1){ map[hits[0]].photo+=(Number(d.count)||0); }
+    else { const k=exactKey(d.style,d.color,d.size); if(!map[k]) map[k]=blank(d.style,d.color,d.size); map[k].photo+=(Number(d.count)||0); } });
   const rows=Object.values(map).sort((a,b2)=>String(a.style).localeCompare(String(b2.style))||String(a.color).localeCompare(String(b2.color))||bxSizeCmp(a.size,b2.size));
   let okN=0,aiFlags=0; rows.forEach(r=>{
     if(r.sys>0 && r.photo>0 && Math.abs(r.sys-r.photo)<=PCHK_AI_TOL) okN++;
@@ -7615,7 +7624,7 @@ async function pchkApplyFix(line, wh, bin, target){
   const cur=(typeof bxStore!=='undefined'?bxStore:[]).filter(b=> String(b.style)===String(line.style)
     && String(b.size||'').toUpperCase()===String(line.size).toUpperCase()
     && String(b.loc||'').toUpperCase()===LOC && bxWh(b)===W
-    && pchkColorNorm(b.color)===pchkColorNorm(line.color));
+    && pchkNorm(b.color)===pchkNorm(line.color));
   const diff=target-cur.length; const by=(SESS&&SESS.email)||'';
   if(diff===0) return;
   if(diff>0){
