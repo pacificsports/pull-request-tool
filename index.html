@@ -154,7 +154,7 @@ main{max-width:1100px;margin:0 auto;padding:16px;}
     <button class="btn btn-sm" onclick="doLogout()" style="padding:2px 8px;font-size:10px;" data-i18n="logout">Log out</button>
   </span>
   <select id="lang-sel" onchange="setLang(this.value)" style="font-size:11px;padding:3px 6px;border-radius:5px;border:none;background:#1d3f66;color:#fff;"><option value="ko">한국어</option><option value="en">English</option><option value="es">Español</option></select>
-  <span style="font-size:10px;color:#9fb8d4;">v576 ↩</span>
+  <span style="font-size:10px;color:#9fb8d4;">v577 ↩</span>
 </div>
 <script type="text/javascript" src="https://js.authorize.net/v1/Accept.js" charset="utf-8"></script>
 <div id="po-viewer" style="display:none;position:fixed;top:0;right:0;width:44%;height:100vh;background:#fff;border-left:2px solid var(--border);z-index:60;box-shadow:-6px 0 20px rgba(0,0,0,.15);">
@@ -7583,7 +7583,7 @@ async function pchkReviewOpen(whFilter){
   </div>`;
   document.body.appendChild(div);
   let rows=[];
-  try{ let path='/rest/v1/pr_physcheck?select=id,created_at,wh,bin,submitter,note,detected,staff_check,status,reviewed_by,reviewed_at,resolve_note&order=created_at.desc&limit=200'; if(whFilter) path+='&wh=eq.'+encodeURIComponent(whFilter); const r=await sbFetch(path); if(!r.ok) throw new Error('HTTP '+r.status); rows=await r.json(); }
+  try{ let path='/rest/v1/pr_physcheck?select=id,created_at,wh,bin,submitter,note,detected,staff_check,fixes,status,reviewed_by,reviewed_at,resolve_note&order=created_at.desc&limit=200'; if(whFilter) path+='&wh=eq.'+encodeURIComponent(whFilter); const r=await sbFetch(path); if(!r.ok) throw new Error('HTTP '+r.status); rows=await r.json(); }
   catch(e){ const b=document.getElementById('pchkrev-body'); if(b) b.innerHTML=`<div style="padding:20px;color:#b91c1c;">Load failed: ${esc(e.message||String(e))}</div>`; return; }
   pchkReviewRender(rows);
 }
@@ -7600,8 +7600,10 @@ async function pchkLineSave(id,i){
   const target=Math.max(0, parseInt(inp.value,10)||0);
   const line=((window._pchkRevRows||{})[id]||[])[i]; const meta=(window._pchkRevMeta||{})[id]; if(!line||!meta) return;
   const c=document.getElementById('pchkact-'+id+'-'+i); if(c) c.innerHTML='<span style="color:#64748b;font-size:12px;">saving…</span>';
+  const oldSys=line.sys;
   try{ await pchkApplyFix(line, meta.wh, meta.bin, target); }
   catch(e){ showToast('⚠ Fix failed: '+(e.message||e)); if(c) c.innerHTML=pchkActBtns(id,i); return; }
+  if(oldSys!==target) pchkLogFix(id,{t:'fix',style:line.style,color:line.color,size:line.size,from:oldSys,to:target});
   line.sys=target;
   const sc=document.getElementById('pchksys-'+id+'-'+i); if(sc) sc.textContent=target;
   if(c) c.innerHTML='<span style="color:#16a34a;font-weight:800;font-size:12px;">✓ fixed → '+target+'</span>';
@@ -7660,10 +7662,17 @@ async function pchkAddSave(id,rid){
     await bxInsert(Array.from({length:qty},()=>({style:st,color:co,size:sz,pcs,loc:String(meta.bin).toUpperCase(),wh:(String(meta.wh).toUpperCase()==='CA')?'CA':'SC',status:'IN',in_by:by,note:'Photo check add'})));
     await bxRefetch();
   }catch(e){ showToast('⚠ Add failed: '+(e.message||e)); if(act) act.innerHTML=pchkAddBtns(id,rid); return; }
+  pchkLogFix(id,{t:'add',style:st,color:co,size:sz,qty});
   showToast('✅ Added '+qty+' × '+st+(co?' '+co:'')+' '+sz+' @'+meta.bin);
   const tr=document.getElementById('pchkrow-'+id+'-'+rid);
   if(tr){ tr.style.background='#f0fdf4'; tr.innerHTML=`<td style="padding:4px 7px;font-weight:700;">${esc(st)}</td><td style="padding:4px 7px;">${esc(co)}</td><td style="padding:4px 7px;text-align:center;">${esc(sz)}</td><td style="padding:4px 7px;text-align:center;font-weight:800;">${qty}</td><td style="text-align:center;color:#cbd5e1;">–</td><td style="text-align:center;color:#cbd5e1;">–</td><td style="padding:3px 5px;text-align:center;"><span style="color:#16a34a;font-weight:800;font-size:12px;">✓ added</span></td>`; }
 }
+// Fix/Add 내역을 기록에 누적 저장 (나중에 "뭐 고쳤나" 표시용)
+async function pchkLogFix(id, entry){
+  const arr=((window._pchkFixes=window._pchkFixes||{})[id]||[]); arr.push(entry); window._pchkFixes[id]=arr;
+  try{ await sbFetch('/rest/v1/pr_physcheck?id=eq.'+id,{method:'PATCH',headers:{Prefer:'return=minimal'},body:JSON.stringify({fixes:arr})}); }catch(e){}
+}
+function pchkToggleDetail(id){ const d=document.getElementById('pchkdet-'+id), c=document.getElementById('pchkcaret-'+id); if(!d) return; const open=d.style.display!=='none'; d.style.display=open?'none':'block'; if(c) c.textContent=open?'▸':'▾'; }
 // 🗑 검토 기록 삭제 (테스트/처리완료 정리용)
 async function pchkReviewDelete(id){
   if(!confirm('Delete this check record permanently?')) return;
@@ -7679,6 +7688,7 @@ function pchkReviewRender(rows){
     const cmp=pchkCompare(r.bin, r.wh, r.detected||[], r.staff_check||[]);
     (window._pchkRevRows=window._pchkRevRows||{})[r.id]=cmp.rows;
     (window._pchkRevMeta=window._pchkRevMeta||{})[r.id]={bin:r.bin,wh:r.wh};
+    (window._pchkFixes=window._pchkFixes||{})[r.id]=Array.isArray(r.fixes)?r.fixes.slice():[];
     const pending=r.status==='pending';
     const when=(r.created_at||'').replace('T',' ').slice(5,16);
     const staffCell=x=>{ if(!x.hasStaff && x.staffMark==null) return '<span style="color:#cbd5e1;">–</span>';
@@ -7734,8 +7744,42 @@ function pchkReviewRender(rows){
       ${acts}
     </div>`;
   };
+  // 처리완료(handled) — 접힌 아코디언: bin + 저장날짜 + CONFIRMED/FIXED + 📷, 클릭하면 detail 펼침
+  const doneRow=r=>{
+    const hasAI=Array.isArray(r.detected)&&r.detected.length>0;
+    const cmp=pchkCompare(r.bin, r.wh, r.detected||[], r.staff_check||[]);
+    const fixes=Array.isArray(r.fixes)?r.fixes:[];
+    const savedDate=(r.created_at||'').replace('T',' ').slice(0,16);
+    const badge = r.status==='resolved'
+      ? (fixes.length ? `<span style="background:#fef9c3;color:#a16207;font-size:10px;font-weight:800;padding:2px 9px;border-radius:20px;">✏ FIXED</span>`
+                      : `<span style="background:#dcfce7;color:#166534;font-size:10px;font-weight:800;padding:2px 9px;border-radius:20px;">✓ CONFIRMED</span>`)
+      : `<span style="background:#e2e8f0;color:#475569;font-size:10px;font-weight:800;padding:2px 9px;border-radius:20px;">DISMISSED</span>`;
+    const stCell=x=>{ if(x.staffMark==='ok') return '<span style="color:#16a34a;font-weight:800;">✓</span>'; if(x.staffMark==='off') return '<span style="color:#dc2626;font-weight:800;">✗</span>'; return '<span style="color:#cbd5e1;">–</span>'; };
+    const aiC=x=> hasAI ? (x.photo>0?`<b>${x.photo}</b>`:'<span style="color:#cbd5e1;">0</span>') : '<span style="color:#cbd5e1;">–</span>';
+    const trs=cmp.rows.map(x=>`<tr><td style="padding:3px 6px;font-weight:700;">${esc(x.style)}</td><td style="padding:3px 6px;">${esc(x.color)}</td><td style="padding:3px 6px;text-align:center;">${esc(x.size)}</td><td style="padding:3px 6px;text-align:center;font-weight:800;">${x.sys}</td><td style="padding:3px 6px;text-align:center;">${stCell(x)}</td><td style="padding:3px 6px;text-align:center;">${aiC(x)}</td></tr>`).join('');
+    const fixList = fixes.length ? `<div style="background:#fffbeb;border:1px solid #fde68a;border-radius:8px;padding:8px 11px;margin-bottom:8px;font-size:12px;color:#92400e;"><b>🛠 Fixed:</b><br>${fixes.map(f=> f.t==='add' ? `➕ ${esc(f.style)} ${esc(f.color||'')} ${esc(f.size)} — added ${f.qty}` : `✏ ${esc(f.style)} ${esc(f.color||'')} ${esc(f.size)}: ${f.from} → ${f.to}`).join('<br>')}</div>` : '';
+    return `<div style="background:#fff;border-radius:10px;margin-bottom:8px;border:1px solid #e2e8f0;overflow:hidden;">
+      <div onclick="pchkToggleDetail(${r.id})" style="display:flex;align-items:center;gap:8px;padding:11px 13px;cursor:pointer;flex-wrap:wrap;">
+        <span style="font-size:14px;font-weight:800;color:#0891b2;">📍 [${esc(r.wh)}] ${esc(r.bin)}</span>
+        ${badge}
+        <span style="font-size:11px;color:#94a3b8;">saved ${savedDate}${r.submitter?(' · '+esc(r.submitter)):''}</span>
+        <button onclick="event.stopPropagation();pchkViewPhotos(${r.id})" style="margin-left:auto;background:#e0f2fe;color:#075985;border:1px solid #7dd3fc;border-radius:7px;padding:5px 11px;font-size:11px;font-weight:700;">📷</button>
+        <span id="pchkcaret-${r.id}" style="color:#cbd5e1;font-weight:800;">▸</span>
+      </div>
+      <div id="pchkdet-${r.id}" style="display:none;padding:0 13px 13px;">
+        ${fixList}
+        <div style="overflow-x:auto;"><table style="width:100%;font-size:11.5px;border-collapse:collapse;"><thead><tr style="background:#0f2a4a;color:#fff;"><th style="padding:3px 6px;text-align:left;">Style</th><th style="padding:3px 6px;text-align:left;">Color</th><th style="padding:3px 6px;">Sz</th><th style="padding:3px 6px;">Sys</th><th style="padding:3px 6px;">Staff</th><th style="padding:3px 6px;">AI</th></tr></thead><tbody>${trs||'<tr><td colspan=6 style="padding:8px;color:#64748b;">no data</td></tr>'}</tbody></table></div>
+        ${r.resolve_note?`<div style="font-size:12px;color:#166534;background:#f0fdf4;border:1px solid #bbf7d0;border-radius:8px;padding:6px 10px;margin-top:8px;">🗒 ${esc(r.resolve_note)}</div>`:''}
+        <div style="display:flex;gap:6px;margin-top:8px;align-items:center;flex-wrap:wrap;">
+          <span style="font-size:11px;color:#94a3b8;">${r.reviewed_by?('by '+esc(r.reviewed_by)+' · '):''}${(r.reviewed_at||'').replace('T',' ').slice(5,16)}</span>
+          <button onclick="pchkReviewSet(${r.id},'pending')" style="background:#fff;color:#64748b;border:1px solid #cbd5e1;border-radius:8px;padding:5px 10px;font-size:11px;font-weight:700;margin-left:auto;">↺ Reopen</button>
+          <button onclick="pchkReviewDelete(${r.id})" style="background:#fff;color:#dc2626;border:1px solid #fecaca;border-radius:8px;padding:5px 10px;font-size:11px;font-weight:700;">🗑 Delete</button>
+        </div>
+      </div>
+    </div>`;
+  };
   b.innerHTML = (pend.length?`<div style="font-size:12px;font-weight:800;color:#92400e;margin-bottom:8px;">🟡 Pending (${pend.length})</div>`+pend.map(card).join(''):`<div style="text-align:center;color:#64748b;padding:24px;">No pending checks. 🎉</div>`)
-    + (done.length?`<div style="font-size:12px;font-weight:800;color:#64748b;margin:14px 0 8px;">Recently handled</div>`+done.slice(0,20).map(card).join(''):'');
+    + (done.length?`<div style="font-size:12px;font-weight:800;color:#64748b;margin:14px 0 8px;">Recently handled</div>`+done.slice(0,40).map(doneRow).join(''):'');
 }
 // 🔍 매니저가 인터넷 좋은 곳에서 AI 분석 실행 → detected 채우고 비교 갱신
 async function pchkReviewAnalyze(id){
