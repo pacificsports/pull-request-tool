@@ -154,7 +154,7 @@ main{max-width:1100px;margin:0 auto;padding:16px;}
     <button class="btn btn-sm" onclick="doLogout()" style="padding:2px 8px;font-size:10px;" data-i18n="logout">Log out</button>
   </span>
   <select id="lang-sel" onchange="setLang(this.value)" style="font-size:11px;padding:3px 6px;border-radius:5px;border:none;background:#1d3f66;color:#fff;"><option value="ko">한국어</option><option value="en">English</option><option value="es">Español</option></select>
-  <span style="font-size:10px;color:#9fb8d4;">v573 ↩</span>
+  <span style="font-size:10px;color:#9fb8d4;">v574 ↩</span>
 </div>
 <script type="text/javascript" src="https://js.authorize.net/v1/Accept.js" charset="utf-8"></script>
 <div id="po-viewer" style="display:none;position:fixed;top:0;right:0;width:44%;height:100vh;background:#fff;border-left:2px solid var(--border);z-index:60;box-shadow:-6px 0 20px rgba(0,0,0,.15);">
@@ -7290,6 +7290,8 @@ function pchkEmpUsePallet(){
 }
 // 색 이름 정규화 — (SIDE SEAM) 같은 꼬리표 제거 + HTR/LT 등 약어 확장 → 같은 색 매칭
 const PCHK_COLOR_ABBR={HTR:'HEATHER',HEATHR:'HEATHER',HEATH:'HEATHER',HTHR:'HEATHER',LT:'LIGHT',DK:'DARK',GRY:'GREY',GRAY:'GREY',BLU:'BLUE',GRN:'GREEN',YLW:'YELLOW',ORG:'ORANGE',PPL:'PURPLE',CHAR:'CHARCOAL',CHRCL:'CHARCOAL',NVY:'NAVY',BLK:'BLACK',WHT:'WHITE',MRN:'MAROON',BRN:'BROWN',SLV:'SILVER',GLD:'GOLD'};
+// AI 사진 카운트는 박스가 가려지면 놓치므로 대략치 — 이 차이 이하는 "정상"으로 처리 (오탐 방지)
+const PCHK_AI_TOL=1;
 function pchkColorNorm(c){
   let s=String(c||'').toUpperCase().replace(/\([^)]*\)/g,' ').replace(/[^A-Z0-9 ]/g,' ').replace(/\s+/g,' ').trim();
   return s.split(' ').map(w=>PCHK_COLOR_ABBR[w]||w).join(' ').replace(/\s+/g,' ').trim();
@@ -7546,9 +7548,14 @@ function pchkCompare(bin, wh, detected, staffCheck){
   (detected||[]).forEach(d=>{ const k=keyOf(d.style,d.color,d.size); if(!map[k]) map[k]=blank(d.style,d.color,d.size); map[k].photo+=(Number(d.count)||0); });
   (staffCheck||[]).forEach(s=>{ const k=keyOf(s.style,s.color,s.size); if(!map[k]) map[k]=blank(s.style,s.color,s.size); map[k].staffMark=s.mark||null; map[k].staffCount=(s.count!=null?s.count:null); map[k].hasStaff=true; });
   const rows=Object.values(map).sort((a,b2)=>String(a.style).localeCompare(String(b2.style))||String(a.color).localeCompare(String(b2.color))||bxSizeCmp(a.size,b2.size));
-  let okN=0,diffN=0; rows.forEach(r=>{ if(r.sys===r.photo) okN++; else diffN++; });
+  let okN=0,aiFlags=0; rows.forEach(r=>{
+    if(r.sys>0 && r.photo>0 && Math.abs(r.sys-r.photo)<=PCHK_AI_TOL) okN++;
+    else if(r.sys===0 && r.photo>0) aiFlags++;            // 사진에만 있음 = 진짜 확인 필요
+    else if(r.sys>0 && r.photo>0) aiFlags++;              // 오차 초과 = 확인
+    // 사진에 안 보임(photo 0)은 가려졌을 뿐일 수 있어 경보 안 함
+  });
   const staffOff=rows.filter(r=>r.staffMark==='off').length;
-  return {rows, okN, diffN, staffOff};
+  return {rows, okN, diffN:aiFlags, staffOff, aiFlags};
 }
 async function pchkReviewBadge(){
   try{ const r=await sbFetch('/rest/v1/pr_physcheck?select=wh&status=eq.pending'); if(!r.ok) return;
@@ -7592,7 +7599,11 @@ function pchkReviewRender(rows){
       if(x.staffMark==='off') return '<span style="color:#dc2626;font-weight:800;">✗</span>'+(x.staffCount!=null?` <span style="color:#dc2626;">${x.staffCount}</span>`:'');
       return x.staffCount!=null?`<span style="color:#64748b;">${x.staffCount}</span>`:'<span style="color:#cbd5e1;">–</span>'; };
     const body=cmp.rows.map(x=>{ let st,bg='';
-      if(hasAI){ if(x.sys===x.photo){ st='✅'; bg='#f0fdf4'; } else if(x.photo===0){ st='➖ missing in photo'; bg='#fef2f2'; } else if(x.sys===0){ st='➕ not in system'; bg='#eff6ff'; } else { st=`⚠ ${x.sys}→${x.photo}`; bg='#fffbeb'; } }
+      if(hasAI){ const df=x.photo-x.sys;
+        if(x.sys===0 && x.photo>0){ st='➕ not in system'; bg='#eff6ff'; }
+        else if(x.photo===0){ st='◻ not visible in photo'; bg=''; }
+        else if(Math.abs(df)<=PCHK_AI_TOL){ st='✅'+(df!==0?' ≈':''); bg='#f0fdf4'; }
+        else { st=`⚠ ${x.sys}→${x.photo}`; bg='#fffbeb'; } }
       else { if(x.staffMark==='off'){ st='🚩 staff flagged'; bg='#fef2f2'; } else if(x.staffMark==='ok'){ st='✓ staff ok'; bg='#f0fdf4'; } else { st=''; } }
       return `<tr style="background:${bg};"><td style="padding:4px 7px;font-weight:700;">${esc(x.style)}</td><td style="padding:4px 7px;">${esc(x.color)}</td><td style="padding:4px 7px;text-align:center;">${esc(x.size)}</td><td style="padding:4px 7px;text-align:center;">${x.sys}</td><td style="padding:4px 7px;text-align:center;">${staffCell(x)}</td><td style="padding:4px 7px;text-align:center;font-weight:800;">${hasAI?x.photo:'<span style=\'color:#cbd5e1\'>–</span>'}</td><td style="padding:4px 7px;font-size:11px;font-weight:700;white-space:nowrap;">${st}</td></tr>`; }).join('');
     const statusChip = r.status==='pending' ? `<span style="background:#fef3c7;color:#92400e;font-size:10px;font-weight:800;padding:2px 8px;border-radius:20px;">PENDING</span>`
@@ -7624,9 +7635,10 @@ function pchkReviewRender(rows){
       ${r.note?`<div style="font-size:12px;color:#0891b2;font-weight:700;margin-bottom:8px;">🔎 Staff was checking: ${esc(r.note)}</div>`:''}
       <div style="display:flex;gap:6px;margin-bottom:8px;flex-wrap:wrap;">
         ${cmp.staffOff?`<span style="background:#fef2f2;color:#b91c1c;font-size:11px;font-weight:800;padding:3px 10px;border-radius:8px;">🚩 ${cmp.staffOff} staff-flagged</span>`:`<span style="background:#f0fdf4;color:#15803d;font-size:11px;font-weight:800;padding:3px 10px;border-radius:8px;">✓ staff: no flags</span>`}
-        ${hasAI?`<span style="background:#f0fdf4;color:#15803d;font-size:11px;font-weight:800;padding:3px 10px;border-radius:8px;">AI ✅ ${cmp.okN} match</span><span style="background:${cmp.diffN?'#fffbeb':'#f1f5f9'};color:${cmp.diffN?'#b45309':'#94a3b8'};font-size:11px;font-weight:800;padding:3px 10px;border-radius:8px;">AI ⚠ ${cmp.diffN} diff</span>`:`<span style="background:#f5f3ff;color:#6d28d9;font-size:11px;font-weight:800;padding:3px 10px;border-radius:8px;">AI not run — tap Analyze</span>`}
+        ${hasAI?`<span style="background:#f0fdf4;color:#15803d;font-size:11px;font-weight:800;padding:3px 10px;border-radius:8px;">AI ≈ ${cmp.okN} ok</span>${cmp.aiFlags?`<span style="background:#fffbeb;color:#b45309;font-size:11px;font-weight:800;padding:3px 10px;border-radius:8px;">AI ⚠ ${cmp.aiFlags} to check</span>`:''}`:`<span style="background:#f5f3ff;color:#6d28d9;font-size:11px;font-weight:800;padding:3px 10px;border-radius:8px;">AI not run — tap Analyze</span>`}
       </div>
       <div style="overflow-x:auto;"><table style="width:100%;font-size:11.5px;border-collapse:collapse;"><thead><tr style="background:#0f2a4a;color:#fff;"><th style="padding:4px 7px;text-align:left;">Style</th><th style="padding:4px 7px;text-align:left;">Color</th><th style="padding:4px 7px;">Sz</th><th style="padding:4px 7px;">Sys</th><th style="padding:4px 7px;">Staff</th><th style="padding:4px 7px;">Photo</th><th style="padding:4px 7px;text-align:left;">Status</th></tr></thead><tbody>${body||'<tr><td colspan=7 style="padding:8px;color:#64748b;">no data</td></tr>'}</tbody></table></div>
+      ${hasAI?`<div style="font-size:10.5px;color:#94a3b8;margin-top:6px;line-height:1.4;">≈ AI photo count is <b>approximate</b> — hidden boxes get missed, so ±${PCHK_AI_TOL} counts as OK. "◻ not visible" just means that side wasn't captured. Trust the staff ✓/✗ and the photos; the numbers are a hint.</div>`:''}
       ${acts}
     </div>`;
   };
