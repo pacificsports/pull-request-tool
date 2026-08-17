@@ -154,7 +154,7 @@ main{max-width:1100px;margin:0 auto;padding:16px;}
     <button class="btn btn-sm" onclick="doLogout()" style="padding:2px 8px;font-size:10px;" data-i18n="logout">Log out</button>
   </span>
   <select id="lang-sel" onchange="setLang(this.value)" style="font-size:11px;padding:3px 6px;border-radius:5px;border:none;background:#1d3f66;color:#fff;"><option value="ko">한국어</option><option value="en">English</option><option value="es">Español</option></select>
-  <span style="font-size:10px;color:#9fb8d4;">v592 ↩</span>
+  <span style="font-size:10px;color:#9fb8d4;">v593 ↩</span>
 </div>
 <script type="text/javascript" src="https://js.authorize.net/v1/Accept.js" charset="utf-8"></script>
 <div id="po-viewer" style="display:none;position:fixed;top:0;right:0;width:44%;height:100vh;background:#fff;border-left:2px solid var(--border);z-index:60;box-shadow:-6px 0 20px rgba(0,0,0,.15);">
@@ -334,6 +334,7 @@ main{max-width:1100px;margin:0 auto;padding:16px;}
         <button class="btn btn-sm" id="bo-filter-btn" onclick="boOnly=!boOnly;readyOnly=false;renderSaved();" title="Show only orders with Back Order">⛔ BO</button>
         <button class="btn btn-sm" id="ready-filter-btn" onclick="readyOnly=!readyOnly;boOnly=false;renderSaved();" title="Ready — show only orders awaiting pickup">📅 Ready</button>
         <button class="btn btn-sm" style="background:#065f46;color:#fff;border-color:#065f46;font-weight:700;" onclick="openBulkPay()" title="Upload a factoring remittance PDF to auto-match invoices and post payments in bulk">💰 Bulk Payment</button>
+        <button class="btn btn-sm" id="ship-draft-btn" style="display:none;background:#0891b2;color:#fff;border-color:#0891b2;font-weight:700;" onclick="icResumeDraft()" title="Resume the saved 'Inform Customer' ship draft (restores the selected orders + pallets)">📄 Ship Draft<span id="ship-draft-when" style="font-weight:400;opacity:.85;"></span></button>
         <button class="btn btn-sm" onclick="openTrash()" title="Deleted orders (kept 30 days)">🗑</button>
         <input class="fi" id="saved-search" placeholder="🔍 Search customer / PO# / Ref# / style · color (e.g. 1315 NAVY)" oninput="savedQuery=this.value;renderSaved();" style="width:340px;font-size:12px;padding:6px 10px;font-weight:400;">
         <button class="btn btn-sm" id="saved-search-clear" style="display:none;" onclick="savedQuery='';document.getElementById('saved-search').value='';renderSaved();">✕</button>
@@ -16757,6 +16758,27 @@ function openInformCustomer(){
   window._ic={ cust: custs.length===1?custs[0]:'', time:'3pm', pos:pos.join('\n'), boxes, lbsPer:33, pallets:[{l:48,w:43,h:84}] };
   icBuild();
 }
+// 💾 Ship draft — 선택한 오더 + pallet/박스/무게 설정을 저장해두고 나중에 이어서 (브라우저 보관)
+function icDraftKey(){ return 'psi_ic_draft'; }
+function icGetDraft(){ try{ const s=localStorage.getItem(icDraftKey()); return s?JSON.parse(s):null; }catch(e){ return null; } }
+function icRenderDraftBtn(){ const b=document.getElementById('ship-draft-btn'); if(!b) return; const d=icGetDraft(); if(d){ b.style.display='inline-flex'; const w=document.getElementById('ship-draft-when'); if(w){ const n=(d.sel||[]).length; const dt=d.savedAt?new Date(d.savedAt):null; w.textContent=' ('+n+(dt?(' · '+(dt.getMonth()+1)+'/'+dt.getDate()):'')+')'; } } else { b.style.display='none'; } }
+function icSaveDraft(){
+  if(!window._ic) return; icSyncPallets();
+  const sel=[...document.querySelectorAll('.bship-cb:checked')].map(c=>({base:c.dataset.base, wh:c.dataset.wh}));
+  const draft={ ic:window._ic, sel, savedAt:new Date().toISOString() };
+  try{ localStorage.setItem(icDraftKey(), JSON.stringify(draft)); }catch(e){ showToast('⚠ Could not save draft'); return; }
+  showToast('💾 Ship draft saved — resume it anytime from 📄 Ship Draft'); icRenderDraftBtn();
+}
+function icDiscardDraft(){ if(!confirm('Discard the saved ship draft?')) return; try{ localStorage.removeItem(icDraftKey()); }catch(e){} showToast('🗑 Ship draft discarded'); icRenderDraftBtn(); const m=document.getElementById('modal-ic'); if(m) m.remove(); }
+function icResumeDraft(){
+  const d=icGetDraft(); if(!d){ showToast('No saved ship draft'); return; }
+  document.querySelectorAll('.bship-cb').forEach(cb=>{ cb.checked=false; });
+  let missing=0;
+  (d.sel||[]).forEach(s=>{ let cb=null; try{ cb=document.querySelector('.bship-cb[data-base="'+(window.CSS&&CSS.escape?CSS.escape(s.base):s.base)+'"][data-wh="'+s.wh+'"]'); }catch(e){} if(cb) cb.checked=true; else missing++; });
+  if(typeof updateBatchBar==='function') updateBatchBar();
+  window._ic=d.ic||{}; icBuild();
+  if(missing) showToast('📄 Draft resumed — '+missing+' order(s) not in the current list (email draft kept)');
+}
 function icEmailText(){
   const s=window._ic||{}; const pal=s.pallets||[]; const P=pal.length;
   const dims=pal.map((p,i)=>`${p.l} in X ${p.w} in X ${p.h} in for Pallet ${i+1}`).join('\n');
@@ -16859,10 +16881,14 @@ function icBuild(){
       </div>
     </div>
     <div style="padding:0 18px 6px;"><label style="font-size:11px;font-weight:700;color:#64748b;">Email preview — this is exactly what gets pasted</label><div id="ic-preview-html" style="border:1.5px solid #cbd5e1;border-radius:8px;padding:12px;max-height:240px;overflow:auto;background:#fff;"></div></div>
-    <div style="padding:10px 18px 14px;display:flex;gap:8px;justify-content:flex-end;border-top:1px solid var(--border);">
+    <div style="padding:10px 18px 14px;display:flex;gap:8px;align-items:center;border-top:1px solid var(--border);">
+      <button class="btn btn-sm" style="background:#f0f9ff;color:#0369a1;border-color:#7dd3fc;font-weight:700;" onclick="icSaveDraft()" title="Save the selected orders + this setup so you can work on other orders and resume later">💾 Save draft</button>
+      ${icGetDraft()?`<button class="btn btn-sm" onclick="icDiscardDraft()" title="Delete the saved ship draft" style="color:#dc2626;">🗑 Discard draft</button>`:''}
+      <span style="margin-left:auto;display:flex;gap:8px;">
       <button class="btn btn-sm" onclick="document.getElementById('modal-ic').remove()">Close</button>
       <button class="btn btn-sm" onclick="icCopyText()" title="Copy as plain text instead">Copy as text</button>
       <button class="btn btn-sm btn-primary" style="background:#0891b2;border-color:#0891b2;" onclick="icCopy()">📋 Copy email</button>
+      </span>
     </div>
   </div>`;
   document.body.appendChild(div);
@@ -17256,6 +17282,7 @@ function renderKpi(){
 }
 function renderSaved(){
   renderKpi();
+  if(typeof icRenderDraftBtn==='function') icRenderDraftBtn();
   const bb = document.getElementById('bo-filter-btn');
   if(bb) bb.style.cssText = boOnly ? 'background:#b91c1c;color:#fff;border-color:#b91c1c;' : '';
   const rb = $('ready-filter-btn');
