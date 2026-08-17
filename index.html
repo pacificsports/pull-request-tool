@@ -154,7 +154,7 @@ main{max-width:1100px;margin:0 auto;padding:16px;}
     <button class="btn btn-sm" onclick="doLogout()" style="padding:2px 8px;font-size:10px;" data-i18n="logout">Log out</button>
   </span>
   <select id="lang-sel" onchange="setLang(this.value)" style="font-size:11px;padding:3px 6px;border-radius:5px;border:none;background:#1d3f66;color:#fff;"><option value="ko">한국어</option><option value="en">English</option><option value="es">Español</option></select>
-  <span style="font-size:10px;color:#9fb8d4;">v577 ↩</span>
+  <span style="font-size:10px;color:#9fb8d4;">v578 ↩</span>
 </div>
 <script type="text/javascript" src="https://js.authorize.net/v1/Accept.js" charset="utf-8"></script>
 <div id="po-viewer" style="display:none;position:fixed;top:0;right:0;width:44%;height:100vh;background:#fff;border-left:2px solid var(--border);z-index:60;box-shadow:-6px 0 20px rgba(0,0,0,.15);">
@@ -7629,7 +7629,41 @@ async function pchkApplyFix(line, wh, bin, target){
   }
   await bxRefetch();
 }
-function pchkConfirmAll(id){ pchkReviewSet(id,'resolved'); }
+function pchkConfirmAll(id){ const m=(window._pchkRevMeta||{})[id]; if(m && typeof stMark==='function'){ try{ stMark('BXBIN', m.wh, m.bin); }catch(e){} } pchkReviewSet(id,'resolved'); }
+// 그 bin의 체크 이력 요약 — By Location 표시용 (bin -> 체크 횟수 + 최신 confirmed id)
+async function pchkLoadConfBins(){
+  try{ const r=await sbFetch('/rest/v1/pr_physcheck?select=id,wh,bin,status,reviewed_at&order=created_at.desc&limit=3000');
+    if(!r.ok) return; const m={};
+    (await r.json()).forEach(x=>{ const k=String(x.wh||'').toUpperCase()+'|'+String(x.bin||'').toUpperCase(); if(!m[k]) m[k]={n:0,confId:null}; m[k].n++; if(x.status==='resolved' && !m[k].confId) m[k].confId=x.id; });
+    window._pchkBinChk=m;
+  }catch(e){}
+}
+// 📷 이 bin의 사진 체크 이력 — 날짜 목록 → 날짜 누르면 그날 사진 (덮어쓰지 않고 전부 보관, 변화 추적용)
+async function pchkBinPhotoHistory(wh, bin){
+  const W=String(wh||'').toUpperCase(), B=String(bin||'').toUpperCase();
+  let rows=[];
+  try{ const r=await sbFetch('/rest/v1/pr_physcheck?select=id,created_at,status,submitter,fixes&wh=eq.'+encodeURIComponent(W)+'&bin=eq.'+encodeURIComponent(B)+'&order=created_at.desc&limit=200'); if(r.ok) rows=await r.json(); else throw new Error('HTTP '+r.status); }
+  catch(e){ showToast('⚠ Load failed: '+(e.message||e)); return; }
+  const ex=document.getElementById('modal-pchkhist'); if(ex) ex.remove();
+  const div=document.createElement('div'); div.id='modal-pchkhist';
+  div.style.cssText='position:fixed;inset:0;background:rgba(15,23,42,.55);z-index:240;display:flex;align-items:center;justify-content:center;padding:20px;';
+  div.onclick=e=>{ if(e.target===div) div.remove(); };
+  const list = rows.length ? rows.map(r=>{
+    const d=(r.created_at||'').replace('T',' ').slice(0,16);
+    const badge = r.status==='resolved'? '<span style="color:#16a34a;">✓ confirmed</span>' : r.status==='dismissed'? '<span style="color:#94a3b8;">dismissed</span>' : '<span style="color:#a16207;">pending</span>';
+    const fixN=Array.isArray(r.fixes)?r.fixes.length:0;
+    return `<button onclick="pchkViewPhotos(${r.id})" style="display:flex;width:100%;align-items:center;gap:8px;text-align:left;background:#fff;border:1px solid #e2e8f0;border-radius:9px;padding:11px 13px;margin-bottom:7px;cursor:pointer;">
+      <span style="font-size:13px;font-weight:800;color:#0f2a4a;">📅 ${d}</span>
+      <span style="font-size:11px;color:#64748b;">${esc(r.submitter||'')}</span>
+      <span style="font-size:10px;font-weight:800;margin-left:auto;">${badge}${fixN?(' · ✏'+fixN):''}</span>
+      <span style="color:#94a3b8;">📷</span>
+    </button>`; }).join('') : '<div style="color:#64748b;padding:20px;text-align:center;">No photo checks for this bin yet.</div>';
+  div.innerHTML=`<div style="background:#f1f5f9;border-radius:14px;max-width:460px;width:100%;max-height:82vh;display:flex;flex-direction:column;overflow:hidden;">
+    <div style="background:#0f2a4a;color:#fff;padding:12px 16px;display:flex;align-items:center;gap:8px;"><span style="font-weight:800;font-size:15px;">📍 [${esc(W)}] ${esc(B)} — photo history</span><button onclick="document.getElementById('modal-pchkhist').remove()" style="margin-left:auto;background:rgba(255,255,255,.2);color:#fff;border:none;border-radius:8px;padding:6px 12px;font-weight:800;">✕</button></div>
+    <div style="padding:12px 14px;overflow-y:auto;"><div style="font-size:11px;color:#64748b;margin-bottom:8px;">Tap a date to see that day's photos — every check is kept for tracking how the bin changes.</div>${list}</div>
+  </div>`;
+  document.body.appendChild(div);
+}
 // ➕ 시스템에 없는 품목을 이 팔렛에 추가 (실제 재고 add)
 function pchkAddBtns(id,rid){ return `<button onclick="pchkAddSave(${id},'${rid}')" style="background:#16a34a;color:#fff;border:none;border-radius:6px;padding:5px 9px;font-size:12px;font-weight:800;">Add</button> <button onclick="(function(){var e=document.getElementById('pchkrow-${id}-${rid}');if(e)e.remove();})()" style="background:#e2e8f0;color:#334155;border:none;border-radius:6px;padding:5px 7px;font-size:12px;">✕</button>`; }
 function pchkAddRow(id){
@@ -12050,6 +12084,7 @@ async function bxLocBulk(action){
 function bxToggleLocView(){
   window._bxLocMode = !window._bxLocMode;
   const b = $('bx-locbtn'); if(b) b.style.cssText = window._bxLocMode ? 'background:#0f2a4a;color:#fff;border-color:#0f2a4a;' : '';
+  if(window._bxLocMode && typeof pchkLoadConfBins==='function'){ pchkLoadConfBins().then(()=>{ if(window._bxLocMode && $('bx-body')) renderBoxRoom(); }); }
   renderBoxRoom();
 }
 function bxLocSetWh(w){ window._bxLocWh = w; renderBoxRoom(); }
@@ -12082,6 +12117,7 @@ function bxOpenLoc(wh, flt){
   window._bxLocMode = true;
   window._bxLocWh = wh || 'SC';
   window._bxLocFilter = flt || 'all';
+  if(typeof pchkLoadConfBins==='function'){ pchkLoadConfBins().then(()=>{ if(window._bxLocMode && $('bx-body')) renderBoxRoom(); }); }
   const b = $('bx-locbtn'); if(b) b.style.cssText = 'background:#0f2a4a;color:#fff;border-color:#0f2a4a;';
   renderBoxRoom();
 }
@@ -12148,6 +12184,7 @@ function bxRenderByLoc(el, q){
         <span class="muted" style="font-weight:400;font-size:11px;">${rows.length} SKU-size line(s)</span>
         <span id="bxls-${cssId(wh+'-'+loc)}" style="margin-left:auto;font-family:Consolas,monospace;font-size:12px;"><b>${boxes.length}</b> boxes · ${pcsOf(boxes).toLocaleString()} pcs</span>
         <span style="font-weight:400;white-space:nowrap;" title="Stock count date for this whole bin">${stBadge('BXBIN', wh, loc)}</span>
+        ${(()=>{ const bc=(window._pchkBinChk||{})[String(wh).toUpperCase()+'|'+String(loc).toUpperCase()]; if(!bc) return ''; return `${bc.confId?`<span style="font-size:9px;font-weight:800;color:#0891b2;white-space:nowrap;" title="Photo-check confirmed">✓ confirmed</span>`:''} <button class="btn btn-sm" style="border:none;padding:0 4px;" onclick="event.preventDefault();event.stopPropagation();pchkBinPhotoHistory('${wh}','${esc(loc)}')" title="Photo check history (${bc.n})">📷${bc.n>1?' '+bc.n:''}</button>`; })()}
         <button class="btn btn-sm" style="border:none;padding:0 4px;" onclick="event.preventDefault();bxLocPrintBin('${wh}','${esc(loc)}')" title="Print this bin's contents">🖨</button>
       </summary>
       <div class="bxl-inner">${_open ? bxLocInner(loc, rows, wh) : ''}</div></details>`;
