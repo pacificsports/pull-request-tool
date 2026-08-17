@@ -154,7 +154,7 @@ main{max-width:1100px;margin:0 auto;padding:16px;}
     <button class="btn btn-sm" onclick="doLogout()" style="padding:2px 8px;font-size:10px;" data-i18n="logout">Log out</button>
   </span>
   <select id="lang-sel" onchange="setLang(this.value)" style="font-size:11px;padding:3px 6px;border-radius:5px;border:none;background:#1d3f66;color:#fff;"><option value="ko">한국어</option><option value="en">English</option><option value="es">Español</option></select>
-  <span style="font-size:10px;color:#9fb8d4;">v574 ↩</span>
+  <span style="font-size:10px;color:#9fb8d4;">v575 ↩</span>
 </div>
 <script type="text/javascript" src="https://js.authorize.net/v1/Accept.js" charset="utf-8"></script>
 <div id="po-viewer" style="display:none;position:fixed;top:0;right:0;width:44%;height:100vh;background:#fff;border-left:2px solid var(--border);z-index:60;box-shadow:-6px 0 20px rgba(0,0,0,.15);">
@@ -7587,39 +7587,86 @@ async function pchkReviewOpen(whFilter){
   catch(e){ const b=document.getElementById('pchkrev-body'); if(b) b.innerHTML=`<div style="padding:20px;color:#b91c1c;">Load failed: ${esc(e.message||String(e))}</div>`; return; }
   pchkReviewRender(rows);
 }
+// 각 줄 Confirm/Fix 버튼 + 인라인 수량 수정 (실제 재고 바뀜)
+function pchkActBtns(id,i){ return `<button onclick="pchkLineConfirm(${id},${i})" title="System qty is correct" style="border:1px solid #86efac;background:#f0fdf4;color:#15803d;border-radius:7px;padding:5px 9px;font-size:12px;font-weight:800;">✓</button> <button onclick="pchkLineFix(${id},${i})" title="Fix the system qty" style="border:1px solid #fdba74;background:#fff7ed;color:#c2410c;border-radius:7px;padding:5px 9px;font-size:12px;font-weight:800;">✏ Fix</button>`; }
+function pchkLineConfirm(id,i){ const c=document.getElementById('pchkact-'+id+'-'+i); if(c) c.innerHTML='<span style="color:#16a34a;font-weight:800;font-size:12px;">✓ ok</span>'; }
+function pchkLineCancel(id,i){ const c=document.getElementById('pchkact-'+id+'-'+i); if(c) c.innerHTML=pchkActBtns(id,i); }
+function pchkLineFix(id,i){ const c=document.getElementById('pchkact-'+id+'-'+i); const line=((window._pchkRevRows||{})[id]||[])[i]; if(!c||!line) return;
+  c.innerHTML=`<input id="pchkfix-${id}-${i}" type="number" inputmode="numeric" value="${line.sys}" style="width:54px;font-size:13px;padding:5px 3px;text-align:center;border:1.5px solid #f59e0b;border-radius:6px;box-sizing:border-box;"> <button onclick="pchkLineSave(${id},${i})" style="background:#16a34a;color:#fff;border:none;border-radius:6px;padding:5px 9px;font-size:12px;font-weight:800;">Save</button> <button onclick="pchkLineCancel(${id},${i})" style="background:#e2e8f0;color:#334155;border:none;border-radius:6px;padding:5px 7px;font-size:12px;">✕</button>`;
+  const inp=document.getElementById('pchkfix-'+id+'-'+i); if(inp){ inp.focus(); inp.select(); }
+}
+async function pchkLineSave(id,i){
+  const inp=document.getElementById('pchkfix-'+id+'-'+i); if(!inp) return;
+  const target=Math.max(0, parseInt(inp.value,10)||0);
+  const line=((window._pchkRevRows||{})[id]||[])[i]; const meta=(window._pchkRevMeta||{})[id]; if(!line||!meta) return;
+  const c=document.getElementById('pchkact-'+id+'-'+i); if(c) c.innerHTML='<span style="color:#64748b;font-size:12px;">saving…</span>';
+  try{ await pchkApplyFix(line, meta.wh, meta.bin, target); }
+  catch(e){ showToast('⚠ Fix failed: '+(e.message||e)); if(c) c.innerHTML=pchkActBtns(id,i); return; }
+  line.sys=target;
+  const sc=document.getElementById('pchksys-'+id+'-'+i); if(sc) sc.textContent=target;
+  if(c) c.innerHTML='<span style="color:#16a34a;font-weight:800;font-size:12px;">✓ fixed → '+target+'</span>';
+  showToast('✅ '+line.style+' '+line.color+' '+line.size+' @'+meta.bin+' → '+target+' box(es)');
+}
+async function pchkApplyFix(line, wh, bin, target){
+  const W=(String(wh||'SC').trim().toUpperCase()==='CA')?'CA':'SC';
+  const LOC=String(bin||'').toUpperCase();
+  const cur=(typeof bxStore!=='undefined'?bxStore:[]).filter(b=> String(b.style)===String(line.style)
+    && String(b.size||'').toUpperCase()===String(line.size).toUpperCase()
+    && String(b.loc||'').toUpperCase()===LOC && bxWh(b)===W
+    && pchkColorNorm(b.color)===pchkColorNorm(line.color));
+  const diff=target-cur.length; const by=(SESS&&SESS.email)||'';
+  if(diff===0) return;
+  if(diff>0){
+    const pcs=cur.length?(Number(cur[0].pcs)||72):(typeof autoPpb==='function'?autoPpb({style:line.style,size:line.size}):72);
+    const color=cur.length?cur[0].color:line.color;
+    await bxInsert(Array.from({length:diff},()=>({style:line.style,color,size:line.size,pcs,loc:LOC,wh:W,status:'IN',in_by:by,note:'Photo check fix'})));
+  } else {
+    if(typeof reserveBlock==='function'){ const rb=reserveBlock(line.style,cur.length?cur[0].color:line.color,line.size,W,-diff); if(rb){ alert(rb); throw new Error('reserved — release first'); } }
+    const take=cur.slice(0,-diff);
+    await bxPatch(take.map(b=>b.id),{status:'OUT',out_at:new Date().toISOString(),out_by:by,out_po:'Photo check fix'});
+  }
+  await bxRefetch();
+}
+function pchkConfirmAll(id){ pchkReviewSet(id,'resolved'); }
 function pchkReviewRender(rows){
   const b=document.getElementById('pchkrev-body'); if(!b) return;
   const pend=rows.filter(r=>r.status==='pending'), done=rows.filter(r=>r.status!=='pending');
   const card=r=>{
     const hasAI=Array.isArray(r.detected)&&r.detected.length>0;
     const cmp=pchkCompare(r.bin, r.wh, r.detected||[], r.staff_check||[]);
+    (window._pchkRevRows=window._pchkRevRows||{})[r.id]=cmp.rows;
+    (window._pchkRevMeta=window._pchkRevMeta||{})[r.id]={bin:r.bin,wh:r.wh};
+    const pending=r.status==='pending';
     const when=(r.created_at||'').replace('T',' ').slice(5,16);
     const staffCell=x=>{ if(!x.hasStaff && x.staffMark==null) return '<span style="color:#cbd5e1;">–</span>';
       if(x.staffMark==='ok') return '<span style="color:#16a34a;font-weight:800;">✓</span>'+(x.staffCount!=null?` <span style="color:#64748b;">${x.staffCount}</span>`:'');
       if(x.staffMark==='off') return '<span style="color:#dc2626;font-weight:800;">✗</span>'+(x.staffCount!=null?` <span style="color:#dc2626;">${x.staffCount}</span>`:'');
       return x.staffCount!=null?`<span style="color:#64748b;">${x.staffCount}</span>`:'<span style="color:#cbd5e1;">–</span>'; };
-    const body=cmp.rows.map(x=>{ let st,bg='';
-      if(hasAI){ const df=x.photo-x.sys;
-        if(x.sys===0 && x.photo>0){ st='➕ not in system'; bg='#eff6ff'; }
-        else if(x.photo===0){ st='◻ not visible in photo'; bg=''; }
-        else if(Math.abs(df)<=PCHK_AI_TOL){ st='✅'+(df!==0?' ≈':''); bg='#f0fdf4'; }
-        else { st=`⚠ ${x.sys}→${x.photo}`; bg='#fffbeb'; } }
-      else { if(x.staffMark==='off'){ st='🚩 staff flagged'; bg='#fef2f2'; } else if(x.staffMark==='ok'){ st='✓ staff ok'; bg='#f0fdf4'; } else { st=''; } }
-      return `<tr style="background:${bg};"><td style="padding:4px 7px;font-weight:700;">${esc(x.style)}</td><td style="padding:4px 7px;">${esc(x.color)}</td><td style="padding:4px 7px;text-align:center;">${esc(x.size)}</td><td style="padding:4px 7px;text-align:center;">${x.sys}</td><td style="padding:4px 7px;text-align:center;">${staffCell(x)}</td><td style="padding:4px 7px;text-align:center;font-weight:800;">${hasAI?x.photo:'<span style=\'color:#cbd5e1\'>–</span>'}</td><td style="padding:4px 7px;font-size:11px;font-weight:700;white-space:nowrap;">${st}</td></tr>`; }).join('');
+    const aiCell=x=> hasAI ? (x.photo>0?`<b>${x.photo}</b>`:'<span style="color:#cbd5e1;">0</span>') : '<span style="color:#cbd5e1;">–</span>';
+    const body=cmp.rows.map((x,i)=>{
+      const flagged = x.staffMark==='off' || (x.sys===0 && x.photo>0);
+      return `<tr id="pchkrow-${r.id}-${i}" style="background:${flagged?'#fef2f2':''};">
+        <td style="padding:4px 7px;font-weight:700;">${esc(x.style)}</td>
+        <td style="padding:4px 7px;">${esc(x.color)}</td>
+        <td style="padding:4px 7px;text-align:center;">${esc(x.size)}</td>
+        <td id="pchksys-${r.id}-${i}" style="padding:4px 7px;text-align:center;font-weight:800;">${x.sys}</td>
+        <td style="padding:4px 7px;text-align:center;">${staffCell(x)}</td>
+        <td style="padding:4px 7px;text-align:center;">${aiCell(x)}</td>
+        ${pending?`<td id="pchkact-${r.id}-${i}" style="padding:3px 5px;text-align:center;white-space:nowrap;">${pchkActBtns(r.id,i)}</td>`:''}
+      </tr>`; }).join('');
     const statusChip = r.status==='pending' ? `<span style="background:#fef3c7;color:#92400e;font-size:10px;font-weight:800;padding:2px 8px;border-radius:20px;">PENDING</span>`
       : r.status==='resolved' ? `<span style="background:#dcfce7;color:#166534;font-size:10px;font-weight:800;padding:2px 8px;border-radius:20px;">RESOLVED</span>`
       : `<span style="background:#e2e8f0;color:#475569;font-size:10px;font-weight:800;padding:2px 8px;border-radius:20px;">DISMISSED</span>`;
     const photoBtn=`<button onclick="pchkViewPhotos(${r.id})" style="background:#e0f2fe;color:#075985;border:1px solid #7dd3fc;border-radius:8px;padding:7px 12px;font-size:12px;font-weight:700;">📷 Photos</button>`;
     const aiBtn=`<button onclick="pchkReviewAnalyze(${r.id})" style="background:#7c3aed;color:#fff;border:none;border-radius:8px;padding:7px 12px;font-size:12px;font-weight:700;">🔍 ${hasAI?'Re-analyze':'Analyze photos (AI)'}</button>`;
     const acts = r.status==='pending' ? `
-      <input id="pchk-note-${r.id}" placeholder="What did you fix / find? (kept in the record)" autocomplete="off" style="width:100%;margin-top:8px;font-size:12px;padding:8px 10px;border:1.5px solid #cbd5e1;border-radius:8px;box-sizing:border-box;">
-      <div style="display:flex;gap:6px;margin-top:6px;flex-wrap:wrap;">
+      <div style="display:flex;gap:6px;margin-top:8px;flex-wrap:wrap;">
         ${photoBtn}
         ${aiBtn}
-        <button onclick="pchkReviewJump('${esc(r.bin)}','${esc(r.wh)}')" style="background:#0f2a4a;color:#fff;border:none;border-radius:8px;padding:7px 12px;font-size:12px;font-weight:700;">📍 Open bin to fix</button>
-        <button onclick="pchkReviewSet(${r.id},'resolved')" style="background:#16a34a;color:#fff;border:none;border-radius:8px;padding:7px 12px;font-size:12px;font-weight:700;">✓ Resolve</button>
         <button onclick="pchkReviewSet(${r.id},'dismissed')" style="background:#e2e8f0;color:#334155;border:none;border-radius:8px;padding:7px 12px;font-size:12px;font-weight:700;">Dismiss</button>
-      </div>` : `
+      </div>
+      <input id="pchk-note-${r.id}" placeholder="Note (optional, kept in the record)" autocomplete="off" style="width:100%;margin-top:8px;font-size:12px;padding:8px 10px;border:1.5px solid #cbd5e1;border-radius:8px;box-sizing:border-box;">
+      <button onclick="pchkConfirmAll(${r.id})" style="width:100%;margin-top:8px;background:#16a34a;color:#fff;border:none;border-radius:10px;padding:13px;font-size:14px;font-weight:800;">✓ Confirm all — system qty is correct, clear</button>` : `
       ${r.resolve_note?`<div style="font-size:12px;color:#166534;background:#f0fdf4;border:1px solid #bbf7d0;border-radius:8px;padding:6px 10px;margin-top:6px;">🛠 ${esc(r.resolve_note)}</div>`:''}
       <div style="display:flex;gap:6px;margin-top:6px;flex-wrap:wrap;align-items:center;">
         ${photoBtn}
@@ -7635,10 +7682,10 @@ function pchkReviewRender(rows){
       ${r.note?`<div style="font-size:12px;color:#0891b2;font-weight:700;margin-bottom:8px;">🔎 Staff was checking: ${esc(r.note)}</div>`:''}
       <div style="display:flex;gap:6px;margin-bottom:8px;flex-wrap:wrap;">
         ${cmp.staffOff?`<span style="background:#fef2f2;color:#b91c1c;font-size:11px;font-weight:800;padding:3px 10px;border-radius:8px;">🚩 ${cmp.staffOff} staff-flagged</span>`:`<span style="background:#f0fdf4;color:#15803d;font-size:11px;font-weight:800;padding:3px 10px;border-radius:8px;">✓ staff: no flags</span>`}
-        ${hasAI?`<span style="background:#f0fdf4;color:#15803d;font-size:11px;font-weight:800;padding:3px 10px;border-radius:8px;">AI ≈ ${cmp.okN} ok</span>${cmp.aiFlags?`<span style="background:#fffbeb;color:#b45309;font-size:11px;font-weight:800;padding:3px 10px;border-radius:8px;">AI ⚠ ${cmp.aiFlags} to check</span>`:''}`:`<span style="background:#f5f3ff;color:#6d28d9;font-size:11px;font-weight:800;padding:3px 10px;border-radius:8px;">AI not run — tap Analyze</span>`}
+        ${hasAI?`<span style="background:#f5f3ff;color:#6d28d9;font-size:11px;font-weight:800;padding:3px 10px;border-radius:8px;">🔍 AI read (approx)</span>`:`<span style="background:#f5f3ff;color:#6d28d9;font-size:11px;font-weight:800;padding:3px 10px;border-radius:8px;">AI not run — tap Analyze</span>`}
       </div>
-      <div style="overflow-x:auto;"><table style="width:100%;font-size:11.5px;border-collapse:collapse;"><thead><tr style="background:#0f2a4a;color:#fff;"><th style="padding:4px 7px;text-align:left;">Style</th><th style="padding:4px 7px;text-align:left;">Color</th><th style="padding:4px 7px;">Sz</th><th style="padding:4px 7px;">Sys</th><th style="padding:4px 7px;">Staff</th><th style="padding:4px 7px;">Photo</th><th style="padding:4px 7px;text-align:left;">Status</th></tr></thead><tbody>${body||'<tr><td colspan=7 style="padding:8px;color:#64748b;">no data</td></tr>'}</tbody></table></div>
-      ${hasAI?`<div style="font-size:10.5px;color:#94a3b8;margin-top:6px;line-height:1.4;">≈ AI photo count is <b>approximate</b> — hidden boxes get missed, so ±${PCHK_AI_TOL} counts as OK. "◻ not visible" just means that side wasn't captured. Trust the staff ✓/✗ and the photos; the numbers are a hint.</div>`:''}
+      <div style="overflow-x:auto;"><table style="width:100%;font-size:11.5px;border-collapse:collapse;"><thead><tr style="background:#0f2a4a;color:#fff;"><th style="padding:4px 7px;text-align:left;">Style</th><th style="padding:4px 7px;text-align:left;">Color</th><th style="padding:4px 7px;">Sz</th><th style="padding:4px 7px;">Sys</th><th style="padding:4px 7px;">Staff</th><th style="padding:4px 7px;">AI</th>${pending?'<th style="padding:4px 7px;">Action</th>':''}</tr></thead><tbody>${body||`<tr><td colspan=${pending?7:6} style="padding:8px;color:#64748b;">no data</td></tr>`}</tbody></table></div>
+      ${hasAI?`<div style="font-size:10.5px;color:#94a3b8;margin-top:6px;line-height:1.4;"><b>Sys</b>=시스템 재고 · <b>Staff</b>=직원 눈체크 · <b>AI</b>=사진판독(대략치, 가려진 박스는 놓침). 틀리면 <b>✏ Fix</b>로 실제 수량 입력, 다 맞으면 <b>Confirm all</b>.</div>`:''}
       ${acts}
     </div>`;
   };
