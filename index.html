@@ -154,7 +154,7 @@ main{max-width:1100px;margin:0 auto;padding:16px;}
     <button class="btn btn-sm" onclick="doLogout()" style="padding:2px 8px;font-size:10px;" data-i18n="logout">Log out</button>
   </span>
   <select id="lang-sel" onchange="setLang(this.value)" style="font-size:11px;padding:3px 6px;border-radius:5px;border:none;background:#1d3f66;color:#fff;"><option value="ko">한국어</option><option value="en">English</option><option value="es">Español</option></select>
-  <span style="font-size:10px;color:#9fb8d4;">v575 ↩</span>
+  <span style="font-size:10px;color:#9fb8d4;">v576 ↩</span>
 </div>
 <script type="text/javascript" src="https://js.authorize.net/v1/Accept.js" charset="utf-8"></script>
 <div id="po-viewer" style="display:none;position:fixed;top:0;right:0;width:44%;height:100vh;background:#fff;border-left:2px solid var(--border);z-index:60;box-shadow:-6px 0 20px rgba(0,0,0,.15);">
@@ -7628,6 +7628,49 @@ async function pchkApplyFix(line, wh, bin, target){
   await bxRefetch();
 }
 function pchkConfirmAll(id){ pchkReviewSet(id,'resolved'); }
+// ➕ 시스템에 없는 품목을 이 팔렛에 추가 (실제 재고 add)
+function pchkAddBtns(id,rid){ return `<button onclick="pchkAddSave(${id},'${rid}')" style="background:#16a34a;color:#fff;border:none;border-radius:6px;padding:5px 9px;font-size:12px;font-weight:800;">Add</button> <button onclick="(function(){var e=document.getElementById('pchkrow-${id}-${rid}');if(e)e.remove();})()" style="background:#e2e8f0;color:#334155;border:none;border-radius:6px;padding:5px 7px;font-size:12px;">✕</button>`; }
+function pchkAddRow(id){
+  const tb=document.getElementById('pchktbody-'+id); if(!tb) return;
+  const rid='new'+(window._pchkNewCnt=(window._pchkNewCnt||0)+1);
+  const tr=document.createElement('tr'); tr.id='pchkrow-'+id+'-'+rid; tr.style.background='#eff6ff';
+  tr.innerHTML=`<td style="padding:3px 4px;"><input id="pchkadd-st-${id}-${rid}" placeholder="Style" style="width:62px;font-size:12px;padding:4px;border:1px solid #93c5fd;border-radius:5px;box-sizing:border-box;"></td>`
+    +`<td style="padding:3px 4px;"><input id="pchkadd-co-${id}-${rid}" placeholder="Color" style="width:104px;font-size:12px;padding:4px;border:1px solid #93c5fd;border-radius:5px;text-transform:uppercase;box-sizing:border-box;"></td>`
+    +`<td style="padding:3px 4px;"><input id="pchkadd-sz-${id}-${rid}" placeholder="Sz" style="width:44px;font-size:12px;padding:4px;border:1px solid #93c5fd;border-radius:5px;text-transform:uppercase;box-sizing:border-box;"></td>`
+    +`<td style="padding:3px 4px;text-align:center;"><input id="pchkadd-qty-${id}-${rid}" type="number" inputmode="numeric" placeholder="Qty" style="width:50px;font-size:12px;padding:4px;text-align:center;border:1px solid #93c5fd;border-radius:5px;box-sizing:border-box;"></td>`
+    +`<td style="text-align:center;color:#cbd5e1;">–</td><td style="text-align:center;color:#cbd5e1;">–</td>`
+    +`<td id="pchkact-${id}-${rid}" style="padding:3px 5px;text-align:center;white-space:nowrap;">${pchkAddBtns(id,rid)}</td>`;
+  tb.appendChild(tr);
+  const f=document.getElementById('pchkadd-st-'+id+'-'+rid); if(f) f.focus();
+}
+async function pchkAddSave(id,rid){
+  const g=k=>document.getElementById('pchkadd-'+k+'-'+id+'-'+rid);
+  const st=String((g('st')||{}).value||'').trim();
+  const co=String((g('co')||{}).value||'').trim().toUpperCase();
+  const sz=String((g('sz')||{}).value||'').trim().toUpperCase();
+  const qty=Math.max(0, parseInt((g('qty')||{}).value,10)||0);
+  if(!st||!sz||!qty){ showToast('⚠ Enter Style, Size and Qty'); return; }
+  const meta=(window._pchkRevMeta||{})[id]; if(!meta) return;
+  const act=document.getElementById('pchkact-'+id+'-'+rid); if(act) act.innerHTML='<span style="color:#64748b;font-size:12px;">adding…</span>';
+  try{
+    if(typeof skuLoaded!=='undefined' && !skuLoaded && typeof skuFetch==='function') await skuFetch();
+    if(typeof skuConfirmRegister==='function' && typeof skuGateRows==='function'){ if(!(await skuConfirmRegister(skuGateRows([{style:st,color:co,size:sz}])))){ if(act) act.innerHTML=pchkAddBtns(id,rid); return; } }
+    const pcs=(typeof autoPpb==='function')?autoPpb({style:st,size:sz}):72;
+    const by=(SESS&&SESS.email)||'';
+    await bxInsert(Array.from({length:qty},()=>({style:st,color:co,size:sz,pcs,loc:String(meta.bin).toUpperCase(),wh:(String(meta.wh).toUpperCase()==='CA')?'CA':'SC',status:'IN',in_by:by,note:'Photo check add'})));
+    await bxRefetch();
+  }catch(e){ showToast('⚠ Add failed: '+(e.message||e)); if(act) act.innerHTML=pchkAddBtns(id,rid); return; }
+  showToast('✅ Added '+qty+' × '+st+(co?' '+co:'')+' '+sz+' @'+meta.bin);
+  const tr=document.getElementById('pchkrow-'+id+'-'+rid);
+  if(tr){ tr.style.background='#f0fdf4'; tr.innerHTML=`<td style="padding:4px 7px;font-weight:700;">${esc(st)}</td><td style="padding:4px 7px;">${esc(co)}</td><td style="padding:4px 7px;text-align:center;">${esc(sz)}</td><td style="padding:4px 7px;text-align:center;font-weight:800;">${qty}</td><td style="text-align:center;color:#cbd5e1;">–</td><td style="text-align:center;color:#cbd5e1;">–</td><td style="padding:3px 5px;text-align:center;"><span style="color:#16a34a;font-weight:800;font-size:12px;">✓ added</span></td>`; }
+}
+// 🗑 검토 기록 삭제 (테스트/처리완료 정리용)
+async function pchkReviewDelete(id){
+  if(!confirm('Delete this check record permanently?')) return;
+  try{ const r=await sbFetch('/rest/v1/pr_physcheck?id=eq.'+id,{method:'DELETE',headers:{Prefer:'return=minimal'}}); if(!r.ok) throw new Error('HTTP '+r.status); }
+  catch(e){ showToast('⚠ Delete failed: '+(e.message||e)); return; }
+  showToast('🗑 Deleted'); pchkReviewBadge(); pchkReviewOpen(window._pchkRevFilter||'');
+}
 function pchkReviewRender(rows){
   const b=document.getElementById('pchkrev-body'); if(!b) return;
   const pend=rows.filter(r=>r.status==='pending'), done=rows.filter(r=>r.status!=='pending');
@@ -7660,6 +7703,7 @@ function pchkReviewRender(rows){
     const photoBtn=`<button onclick="pchkViewPhotos(${r.id})" style="background:#e0f2fe;color:#075985;border:1px solid #7dd3fc;border-radius:8px;padding:7px 12px;font-size:12px;font-weight:700;">📷 Photos</button>`;
     const aiBtn=`<button onclick="pchkReviewAnalyze(${r.id})" style="background:#7c3aed;color:#fff;border:none;border-radius:8px;padding:7px 12px;font-size:12px;font-weight:700;">🔍 ${hasAI?'Re-analyze':'Analyze photos (AI)'}</button>`;
     const acts = r.status==='pending' ? `
+      <button onclick="pchkAddRow(${r.id})" style="margin-top:8px;background:#eff6ff;color:#1d4ed8;border:1px dashed #93c5fd;border-radius:8px;padding:8px 12px;font-size:12px;font-weight:800;cursor:pointer;">➕ Add item (in pallet, not in system)</button>
       <div style="display:flex;gap:6px;margin-top:8px;flex-wrap:wrap;">
         ${photoBtn}
         ${aiBtn}
@@ -7672,6 +7716,7 @@ function pchkReviewRender(rows){
         ${photoBtn}
         <span style="font-size:11px;color:#94a3b8;">${r.reviewed_by?('by '+esc(r.reviewed_by)+' · '):''}${(r.reviewed_at||'').replace('T',' ').slice(5,16)}</span>
         <button onclick="pchkReviewSet(${r.id},'pending')" style="background:#fff;color:#64748b;border:1px solid #cbd5e1;border-radius:8px;padding:5px 10px;font-size:11px;font-weight:700;margin-left:auto;">↺ Reopen</button>
+        <button onclick="pchkReviewDelete(${r.id})" title="Delete this record permanently" style="background:#fff;color:#dc2626;border:1px solid #fecaca;border-radius:8px;padding:5px 10px;font-size:11px;font-weight:700;">🗑 Delete</button>
       </div>`;
     return `<div style="background:#fff;border-radius:12px;padding:14px;margin-bottom:12px;${r.status==='pending'&&(cmp.staffOff||(hasAI&&cmp.diffN))?'border:1.5px solid #fcd34d;':'border:1px solid #e2e8f0;'}">
       <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-bottom:8px;">
@@ -7684,7 +7729,7 @@ function pchkReviewRender(rows){
         ${cmp.staffOff?`<span style="background:#fef2f2;color:#b91c1c;font-size:11px;font-weight:800;padding:3px 10px;border-radius:8px;">🚩 ${cmp.staffOff} staff-flagged</span>`:`<span style="background:#f0fdf4;color:#15803d;font-size:11px;font-weight:800;padding:3px 10px;border-radius:8px;">✓ staff: no flags</span>`}
         ${hasAI?`<span style="background:#f5f3ff;color:#6d28d9;font-size:11px;font-weight:800;padding:3px 10px;border-radius:8px;">🔍 AI read (approx)</span>`:`<span style="background:#f5f3ff;color:#6d28d9;font-size:11px;font-weight:800;padding:3px 10px;border-radius:8px;">AI not run — tap Analyze</span>`}
       </div>
-      <div style="overflow-x:auto;"><table style="width:100%;font-size:11.5px;border-collapse:collapse;"><thead><tr style="background:#0f2a4a;color:#fff;"><th style="padding:4px 7px;text-align:left;">Style</th><th style="padding:4px 7px;text-align:left;">Color</th><th style="padding:4px 7px;">Sz</th><th style="padding:4px 7px;">Sys</th><th style="padding:4px 7px;">Staff</th><th style="padding:4px 7px;">AI</th>${pending?'<th style="padding:4px 7px;">Action</th>':''}</tr></thead><tbody>${body||`<tr><td colspan=${pending?7:6} style="padding:8px;color:#64748b;">no data</td></tr>`}</tbody></table></div>
+      <div style="overflow-x:auto;"><table style="width:100%;font-size:11.5px;border-collapse:collapse;"><thead><tr style="background:#0f2a4a;color:#fff;"><th style="padding:4px 7px;text-align:left;">Style</th><th style="padding:4px 7px;text-align:left;">Color</th><th style="padding:4px 7px;">Sz</th><th style="padding:4px 7px;">Sys</th><th style="padding:4px 7px;">Staff</th><th style="padding:4px 7px;">AI</th>${pending?'<th style="padding:4px 7px;">Action</th>':''}</tr></thead><tbody id="pchktbody-${r.id}">${body||`<tr><td colspan=${pending?7:6} style="padding:8px;color:#64748b;">no data</td></tr>`}</tbody></table></div>
       ${hasAI?`<div style="font-size:10.5px;color:#94a3b8;margin-top:6px;line-height:1.4;"><b>Sys</b>=시스템 재고 · <b>Staff</b>=직원 눈체크 · <b>AI</b>=사진판독(대략치, 가려진 박스는 놓침). 틀리면 <b>✏ Fix</b>로 실제 수량 입력, 다 맞으면 <b>Confirm all</b>.</div>`:''}
       ${acts}
     </div>`;
