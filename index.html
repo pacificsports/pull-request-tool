@@ -154,7 +154,7 @@ main{max-width:1100px;margin:0 auto;padding:16px;}
     <button class="btn btn-sm" onclick="doLogout()" style="padding:2px 8px;font-size:10px;" data-i18n="logout">Log out</button>
   </span>
   <select id="lang-sel" onchange="setLang(this.value)" style="font-size:11px;padding:3px 6px;border-radius:5px;border:none;background:#1d3f66;color:#fff;"><option value="ko">한국어</option><option value="en">English</option><option value="es">Español</option></select>
-  <span style="font-size:10px;color:#9fb8d4;">v606 ↩</span>
+  <span style="font-size:10px;color:#9fb8d4;">v607 ↩</span>
 </div>
 <script type="text/javascript" src="https://js.authorize.net/v1/Accept.js" charset="utf-8"></script>
 <div id="po-viewer" style="display:none;position:fixed;top:0;right:0;width:44%;height:100vh;background:#fff;border-left:2px solid var(--border);z-index:60;box-shadow:-6px 0 20px rgba(0,0,0,.15);">
@@ -420,6 +420,7 @@ main{max-width:1100px;margin:0 auto;padding:16px;}
       <button class="btn btn-sm" onclick="skuManager()" style="background:#7c3aed;color:#fff;border-color:#7c3aed;" title="SKU master — add/rename/merge">🎨 SKU</button>
       <button class="btn btn-sm btn-primary" onclick="bxAddBoxes({wh:'SC'})" title="Receive boxes into the SC warehouse">＋ SC Boxes</button>
       <button class="btn btn-sm" style="background:#c2410c;color:#fff;border-color:#c2410c;" onclick="bxAddBoxes({wh:'CA'})" title="Receive boxes into the CA warehouse">＋ CA Boxes</button>
+      <button class="btn btn-sm" style="background:#b45309;color:#fff;border-color:#b45309;" onclick="bxAddBoxes({wh:'CA',loc:'TEMPORARY'})" title="Truck arrived but bins not decided yet? Receive into the TEMPORARY staging bin now (counts as in stock), then assign real locations later — a reminder stays until you do">⏳ Temp Receive (CA)</button>
       <button class="btn btn-sm" onclick="document.getElementById('bx-import-file').click()" style="background:#166534;color:#fff;border-color:#166534;">📥 Import</button>
       <button class="btn btn-sm" onclick="bxTemplate()" title="Download Excel import template">📄 Template</button>
       <button class="btn btn-sm" onclick="bxExport()">⬇ Excel</button>
@@ -439,6 +440,7 @@ main{max-width:1100px;margin:0 auto;padding:16px;}
     <div id="bx-hibar"></div>
     <div id="bx-sobar"></div>
     <div id="bx-trbar"></div>
+    <div id="bx-tmpbar"></div>
     <div id="bx-body"><div class="muted">Loading...</div></div>
   </div>
 </div>
@@ -9254,6 +9256,28 @@ function bxColorFor(L){
   return c;
 }
 function bxWh(b){ const w = String(b.wh||'').trim().toUpperCase(); return w || 'SC'; }
+// ═══ ⏳ TEMPORARY staging bin — 트럭 도착했는데 자리 미정일 때 여기로 입고, 나중에 진짜 위치로 재배정 (v607) ═══
+const TMP_LOC = 'TEMPORARY';
+function bxIsTmpLoc(loc){ return String(loc||'').trim().toUpperCase().replace(/[\s-]/g,'')==='TEMPORARY'; }
+function bxTmpCounts(){ let sc=0, ca=0; (typeof bxStore!=='undefined'?bxStore:[]).forEach(b=>{ if(bxIsTmpLoc(b.loc)){ if(bxWh(b)==='CA') ca++; else if(bxWh(b)==='SC') sc++; } }); return {sc, ca, total:sc+ca}; }
+// ⏳ TEMPORARY 재고를 진짜 위치로 재배정 — By Location 뷰를 TEMPORARY 로 검색해서 열기
+function bxTmpAssign(wh){
+  const s=$('bx-search'); if(s) s.value=TMP_LOC;
+  if(typeof bxOpenLoc==='function') bxOpenLoc(wh||( bxTmpCounts().ca>=bxTmpCounts().sc ? 'CA':'SC'), 'all');
+  else renderBoxRoom();
+}
+// ⏳ Box Room 상단 리마인더 배너 — TEMPORARY 에 대기 중인 박스가 있으면 표시
+function bxTmpBar(){
+  const bar=$('bx-tmpbar'); if(!bar) return;
+  const c=bxTmpCounts();
+  if(!c.total){ bar.innerHTML=''; return; }
+  const parts=[]; if(c.ca) parts.push('CA '+c.ca); if(c.sc) parts.push('SC '+c.sc);
+  bar.innerHTML=`<div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;background:#fffbeb;border:1.5px solid #fbbf24;border-radius:10px;padding:9px 14px;margin-bottom:8px;">
+    <span style="font-size:18px;">⏳</span>
+    <span style="font-size:12.5px;font-weight:800;color:#b45309;">${c.total} box(es) waiting in TEMPORARY <span style="font-weight:600;">(${parts.join(' · ')})</span> — still need a real location.</span>
+    <button class="btn btn-sm" style="margin-left:auto;background:#b45309;color:#fff;border-color:#b45309;font-weight:800;white-space:nowrap;" onclick="bxTmpAssign('${c.ca>=c.sc?'CA':'SC'}')" title="Open the TEMPORARY bin and move each item to its real location">📍 Assign locations</button>
+  </div>`;
+}
 // ═══ 🎨 SKU Master (pr_skus) — style+color 마스터. 미등록 조합은 DB 트리거가 입고 거부 ═══
 let skuStore = []; let skuLoaded = false;
 async function skuFetch(){
@@ -10112,10 +10136,11 @@ async function bxInsert(rows){
   }
 }
 function bxAddBoxes(pre){
+  window._bxAddLoc = (pre&&pre.loc) ? String(pre.loc) : '';   // ⏳ sticky location for new rows (e.g. TEMPORARY)
   const ex = document.getElementById('modal-bxadd'); if(ex) ex.remove();
   const dlStyle = skuLoaded ? skuStyles() : [...new Set(bxStore.map(b=>String(b.style)))].sort();
   const dlColor = skuLoaded ? [...new Set(skuStore.map(k=>String(k.color).toUpperCase()))].sort() : [...new Set(bxStore.map(b=>String(b.color).toUpperCase()))].sort();
-  const dlLoc = [...new Set(bxStore.map(b=>String(b.loc||'').toUpperCase()).filter(Boolean))].sort();
+  const dlLoc = [...new Set([TMP_LOC, ...bxStore.map(b=>String(b.loc||'').toUpperCase()).filter(Boolean)])].sort();
   const div = document.createElement('div');
   div.id = 'modal-bxadd';
   div.style.cssText = 'position:fixed;inset:0;background:rgba(15,23,42,.55);z-index:99;display:flex;align-items:center;justify-content:center;padding:20px;';
@@ -10182,7 +10207,7 @@ function bxAddRow(pre){
     <td><input class="fi ba-style" list="bx-dl-style" style="width:72px;" value="${pre?esc(String(pre.style||'')):''}" oninput="bxRowStyleChanged(this)"></td>
     <td><input class="fi ba-color" list="bx-dl-color" style="width:150px;text-transform:uppercase;" value="${pre?esc(String(pre.color||'')):''}" oninput="bxRowColorCheck(this)"></td>
     <td><input class="fi ba-size" list="bx-dl-size" style="width:58px;text-transform:uppercase;" value="${pre?esc(String(pre.size||'')):''}"></td>
-    <td><input class="fi ba-loc" list="bx-dl-loc" style="width:92px;text-transform:uppercase;"></td>
+    <td><input class="fi ba-loc" list="bx-dl-loc" style="width:92px;text-transform:uppercase;" value="${esc(String((pre&&pre.loc) ? pre.loc : (window._bxAddLoc||'')))}"></td>
     <td><input class="fi ba-n" type="number" min="1" value="1" style="width:56px;" oninput="bxAddSum()"></td>
     <td><input class="fi ba-pcs" type="number" min="1" placeholder="auto" style="width:62px;"></td>
     <td><input class="fi ba-note" placeholder="optional" style="width:120px;font-size:11px;" value="${pre&&pre.note?esc(String(pre.note)):esc(String((document.getElementById('bxadd-allnote')||{}).value||'').trim())}"></td>
@@ -12732,6 +12757,7 @@ function renderBoxRoom(){
   const el = $('bx-body'); if(!el) return;
   if(el.offsetParent === null){ window._bxDirty = true; return; }   // 숨겨진 탭 — 돌아올 때 그림
   window._bxDirty = false;
+  if(typeof bxTmpBar==='function') bxTmpBar();   // ⏳ TEMPORARY 대기 재고 리마인더
   const q = (($('bx-search')||{}).value||'').trim().toLowerCase();
   if(window._bxLocMode){ const _sy = window.scrollY; bxRenderByLoc(el, q); window.scrollTo(0, _sy); return; }
   const gridMode = window._bxView !== 'detail';
