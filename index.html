@@ -156,7 +156,7 @@ main{max-width:1100px;margin:0 auto;padding:16px;}
     <button class="btn btn-sm" onclick="doLogout()" style="padding:2px 8px;font-size:10px;" data-i18n="logout">Log out</button>
   </span>
   <select id="lang-sel" onchange="setLang(this.value)" style="font-size:11px;padding:3px 6px;border-radius:5px;border:none;background:#1d3f66;color:#fff;"><option value="ko">한국어</option><option value="en">English</option><option value="es">Español</option></select>
-  <span style="font-size:10px;color:#9fb8d4;">v616 ↩</span>
+  <span style="font-size:10px;color:#9fb8d4;">v617 ↩</span>
 </div>
 <script type="text/javascript" src="https://js.authorize.net/v1/Accept.js" charset="utf-8"></script>
 <div id="po-viewer" style="display:none;position:fixed;top:0;right:0;width:44%;height:100vh;background:#fff;border-left:2px solid var(--border);z-index:60;box-shadow:-6px 0 20px rgba(0,0,0,.15);">
@@ -7282,8 +7282,125 @@ function pchkEmpMenu(){
     <div style="max-width:460px;margin:16px auto;display:flex;flex-direction:column;gap:16px;">
       <button onclick="pchkReqOpen()" style="background:#0f2a4a;color:#fff;border:none;border-radius:16px;padding:28px 22px;font-size:21px;font-weight:800;box-shadow:0 3px 10px rgba(0,0,0,.15);text-align:left;">📦 Request a Box<div style="font-size:12.5px;font-weight:500;opacity:.85;margin-top:6px;">Ask a manager to move a box to the PC room</div></button>
       <button onclick="pchkEmpCapture()" style="background:#0891b2;color:#fff;border:none;border-radius:16px;padding:28px 22px;font-size:21px;font-weight:800;box-shadow:0 3px 10px rgba(0,0,0,.15);text-align:left;">📸 Check Physical Inventory<div style="font-size:12.5px;font-weight:500;opacity:.85;margin-top:6px;">Count a pallet with photos</div></button>
+      <button onclick="pchkPackOpen()" style="background:#b45309;color:#fff;border:none;border-radius:16px;padding:28px 22px;font-size:21px;font-weight:800;box-shadow:0 3px 10px rgba(0,0,0,.15);text-align:left;">📦 Pending Orders — Pack Boxes<div style="font-size:12.5px;font-weight:500;opacity:.85;margin-top:6px;">Pick a PO, add each box's size &amp; weight for the UPS label</div></button>
     </div>
   </div>`;
+}
+// ═══════════ 📦 Pending Orders — 직원 packing 입력 (박스 치수/무게 → PO packing list, UPS 라벨용) (v617) ═══════════
+const BOX_PRESETS=[
+  {n:'BOX #5',l:18,w:15,h:11},{n:'BOX #1',l:20,w:15,h:13},{n:'BOX #4',l:24,w:17,h:13},
+  {n:'BOX #3 & 3-1',l:22,w:16,h:12},{n:'BOX #2',l:22,w:17,h:14},{n:'BOX #2-1',l:22,w:17,h:15},
+  {n:'ULINE BOX',l:22,w:15,h:13},{n:'SMALL SAMPLE BOX',l:19,w:12,h:4}
+];
+let _packBase='', _packCust='', _packPo='', _packBoxes=[], _packTotal='';
+function pchkPackOpen(){
+  pchkWhoLoad();
+  const ov=pchkEmpEl();
+  ov.innerHTML = `<div style="background:#b45309;color:#fff;padding:14px 16px;display:flex;align-items:center;gap:10px;position:sticky;top:0;z-index:5;"><button onclick="pchkEmpMenu()" style="background:rgba(255,255,255,.2);color:#fff;border:none;border-radius:8px;padding:6px 11px;font-size:13px;font-weight:700;">← Menu</button><span style="font-size:17px;font-weight:800;">📦 Pending Orders</span></div>
+  <div style="flex:1;background:#f1f5f9;padding:16px 14px;">
+    <div style="max-width:520px;margin:0 auto;">
+      <input id="pack-q" placeholder="🔍 Search customer / PO #" autocomplete="off" oninput="pchkPackListDeb()" onkeydown="if(event.key==='Enter'){event.preventDefault();pchkPackList();}" style="width:100%;font-size:16px;padding:12px;border:2px solid #cbd5e1;border-radius:10px;box-sizing:border-box;margin-bottom:12px;">
+      <div id="pack-list"><div style="color:#94a3b8;font-size:12px;padding:6px;">Loading…</div></div>
+    </div>
+  </div>`;
+  pchkPackList();
+}
+let _packListT;
+function pchkPackListDeb(){ clearTimeout(_packListT); _packListT=setTimeout(pchkPackList, 300); }
+async function pchkPackList(){
+  const el=document.getElementById('pack-list'); if(!el) return;
+  const q=String((document.getElementById('pack-q')||{}).value||'').trim();
+  let rows=[];
+  try{ const r=await fetch(SB_URL+'/rest/v1/rpc/pack_orders',{method:'POST',headers:{apikey:SB_KEY,Authorization:'Bearer '+SB_KEY,'Content-Type':'application/json'},body:JSON.stringify({q})}); rows=await r.json(); }
+  catch(e){ el.innerHTML='<div style="color:#b91c1c;font-size:12px;">Could not load orders.</div>'; return; }
+  if(!Array.isArray(rows)||!rows.length){ el.innerHTML='<div style="color:#94a3b8;font-size:12px;padding:6px;">No orders'+(q?' for "'+esc(q)+'"':'')+'.</div>'; return; }
+  el.innerHTML=rows.map(r=>`<button onclick="pchkPackEdit('${esc(r.base)}','${esc(String(r.cust||'').replace(/'/g,''))}','${esc(String(r.po||'').replace(/'/g,''))}')" style="display:flex;width:100%;align-items:center;gap:9px;text-align:left;background:#fff;border:1px solid #e5e7eb;border-radius:11px;padding:12px 14px;margin-bottom:8px;cursor:pointer;">
+    <div style="flex:1;min-width:0;"><div style="font-size:15px;font-weight:800;color:#0f2a4a;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">${esc(String(r.cust||'—'))}</div><div style="font-size:12px;color:#64748b;">PO ${esc(String(r.po||'—'))} · ${esc(String(r.dt||''))}</div></div>
+    ${r.packed?'<span style="font-size:11px;font-weight:800;color:#16a34a;background:#dcfce7;border-radius:20px;padding:3px 10px;white-space:nowrap;">📦 packed</span>':'<span style="font-size:11px;color:#b45309;font-weight:700;white-space:nowrap;">add boxes ▸</span>'}
+  </button>`).join('');
+}
+async function pchkPackEdit(base, cust, po){
+  _packBase=base; _packCust=cust; _packPo=po; _packBoxes=[]; _packTotal='';
+  // 기존 저장분 로드
+  try{ const r=await fetch(SB_URL+'/rest/v1/pr_pack?base=eq.'+encodeURIComponent(base)+'&select=total_boxes,boxes', {headers:{apikey:SB_KEY,Authorization:'Bearer '+SB_KEY}}); const j=await r.json(); if(Array.isArray(j)&&j[0]){ _packBoxes=Array.isArray(j[0].boxes)?j[0].boxes:[]; _packTotal=(j[0].total_boxes!=null?String(j[0].total_boxes):''); } }catch(e){}
+  pchkPackRender();
+}
+function pchkPackRender(){
+  const ov=pchkEmpEl();
+  ov.innerHTML=`<div style="background:#b45309;color:#fff;padding:14px 16px;display:flex;align-items:center;gap:10px;position:sticky;top:0;z-index:5;"><button onclick="pchkPackOpen()" style="background:rgba(255,255,255,.2);color:#fff;border:none;border-radius:8px;padding:6px 11px;font-size:13px;font-weight:700;">← Orders</button><span style="font-size:16px;font-weight:800;">📦 Pack — ${esc(_packCust||'')}</span></div>
+  <div style="flex:1;background:#f1f5f9;padding:16px 14px;">
+    <div style="max-width:520px;margin:0 auto;">
+      <div style="background:#fff;border-radius:12px;padding:14px 16px;margin-bottom:12px;">
+        <div style="font-size:12px;color:#64748b;">PO <b style="color:#0f2a4a;">${esc(_packPo||'—')}</b> · ${esc(_packBase)}</div>
+        <label style="display:flex;align-items:center;gap:10px;margin-top:10px;font-size:13px;font-weight:800;color:#0f2a4a;">Number of boxes for order
+          <input id="pack-total" type="number" inputmode="numeric" value="${esc(String(_packTotal))}" onchange="_packTotal=this.value" style="width:80px;font-size:17px;padding:8px;border:2px solid #cbd5e1;border-radius:9px;text-align:center;"></label>
+        <div style="font-size:11px;color:#94a3b8;margin-top:4px;">Total box count for the whole order (you'll add each box's size &amp; weight below).</div>
+      </div>
+      <div id="pack-boxes"></div>
+      <button onclick="pchkPackAddBox()" style="width:100%;background:#0f2a4a;color:#fff;border:none;border-radius:11px;padding:14px;font-size:16px;font-weight:800;margin-top:4px;">+ Add box</button>
+      <div style="margin-top:8px;">${pchkNamePicker()}</div>
+      <button onclick="pchkPackSave()" id="pack-save" style="width:100%;background:#16a34a;color:#fff;border:none;border-radius:12px;padding:16px;font-size:17px;font-weight:800;margin-top:12px;">💾 Save packing</button>
+      <div id="pack-msg" style="font-size:12.5px;font-weight:700;height:16px;text-align:center;margin-top:6px;"></div>
+    </div>
+  </div>`;
+  pchkPackBoxesRender();
+}
+function pchkPackBoxesRender(){
+  const el=document.getElementById('pack-boxes'); if(!el) return;
+  if(!_packBoxes.length){ el.innerHTML='<div style="color:#94a3b8;font-size:12px;padding:8px 2px 12px;">No boxes yet — tap "+ Add box".</div>'; return; }
+  el.innerHTML=_packBoxes.map((b,i)=>`<div style="background:#fff;border:1px solid #e5e7eb;border-radius:10px;padding:10px 13px;margin-bottom:8px;display:flex;align-items:center;gap:10px;">
+    <span style="font-size:13px;font-weight:800;color:#b45309;">#${i+1}</span>
+    <div style="flex:1;font-size:13px;color:#0f2a4a;">${b.name?`<b>${esc(b.name)}</b> · `:''}${b.l}×${b.w}×${b.h} in · <b>${b.wt} lb</b></div>
+    <button onclick="pchkPackDelBox(${i})" style="background:#fee2e2;color:#b91c1c;border:none;border-radius:7px;padding:5px 9px;font-size:12px;font-weight:800;">✕</button>
+  </div>`).join('');
+}
+function pchkPackDelBox(i){ _packBoxes.splice(i,1); pchkPackBoxesRender(); }
+function pchkPackAddBox(){
+  const ex=document.getElementById('modal-packbox'); if(ex) ex.remove();
+  const div=document.createElement('div'); div.id='modal-packbox';
+  div.style.cssText='position:fixed;inset:0;background:rgba(15,23,42,.6);z-index:320;display:flex;align-items:flex-end;justify-content:center;';
+  div.onclick=e=>{ if(e.target===div) div.remove(); };
+  div.innerHTML=`<div style="background:#fff;border-radius:16px 16px 0 0;width:100%;max-width:520px;padding:18px 16px 22px;box-shadow:0 -6px 24px rgba(0,0,0,.2);">
+    <div style="font-size:15px;font-weight:800;color:#0f2a4a;margin-bottom:12px;">Add a box</div>
+    <div style="font-size:12px;font-weight:800;color:#0f2a4a;margin-bottom:6px;">Box type (auto-fills size — or enter your own)</div>
+    <select id="pb-preset" onchange="pchkPackPreset(this.value)" style="width:100%;font-size:16px;padding:11px;border:2px solid #cbd5e1;border-radius:10px;box-sizing:border-box;margin-bottom:12px;">
+      <option value="">— Custom —</option>
+      ${BOX_PRESETS.map((p,i)=>`<option value="${i}">${esc(p.n)} (${p.l}×${p.w}×${p.h})</option>`).join('')}
+    </select>
+    <div style="display:flex;gap:8px;">
+      ${['l','w','h'].map(f=>`<label style="flex:1;font-size:11px;font-weight:800;color:#0f2a4a;text-transform:uppercase;">${f}<input id="pb-${f}" type="number" inputmode="decimal" step="0.1" style="width:100%;font-size:17px;padding:10px;border:2px solid #cbd5e1;border-radius:10px;box-sizing:border-box;text-align:center;"></label>`).join('')}
+      <label style="flex:1.1;font-size:11px;font-weight:800;color:#b45309;text-transform:uppercase;">Weight lb<input id="pb-wt" type="number" inputmode="decimal" step="0.1" style="width:100%;font-size:17px;padding:10px;border:2px solid #fdba74;border-radius:10px;box-sizing:border-box;text-align:center;"></label>
+    </div>
+    <div style="display:flex;gap:8px;margin-top:14px;">
+      <button onclick="document.getElementById('modal-packbox').remove()" style="flex:1;background:#e2e8f0;color:#334155;border:none;border-radius:10px;padding:13px;font-size:15px;font-weight:800;">Cancel</button>
+      <button onclick="pchkPackConfirmBox()" style="flex:2;background:#16a34a;color:#fff;border:none;border-radius:10px;padding:13px;font-size:15px;font-weight:800;">Confirm box</button>
+    </div>
+  </div>`;
+  document.body.appendChild(div);
+}
+function pchkPackPreset(v){ const p=BOX_PRESETS[parseInt(v,10)]; if(!p) return; const g=id=>document.getElementById(id); if(g('pb-l'))g('pb-l').value=p.l; if(g('pb-w'))g('pb-w').value=p.w; if(g('pb-h'))g('pb-h').value=p.h; window._pbName=p.n; }
+function pchkPackConfirmBox(){
+  const g=id=>String((document.getElementById(id)||{}).value||'').trim();
+  const l=parseFloat(g('pb-l')), w=parseFloat(g('pb-w')), h=parseFloat(g('pb-h')), wt=parseFloat(g('pb-wt'));
+  const pv=g('pb-preset'); const name=pv!==''?(BOX_PRESETS[parseInt(pv,10)]||{}).n||'':'';
+  if(!(l>0&&w>0&&h>0)){ alert('Enter L, W, H'); return; }
+  if(!(wt>0)){ alert('Enter weight (lb)'); return; }
+  _packBoxes.push({name, l, w, h, wt});
+  const m=document.getElementById('modal-packbox'); if(m) m.remove();
+  pchkPackBoxesRender();
+}
+async function pchkPackSave(){
+  const msg=document.getElementById('pack-msg');
+  const btn=document.getElementById('pack-save'); if(btn){btn.disabled=true;btn.textContent='Saving…';}
+  const total=(_packTotal!==''&&_packTotal!=null)?parseInt(_packTotal,10):(_packBoxes.length||null);
+  const row={ base:_packBase, cust:_packCust||null, po:_packPo||null, total_boxes: total, boxes:_packBoxes, updated_by:_pchkWho||null, updated_at:new Date().toISOString() };
+  try{
+    const r=await fetch(SB_URL+'/rest/v1/pr_pack?on_conflict=base',{method:'POST',headers:{apikey:SB_KEY,Authorization:'Bearer '+SB_KEY,'Content-Type':'application/json',Prefer:'resolution=merge-duplicates,return=minimal'},body:JSON.stringify([row])});
+    if(!r.ok){ const t=await r.text(); throw new Error('HTTP '+r.status+' '+t.slice(0,120)); }
+    if(msg){msg.style.color='#16a34a';msg.textContent='✅ Saved — manager can print the UPS label.';}
+    if(btn){btn.disabled=false;btn.textContent='💾 Save packing';}
+    setTimeout(pchkPackOpen, 900);
+  }catch(e){ if(msg){msg.style.color='#dc2626';msg.textContent='Could not save: '+(e.message||e);} if(btn){btn.disabled=false;btn.textContent='💾 Save packing';} }
 }
 // ═══════════ 📦 Request a Box — pr_boxreq(anon) 저장, 매니저 처리 (v605) ═══════════
 const BOXREQ_URL = SB_URL + '/rest/v1/pr_boxreq';
