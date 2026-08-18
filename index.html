@@ -132,6 +132,8 @@ main{max-width:1100px;margin:0 auto;padding:16px;}
 .date-hdr::after{content:'';flex:1;height:1px;background:var(--border);}
 .rushblink{animation:rushblink 1s steps(1) infinite;}
 @keyframes rushblink{0%,100%{background:#dc2626;color:#fff;}50%{background:#fff;color:#dc2626;box-shadow:inset 0 0 0 1.5px #dc2626;}}
+.breq-blink{animation:breqBlink 1s ease-in-out infinite;}
+@keyframes breqBlink{0%,100%{box-shadow:0 0 0 0 rgba(220,38,38,.55);border-color:#dc2626;}50%{box-shadow:0 0 0 5px rgba(220,38,38,0);border-color:#f59e0b;}}
 .ccspin{display:inline-block;width:11px;height:11px;border:2.5px solid #92400e;border-top-color:transparent;border-radius:50%;animation:ccspin .7s linear infinite;vertical-align:-1.5px;margin-right:4px;}
 @keyframes ccspin{to{transform:rotate(360deg)}}
 .saved-item .n{font-family:Consolas,monospace;font-weight:800;color:var(--primary);}
@@ -154,7 +156,7 @@ main{max-width:1100px;margin:0 auto;padding:16px;}
     <button class="btn btn-sm" onclick="doLogout()" style="padding:2px 8px;font-size:10px;" data-i18n="logout">Log out</button>
   </span>
   <select id="lang-sel" onchange="setLang(this.value)" style="font-size:11px;padding:3px 6px;border-radius:5px;border:none;background:#1d3f66;color:#fff;"><option value="ko">한국어</option><option value="en">English</option><option value="es">Español</option></select>
-  <span style="font-size:10px;color:#9fb8d4;">v615 ↩</span>
+  <span style="font-size:10px;color:#9fb8d4;">v616 ↩</span>
 </div>
 <script type="text/javascript" src="https://js.authorize.net/v1/Accept.js" charset="utf-8"></script>
 <div id="po-viewer" style="display:none;position:fixed;top:0;right:0;width:44%;height:100vh;background:#fff;border-left:2px solid var(--border);z-index:60;box-shadow:-6px 0 20px rgba(0,0,0,.15);">
@@ -2645,6 +2647,8 @@ async function enterApp(){
   }).catch(()=>{});
   if(typeof pchkReviewBadge==='function') pchkReviewBadge();
   if(typeof pchkBoxreqBadge==='function') pchkBoxreqBadge();
+  try{ clearInterval(window._mgrBoxreqPoll); }catch(e){}
+  window._mgrBoxreqPoll=setInterval(()=>{ if(typeof pchkBoxreqBadge==='function') pchkBoxreqBadge(); }, 20000);   // 📦 box request 알람 20초마다 갱신
 }
 async function initAuth(){
   if(pchkIsEmpMode()){ pchkEmpBoot(); return; }   // 🔒 무로그인 직원 촬영 모드 (#check) — 로그인 건너뜀
@@ -7371,11 +7375,25 @@ async function pchkReqList(){
 }
 // ═══════════ 📦 Box Requests — 매니저 처리 (alarm → 위치 → PC Room → print → done) (v606) ═══════════
 async function pchkBoxreqBadge(){
-  try{ const r=await sbFetch('/rest/v1/pr_boxreq?select=id&status=eq.open'); if(!r.ok) return;
-    const rows=await r.json(); const n=Array.isArray(rows)?rows.length:0; window._boxreqOpen=n;
+  try{ const r=await sbFetch('/rest/v1/pr_boxreq?select=wh&status=eq.open'); if(!r.ok) return;
+    const rows=await r.json(); if(!Array.isArray(rows)) return;
+    const c={SC:0,CA:0}; rows.forEach(x=>{ const w=String(x.wh||'SC').toUpperCase(); if(w==='CA')c.CA++; else c.SC++; });
+    const n=rows.length; window._boxreqOpen=n; window._boxreqPend=c;
     const b=document.getElementById('boxreq-badge'); if(b) b.textContent=n?(' '+n):'';
+    pchkBoxreqTiles();
   }catch(e){}
 }
+function pchkBoxreqPend(wh){ const p=window._boxreqPend||{}; return Number(p[String(wh||'').toUpperCase()])||0; }
+function pchkBoxreqTiles(){
+  [['SC','sc'],['CA','ca']].forEach(([W,k])=>{
+    const el=document.getElementById('boxreq-tile-'+k+'-n'); if(el) el.textContent=pchkBoxreqPend(W);
+    const tile=document.getElementById('boxreq-tile-'+k); if(tile) tile.classList.toggle('breq-blink', pchkBoxreqPend(W)>0);
+    const el2=document.getElementById('boxreq-kpi-'+k+'-n'); if(el2) el2.textContent=pchkBoxreqPend(W);
+    const kpi=document.getElementById('boxreq-kpi-'+k); if(kpi) kpi.classList.toggle('breq-blink', pchkBoxreqPend(W)>0);
+  });
+}
+// 알람 타일 클릭 → 그 창고로 필터해서 Box requests 모듈 열기
+function pchkReqMgrOpenWh(wh){ window._boxreqWhFilter=(wh==='CA'||wh==='SC')?wh:''; pchkReqMgrOpen(); }
 function _brNorm(s){ return String(s||'').toUpperCase().replace(/\([^)]*\)/g,'').replace(/[^A-Z0-9]/g,''); }
 // 요청 품목이 시스템상 어느 bin에 있는지 (style 정확 · size 정확 · color 느슨하게 매칭)
 function pchkReqBins(style, color, size, whWant){
@@ -7393,6 +7411,47 @@ function pchkReqBins(style, color, size, whWant){
     out[k].n++;
   });
   return Object.values(out).sort((a,b)=> a.wh.localeCompare(b.wh) || String(a.loc).localeCompare(String(b.loc)));
+}
+// 🧺 요청 품목의 현재 PC Room 수량 조회 (style+wh 일치, color 느슨하게)
+function _pcNorm2(s){ return String(s||'').toUpperCase().replace(/\([^)]*\)/g,'').replace(/[^A-Z0-9]/g,''); }
+function pchkReqPcInfo(style, color, size, wh){
+  const st=String(style||'').trim().toUpperCase(), cz=_pcNorm2(color), sz=String(size||'').trim().toUpperCase(), W=(String(wh||'SC').toUpperCase()==='CA')?'CA':'SC';
+  let best=null;
+  (typeof pcStore!=='undefined'?pcStore:[]).forEach(r=>{
+    if(String(r.style||'').trim().toUpperCase()!==st) return;
+    if((typeof pcWhOf==='function'?pcWhOf(r):'SC')!==W) return;
+    const rc=_pcNorm2(r.color);
+    if(cz && !(rc===cz || rc.includes(cz) || cz.includes(rc))) return;
+    if(!best || (cz && rc===cz)) best=r;
+  });
+  let qty=null;
+  if(best){ const qm=best.qty||{}; const key=Object.keys(qm).find(k=>String(k).trim().toUpperCase()===sz); qty=key?(Number(qm[key])||0):0; }
+  return { row:best, qty, wh:W, size:sz };
+}
+// 🧺 PC Room 수량을 요청의 physical(counted) 수량으로 맞추기 — 안전하게 확인 후 수동 반영
+async function pchkReqSetPc(id){
+  const r=(window._boxreqRows||[]).find(x=>x.id===id); if(!r) return;
+  if(r.left_qty==null){ showToast('This request has no counted qty'); return; }
+  const info=pchkReqPcInfo(r.style,r.color,r.size,r.wh);
+  const W=info.wh, sz=info.size;
+  let row=info.row;
+  if(!row){
+    const col=String(r.color||'').trim().toUpperCase();
+    if(!col){ showToast('⚠ No color on this request — open the bin below and set PC Room manually'); return; }
+    const k=r.style+'|'+col+'|'+W;
+    row=(typeof pcStore!=='undefined'?pcStore:[]).find(x=>x.k===k);
+    if(!row){ row={ k, style:String(r.style), color:col, wh:W, qty:{}, sizes:(typeof pcSizesFor==='function'?pcSizesFor(r.style):[]) }; if(typeof pcStore!=='undefined') pcStore.push(row); }
+  }
+  const qm0=row.qty||{}; const ek=Object.keys(qm0).find(k=>String(k).trim().toUpperCase()===sz); const cur=ek?(Number(qm0[ek])||0):0;
+  const target=Math.max(0, parseInt(r.left_qty,10)||0);
+  if(!confirm('Set PC Room ['+W+'] '+row.style+' '+row.color+' '+sz+':\n'+cur+' → '+target+' pcs?')) return;
+  row.qty=row.qty||{};
+  if(ek && ek!==sz) delete row.qty[ek];
+  row.qty[sz]=target;
+  try{ await pcSaveRow(row); }catch(e){ showToast('⚠ Save failed'); return; }
+  showToast('🧺 PC Room set: '+row.style+' '+row.color+' '+sz+' = '+target);
+  pchkReqMgrRender();
+  if(typeof renderPcRoom==='function' && document.getElementById('pc-view')) renderPcRoom();
 }
 async function pchkReqMgrOpen(){
   const ex=document.getElementById('modal-boxreq'); if(ex) ex.remove();
@@ -7445,7 +7504,12 @@ function pchkReqMgrRender(){
         <span style="margin-left:auto;font-size:10px;font-weight:800;padding:3px 10px;border-radius:20px;background:${done?'#16a34a':'#f59e0b'};color:#fff;">${done?'✓ DONE':'OPEN'}</span>
       </div>
       <div style="font-size:11px;color:#94a3b8;margin-top:3px;">${dstr}${r.requested_by?' · '+esc(String(r.requested_by)):''}${done&&r.done_by?' · done by '+esc(String(r.done_by)):''}</div>
-      ${done?'':`<div style="margin-top:10px;">${binHtml}</div>
+      ${done?'':`${(function(){ if(r.left_qty==null) return ''; const info=pchkReqPcInfo(r.style,r.color,r.size,r.wh); const curTxt=(info.qty==null)?'—':info.qty; return `<div style="margin-top:9px;display:flex;align-items:center;gap:8px;flex-wrap:wrap;background:#ecfeff;border:1px solid #a5f3fc;border-radius:9px;padding:7px 11px;">
+        <span style="font-size:12.5px;color:#0e7490;font-weight:700;">🧺 PC Room now: <b style="font-size:14px;">${curTxt}</b>${info.qty==null?' <span style="color:#94a3b8;font-weight:500;font-size:11px;">(no PC row yet)</span>':' pcs'}</span>
+        <span style="font-size:12px;color:#94a3b8;">counted on floor: <b style="color:#b45309;">${r.left_qty}</b></span>
+        <button onclick="pchkReqSetPc(${r.id})" style="margin-left:auto;background:#0e7490;color:#fff;border:none;border-radius:8px;padding:6px 12px;font-size:12px;font-weight:800;white-space:nowrap;" title="Set PC Room qty to the counted floor qty (asks to confirm first — nothing changes silently)">Set PC Room = ${r.left_qty}</button>
+      </div>`; })()}
+      <div style="margin-top:10px;">${binHtml}</div>
       <div style="margin-top:9px;display:flex;gap:8px;flex-wrap:wrap;">
         <button onclick="pchkReqPrint(${r.id})" style="background:#334155;color:#fff;border:none;border-radius:8px;padding:8px 13px;font-size:12.5px;font-weight:700;">🖨 Print pull slip</button>
         <button onclick="pchkReqDone(${r.id})" style="background:#16a34a;color:#fff;border:none;border-radius:8px;padding:8px 13px;font-size:12.5px;font-weight:800;">✓ Mark done</button>
@@ -12994,6 +13058,14 @@ function renderBoxRoom(){
         <div style="font-size:11px;font-weight:800;color:#9a3412;line-height:1.35;">🔍 CA Inventory check review <span style="font-size:10px;color:#94a3b8;">click</span></div>
         <div style="font-size:21px;font-weight:800;color:#7c2d12;font-family:Consolas,monospace;line-height:1.2;"><span id="pchk-tile-ca-n">${pchkPending('CA')}</span><span style="font-size:11px;color:#9a3412;font-weight:700;"> pending</span></div>
         <div style="font-size:11px;color:#9a3412;font-family:Consolas,monospace;">staff photo checks</div></div>
+      <div id="boxreq-tile-sc" class="${pchkBoxreqPend('SC')>0?'breq-blink':''}" onclick="pchkReqMgrOpenWh('SC')" title="SC staff box requests → move to PC Room. Click to process now." style="flex:1 1 190px;min-width:190px;max-width:252px;border:2px solid #93c5fd;border-radius:10px;padding:9px 14px;background:#eff6ff;cursor:pointer;">
+        <div style="font-size:11px;font-weight:800;color:#1d4ed8;line-height:1.35;">📦 SC box request <span style="font-size:10px;color:#94a3b8;">click</span></div>
+        <div style="font-size:21px;font-weight:800;color:#1e3a8a;font-family:Consolas,monospace;line-height:1.2;"><span id="boxreq-tile-sc-n">${pchkBoxreqPend('SC')}</span><span style="font-size:11px;color:#1d4ed8;font-weight:700;"> pending</span></div>
+        <div style="font-size:11px;color:#1d4ed8;font-family:Consolas,monospace;">→ move to PC Room</div></div>
+      <div id="boxreq-tile-ca" class="${pchkBoxreqPend('CA')>0?'breq-blink':''}" onclick="pchkReqMgrOpenWh('CA')" title="CA staff box requests → move to PC Room. Click to process now." style="flex:1 1 190px;min-width:190px;max-width:252px;border:2px solid #fdba74;border-radius:10px;padding:9px 14px;background:#fff7ed;cursor:pointer;">
+        <div style="font-size:11px;font-weight:800;color:#9a3412;line-height:1.35;">📦 CA box request <span style="font-size:10px;color:#94a3b8;">click</span></div>
+        <div style="font-size:21px;font-weight:800;color:#7c2d12;font-family:Consolas,monospace;line-height:1.2;"><span id="boxreq-tile-ca-n">${pchkBoxreqPend('CA')}</span><span style="font-size:11px;color:#9a3412;font-weight:700;"> pending</span></div>
+        <div style="font-size:11px;color:#9a3412;font-family:Consolas,monospace;">→ move to PC Room</div></div>
       ${(()=>{ const IN=window._bxInc||{}; let nb=0,np=0; Object.keys(IN).forEach(k2=>{ nb+=IN[k2].boxes; np+=IN[k2].pcs; });
         if(!nb) return '';
         const refs = [...new Set(window._bxIncRefs||[])];
@@ -17734,7 +17806,14 @@ function renderKpi(){
     ${(()=>{ const rt=(typeof rsvTotals==='function')?rsvTotals():{boxes:0,refill:0}; return `<div onclick="openReserveList()" style="flex:1;min-width:118px;background:#f5f3ff;border:1px solid #7c3aed44;border-left:5px solid #7c3aed;border-radius:8px;padding:8px 13px;cursor:pointer;" title="Reserved boxes — click to view / manage">
       <div style="font-size:23px;font-weight:900;color:#7c3aed;line-height:1;">${rt.boxes.toLocaleString()}${rt.refill>0?`<span style="font-size:12px;color:#dc2626;"> ⚠${rt.refill}</span>`:''}</div>
       <div style="font-size:10px;font-weight:800;color:#4b5563;letter-spacing:.3px;margin-top:4px;text-transform:uppercase;white-space:nowrap;">🔒 Reserved Boxes</div></div>`; })()}
+    ${(typeof pchkBoxreqPend==='function')?`<div id="boxreq-kpi-sc" class="${pchkBoxreqPend('SC')>0?'breq-blink':''}" onclick="pchkReqMgrOpenWh('SC')" style="flex:1;min-width:118px;background:#eff6ff;border:1px solid #93c5fd;border-left:5px solid #1d4ed8;border-radius:8px;padding:8px 13px;cursor:pointer;" title="SC staff box requests → move to PC Room. Click to process now.">
+      <div style="font-size:23px;font-weight:900;color:#1d4ed8;line-height:1;"><span id="boxreq-kpi-sc-n">${pchkBoxreqPend('SC')}</span></div>
+      <div style="font-size:10px;font-weight:800;color:#4b5563;letter-spacing:.3px;margin-top:4px;text-transform:uppercase;white-space:nowrap;">📦 SC Box Request</div></div>
+    <div id="boxreq-kpi-ca" class="${pchkBoxreqPend('CA')>0?'breq-blink':''}" onclick="pchkReqMgrOpenWh('CA')" style="flex:1;min-width:118px;background:#fff7ed;border:1px solid #fdba74;border-left:5px solid #c2410c;border-radius:8px;padding:8px 13px;cursor:pointer;" title="CA staff box requests → move to PC Room. Click to process now.">
+      <div style="font-size:23px;font-weight:900;color:#c2410c;line-height:1;"><span id="boxreq-kpi-ca-n">${pchkBoxreqPend('CA')}</span></div>
+      <div style="font-size:10px;font-weight:800;color:#4b5563;letter-spacing:.3px;margin-top:4px;text-transform:uppercase;white-space:nowrap;">📦 CA Box Request</div></div>`:''}
   </div>`;
+  if(typeof pchkBoxreqBadge==='function') pchkBoxreqBadge();   // 알람 수 최신화 (Orders 화면 열 때)
 }
 function renderSaved(){
   renderKpi();
