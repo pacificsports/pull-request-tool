@@ -154,7 +154,7 @@ main{max-width:1100px;margin:0 auto;padding:16px;}
     <button class="btn btn-sm" onclick="doLogout()" style="padding:2px 8px;font-size:10px;" data-i18n="logout">Log out</button>
   </span>
   <select id="lang-sel" onchange="setLang(this.value)" style="font-size:11px;padding:3px 6px;border-radius:5px;border:none;background:#1d3f66;color:#fff;"><option value="ko">한국어</option><option value="en">English</option><option value="es">Español</option></select>
-  <span style="font-size:10px;color:#9fb8d4;">v605 ↩</span>
+  <span style="font-size:10px;color:#9fb8d4;">v606 ↩</span>
 </div>
 <script type="text/javascript" src="https://js.authorize.net/v1/Accept.js" charset="utf-8"></script>
 <div id="po-viewer" style="display:none;position:fixed;top:0;right:0;width:44%;height:100vh;background:#fff;border-left:2px solid var(--border);z-index:60;box-shadow:-6px 0 20px rgba(0,0,0,.15);">
@@ -429,6 +429,7 @@ main{max-width:1100px;margin:0 auto;padding:16px;}
       <button class="btn btn-sm" id="bx-costbtn" onclick="costOpen()" style="display:none;background:#065f46;color:#fff;border-color:#065f46;" title="Cost per style/size + margin — owner & accounting only. Fill gaps, edit, and see inventory value">💲 Cost</button>
       <button class="btn btn-sm" onclick="pchkOpen()" style="background:#0891b2;color:#fff;border-color:#0891b2;" title="Physical check with photos — take pallet photos, AI reads labels, compares to system">📸 Photo Check</button>
       <button class="btn btn-sm" onclick="pchkReviewOpen()" style="background:#155e75;color:#fff;border-color:#155e75;" title="Review physical checks submitted by staff (staff link: psflowx.com/#check)">🔍 Check reviews<span id="pchk-review-badge" style="font-weight:800;"></span></button>
+      <button class="btn btn-sm" onclick="pchkReqMgrOpen()" style="background:#7c3aed;color:#fff;border-color:#7c3aed;" title="Box pull requests from staff (staff link: psflowx.com/pic → Request a Box) — see locations, move a box to PC Room, print">📦 Box requests<span id="boxreq-badge" style="font-weight:800;"></span></button>
       <button class="btn btn-sm" onclick="hiOpen()" style="background:#0e7490;color:#fff;border-color:#0e7490;" title="Upload Haiti invoice → review → assign locations on arrival">🇭🇹 Haiti Receive</button>
       <button class="btn btn-sm" onclick="trOpen()" style="background:#b45309;color:#fff;border-color:#b45309;" title="SC → CA box transfer (build batch → depart → assign CA locations on arrival)">🚚 Transfer</button>
       <button class="btn btn-sm" onclick="dvcOpen()" style="background:#334155;color:#fff;border-color:#334155;" title="Drop the DaVinci 'Inventory By Location' Excel exports here to compare against our stock, line by line">⚖ DV Compare</button>
@@ -2642,6 +2643,7 @@ async function enterApp(){
     if(r.ok){ pcStore = await r.json(); pcLoaded = true; if(poLines.length) renderTable(); }
   }).catch(()=>{});
   if(typeof pchkReviewBadge==='function') pchkReviewBadge();
+  if(typeof pchkBoxreqBadge==='function') pchkBoxreqBadge();
 }
 async function initAuth(){
   if(pchkIsEmpMode()){ pchkEmpBoot(); return; }   // 🔒 무로그인 직원 촬영 모드 (#check) — 로그인 건너뜀
@@ -7342,6 +7344,109 @@ async function pchkReqList(){
     </div>`;
   }).join('');
 }
+// ═══════════ 📦 Box Requests — 매니저 처리 (alarm → 위치 → PC Room → print → done) (v606) ═══════════
+async function pchkBoxreqBadge(){
+  try{ const r=await sbFetch('/rest/v1/pr_boxreq?select=id&status=eq.open'); if(!r.ok) return;
+    const rows=await r.json(); const n=Array.isArray(rows)?rows.length:0; window._boxreqOpen=n;
+    const b=document.getElementById('boxreq-badge'); if(b) b.textContent=n?(' '+n):'';
+  }catch(e){}
+}
+function _brNorm(s){ return String(s||'').toUpperCase().replace(/\([^)]*\)/g,'').replace(/[^A-Z0-9]/g,''); }
+// 요청 품목이 시스템상 어느 bin에 있는지 (style 정확 · size 정확 · color 느슨하게 매칭)
+function pchkReqBins(style, color, size){
+  const st=String(style||'').trim(), cz=_brNorm(color), sz=String(size||'').trim().toUpperCase();
+  const out={};
+  (typeof bxStore!=='undefined'?bxStore:[]).forEach(b=>{
+    if(String(b.style)!==st) return;
+    if(sz && String(b.size||'').toUpperCase()!==sz) return;
+    if(cz){ const bc=_brNorm(b.color); if(!(bc===cz || bc.includes(cz) || cz.includes(bc))) return; }
+    const wh=bxWh(b), loc=String(b.loc||'?').toUpperCase();
+    const k=wh+'|'+loc+'|'+String(b.color).toUpperCase()+'|'+String(b.size||'').toUpperCase();
+    if(!out[k]) out[k]={wh,loc,color:b.color,size:b.size,n:0};
+    out[k].n++;
+  });
+  return Object.values(out).sort((a,b)=> a.wh.localeCompare(b.wh) || String(a.loc).localeCompare(String(b.loc)));
+}
+async function pchkReqMgrOpen(){
+  const ex=document.getElementById('modal-boxreq'); if(ex) ex.remove();
+  const div=document.createElement('div'); div.id='modal-boxreq';
+  div.style.cssText='position:fixed;inset:0;background:rgba(15,23,42,.55);z-index:210;display:flex;align-items:flex-start;justify-content:center;padding:20px 12px;overflow-y:auto;';
+  div.onclick=e=>{ if(e.target===div) div.remove(); };
+  div.innerHTML=`<div style="background:#fff;border-radius:14px;max-width:760px;width:100%;max-height:92vh;display:flex;flex-direction:column;overflow:hidden;">
+    <div style="background:#0f2a4a;color:#fff;padding:14px 18px;display:flex;align-items:center;gap:10px;">
+      <span style="font-size:16px;font-weight:800;">📦 Box pull requests</span>
+      <button onclick="pchkReqMgrOpen()" title="Refresh" style="background:rgba(255,255,255,.15);color:#fff;border:none;border-radius:8px;padding:5px 10px;font-size:13px;">🔄</button>
+      <label style="margin-left:auto;font-size:12px;font-weight:600;display:inline-flex;align-items:center;gap:5px;cursor:pointer;"><input type="checkbox" id="boxreq-showdone" onchange="pchkReqMgrRender()" style="width:14px;height:14px;">show done</label>
+      <button onclick="document.getElementById('modal-boxreq').remove()" style="background:rgba(255,255,255,.2);color:#fff;border:none;border-radius:8px;padding:6px 12px;font-size:15px;font-weight:800;">✕</button>
+    </div>
+    <div id="boxreq-body" style="flex:1;overflow-y:auto;background:#f1f5f9;padding:14px;"><div style="text-align:center;color:#64748b;padding:30px;">Loading…</div></div>
+  </div>`;
+  document.body.appendChild(div);
+  let rows=[];
+  try{ const r=await sbFetch('/rest/v1/pr_boxreq?select=*&order=created_at.desc&limit=200'); if(!r.ok) throw new Error('HTTP '+r.status); rows=await r.json(); }
+  catch(e){ const b=document.getElementById('boxreq-body'); if(b) b.innerHTML='<div style="padding:20px;color:#b91c1c;">Load failed: '+esc(e.message||String(e))+'</div>'; return; }
+  window._boxreqRows=Array.isArray(rows)?rows:[];
+  pchkReqMgrRender();
+}
+function pchkReqMgrRender(){
+  const b=document.getElementById('boxreq-body'); if(!b) return;
+  const showDone=((document.getElementById('boxreq-showdone')||{}).checked);
+  let rows=(window._boxreqRows||[]);
+  if(!showDone) rows=rows.filter(r=>r.status!=='done');
+  if(!rows.length){ b.innerHTML='<div style="text-align:center;color:#64748b;padding:34px;">No open requests. 🎉</div>'; return; }
+  b.innerHTML=rows.map(r=>{
+    const done=r.status==='done';
+    const d=r.created_at?new Date(r.created_at):null;
+    const dstr=d?(d.toLocaleDateString('en-US',{month:'numeric',day:'numeric'})+' '+d.toLocaleTimeString('en-US',{hour:'numeric',minute:'2-digit'})):'';
+    const bins=done?[]:pchkReqBins(r.style,r.color,r.size);
+    const binHtml=done?'':(bins.length?bins.map(x=>`<button onclick="bxLocModal('${esc(String(r.style))}','${esc(String(x.color))}','${esc(String(x.size))}','${x.wh}','${esc(String(x.loc))}')" title="Open this bin — then press 🧺 Open → PC Room to pull a box" style="display:inline-flex;align-items:center;gap:6px;background:#eff6ff;border:1px solid #93c5fd;border-radius:8px;padding:6px 11px;margin:0 6px 6px 0;font-size:12.5px;font-weight:700;color:#1d4ed8;cursor:pointer;">📍 [${x.wh}] ${esc(String(x.loc))} <span style="color:#64748b;font-weight:600;">${x.n} box${x.n>1?'es':''}</span></button>`).join(''):'<span style="color:#dc2626;font-size:12px;font-weight:700;">⚠ No full boxes found in stock for this item.</span>');
+    return `<div style="background:${done?'#f0fdf4':'#fff'};border:1px solid ${done?'#bbf7d0':'#e5e7eb'};border-radius:12px;padding:13px 15px;margin-bottom:10px;">
+      <div style="display:flex;align-items:center;gap:9px;flex-wrap:wrap;">
+        <b style="font-size:16px;color:#0f2a4a;">${esc(String(r.style))}</b>
+        <span style="font-size:14px;">${esc(String(r.color||''))}</span>
+        <span style="font-size:14px;font-weight:800;">${esc(String(r.size||''))}</span>
+        ${r.left_qty!=null?`<span style="font-size:11.5px;color:#b45309;font-weight:700;">🧮 ${r.left_qty} left now</span>`:''}
+        <span style="margin-left:auto;font-size:10px;font-weight:800;padding:3px 10px;border-radius:20px;background:${done?'#16a34a':'#f59e0b'};color:#fff;">${done?'✓ DONE':'OPEN'}</span>
+      </div>
+      <div style="font-size:11px;color:#94a3b8;margin-top:3px;">${dstr}${r.requested_by?' · '+esc(String(r.requested_by)):''}${done&&r.done_by?' · done by '+esc(String(r.done_by)):''}</div>
+      ${done?'':`<div style="margin-top:10px;">${binHtml}</div>
+      <div style="margin-top:9px;display:flex;gap:8px;flex-wrap:wrap;">
+        <button onclick="pchkReqPrint(${r.id})" style="background:#334155;color:#fff;border:none;border-radius:8px;padding:8px 13px;font-size:12.5px;font-weight:700;">🖨 Print pull slip</button>
+        <button onclick="pchkReqDone(${r.id})" style="background:#16a34a;color:#fff;border:none;border-radius:8px;padding:8px 13px;font-size:12.5px;font-weight:800;">✓ Mark done</button>
+        <button onclick="pchkReqMgrDelete(${r.id})" title="Delete this request" style="background:#fff;color:#b91c1c;border:1px solid #fecaca;border-radius:8px;padding:8px 11px;font-size:12px;">🗑</button>
+      </div>`}
+    </div>`;
+  }).join('');
+}
+async function pchkReqDone(id){
+  const by=(SESS&&SESS.email)||'';
+  try{ const r=await sbFetch('/rest/v1/pr_boxreq?id=eq.'+id,{method:'PATCH',headers:{Prefer:'return=minimal'},body:JSON.stringify({status:'done',done_by:by,done_at:new Date().toISOString()})}); if(!r.ok) throw new Error('HTTP '+r.status); }
+  catch(e){ showToast('⚠ Failed: '+(e.message||e)); return; }
+  const row=(window._boxreqRows||[]).find(x=>x.id===id); if(row){ row.status='done'; row.done_by=by; row.done_at=new Date().toISOString(); }
+  showToast('✓ Request marked done'); pchkReqMgrRender(); pchkBoxreqBadge();
+}
+async function pchkReqMgrDelete(id){
+  if(!confirm('Delete this request permanently?')) return;
+  try{ const r=await sbFetch('/rest/v1/pr_boxreq?id=eq.'+id,{method:'DELETE',headers:{Prefer:'return=minimal'}}); if(!r.ok) throw new Error('HTTP '+r.status); }
+  catch(e){ showToast('⚠ Failed: '+(e.message||e)); return; }
+  window._boxreqRows=(window._boxreqRows||[]).filter(x=>x.id!==id);
+  showToast('🗑 Deleted'); pchkReqMgrRender(); pchkBoxreqBadge();
+}
+function pchkReqPrint(id){
+  const r=(window._boxreqRows||[]).find(x=>x.id===id); if(!r) return;
+  const bins=pchkReqBins(r.style,r.color,r.size);
+  const binRows=bins.length?bins.map(x=>`<tr><td>[${x.wh}] ${esc(String(x.loc))}</td><td style="text-align:center;">${x.n}</td></tr>`).join(''):'<tr><td colspan="2" style="color:#b91c1c;">No full boxes found in stock.</td></tr>';
+  const w=window.open('','_blank'); if(!w){ showToast('⚠ Allow popups to print'); return; }
+  w.document.write(`<html><head><title>Pull Request ${esc(String(r.style))}</title><style>body{font-family:Arial,sans-serif;padding:24px;color:#111;} h1{font-size:22px;margin:0 0 4px;} .sub{color:#555;font-size:13px;margin-bottom:12px;} .big{font-size:26px;font-weight:800;margin:12px 0;} table{border-collapse:collapse;width:100%;max-width:360px;} td,th{border:1px solid #999;padding:8px 10px;font-size:14px;text-align:left;} th{background:#eee;} p{font-size:13px;}</style></head><body>
+    <h1>📦 Box Pull Request</h1>
+    <div class="sub">${esc(new Date().toLocaleString())}${r.requested_by?' · requested by '+esc(String(r.requested_by)):''}</div>
+    <div class="big">${esc(String(r.style))} &nbsp; ${esc(String(r.color||''))} &nbsp; ${esc(String(r.size||''))}</div>
+    ${r.left_qty!=null?`<div style="font-size:14px;color:#b45309;">Pcs left on floor now: <b>${r.left_qty}</b></div>`:''}
+    <p>Pull <b>1 full box</b> and move it to the PC Room. Locations in stock:</p>
+    <table><thead><tr><th>📍 Location</th><th>Boxes</th></tr></thead><tbody>${binRows}</tbody></table>
+    <script>window.onload=function(){window.print();};<\/script></body></html>`);
+  w.document.close();
+}
 let _pchkWho='', _pchkStyle='', _pchkColor='', _pchkSize='';
 function pchkEmpGrab(){   // 재렌더 전에 현재 입력값 보존
   const g=id=>{ const e=document.getElementById(id); return e?e.value:null; };
@@ -8207,7 +8312,7 @@ function showView(v){
   if(v==='dash') renderDash();
   if(v==='cust') renderCustomers();
   if(v==='pc'){ if(pcLoaded){ if(window._pcDirty !== false) renderPcRoom(); } else loadPcRoom(); }
-  if(v==='box'){ loadBoxRoom(); if(typeof pchkReviewBadge==='function') pchkReviewBadge(); }
+  if(v==='box'){ loadBoxRoom(); if(typeof pchkReviewBadge==='function') pchkReviewBadge(); if(typeof pchkBoxreqBadge==='function') pchkBoxreqBadge(); }
   if(v==='tx') renderTx();
   if(v==='act'){ if(!window._actAt || Date.now()-window._actAt > 60000) actLoad(); else actRender(); }
 }
