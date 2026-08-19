@@ -156,7 +156,7 @@ main{max-width:1100px;margin:0 auto;padding:16px;}
     <button class="btn btn-sm" onclick="doLogout()" style="padding:2px 8px;font-size:10px;" data-i18n="logout">Log out</button>
   </span>
   <select id="lang-sel" onchange="setLang(this.value)" style="font-size:11px;padding:3px 6px;border-radius:5px;border:none;background:#1d3f66;color:#fff;"><option value="ko">한국어</option><option value="en">English</option><option value="es">Español</option></select>
-  <span style="font-size:10px;color:#9fb8d4;">v627 ↩</span>
+  <span style="font-size:10px;color:#9fb8d4;">v628 ↩</span>
 </div>
 <script type="text/javascript" src="https://js.authorize.net/v1/Accept.js" charset="utf-8"></script>
 <div id="po-viewer" style="display:none;position:fixed;top:0;right:0;width:44%;height:100vh;background:#fff;border-left:2px solid var(--border);z-index:60;box-shadow:-6px 0 20px rgba(0,0,0,.15);">
@@ -5035,11 +5035,11 @@ function openPLInner(base){
     const iv = (rec.inv && rec.inv[w]) || {};
     // 배송비 자동 프리필: 고객이 승인한 금액이 있으면 그걸 최우선(=청구=승인 일치), 없으면 라벨 정가
     let _fr = Number(iv.freight)||0;
-    const _ups = rec.meta && rec.meta._ups;
+    const _uw = upsForWh(rec, w);
     const _appr = rec.meta && rec.meta._shipApproval;
     if(_fr===0 && !(iv.savedAt)){
       if(_appr && Number(_appr.amount)>0 && (!_appr.wh || _appr.wh===w)) _fr = Number(_appr.amount);
-      else if(_ups && _ups.origin===w && _ups.billing==='shipper' && Number(_ups.billShip)>0) _fr = Number(_ups.billShip);
+      else if(_uw && _uw.billing==='shipper' && Number(_uw.billShip)>0) _fr = Number(_uw.billShip);
     }
     invDrafts[w] = {
       invNo: iv.invNo||'',
@@ -6696,6 +6696,13 @@ function lblSt(rec){
   return { name:m.shipName||'', company:m.cust||'', addr1:m.shipAddr||'', city:m.shipCity||'',
            state:String(m.shipState||'').toUpperCase(), zip:m.shipZip||'' };
 }
+// 창고별 라벨 정보 조회 (신규: meta._ups[wh] / 레거시: 평면 _ups with .origin)
+function upsForWh(rec, wh){
+  const u = rec && rec.meta && rec.meta._ups; if(!u) return null;
+  if(u[wh] && (((u[wh].tracking||[]).length)||u[wh].shipmentId)) return u[wh];
+  if((((u.tracking||[]).length)||u.shipmentId) && u.origin===wh) return u;   // 레거시 평면
+  return null;
+}
 async function lblLoadBoxes(base, wh){
   _lblBoxes = [];
   try{
@@ -6706,15 +6713,21 @@ async function lblLoadBoxes(base, wh){
   }catch(e){}
   if(!_lblBoxes.length) _lblBoxes = [{name:'',l:'',w:'',h:'',wt:''}];
 }
-async function openLabelModal(base){
+async function openLabelModal(base, forceWh){
   const rec = (savedCache||[]).find(r=>r.base===base);
   if(!rec){ showToast('Order not found'); return; }
   if(_shipHandling==null){ try{ await loadShipHandling(); }catch(e){} }
-  _lblBase = base; _lblRec = rec; _lblResult = (rec.meta&&rec.meta._ups)||null;
+  _lblBase = base; _lblRec = rec;
   const whs = (rec.whs||[]).filter(w=>w==='SC'||w==='CA');
-  window._lblOrigin = (_lblResult&&_lblResult.origin) || whs[0] || 'SC';
+  window._lblOrigin = (forceWh==='SC'||forceWh==='CA') ? forceWh : (whs[0] || 'SC');
+  window._lblLock = !!(forceWh==='SC'||forceWh==='CA');   // 창고별 버튼으로 열면 출발지 고정
+  _lblResult = upsForWh(rec, window._lblOrigin);
   await lblLoadBoxes(base, window._lblOrigin);   // 출발창고(SC/CA)에 해당하는 박스만 로드
-  window._lblService = (_lblResult&&_lblResult.service) || '03';
+  // 서비스 기본값: 기존 라벨 > 패킹리스트 Method > Ground
+  const _M2S = {'Ground':'03','3rd Day':'12','2nd Day':'02','Next Day':'01'};
+  let _svc = (_lblResult&&_lblResult.service) || '03';
+  try{ if(typeof plBase!=='undefined' && plBase===base){ const pd=plDrafts[window._lblOrigin]; if(pd && pd.method && _M2S[pd.method]) _svc=_M2S[pd.method]; } }catch(e){}
+  window._lblService = _svc;
   window._lblTest = false;
   const bill0 = custUpsFor(rec.meta.cust);
   window._lblBillMode = (_lblResult&&_lblResult.billing) || bill0.mode || 'shipper';
@@ -6762,7 +6775,9 @@ function lblRender(){
       ${_appr?`<div style="font-size:10.5px;color:#64748b;margin-top:4px;">${_apprMoney(_appr.amount)} · ${esc(_appr.email||'')} · sent ${_appr.at?new Date(_appr.at).toLocaleString():''}</div>`:''}
     </div>` : '';
   const origin = window._lblOrigin;
-  const originBtns = ['SC','CA'].map(w=>`<button class="btn btn-sm" onclick="lblSetOrigin('${w}')" style="${origin===w?'background:'+(w==='SC'?'#1d4ed8':'#c2410c')+';color:#fff;border-color:'+(w==='SC'?'#1d4ed8':'#c2410c')+';':''}">${w==='SC'?'Sumter, SC':'Eastvale, CA'}</button>`).join('');
+  const originBtns = window._lblLock
+    ? `<div style="padding:8px 13px;border-radius:8px;background:${origin==='SC'?'#1d4ed8':'#c2410c'};color:#fff;font-weight:800;font-size:13px;display:inline-block;">${origin==='SC'?'Sumter, SC':'Eastvale, CA'}</div>`
+    : ['SC','CA'].map(w=>`<button class="btn btn-sm" onclick="lblSetOrigin('${w}')" style="${origin===w?'background:'+(w==='SC'?'#1d4ed8':'#c2410c')+';color:#fff;border-color:'+(w==='SC'?'#1d4ed8':'#c2410c')+';':''}">${w==='SC'?'Sumter, SC':'Eastvale, CA'}</button>`).join('');
   const svcOpts = UPS_SERVICES.map(s=>`<option value="${s.code}"${window._lblService===s.code?' selected':''}>${s.name}</option>`).join('');
   const boxRows = _lblBoxes.map((b,i)=>`<div style="display:flex;gap:5px;align-items:center;margin-bottom:6px;">
     <span style="font-family:Consolas,monospace;font-size:11px;color:#64748b;min-width:20px;">#${i+1}</span>
@@ -6958,13 +6973,25 @@ async function lblCreate(){
 async function lblSaveTracking(){
   const rec = _lblRec; if(!rec||!_lblResult) return;
   rec.meta = rec.meta||{};
-  rec.meta._ups = { tracking:_lblResult.tracking, service:_lblResult.service, origin:_lblResult.origin,
+  let store = rec.meta._ups || {};
+  // 레거시 평면 _ups → 창고별 키로 변환
+  if((store.tracking||store.shipmentId) && store.origin && !(store.SC||store.CA)){ const o=store.origin; store = { [o]: {...store} }; }
+  store[_lblResult.origin] = { tracking:_lblResult.tracking, service:_lblResult.service, origin:_lblResult.origin,
     billing:_lblResult.billing, shipmentId:_lblResult.shipmentId||null,
-    cost:_lblResult.cost||null, ourCost:_lblResult.ourCost!=null?_lblResult.ourCost:null, billShip:_lblResult.billShip||0,
-    at:_lblResult.at, by:_lblResult.by };
+    cost:_lblResult.cost||null, ourCost:_lblResult.ourCost!=null?_lblResult.ourCost:null,
+    listCost:_lblResult.listCost!=null?_lblResult.listCost:null, boxCount:_lblResult.boxCount||null, handling:_lblResult.handling||0,
+    billShip:_lblResult.billShip||0, at:_lblResult.at, by:_lblResult.by };
+  rec.meta._ups = store;
   try{
     await sbFetch('/rest/v1/pr_orders?base=eq.'+encodeURIComponent(rec.base), {method:'PATCH', headers:{Prefer:'return=minimal'}, body:JSON.stringify({meta:rec.meta, updated_at:new Date().toISOString()})});
     const i = savedCache.findIndex(s=>s.base===rec.base); if(i>=0) savedCache[i]=rec;
+    // 패킹리스트가 이 창고로 열려있으면 tracking#·Via·Method 바로 채워넣기
+    try{ if(typeof plBase!=='undefined' && plBase===rec.base && plDrafts[_lblResult.origin]){
+      const S2M={'03':'Ground','12':'3rd Day','02':'2nd Day','01':'Next Day'};
+      const pd=plDrafts[_lblResult.origin]; pd.via='UPS'; if(S2M[_lblResult.service]) pd.method=S2M[_lblResult.service];
+      pd.trackings=(_lblResult.tracking&&_lblResult.tracking.length)?_lblResult.tracking.slice():pd.trackings;
+      if(typeof renderPL==='function' && plWh===_lblResult.origin) renderPL();
+    } }catch(e){}
     if(typeof renderSaved==='function') renderSaved();
   }catch(e){}
 }
@@ -6997,9 +7024,15 @@ async function lblVoid(){
     const j = await r.json();
     if(!j.ok){ showToast('❌ '+(j.error||'Void failed')); return; }
     showToast('✕ Label voided — '+(j.status||'ok'));
-    // 실제 라벨이었으면 주문에서 UPS 정보 제거
+    // 실제 라벨이었으면 이 창고 UPS 정보만 제거
     if(!_lblResult.test && _lblRec){
-      _lblRec.meta = _lblRec.meta||{}; delete _lblRec.meta._ups;
+      _lblRec.meta = _lblRec.meta||{};
+      const o=_lblResult.origin, st=_lblRec.meta._ups;
+      if(st){
+        if(st[o]) delete st[o];
+        else if(st.origin===o) delete _lblRec.meta._ups;   // 레거시 평면
+        if(_lblRec.meta._ups && !_lblRec.meta._ups.SC && !_lblRec.meta._ups.CA && !(_lblRec.meta._ups.tracking)) delete _lblRec.meta._ups;
+      }
       try{ await sbFetch('/rest/v1/pr_orders?base=eq.'+encodeURIComponent(_lblRec.base), {method:'PATCH', headers:{Prefer:'return=minimal'}, body:JSON.stringify({meta:_lblRec.meta, updated_at:new Date().toISOString()})}); }catch(e){}
       const i = savedCache.findIndex(s=>s.base===_lblRec.base); if(i>=0) savedCache[i]=_lblRec;
       if(typeof renderSaved==='function') renderSaved();
@@ -7022,7 +7055,8 @@ function lblApprOpen(){
   lblSyncBoxes();
   const est = (function(){ const el=document.getElementById('lbl-est'); if(!el) return ''; const m=(el.textContent||'').match(/\$([\d,]+\.\d{2})/); return m?m[1].replace(/,/g,''):''; })();
   const cur = (rec.meta&&rec.meta._shipApproval)||{};
-  const exact = (rec.meta&&rec.meta._ups&&Number(rec.meta._ups.billShip)>0) ? Number(rec.meta._ups.billShip) : '';   // 라벨을 이미 만들었으면 인보이스에 청구될 정확한 정가
+  const _uw = upsForWh(rec, window._lblOrigin);
+  const exact = (_uw&&Number(_uw.billShip)>0) ? Number(_uw.billShip) : '';   // 이 창고 라벨의 정확한 청구액(정가+핸들링)
   const email = (rec.meta&&rec.meta.custEmail) || custEmailFor(rec.meta&&rec.meta.cust) || '';
   const amt = cur.amount || exact || est || '';
   const hasExact = exact!=='' ;
@@ -7372,6 +7406,7 @@ function renderPL(){
         <div class="ff"><label>Ship Date</label><input class="fi" id="plf-date" type="date" value="${esc(d.date||todayStr())}" onchange="plFieldChanged()"></div>
         <div class="ff"><label>Note</label><input class="fi" id="plf-note" value="${esc(d.note||'')}" onchange="plFieldChanged()"></div>
       </div>`}
+      ${plShowInv ? '' : `<div id="pl-empbox" class="no-print" style="margin-bottom:12px;"></div>`}
       <div class="no-print" style="display:flex;gap:6px;justify-content:flex-end;margin-bottom:12px;flex-wrap:wrap;">
         ${plShowInv
           ? `<button class="btn btn-sm" style="background:#fff;color:#7c3aed;border-color:#c4b5fd;margin-right:auto;" onclick="viewSavedPO(plBase)" title="Open the customer's original PO alongside to compare with the invoice">📄 Customer PO</button>
@@ -7495,6 +7530,36 @@ function renderPL(){
       ${plShowInv ? buildStageDoc(rec, plWh, 'invoice', invDocData()) : buildStageDoc(rec, plWh, 'packing', d)}
       </div>
     </div>`;
+  if(!plShowInv) plRenderEmpBoxes();
+}
+// 📦 패킹리스트 안: 직원이 넣은 박스(창고별) + UPS Label 버튼
+async function plRenderEmpBoxes(){
+  const host=document.getElementById('pl-empbox'); if(!host) return;
+  const base=plBase, wh=plWh;
+  const rec=(savedCache||[]).find(s=>s.base===base); if(!rec) return;
+  const d=plDrafts[wh]||{};
+  const viaSel=String(d.via||'').toUpperCase();
+  let row=null;
+  try{ const r=await sbFetch('/rest/v1/pr_pack?base=eq.'+encodeURIComponent(base)+'&wh=eq.'+encodeURIComponent(wh)+'&select=total_boxes,boxes,via,updated_by,updated_at'); const j=await r.json(); if(Array.isArray(j)) row=j[0]||null; }catch(e){}
+  if(plBase!==base||plWh!==wh) return;   // 그새 다른 창고로 바뀌었으면 무시
+  const boxes=(row&&Array.isArray(row.boxes))?row.boxes:[];
+  const total=(row&&row.total_boxes!=null)?row.total_boxes:(boxes.length||0);
+  const empVia=(row&&row.via)||'';
+  const money=n=>'$'+Number(n||0).toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2});
+  const uw=upsForWh(rec, wh);
+  const whc=(wh==='CA'?'#c2410c':'#1d4ed8');
+  const boxList=boxes.length?boxes.map((b,i)=>`<span style="display:inline-block;background:#f1f5f9;border:1px solid #e2e8f0;border-radius:7px;padding:2px 8px;margin:2px 3px 0 0;font-size:11px;">#${i+1} ${b.name?esc(b.name)+' ':''}${b.l}×${b.w}×${b.h} · ${b.wt}lb</span>`).join(''):'<span style="color:#94a3b8;font-size:12px;">No box details entered by warehouse yet.</span>';
+  const upsBtn = (viaSel==='UPS'||viaSel==='') ? `<button class="btn btn-sm" style="${uw&&(uw.tracking||[]).length?'background:#166534;color:#fff;border-color:#166534;':'background:#7c2d12;color:#fff;border-color:#7c2d12;'}font-weight:800;" onclick="openLabelModal('${esc(base)}','${wh}')" title="Create & print the UPS label for ${wh} (uses these boxes)">🏷 UPS Label${uw&&(uw.tracking||[]).length?' ✓':''}</button>` : `<span style="font-size:11px;color:#64748b;">UPS label available when Via = UPS</span>`;
+  host.innerHTML=`<div style="border:1.5px solid ${whc}33;background:#f8fafc;border-radius:10px;padding:10px 12px;">
+    <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;">
+      <span style="font-size:10px;font-weight:800;color:#fff;background:${whc};border-radius:8px;padding:2px 8px;">${wh}</span>
+      <span style="font-size:12px;font-weight:800;color:#0f2a4a;">📦 Warehouse packed: ${total} box(es)${empVia?' · '+esc(empVia):''}</span>
+      ${row&&row.updated_by?`<span style="font-size:10.5px;color:#94a3b8;">by ${esc(String(row.updated_by).split('@')[0])}</span>`:''}
+      <span style="margin-left:auto;">${upsBtn}</span>
+    </div>
+    <div style="margin-top:6px;">${boxList}</div>
+    ${uw&&(uw.tracking||[]).length?`<div style="margin-top:6px;font-size:11.5px;color:#166534;">✅ UPS ${(uw.tracking||[]).join(', ')}${Number(uw.billShip)>0?` · invoice ${money(uw.billShip)}`:''}</div>`:''}
+  </div>`;
 }
 
 // ═══════════════ 📊 Dashboard ═══════════════
@@ -18589,8 +18654,8 @@ function renderSaved(){
       <button class="btn btn-sm" onclick="openOrderSummary('${esc(s.base)}')">📋 Order Confirmation</button>
       <button class="btn btn-sm" onclick="copyOrderSummary('${esc(s.base)}')">📧 Copy Email</button>
       <button class="btn btn-sm" onclick="viewSavedPO('${esc(s.base)}')">📄 PO</button>
-      <button class="btn btn-sm" style="${(s.meta&&s.meta._ups&&(s.meta._ups.tracking||[]).length)?'background:#166534;color:#fff;border-color:#166534;':'background:#7c2d12;color:#fff;border-color:#7c2d12;'}" onclick="openLabelModal('${esc(s.base)}')" title="Create & print UPS shipping label (auto-fills box dimensions/weight from packing)">🏷 UPS Label${(s.meta&&s.meta._ups&&(s.meta._ups.tracking||[]).length)?' ✓':''}</button>
-      ${(s.meta&&s.meta._shipApproval)?`<span title="Shipping cost approval: ${esc(_apprMoney(s.meta._shipApproval.amount))} → ${esc(s.meta._shipApproval.email||'')}" style="cursor:pointer;" onclick="openLabelModal('${esc(s.base)}')">${apprStatusChip(s.meta._shipApproval)}</span>`:''}
+      ${(()=>{ const sw=(s.whs||[]).filter(w=>w==='SC'||w==='CA'); const only=sw.length<=1; return sw.map(w=>{ const uw=upsForWh(s,w); const has=uw&&(uw.tracking||[]).length; return `<button class="btn btn-sm" style="${has?'background:#166534;color:#fff;border-color:#166534;':'background:#7c2d12;color:#fff;border-color:#7c2d12;'}" onclick="openLabelModal('${esc(s.base)}','${w}')" title="Create & print UPS label from ${w} (auto-fills boxes from ${w} packing)">🏷 UPS${only?' Label':' '+w}${has?' ✓':''}</button>`; }).join(''); })()}
+      ${(s.meta&&s.meta._shipApproval)?`<span title="Shipping cost approval: ${esc(_apprMoney(s.meta._shipApproval.amount))} → ${esc(s.meta._shipApproval.email||'')}" style="cursor:pointer;" onclick="openLabelModal('${esc(s.base)}','${esc((s.meta._shipApproval.wh==='CA'?'CA':'SC'))}')">${apprStatusChip(s.meta._shipApproval)}</span>`:''}
       <button class="btn btn-sm" onclick="openHistory('${esc(s.base)}')" title="Change history">🕘</button>
       <button class="btn btn-sm" style="color:#7c3aed;" onclick="splitOrderOpen('${esc(s.base)}')" title="Split some items into a separate order (-S) — run urgent items separately (stock deductions transfer too)">✂ Split</button>
       ${!recIsReplace(s) && (s.whs||[]).some(w=>s.pl && s.pl[w] && s.pl[w].savedAt) ? `<button class="btn btn-sm" style="color:#be123c;border-color:#fda4af;" onclick="replaceOrderOpen('${esc(s.base)}')" title="Replace defective shipped items — creates a free PO#R order (no invoice)">🔁 Replace</button>` : ''}
