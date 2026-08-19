@@ -156,7 +156,7 @@ main{max-width:1100px;margin:0 auto;padding:16px;}
     <button class="btn btn-sm" onclick="doLogout()" style="padding:2px 8px;font-size:10px;" data-i18n="logout">Log out</button>
   </span>
   <select id="lang-sel" onchange="setLang(this.value)" style="font-size:11px;padding:3px 6px;border-radius:5px;border:none;background:#1d3f66;color:#fff;"><option value="ko">한국어</option><option value="en">English</option><option value="es">Español</option></select>
-  <span style="font-size:10px;color:#9fb8d4;">v653 ↩</span>
+  <span id="app-ver" style="font-size:10px;color:#9fb8d4;">v654 ↩</span>
 </div>
 <script type="text/javascript" src="https://js.authorize.net/v1/Accept.js" charset="utf-8"></script>
 <div id="po-viewer" style="display:none;position:fixed;top:0;right:0;width:44%;height:100vh;background:#fff;border-left:2px solid var(--border);z-index:60;box-shadow:-6px 0 20px rgba(0,0,0,.15);">
@@ -2708,16 +2708,17 @@ async function enterApp(){
 // 직원이 창고별로 박스를 넣었는지 맵 (base → Set(wh)). UPS 버튼 색상용.
 async function loadPackedMap(){
   try{
-    const r = await sbFetch('/rest/v1/pr_pack?select=base,wh,boxes,total_boxes');
+    const r = await sbFetch('/rest/v1/pr_pack?select=base,wh,boxes,total_boxes,via');
     if(!r.ok) return; const rows = await r.json();
     const map = {};
-    (rows||[]).forEach(x=>{ const has = (Array.isArray(x.boxes)&&x.boxes.length>0) || (Number(x.total_boxes)>0); if(has){ const w=(x.wh==='CA'?'CA':(x.wh==='SC'?'SC':x.wh||'')); (map[x.base]=map[x.base]||{})[w]=true; } });
+    (rows||[]).forEach(x=>{ const has = (Array.isArray(x.boxes)&&x.boxes.length>0) || (Number(x.total_boxes)>0); if(has){ const w=(x.wh==='CA'?'CA':(x.wh==='SC'?'SC':x.wh||'')); (map[x.base]=map[x.base]||{})[w]={via:(x.via||'')}; } });
     const changed = JSON.stringify(map)!==JSON.stringify(window._packedMap||{});
     window._packedMap = map;
     if(changed && typeof renderSaved==='function') renderSaved();
   }catch(e){}
 }
 function packReady(base, wh){ return !!(window._packedMap && window._packedMap[base] && window._packedMap[base][wh]); }
+function packVia(base, wh){ const m=window._packedMap && window._packedMap[base] && window._packedMap[base][wh]; return (m && typeof m==='object') ? String(m.via||'').toUpperCase() : ''; }
 async function initAuth(){
   if(shipApprToken()){ renderShipApprPage(shipApprToken()); return; }   // 📧 고객 배송비 승인 페이지 (무로그인)
   if(pchkIsEmpMode()){ pchkEmpBoot(); return; }   // 🔒 무로그인 직원 촬영 모드 (#check) — 로그인 건너뜀
@@ -19237,7 +19238,10 @@ function renderSaved(){
           const tip = has ? 'Combined label created — ships from CA' : (ready ? 'Boxes entered — ready to make the combined CA label' : 'Waiting for SC/CA to enter boxes');
           return `<button class="btn btn-sm" style="${sty}" onclick="openLabelModal('${esc(s.base)}','COMBINE')" title="${tip}">🏷 UPS · from CA${sw.length>1?' ('+sw.join('+')+')':''}${has?' ✓':(ready?' •':'')}</button>`;
         }
-        const only=sw.length<=1; return sw.map(w=>{ const uw=upsForWh(s,w); const has=uw&&(uw.tracking||[]).length; const ready=packReady(s.base,w);
+        const only=sw.length<=1; return sw.map(w=>{ const uw=upsForWh(s,w); const has=uw&&(uw.tracking||[]).length;
+        // 🚛 직원이 LTL로 포장한 창고는 UPS 라벨 대상이 아님 — 초록 LTL 배지 (라벨 이미 만든 경우는 예외로 유지)
+        if(!has && packVia(s.base,w)==='LTL'){ return `<span title="Packed as LTL by warehouse (${w}) — ships on the LTL truck, no UPS label needed" style="background:#dcfce7;color:#166534;border:1px solid #86efac;font-size:10.5px;font-weight:800;padding:4px 10px;border-radius:7px;white-space:nowrap;">🚛 LTL${only?'':' '+w}</span>`; }
+        const ready=packReady(s.base,w);
         const sty = has ? 'background:#166534;color:#fff;border-color:#166534;' : (ready ? 'background:#b45309;color:#fff;border-color:#b45309;' : 'background:#fff;color:#94a3b8;border-color:#e2e8f0;');
         const tip = has ? 'Label created' : (ready ? 'Warehouse entered boxes — ready to make the label' : 'Waiting for warehouse to enter boxes');
         return `<button class="btn btn-sm" style="${sty}" onclick="openLabelModal('${esc(s.base)}','${w}')" title="${tip} (${w})">🏷 UPS${only?' Label':' '+w}${has?' ✓':(ready?' •':'')}</button>`; }).join(''); })()}
@@ -19524,6 +19528,28 @@ function safeToAutoRefresh(){
 }
 setInterval(()=>{ if(safeToAutoRefresh()) loadSavedList(); }, 30000);
 window.addEventListener('focus', ()=>{ if(safeToAutoRefresh()) loadSavedList(); });
+
+// ── 새 버전 자동 감지 → 새로고침 배너 (CDN/브라우저 캐시로 옛 버전 계속 보는 문제 방지) ──
+const APP_VER = (function(){ try{ const s=document.getElementById('app-ver'); const m=s&&s.textContent.match(/v(\d+)/); return m?parseInt(m[1],10):0; }catch(e){ return 0; } })();
+let _verDismissed=false;
+async function checkAppVersion(){
+  try{
+    const r=await fetch('/index.html?vck='+Date.now(), {cache:'no-store', headers:{'Range':'bytes=0-20000'}});
+    const t=await r.text(); const m=t.match(/v(\d+)\s*↩/);
+    if(!m) return; const live=parseInt(m[1],10);
+    if(live>APP_VER && !_verDismissed && !document.getElementById('ver-update-banner')) showVerBanner(live);
+  }catch(e){}
+}
+function showVerBanner(live){
+  const d=document.createElement('div'); d.id='ver-update-banner';
+  d.style.cssText='position:fixed;left:0;right:0;bottom:0;z-index:100000;background:#0e7490;color:#fff;padding:12px 16px;display:flex;align-items:center;gap:14px;justify-content:center;flex-wrap:wrap;font-weight:800;font-size:14px;box-shadow:0 -4px 16px rgba(0,0,0,.25);';
+  d.innerHTML='🔄 A newer version (v'+live+') is available — refresh to load the latest. <button id="ver-reload-btn" style="background:#fff;color:#0e7490;border:none;border-radius:8px;padding:8px 18px;font-weight:900;cursor:pointer;font-size:14px;">Refresh now</button> <button id="ver-dismiss-btn" style="background:transparent;color:#bae6fd;border:1px solid #67e8f9;border-radius:8px;padding:7px 12px;cursor:pointer;font-size:12px;">Later</button>';
+  document.body.appendChild(d);
+  document.getElementById('ver-reload-btn').onclick=function(){ location.href=location.pathname+'?v='+live; };
+  document.getElementById('ver-dismiss-btn').onclick=function(){ _verDismissed=true; d.remove(); };
+}
+setTimeout(checkAppVersion, 6000);
+setInterval(checkAppVersion, 180000);   // 3분마다 새 버전 확인
 </script>
 </body>
 </html>
