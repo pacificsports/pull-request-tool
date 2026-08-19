@@ -156,7 +156,7 @@ main{max-width:1100px;margin:0 auto;padding:16px;}
     <button class="btn btn-sm" onclick="doLogout()" style="padding:2px 8px;font-size:10px;" data-i18n="logout">Log out</button>
   </span>
   <select id="lang-sel" onchange="setLang(this.value)" style="font-size:11px;padding:3px 6px;border-radius:5px;border:none;background:#1d3f66;color:#fff;"><option value="ko">한국어</option><option value="en">English</option><option value="es">Español</option></select>
-  <span style="font-size:10px;color:#9fb8d4;">v626 ↩</span>
+  <span style="font-size:10px;color:#9fb8d4;">v627 ↩</span>
 </div>
 <script type="text/javascript" src="https://js.authorize.net/v1/Accept.js" charset="utf-8"></script>
 <div id="po-viewer" style="display:none;position:fixed;top:0;right:0;width:44%;height:100vh;background:#fff;border-left:2px solid var(--border);z-index:60;box-shadow:-6px 0 20px rgba(0,0,0,.15);">
@@ -6696,21 +6696,24 @@ function lblSt(rec){
   return { name:m.shipName||'', company:m.cust||'', addr1:m.shipAddr||'', city:m.shipCity||'',
            state:String(m.shipState||'').toUpperCase(), zip:m.shipZip||'' };
 }
-async function openLabelModal(base){
-  const rec = (savedCache||[]).find(r=>r.base===base);
-  if(!rec){ showToast('Order not found'); return; }
-  if(_shipHandling==null){ try{ await loadShipHandling(); }catch(e){} }
-  _lblBase = base; _lblRec = rec; _lblResult = (rec.meta&&rec.meta._ups)||null;
+async function lblLoadBoxes(base, wh){
   _lblBoxes = [];
   try{
-    const r = await sbFetch('/rest/v1/pr_pack?base=eq.'+encodeURIComponent(base)+'&select=total_boxes,boxes');
+    const r = await sbFetch('/rest/v1/pr_pack?base=eq.'+encodeURIComponent(base)+'&wh=eq.'+encodeURIComponent(wh)+'&select=boxes');
     const j = await r.json();
     if(Array.isArray(j) && j[0] && Array.isArray(j[0].boxes))
       _lblBoxes = j[0].boxes.map(b=>({name:b.name||'', l:+b.l||0, w:+b.w||0, h:+b.h||0, wt:+b.wt||0}));
   }catch(e){}
   if(!_lblBoxes.length) _lblBoxes = [{name:'',l:'',w:'',h:'',wt:''}];
+}
+async function openLabelModal(base){
+  const rec = (savedCache||[]).find(r=>r.base===base);
+  if(!rec){ showToast('Order not found'); return; }
+  if(_shipHandling==null){ try{ await loadShipHandling(); }catch(e){} }
+  _lblBase = base; _lblRec = rec; _lblResult = (rec.meta&&rec.meta._ups)||null;
   const whs = (rec.whs||[]).filter(w=>w==='SC'||w==='CA');
   window._lblOrigin = (_lblResult&&_lblResult.origin) || whs[0] || 'SC';
+  await lblLoadBoxes(base, window._lblOrigin);   // 출발창고(SC/CA)에 해당하는 박스만 로드
   window._lblService = (_lblResult&&_lblResult.service) || '03';
   window._lblTest = false;
   const bill0 = custUpsFor(rec.meta.cust);
@@ -6859,7 +6862,7 @@ function lblSyncBill(){
   const z = document.getElementById('lbl-ups-zip'); if(z) window._lblUpsZip = z.value||'';
 }
 function lblSetBill(m){ lblSyncBoxes(); lblSyncBill(); window._lblBillMode = (m==='receiver'?'receiver':'shipper'); lblRender(); }
-function lblSetOrigin(w){ lblSyncBoxes(); lblSyncBill(); window._lblOrigin = w; lblRender(); }
+async function lblSetOrigin(w){ lblSyncBill(); window._lblOrigin = w; await lblLoadBoxes(_lblBase, w); lblRender(); }
 async function lblEstimate(){
   const rec=_lblRec; if(!rec) return;
   const est=document.getElementById('lbl-est');
@@ -7792,7 +7795,7 @@ const BOX_PRESETS=[
   {n:'BOX #3 & 3-1',l:22,w:16,h:12},{n:'BOX #2',l:22,w:17,h:14},{n:'BOX #2-1',l:22,w:17,h:15},
   {n:'ULINE BOX',l:22,w:15,h:13},{n:'SMALL SAMPLE BOX',l:19,w:12,h:4}
 ];
-let _packBase='', _packCust='', _packPo='', _packBoxes=[], _packTotal='';
+let _packBase='', _packCust='', _packPo='', _packBoxes=[], _packTotal='', _packBoxWh='SC', _packVia='UPS';
 function pchkPackOpen(){
   pchkWhoLoad();
   const ov=pchkEmpEl();
@@ -7804,17 +7807,17 @@ function pchkPackOpen(){
       <div id="pack-list"><div style="color:#94a3b8;font-size:12px;padding:6px;">Loading…</div></div>
     </div>
   </div>`;
-  if(window._packWh==null) window._packWh='';
+  if(window._packWh==null){ let s='SC'; try{ s=localStorage.getItem('pack_wh')||'SC'; }catch(e){} window._packWh=(s==='CA'?'CA':'SC'); }
   pchkPackWhTabs();
   pchkPackList();
 }
 function pchkPackWhTabs(){
   const el=document.getElementById('pack-wh-tabs'); if(!el) return;
-  const cur=window._packWh||'';
-  const tab=(v,lab,c)=>`<button onclick="pchkSetPackWh('${v}')" style="flex:1;padding:10px;border-radius:10px;border:2px solid ${cur===v?c:'#cbd5e1'};background:${cur===v?c:'#fff'};color:${cur===v?'#fff':'#64748b'};font-size:14px;font-weight:800;">${lab}</button>`;
-  el.innerHTML = tab('','All','#0f2a4a') + tab('SC','SC','#1d4ed8') + tab('CA','CA','#c2410c');
+  const cur=window._packWh||'SC';
+  const tab=(v,lab,c)=>`<button onclick="pchkSetPackWh('${v}')" style="flex:1;padding:12px;border-radius:10px;border:2px solid ${cur===v?c:'#cbd5e1'};background:${cur===v?c:'#fff'};color:${cur===v?'#fff':'#64748b'};font-size:15px;font-weight:800;">${lab}</button>`;
+  el.innerHTML = tab('SC','SC','#1d4ed8') + tab('CA','CA','#c2410c');
 }
-function pchkSetPackWh(w){ window._packWh=w; pchkPackWhTabs(); pchkPackList(); }
+function pchkSetPackWh(w){ window._packWh=(w==='CA'?'CA':'SC'); try{ localStorage.setItem('pack_wh', window._packWh); }catch(e){} pchkPackWhTabs(); pchkPackList(); }
 let _packListT;
 function pchkPackListDeb(){ clearTimeout(_packListT); _packListT=setTimeout(pchkPackList, 300); }
 async function pchkPackList(){
@@ -7823,39 +7826,50 @@ async function pchkPackList(){
   let rows=[];
   try{ const r=await fetch(SB_URL+'/rest/v1/rpc/pack_orders',{method:'POST',headers:{apikey:SB_KEY,Authorization:'Bearer '+SB_KEY,'Content-Type':'application/json'},body:JSON.stringify({q})}); rows=await r.json(); }
   catch(e){ el.innerHTML='<div style="color:#b91c1c;font-size:12px;">Could not load orders.</div>'; return; }
-  const _wh=window._packWh||'';
-  if(_wh && Array.isArray(rows)) rows=rows.filter(r=>Array.isArray(r.whs)&&r.whs.includes(_wh));
-  if(!Array.isArray(rows)||!rows.length){ el.innerHTML='<div style="color:#94a3b8;font-size:12px;padding:6px;">No '+(_wh?_wh+' ':'')+'orders'+(q?' for "'+esc(q)+'"':'')+'.</div>'; return; }
-  el.innerHTML=rows.map(r=>`<button onclick="pchkPackEdit('${esc(r.base)}','${esc(String(r.cust||'').replace(/'/g,''))}','${esc(String(r.po||'').replace(/'/g,''))}')" style="display:flex;width:100%;align-items:center;gap:9px;text-align:left;background:#fff;border:1px solid #e5e7eb;border-radius:11px;padding:12px 14px;margin-bottom:8px;cursor:pointer;">
-    <div style="flex:1;min-width:0;"><div style="font-size:15px;font-weight:800;color:#0f2a4a;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">${esc(String(r.cust||'—'))}</div><div style="font-size:12px;color:#64748b;">PO ${esc(String(r.po||'—'))} · ${esc(String(r.dt||''))} ${(Array.isArray(r.whs)?r.whs:[]).filter(w=>w==='SC'||w==='CA').map(w=>`<span style="font-size:10px;font-weight:800;color:#fff;background:${w==='SC'?'#1d4ed8':'#c2410c'};border-radius:10px;padding:1px 7px;margin-left:3px;">${w}</span>`).join('')}</div></div>
-    ${r.packed?'<span style="font-size:11px;font-weight:800;color:#16a34a;background:#dcfce7;border-radius:20px;padding:3px 10px;white-space:nowrap;">📦 packed</span>':'<span style="font-size:11px;color:#b45309;font-weight:700;white-space:nowrap;">add boxes ▸</span>'}
-  </button>`).join('');
+  const _wh=window._packWh||'SC';
+  if(Array.isArray(rows)) rows=rows.filter(r=>Array.isArray(r.whs)&&r.whs.includes(_wh));
+  if(!Array.isArray(rows)||!rows.length){ el.innerHTML='<div style="color:#94a3b8;font-size:12px;padding:6px;">No '+_wh+' orders'+(q?' for "'+esc(q)+'"':'')+'.</div>'; return; }
+  const c=(_wh==='SC'?'#1d4ed8':'#c2410c');
+  el.innerHTML=rows.map(r=>{ const packed=Array.isArray(r.packed_whs)&&r.packed_whs.includes(_wh);
+    return `<button onclick="pchkPackEdit('${esc(r.base)}','${esc(String(r.cust||'').replace(/'/g,''))}','${esc(String(r.po||'').replace(/'/g,''))}','${_wh}')" style="display:flex;width:100%;align-items:center;gap:9px;text-align:left;background:#fff;border:1px solid #e5e7eb;border-radius:11px;padding:12px 14px;margin-bottom:8px;cursor:pointer;">
+    <span style="font-size:10px;font-weight:800;color:#fff;background:${c};border-radius:8px;padding:2px 8px;white-space:nowrap;">${_wh}</span>
+    <div style="flex:1;min-width:0;"><div style="font-size:15px;font-weight:800;color:#0f2a4a;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">${esc(String(r.cust||'—'))}</div><div style="font-size:12px;color:#64748b;">PO ${esc(String(r.po||'—'))} · ${esc(String(r.dt||''))}</div></div>
+    ${packed?'<span style="font-size:11px;font-weight:800;color:#16a34a;background:#dcfce7;border-radius:20px;padding:3px 10px;white-space:nowrap;">📦 packed</span>':'<span style="font-size:11px;color:#b45309;font-weight:700;white-space:nowrap;">add boxes ▸</span>'}
+  </button>`; }).join('');
 }
-async function pchkPackEdit(base, cust, po){
-  _packBase=base; _packCust=cust; _packPo=po; _packBoxes=[]; _packTotal='';
-  // 기존 저장분 로드
-  try{ const r=await fetch(SB_URL+'/rest/v1/pr_pack?base=eq.'+encodeURIComponent(base)+'&select=total_boxes,boxes', {headers:{apikey:SB_KEY,Authorization:'Bearer '+SB_KEY}}); const j=await r.json(); if(Array.isArray(j)&&j[0]){ _packBoxes=Array.isArray(j[0].boxes)?j[0].boxes:[]; _packTotal=(j[0].total_boxes!=null?String(j[0].total_boxes):''); } }catch(e){}
+async function pchkPackEdit(base, cust, po, wh){
+  _packBase=base; _packCust=cust; _packPo=po; _packBoxes=[]; _packTotal=''; _packBoxWh=(wh==='CA'?'CA':'SC'); _packVia='UPS';
+  // 이 창고(base+wh)의 기존 저장분 로드
+  try{ const r=await fetch(SB_URL+'/rest/v1/pr_pack?base=eq.'+encodeURIComponent(base)+'&wh=eq.'+encodeURIComponent(_packBoxWh)+'&select=total_boxes,boxes,via', {headers:{apikey:SB_KEY,Authorization:'Bearer '+SB_KEY}}); const j=await r.json(); if(Array.isArray(j)&&j[0]){ _packBoxes=Array.isArray(j[0].boxes)?j[0].boxes:[]; _packTotal=(j[0].total_boxes!=null?String(j[0].total_boxes):''); _packVia=(j[0].via==='LTL'?'LTL':'UPS'); } }catch(e){}
   pchkPackRender();
 }
+function pchkPackSetVia(v){ const t=document.getElementById('pack-total'); if(t) _packTotal=t.value; _packVia=(v==='LTL'?'LTL':'UPS'); pchkPackRender(); }
 function pchkPackRender(){
   const ov=pchkEmpEl();
-  ov.innerHTML=`<div style="background:#b45309;color:#fff;padding:14px 16px;display:flex;align-items:center;gap:10px;position:sticky;top:0;z-index:5;"><button onclick="pchkPackOpen()" style="background:rgba(255,255,255,.2);color:#fff;border:none;border-radius:8px;padding:6px 11px;font-size:13px;font-weight:700;">← Orders</button><span style="font-size:16px;font-weight:800;">📦 Pack — ${esc(_packCust||'')}</span></div>
+  const whc=(_packBoxWh==='SC'?'#1d4ed8':'#c2410c');
+  const isLtl=_packVia==='LTL';
+  ov.innerHTML=`<div style="background:#b45309;color:#fff;padding:14px 16px;display:flex;align-items:center;gap:10px;position:sticky;top:0;z-index:5;"><button onclick="pchkPackOpen()" style="background:rgba(255,255,255,.2);color:#fff;border:none;border-radius:8px;padding:6px 11px;font-size:13px;font-weight:700;">← Orders</button><span style="background:rgba(255,255,255,.25);border-radius:8px;padding:3px 9px;font-size:13px;font-weight:800;">${_packBoxWh}</span><span style="font-size:16px;font-weight:800;">📦 Pack — ${esc(_packCust||'')}</span></div>
   <div style="flex:1;background:#f1f5f9;padding:16px 14px;">
     <div style="max-width:520px;margin:0 auto;">
       <div style="background:#fff;border-radius:12px;padding:14px 16px;margin-bottom:12px;">
-        <div style="font-size:12px;color:#64748b;">PO <b style="color:#0f2a4a;">${esc(_packPo||'—')}</b> · ${esc(_packBase)}</div>
-        <label style="display:flex;align-items:center;gap:10px;margin-top:10px;font-size:13px;font-weight:800;color:#0f2a4a;">Number of boxes for order
+        <div style="font-size:12px;color:#64748b;">PO <b style="color:#0f2a4a;">${esc(_packPo||'—')}</b> · ships from <b style="color:${whc};">${_packBoxWh}</b></div>
+        <div style="font-size:12px;font-weight:800;color:#0f2a4a;margin:11px 0 6px;">How is this shipping?</div>
+        <div style="display:flex;gap:8px;">
+          <button onclick="pchkPackSetVia('UPS')" style="flex:1;padding:12px;border-radius:10px;border:2px solid ${!isLtl?'#7c2d12':'#cbd5e1'};background:${!isLtl?'#7c2d12':'#fff'};color:${!isLtl?'#fff':'#64748b'};font-size:15px;font-weight:800;">🏷 UPS</button>
+          <button onclick="pchkPackSetVia('LTL')" style="flex:1;padding:12px;border-radius:10px;border:2px solid ${isLtl?'#374151':'#cbd5e1'};background:${isLtl?'#374151':'#fff'};color:${isLtl?'#fff':'#64748b'};font-size:15px;font-weight:800;">🚛 LTL</button>
+        </div>
+        <label style="display:flex;align-items:center;gap:10px;margin-top:14px;font-size:13px;font-weight:800;color:#0f2a4a;">Number of boxes
           <input id="pack-total" type="number" inputmode="numeric" value="${esc(String(_packTotal))}" onchange="_packTotal=this.value" style="width:80px;font-size:17px;padding:8px;border:2px solid #cbd5e1;border-radius:9px;text-align:center;"></label>
-        <div style="font-size:11px;color:#94a3b8;margin-top:4px;">Total box count for the whole order (you'll add each box's size &amp; weight below).</div>
+        <div style="font-size:11px;color:#94a3b8;margin-top:4px;">${isLtl?'🚛 LTL — box count is enough. Per-box size is optional.':'🏷 UPS — add each box size &amp; weight below (used for the shipping label).'}</div>
       </div>
-      <div id="pack-boxes"></div>
-      <button onclick="pchkPackAddBox()" style="width:100%;background:#0f2a4a;color:#fff;border:none;border-radius:11px;padding:14px;font-size:16px;font-weight:800;margin-top:4px;">+ Add box</button>
+      ${isLtl?'':`<div id="pack-boxes"></div>
+      <button onclick="pchkPackAddBox()" style="width:100%;background:#0f2a4a;color:#fff;border:none;border-radius:11px;padding:14px;font-size:16px;font-weight:800;margin-top:4px;">+ Add box</button>`}
       <div style="margin-top:8px;">${pchkNamePicker()}</div>
       <button onclick="pchkPackSave()" id="pack-save" style="width:100%;background:#16a34a;color:#fff;border:none;border-radius:12px;padding:16px;font-size:17px;font-weight:800;margin-top:12px;">💾 Save packing</button>
       <div id="pack-msg" style="font-size:12.5px;font-weight:700;height:16px;text-align:center;margin-top:6px;"></div>
     </div>
   </div>`;
-  pchkPackBoxesRender();
+  if(!isLtl) pchkPackBoxesRender();
 }
 function pchkPackBoxesRender(){
   const el=document.getElementById('pack-boxes'); if(!el) return;
@@ -7903,13 +7917,15 @@ function pchkPackConfirmBox(){
 }
 async function pchkPackSave(){
   const msg=document.getElementById('pack-msg');
+  const tEl=document.getElementById('pack-total'); if(tEl) _packTotal=tEl.value;
   const btn=document.getElementById('pack-save'); if(btn){btn.disabled=true;btn.textContent='Saving…';}
   const total=(_packTotal!==''&&_packTotal!=null)?parseInt(_packTotal,10):(_packBoxes.length||null);
-  const row={ base:_packBase, cust:_packCust||null, po:_packPo||null, total_boxes: total, boxes:_packBoxes, updated_by:_pchkWho||null, updated_at:new Date().toISOString() };
+  const boxes=(_packVia==='LTL')?[]:_packBoxes;   // LTL은 박스수만
+  const row={ base:_packBase, wh:_packBoxWh, via:_packVia, cust:_packCust||null, po:_packPo||null, total_boxes: total, boxes:boxes, updated_by:_pchkWho||null, updated_at:new Date().toISOString() };
   try{
-    const r=await fetch(SB_URL+'/rest/v1/pr_pack?on_conflict=base',{method:'POST',headers:{apikey:SB_KEY,Authorization:'Bearer '+SB_KEY,'Content-Type':'application/json',Prefer:'resolution=merge-duplicates,return=minimal'},body:JSON.stringify([row])});
+    const r=await fetch(SB_URL+'/rest/v1/pr_pack?on_conflict=base,wh',{method:'POST',headers:{apikey:SB_KEY,Authorization:'Bearer '+SB_KEY,'Content-Type':'application/json',Prefer:'resolution=merge-duplicates,return=minimal'},body:JSON.stringify([row])});
     if(!r.ok){ const t=await r.text(); throw new Error('HTTP '+r.status+' '+t.slice(0,120)); }
-    if(msg){msg.style.color='#16a34a';msg.textContent='✅ Saved — manager can print the UPS label.';}
+    if(msg){msg.style.color='#16a34a';msg.textContent=_packVia==='LTL'?'✅ Saved — '+(total||0)+' box(es), LTL.':'✅ Saved — manager can print the UPS label.';}
     if(btn){btn.disabled=false;btn.textContent='💾 Save packing';}
     setTimeout(pchkPackOpen, 900);
   }catch(e){ if(msg){msg.style.color='#dc2626';msg.textContent='Could not save: '+(e.message||e);} if(btn){btn.disabled=false;btn.textContent='💾 Save packing';} }
