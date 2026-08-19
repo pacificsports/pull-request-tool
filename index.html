@@ -156,7 +156,7 @@ main{max-width:1100px;margin:0 auto;padding:16px;}
     <button class="btn btn-sm" onclick="doLogout()" style="padding:2px 8px;font-size:10px;" data-i18n="logout">Log out</button>
   </span>
   <select id="lang-sel" onchange="setLang(this.value)" style="font-size:11px;padding:3px 6px;border-radius:5px;border:none;background:#1d3f66;color:#fff;"><option value="ko">한국어</option><option value="en">English</option><option value="es">Español</option></select>
-  <span style="font-size:10px;color:#9fb8d4;">v628 ↩</span>
+  <span style="font-size:10px;color:#9fb8d4;">v629 ↩</span>
 </div>
 <script type="text/javascript" src="https://js.authorize.net/v1/Accept.js" charset="utf-8"></script>
 <div id="po-viewer" style="display:none;position:fixed;top:0;right:0;width:44%;height:100vh;background:#fff;border-left:2px solid var(--border);z-index:60;box-shadow:-6px 0 20px rgba(0,0,0,.15);">
@@ -723,7 +723,7 @@ async function loadStyleCloud(){
     const rm = getRsv(); let rmChanged = false;
     rows.forEach(row=>{
       if(row.k && String(row.k).slice(0,5)==='@ppb:'){ const kk = row.k.slice(5); const v = Number(row.style)||0; if(kk && v>0 && pm[kk]!==v){ pm[kk] = v; pmChanged = true; } return; }   // 스타일·사이즈별 박스입수 (v496)
-      if(row.k && String(row.k).slice(0,5)==='@rsv:'){ const kk = row.k.slice(5); try{ const v = row.style?JSON.parse(row.style):null; if(v && Number(v.n)>0){ if(JSON.stringify(rm[kk])!==JSON.stringify(v)){ rm[kk]=v; rmChanged=true; } } else if(rm[kk]){ delete rm[kk]; rmChanged=true; } }catch(e){} return; }   // 예약 (v504)
+      if(row.k && String(row.k).slice(0,5)==='@rsv:'){ const kk = row.k.slice(5); try{ const v = row.style?JSON.parse(row.style):null; const arr = _rsvArr(v); if(arr.length){ if(JSON.stringify(rm[kk])!==JSON.stringify(arr)){ rm[kk]=arr; rmChanged=true; } } else if(rm[kk]){ delete rm[kk]; rmChanged=true; } }catch(e){} return; }   // 예약 (거래처별 배열, v6xx)
       if(row.k && row.style && m[row.k] !== row.style){ m[row.k] = row.style; changed = true; }
     });
     if(changed) saveStyleMap(m);
@@ -772,8 +772,12 @@ const LS_RSV = 'psi_rsv';
 function getRsv(){ try{ return JSON.parse(localStorage.getItem(LS_RSV)||'{}'); }catch(e){ return {}; } }
 function saveRsvLocal(m){ try{ localStorage.setItem(LS_RSV, JSON.stringify(m)); }catch(e){} }
 function rsvKey(style,color,size,wh){ return String(style||'').trim().toUpperCase()+'|'+String(color||'').trim().toUpperCase()+'|'+String(size||'').trim().toUpperCase()+'|'+(String(wh||'SC').toUpperCase()==='CA'?'CA':'SC'); }
-function reserveFor(style,color,size,wh){ const r=getRsv()[rsvKey(style,color,size,wh)]; return (r && Number(r.n)>0)?r:null; }
-function reservedBoxes(style,color,size,wh){ const r=getRsv()[rsvKey(style,color,size,wh)]; return r?Math.max(0,Number(r.n)||0):0; }
+// 예약값 정규화: 신규는 [{cust,n,note}] 배열, 레거시는 {n,cust,note} → 배열로
+function _rsvArr(v){ if(!v) return []; if(Array.isArray(v)) return v.filter(x=>x&&Number(x.n)>0).map(x=>({cust:String(x.cust||''),n:Math.max(0,Math.round(Number(x.n)||0)),note:String(x.note||'')})); if(Number(v.n)>0) return [{cust:String(v.cust||''),n:Math.max(0,Math.round(Number(v.n)||0)),note:String(v.note||'')}]; return []; }
+function rsvListAt(style,color,size,wh){ return _rsvArr(getRsv()[rsvKey(style,color,size,wh)]); }
+function reservedForCust(style,color,size,wh,cust){ const cu=String(cust||'').trim().toLowerCase(); const e=rsvListAt(style,color,size,wh).find(x=>x.cust.trim().toLowerCase()===cu); return e?e.n:0; }
+function reserveFor(style,color,size,wh){ const arr=rsvListAt(style,color,size,wh); if(!arr.length) return null; const custs=[...new Set(arr.map(x=>x.cust).filter(Boolean))]; return { n: arr.reduce((a,x)=>a+x.n,0), cust: custs.join(', '), note: (arr.find(x=>x.note)||{}).note||'', list: arr }; }
+function reservedBoxes(style,color,size,wh){ return rsvListAt(style,color,size,wh).reduce((a,x)=>a+(Number(x.n)||0),0); }
 function physBoxes(style,color,size,wh){ try{ return (typeof bxFindAll==='function'?(bxFindAll(style,color,size,wh)||[]):[]).length; }catch(e){ return 0; } }
 function availBoxes(style,color,size,wh){ return Math.max(0, physBoxes(style,color,size,wh) - reservedBoxes(style,color,size,wh)); }
 function reserveRefill(style,color,size,wh){ return Math.max(0, reservedBoxes(style,color,size,wh) - physBoxes(style,color,size,wh)); }
@@ -789,41 +793,61 @@ function reserveBlock(style,color,size,wh,removeCount){
   }catch(e){}
   return null;
 }
+function _rsvSync(k, val){ try{ if(typeof SESS!=='undefined' && SESS){
+  sbFetch('/rest/v1/pr_style_map?on_conflict=k', {method:'POST', headers:{Prefer:'resolution=merge-duplicates,return=minimal'}, body: JSON.stringify([{k:'@rsv:'+k, style: (val&&val.length)?JSON.stringify(val):'', updated_at:new Date().toISOString()}])}).catch(()=>{});
+} }catch(e){} }
+// 거래처(cust) 하나의 예약을 설정/수정/삭제 (다른 거래처 예약은 유지). n<=0이면 그 거래처만 제거.
 function setReserve(style,color,size,wh,n,cust,note){
   const k=rsvKey(style,color,size,wh); const m=getRsv();
   n=Math.max(0,Math.round(Number(n)||0));
-  const val = (n<=0) ? null : { n:n, cust:String(cust||'').trim(), note:String(note||'').trim() };
-  if(!val) delete m[k]; else m[k]=val;
+  const cu=String(cust||'').trim();
+  let arr=_rsvArr(m[k]).filter(x=>x.cust.trim().toLowerCase()!==cu.toLowerCase());
+  if(n>0) arr.push({cust:cu, n:n, note:String(note||'').trim()});
+  if(!arr.length) delete m[k]; else m[k]=arr;
   saveRsvLocal(m);
-  try{ if(typeof SESS!=='undefined' && SESS){
-    sbFetch('/rest/v1/pr_style_map?on_conflict=k', {method:'POST', headers:{Prefer:'resolution=merge-duplicates,return=minimal'}, body: JSON.stringify([{k:'@rsv:'+k, style: val?JSON.stringify(val):'', updated_at:new Date().toISOString()}])}).catch(()=>{});
-  } }catch(e){}
+  _rsvSync(k, m[k]||null);
 }
-function rsvTotals(){ const m=getRsv(); let boxes=0, refill=0, items=0; Object.keys(m).forEach(k=>{ const r=m[k]; const n=Math.max(0,Number(r&&r.n)||0); if(n<=0) return; items++; boxes+=n; const p=k.split('|'); refill += Math.max(0, n - physBoxes(p[0],p[1],p[2],p[3])); }); return {boxes, refill, items}; }
+// 이 (size,wh) 조합의 모든 거래처 예약 삭제
+function clearReserveAllAt(style,color,size,wh){ const k=rsvKey(style,color,size,wh); const m=getRsv(); if(m[k]){ delete m[k]; saveRsvLocal(m); _rsvSync(k,null); } }
+function rsvTotals(){ const m=getRsv(); let boxes=0, refill=0, items=0; Object.keys(m).forEach(k=>{ const arr=_rsvArr(m[k]); const n=arr.reduce((a,x)=>a+x.n,0); if(n<=0) return; items++; boxes+=n; const p=k.split('|'); refill += Math.max(0, n - physBoxes(p[0],p[1],p[2],p[3])); }); return {boxes, refill, items}; }
 function rsvColorBadge(style, color){
   try{
     const st=String(style||'').trim().toUpperCase(), co=String(color||'').toUpperCase();
-    const m=getRsv(); let n=0, refill=0; const custs=new Set();
-    Object.keys(m).forEach(k=>{ const p=k.split('|'); if(p[0]===st && (typeof bxBaseColor==='function'?bxBaseColor(p[1])===bxBaseColor(co):p[1]===co)){ const nn=Math.max(0,Number(m[k].n)||0); if(nn<=0) return; n+=nn; if(m[k].cust) custs.add(m[k].cust); refill+=Math.max(0, nn - physBoxes(p[0],p[1],p[2],p[3])); } });
-    if(n<=0) return '';
-    const cu=[...custs].join(', ');
-    return `<div onclick="event.stopPropagation();openReserveEditor('${esc(String(style))}','${esc(co)}')" title="Reserved ${n} box(es)${cu?(' for '+esc(cu)):''}${refill>0?(' · refill '+refill+' box(es) needed'):''} — click to edit" style="display:inline-block;margin-left:6px;font-size:9px;font-weight:800;color:#7c3aed;background:#f5f3ff;border:1px solid #c4b5fd;border-radius:8px;padding:0 6px;cursor:pointer;white-space:nowrap;">🔒 ${n}${cu?(' · '+esc(cu.length>14?cu.slice(0,14)+'…':cu)):''}${refill>0?` <span style="color:#dc2626;">⚠${refill}</span>`:''}</div>`;
+    const m=getRsv();
+    const byCust={};  // cust → {n, refill}
+    Object.keys(m).forEach(k=>{ const p=k.split('|'); if(p.length<4) return; if(p[0]===st && (typeof bxBaseColor==='function'?bxBaseColor(p[1])===bxBaseColor(co):p[1]===co)){
+      const phys=physBoxes(p[0],p[1],p[2],p[3]); let tot=0;
+      _rsvArr(m[k]).forEach(e=>{ const c=e.cust||'(no name)'; byCust[c]=byCust[c]||{n:0,refill:0}; byCust[c].n+=e.n; tot+=e.n; });
+      // refill 은 조합 단위(재고 부족)라 총량 기준으로 분배 대신 총합만 표시
+      const rf=Math.max(0, tot-phys); if(rf>0){ /* 표시는 아래 총합 계산에서 */ }
+    } });
+    const custNames=Object.keys(byCust);
+    const addBtn=`<span onclick="event.stopPropagation();openReserveEditor('${esc(String(style))}','${esc(co)}')" title="Add a reserve for a customer" style="display:inline-block;margin-left:6px;font-size:9px;font-weight:800;color:#7c3aed;background:#faf5ff;border:1px dashed #c4b5fd;border-radius:8px;padding:0 6px;cursor:pointer;white-space:nowrap;">🔒＋</span>`;
+    if(!custNames.length) return addBtn;   // 예약 없으면 "추가" 버튼만
+    const chips=custNames.map(c=>{
+      const lbl=c==='(no name)'?'(no name)':c;
+      return `<span onclick="event.stopPropagation();openReserveEditor('${esc(String(style))}','${esc(co)}','${esc(c==='(no name)'?'':c)}')" title="Reserved ${byCust[c].n} box(es) for ${esc(lbl)} — click to edit" style="display:inline-block;margin-left:4px;font-size:9px;font-weight:800;color:#7c3aed;background:#f5f3ff;border:1px solid #c4b5fd;border-radius:8px;padding:0 6px;cursor:pointer;white-space:nowrap;">🔒 ${esc(lbl.length>12?lbl.slice(0,12)+'…':lbl)}·${byCust[c].n}</span>`;
+    }).join('');
+    return chips + addBtn;
   }catch(e){ return ''; }
 }
-function openReserveEditor(style, color){
+function openReserveEditor(style, color, cust){
   const st=String(style||'').trim(), co=String(color||'').trim().toUpperCase();
   if(!st){ showToast('No style'); return; }
+  const editCust = (cust!==undefined && cust!==null) ? String(cust).trim() : null;   // null = 새 예약 추가
+  window._rsvOrigCust = editCust || '';
   const SIZE_ORDER=['2T','3T','4T','5T','XXS','XS','S','M','L','XL','2XL','3XL','4XL','5XL','6XL'];
   let sizes=[];
   try{ const set=new Set(); (bxStore||[]).forEach(b=>{ if(String(b.style).trim().toUpperCase()===st.toUpperCase() && bxBaseColor(String(b.color).toUpperCase())===bxBaseColor(co)){ const z=String(b.size||'').toUpperCase(); if(z) set.add(z); } }); sizes=[...set]; }catch(e){}
   if(!sizes.length) sizes=['S','M','L','XL','2XL'];
   sizes.sort((a,b)=>{const ia=SIZE_ORDER.indexOf(a),ib=SIZE_ORDER.indexOf(b);return (ia<0?99:ia)-(ib<0?99:ib)||a.localeCompare(b);});
-  let curCust='', curNote='';
-  sizes.forEach(sz=>['SC','CA'].forEach(w=>{ const r=reserveFor(st,co,sz,w); if(r){ if(!curCust&&r.cust) curCust=r.cust; if(!curNote&&r.note) curNote=r.note; } }));
+  let curCust=editCust||'', curNote='';
+  if(editCust!==null){ sizes.forEach(sz=>['SC','CA'].forEach(w=>{ const e=rsvListAt(st,co,sz,w).find(x=>x.cust.trim().toLowerCase()===String(editCust).toLowerCase()); if(e&&e.note&&!curNote) curNote=e.note; })); }
+  const rvAt=(sz,w)=> editCust!==null ? reservedForCust(st,co,sz,w,editCust) : 0;   // 편집중인 거래처의 수량 (신규는 0)
   const rows=sizes.map(sz=>{
-    const rsc=reservedBoxes(st,co,sz,'SC'), rca=reservedBoxes(st,co,sz,'CA');
+    const rsc=rvAt(sz,'SC'), rca=rvAt(sz,'CA');
     const psc=physBoxes(st,co,sz,'SC'), pca=physBoxes(st,co,sz,'CA');
-    const rfSC=Math.max(0,rsc-psc), rfCA=Math.max(0,rca-pca);
+    const rfSC=Math.max(0,reservedBoxes(st,co,sz,'SC')-psc), rfCA=Math.max(0,reservedBoxes(st,co,sz,'CA')-pca);   // 총 예약 기준 refill
     return `<tr>
       <td style="border:1px solid #e5e7eb;padding:4px 8px;font-weight:800;">${esc(sz)}</td>
       <td style="border:1px solid #e5e7eb;padding:3px 6px;text-align:right;color:#1d4ed8;font-family:Consolas,monospace;">${psc}</td>
@@ -838,8 +862,8 @@ function openReserveEditor(style, color){
   div.style.cssText='position:fixed;inset:0;background:rgba(15,23,42,.55);z-index:120;display:flex;align-items:center;justify-content:center;padding:16px;';
   div.onclick=e=>{ if(e.target===div) div.remove(); };
   div.innerHTML=`<div style="background:#fff;border-radius:12px;max-width:560px;width:100%;max-height:90vh;display:flex;flex-direction:column;overflow:hidden;">
-    <div style="background:#7c3aed;color:#fff;padding:10px 16px;font-weight:800;">🔒 Reserve — ${esc(st)} ${esc(co)}
-      <div style="font-weight:400;font-size:11px;color:#e9d5ff;margin-top:2px;">Box count to hold per size &amp; warehouse. Order stock shows the rest (minus reserve). ⚠ = boxes on hand fell below the reserve → refill needed.</div></div>
+    <div style="background:#7c3aed;color:#fff;padding:10px 16px;font-weight:800;">🔒 ${editCust!==null?'Edit reserve':'Add reserve'} — ${esc(st)} ${esc(co)}
+      <div style="font-weight:400;font-size:11px;color:#e9d5ff;margin-top:2px;">${editCust!==null?'Editing '+esc(editCust||'(no name)')+'’s reserve. ':'New reserve for a customer. '}Other customers’ reserves on the same item are kept. ⚠ = on-hand fell below total reserve → refill needed.</div></div>
     <div style="padding:10px 16px;display:flex;flex-direction:column;gap:8px;overflow-y:auto;">
       <div style="display:flex;gap:8px;flex-wrap:wrap;">
         <div class="ff" style="flex:1;min-width:180px;"><label>Reserved for (customer)</label><input class="fi" id="rsv-cust" list="rsv-cust-list" value="${esc(curCust)}" placeholder="Customer name"><datalist id="rsv-cust-list">${custOpts}</datalist></div>
@@ -862,6 +886,11 @@ function saveReserveEditor(style, color){
   const div=document.getElementById('modal-rsv'); if(!div) return;
   const cust=String((document.getElementById('rsv-cust')||{}).value||'').trim();
   const note=String((document.getElementById('rsv-note')||{}).value||'').trim();
+  const orig=String(window._rsvOrigCust||'').trim();
+  // 거래처명을 바꿨으면 예전 이름 예약분 먼저 제거 (이 style/color 전 사이즈·창고)
+  if(orig && orig.toLowerCase()!==cust.toLowerCase()){
+    div.querySelectorAll('.rsv-in').forEach(inp=>{ setReserve(st,co,inp.getAttribute('data-sz'),inp.getAttribute('data-wh'),0,orig); });
+  }
   let saved=0;
   div.querySelectorAll('.rsv-in').forEach(inp=>{
     const sz=inp.getAttribute('data-sz'), wh=inp.getAttribute('data-wh');
@@ -869,6 +898,7 @@ function saveReserveEditor(style, color){
     setReserve(st, co, sz, wh, n, cust, note);
     if(n>0) saved++;
   });
+  window._rsvOrigCust='';
   div.remove();
   if(typeof _lineAvailCache!=='undefined') _lineAvailCache={};
   if(typeof renderBoxRoom==='function' && document.getElementById('bx-body')) renderBoxRoom();
@@ -877,20 +907,20 @@ function saveReserveEditor(style, color){
 }
 function openReserveList(){
   const m=getRsv();
-  // 한 사이즈 = 한 줄, 그 줄에 SC/CA 예약 같이 표시 (스타일|칼라|사이즈로 묶기)
+  // 한 줄 = (style·color·size·거래처), 그 줄에 SC/CA 예약 표시
   const grp={};
-  Object.keys(m).forEach(k=>{ const n=Math.max(0,Number(m[k].n)||0); if(n<=0) return; const p=k.split('|'); if(p.length<4) return; const gk=p[0]+'|'+p[1]+'|'+p[2]; const g=grp[gk]=grp[gk]||{style:p[0],color:p[1],size:p[2],sc:null,ca:null}; g[(p[3]==='CA')?'ca':'sc']={n, cust:m[k].cust||'', note:m[k].note||''}; });
-  const gkeys=Object.keys(grp).sort((a,b)=>{ const A=grp[a],B=grp[b]; return String(A.style).localeCompare(String(B.style)) || String(A.color).localeCompare(String(B.color)) || bxSizeCmp(A.size,B.size); });
-  const whCell=(g,wh)=>{ const r=g[(wh==='CA')?'ca':'sc']; if(!r||r.n<=0) return `<td style="border:1px solid #e5e7eb;padding:4px 8px;text-align:center;color:#d1d5db;">·</td>`; const phys=physBoxes(g.style,g.color,g.size,wh); const refill=Math.max(0,r.n-phys); const col=wh==='CA'?'#9a3412':'#1d4ed8'; return `<td style="border:1px solid #e5e7eb;padding:4px 8px;text-align:center;font-weight:800;color:${col};" title="${wh}: ${r.n} reserved · ${phys} on hand${refill>0?' · refill '+refill:''}">${r.n}${refill>0?` <span style="color:#dc2626;font-size:9px;font-weight:800;">⚠${refill}</span>`:''}</td>`; };
-  const rows=gkeys.map(gk=>{ const g=grp[gk]; const info=g.sc||g.ca||{};
+  Object.keys(m).forEach(k=>{ const p=k.split('|'); if(p.length<4) return; _rsvArr(m[k]).forEach(e=>{ const cust=e.cust||'(no name)'; const gk=p[0]+'|'+p[1]+'|'+p[2]+'|'+cust; const g=grp[gk]=grp[gk]||{style:p[0],color:p[1],size:p[2],cust:cust,note:'',sc:0,ca:0}; g[(p[3]==='CA')?'ca':'sc']+=e.n; if(e.note&&!g.note) g.note=e.note; }); });
+  const gkeys=Object.keys(grp).sort((a,b)=>{ const A=grp[a],B=grp[b]; return String(A.style).localeCompare(String(B.style)) || String(A.color).localeCompare(String(B.color)) || bxSizeCmp(A.size,B.size) || String(A.cust).localeCompare(String(B.cust)); });
+  const whCell=(g,wh)=>{ const n=(wh==='CA')?g.ca:g.sc; if(!n||n<=0) return `<td style="border:1px solid #e5e7eb;padding:4px 8px;text-align:center;color:#d1d5db;">·</td>`; const phys=physBoxes(g.style,g.color,g.size,wh); const tot=reservedBoxes(g.style,g.color,g.size,wh); const refill=Math.max(0,tot-phys); const col=wh==='CA'?'#9a3412':'#1d4ed8'; return `<td style="border:1px solid #e5e7eb;padding:4px 8px;text-align:center;font-weight:800;color:${col};" title="${wh}: ${n} reserved for this customer · ${phys} on hand · total reserved ${tot}${refill>0?' · refill '+refill:''}">${n}${refill>0?` <span style="color:#dc2626;font-size:9px;font-weight:800;">⚠${refill}</span>`:''}</td>`; };
+  const rows=gkeys.map(gk=>{ const g=grp[gk]; const cq=(g.cust==='(no name)')?'':g.cust;
     return `<tr>
       <td style="border:1px solid #e5e7eb;padding:4px 8px;font-weight:700;">${esc(g.style)}</td>
       <td style="border:1px solid #e5e7eb;padding:4px 8px;">${esc(g.color)}</td>
       <td style="border:1px solid #e5e7eb;padding:4px 8px;text-align:center;font-weight:800;">${esc(g.size)}</td>
       ${whCell(g,'SC')}
       ${whCell(g,'CA')}
-      <td style="border:1px solid #e5e7eb;padding:4px 8px;font-size:11px;">${esc(info.cust||'')}${info.note?(' · '+esc(info.note)):''}</td>
-      <td style="border:1px solid #e5e7eb;padding:4px 8px;text-align:center;white-space:nowrap;"><button class="btn btn-sm" style="border:none;color:#7c3aed;" onclick="openReserveEditor('${esc(g.style)}','${esc(g.color)}')" title="Edit">✏</button><button class="btn btn-sm" style="border:none;color:#b91c1c;" onclick="rsvClearSize('${esc(g.style)}','${esc(g.color)}','${esc(g.size)}')" title="Clear this size (SC + CA)">🗑</button></td>
+      <td style="border:1px solid #e5e7eb;padding:4px 8px;font-size:11px;font-weight:700;color:#7c3aed;">${esc(g.cust)}${g.note?(' · '+esc(g.note)):''}</td>
+      <td style="border:1px solid #e5e7eb;padding:4px 8px;text-align:center;white-space:nowrap;"><button class="btn btn-sm" style="border:none;color:#7c3aed;" onclick="openReserveEditor('${esc(g.style)}','${esc(g.color)}','${esc(cq)}')" title="Edit this customer's reserve">✏</button><button class="btn btn-sm" style="border:none;color:#b91c1c;" onclick="rsvClearCustSize('${esc(g.style)}','${esc(g.color)}','${esc(g.size)}','${esc(cq)}')" title="Clear this customer's reserve for this size">🗑</button></td>
     </tr>`; }).join('');
   const keys=gkeys;
   const t=rsvTotals();
@@ -904,7 +934,7 @@ function openReserveList(){
     <div style="overflow-y:auto;padding:12px 16px;">
       ${keys.length? `<table style="border-collapse:collapse;font-size:12px;width:100%;">
         <thead><tr style="background:#f3f4f6;"><th style="border:1px solid #e5e7eb;padding:4px 8px;text-align:left;">Style</th><th style="border:1px solid #e5e7eb;padding:4px 8px;text-align:left;">Color</th><th style="border:1px solid #e5e7eb;padding:4px 8px;">Size</th><th style="border:1px solid #e5e7eb;padding:4px 8px;color:#1d4ed8;">SC 🔒</th><th style="border:1px solid #e5e7eb;padding:4px 8px;color:#9a3412;">CA 🔒</th><th style="border:1px solid #e5e7eb;padding:4px 8px;text-align:left;">For / Note</th><th style="border:1px solid #e5e7eb;padding:4px 8px;"></th></tr></thead>
-        <tbody>${rows}</tbody></table>` : '<div class="muted" style="padding:20px;text-align:center;">No reserves yet. Use the 🔒 button on a color in the Full Box tab.</div>'}
+        <tbody>${rows}</tbody></table>` : '<div class="muted" style="padding:20px;text-align:center;">No reserves yet. Use the 🔒＋ button on a color in the Full Box tab to add one.</div>'}
     </div></div>`;
   document.body.appendChild(div);
 }
@@ -919,7 +949,9 @@ function bxLocReleaseReserve(style,color,size,wh){
   const r = (typeof reserveFor==='function' && reserveFor(style,color,size,wh)) || {};
   const newN = cur - n;
   if(!confirm('Release '+n+' box(es) from the reserve'+(r.cust?(' for '+r.cust):'')+'?\n\n'+(newN>0?(newN+' box(es) will stay reserved.'):'The reserve will be cleared.'))) return;
-  setReserve(style,color,size,wh, newN, r.cust||'', r.note||'');
+  // 여러 거래처면 큰 예약부터 줄여서 n개 해제
+  let left=n; const arr=rsvListAt(style,color,size,wh).slice().sort((a,b)=>b.n-a.n);
+  arr.forEach(e=>{ if(left<=0) return; const take=Math.min(left, e.n); setReserve(style,color,size,wh, e.n-take, e.cust, e.note); left-=take; });
   if(typeof _lineAvailCache!=='undefined') _lineAvailCache={};
   showToast('🔓 Released '+n+' box(es)'+(newN>0?(' — '+newN+' still reserved'):' — reserve cleared'));
   const loc = (window._blmCtx&&window._blmCtx.loc)||'';
@@ -936,13 +968,25 @@ function rsvClearOne(k){
   if(typeof renderBoxRoom==='function' && document.getElementById('bx-body')) renderBoxRoom();
   if(typeof renderTable==='function' && typeof poLines!=='undefined' && poLines.length) renderTable();
 }
-// 🗑 한 사이즈의 SC+CA 예약 모두 해제 (리스트에서 사이즈 한 줄 = SC/CA 합쳐 보이므로)
+// 🗑 한 사이즈의 SC+CA 예약 모두 해제 (모든 거래처)
 function rsvClearSize(style,color,size){
   const sc=reservedBoxes(style,color,size,'SC'), ca=reservedBoxes(style,color,size,'CA');
   if(sc<=0 && ca<=0) return;
-  if(!confirm('Clear reserve for '+style+' '+color+' '+size+'?'+(sc>0?'\n  SC: '+sc+' box(es)':'')+(ca>0?'\n  CA: '+ca+' box(es)':''))) return;
-  if(sc>0) setReserve(style,color,size,'SC',0);
-  if(ca>0) setReserve(style,color,size,'CA',0);
+  if(!confirm('Clear ALL reserves for '+style+' '+color+' '+size+'?'+(sc>0?'\n  SC: '+sc+' box(es)':'')+(ca>0?'\n  CA: '+ca+' box(es)':''))) return;
+  clearReserveAllAt(style,color,size,'SC'); clearReserveAllAt(style,color,size,'CA');
+  if(typeof _lineAvailCache!=='undefined') _lineAvailCache={};
+  openReserveList();
+  if(typeof renderBoxRoom==='function' && document.getElementById('bx-body')) renderBoxRoom();
+  if(typeof renderTable==='function' && typeof poLines!=='undefined' && poLines.length) renderTable();
+}
+// 🗑 특정 거래처의 이 사이즈(SC+CA) 예약만 해제
+function rsvClearCustSize(style,color,size,cust){
+  const cu=String(cust||'').trim();
+  const sc=reservedForCust(style,color,size,'SC',cu), ca=reservedForCust(style,color,size,'CA',cu);
+  if(sc<=0 && ca<=0) return;
+  if(!confirm('Clear '+(cu||'(no name)')+'’s reserve for '+style+' '+color+' '+size+'?'+(sc>0?'\n  SC: '+sc:'')+(ca>0?'\n  CA: '+ca:''))) return;
+  if(sc>0) setReserve(style,color,size,'SC',0,cu);
+  if(ca>0) setReserve(style,color,size,'CA',0,cu);
   if(typeof _lineAvailCache!=='undefined') _lineAvailCache={};
   openReserveList();
   if(typeof renderBoxRoom==='function' && document.getElementById('bx-body')) renderBoxRoom();
@@ -12215,9 +12259,11 @@ function bxGridInner(sty, colGroups){
         return `<td style="text-align:center;padding:2px 3px;">${n?`<span style="display:inline-block;min-width:30px;padding:1px 5px;border-radius:6px;background:#f5f3ff;border:1px solid #c4b5fd;font-size:11px;font-weight:800;color:#7c3aed;" title="Reserved ${n}${rf?(' · refill '+rf):''}">${n}${rf?`<span style="color:#dc2626;font-size:8px;font-weight:800;"> ⚠${rf}</span>`:''}</span>`:`<span style="color:#e8ecf3;">·</span>`}</td>`;
       }).join('');
       if(!any) return '';
-      ['SC','CA'].forEach(w=>sizes.forEach(sz=>{ const r=reserveFor(sty,c,sz,w); if(r){ if(r.cust) custs.add(r.cust); if(r.note&&!note) note=r.note; } }));
-      const lbl='🔒 Reserved'+(custs.size?' · '+esc([...custs].join(', ')):'')+(note?' <span style="font-weight:600;color:#9333ea;">('+esc(note)+')</span>':'');
-      return `<tr style="background:#faf5ff;"><td onclick="openReserveEditor('${esc(sty)}','${esc(c)}')" style="font-size:9.5px;font-weight:800;color:#7c3aed;white-space:nowrap;text-align:left;padding-left:12px;cursor:pointer;" title="Click to edit this reserve">${lbl}</td>${cells}<td style="font-family:Consolas,monospace;font-weight:800;color:#7c3aed;text-align:center;">${tot||''}</td><td></td></tr>`;
+      ['SC','CA'].forEach(w=>sizes.forEach(sz=>{ rsvListAt(sty,c,sz,w).forEach(e=>{ if(e.cust) custs.add(e.cust); if(e.note&&!note) note=e.note; }); }));
+      const custArr=[...custs];
+      const custChips=custArr.length?custArr.map(cn=>`<span onclick="event.stopPropagation();openReserveEditor('${esc(sty)}','${esc(c)}','${esc(cn)}')" style="cursor:pointer;text-decoration:underline;" title="Edit ${esc(cn)}'s reserve">${esc(cn)}</span>`).join(', '):'';
+      const lbl='🔒 Reserved'+(custChips?' · '+custChips:'')+(note?' <span style="font-weight:600;color:#9333ea;">('+esc(note)+')</span>':'')+` <span onclick="event.stopPropagation();openReserveEditor('${esc(sty)}','${esc(c)}')" style="cursor:pointer;color:#7c3aed;" title="Add a reserve for another customer">＋</span>`;
+      return `<tr style="background:#faf5ff;"><td style="font-size:9.5px;font-weight:800;color:#7c3aed;white-space:nowrap;text-align:left;padding-left:12px;">${lbl}</td>${cells}<td style="font-family:Consolas,monospace;font-weight:800;color:#7c3aed;text-align:center;">${tot||''}</td><td></td></tr>`;
     })();
     // ✅ Available = 재고(Total) − Reserved · reserve 있는 색상에서만 표시 (오더에 실제로 쓸 수 있는 수량)
     const availRow = rsvRow ? (()=>{
