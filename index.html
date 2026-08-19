@@ -156,7 +156,7 @@ main{max-width:1100px;margin:0 auto;padding:16px;}
     <button class="btn btn-sm" onclick="doLogout()" style="padding:2px 8px;font-size:10px;" data-i18n="logout">Log out</button>
   </span>
   <select id="lang-sel" onchange="setLang(this.value)" style="font-size:11px;padding:3px 6px;border-radius:5px;border:none;background:#1d3f66;color:#fff;"><option value="ko">한국어</option><option value="en">English</option><option value="es">Español</option></select>
-  <span style="font-size:10px;color:#9fb8d4;">v629 ↩</span>
+  <span style="font-size:10px;color:#9fb8d4;">v630 ↩</span>
 </div>
 <script type="text/javascript" src="https://js.authorize.net/v1/Accept.js" charset="utf-8"></script>
 <div id="po-viewer" style="display:none;position:fixed;top:0;right:0;width:44%;height:100vh;background:#fff;border-left:2px solid var(--border);z-index:60;box-shadow:-6px 0 20px rgba(0,0,0,.15);">
@@ -2691,9 +2691,23 @@ async function enterApp(){
   }).catch(()=>{});
   if(typeof pchkReviewBadge==='function') pchkReviewBadge();
   if(typeof pchkBoxreqBadge==='function') pchkBoxreqBadge();
+  if(typeof loadPackedMap==='function') loadPackedMap();   // 📦 직원 박스입력 상태 → UPS 버튼 색
   try{ clearInterval(window._mgrBoxreqPoll); }catch(e){}
-  window._mgrBoxreqPoll=setInterval(()=>{ if(typeof pchkBoxreqBadge==='function') pchkBoxreqBadge(); }, 20000);   // 📦 box request 알람 20초마다 갱신
+  window._mgrBoxreqPoll=setInterval(()=>{ if(typeof pchkBoxreqBadge==='function') pchkBoxreqBadge(); if(typeof loadPackedMap==='function') loadPackedMap(); }, 20000);   // 📦 box request 알람 + 포장상태 20초마다 갱신
 }
+// 직원이 창고별로 박스를 넣었는지 맵 (base → Set(wh)). UPS 버튼 색상용.
+async function loadPackedMap(){
+  try{
+    const r = await sbFetch('/rest/v1/pr_pack?select=base,wh,boxes,total_boxes');
+    if(!r.ok) return; const rows = await r.json();
+    const map = {};
+    (rows||[]).forEach(x=>{ const has = (Array.isArray(x.boxes)&&x.boxes.length>0) || (Number(x.total_boxes)>0); if(has){ const w=(x.wh==='CA'?'CA':(x.wh==='SC'?'SC':x.wh||'')); (map[x.base]=map[x.base]||{})[w]=true; } });
+    const changed = JSON.stringify(map)!==JSON.stringify(window._packedMap||{});
+    window._packedMap = map;
+    if(changed && typeof renderSaved==='function') renderSaved();
+  }catch(e){}
+}
+function packReady(base, wh){ return !!(window._packedMap && window._packedMap[base] && window._packedMap[base][wh]); }
 async function initAuth(){
   if(shipApprToken()){ renderShipApprPage(shipApprToken()); return; }   // 📧 고객 배송비 승인 페이지 (무로그인)
   if(pchkIsEmpMode()){ pchkEmpBoot(); return; }   // 🔒 무로그인 직원 촬영 모드 (#check) — 로그인 건너뜀
@@ -7020,7 +7034,7 @@ async function lblSaveTracking(){
   let store = rec.meta._ups || {};
   // 레거시 평면 _ups → 창고별 키로 변환
   if((store.tracking||store.shipmentId) && store.origin && !(store.SC||store.CA)){ const o=store.origin; store = { [o]: {...store} }; }
-  store[_lblResult.origin] = { tracking:_lblResult.tracking, service:_lblResult.service, origin:_lblResult.origin,
+  store[_lblResult.origin] = { tracking:_lblResult.tracking, labels:_lblResult.labels||[], service:_lblResult.service, origin:_lblResult.origin,
     billing:_lblResult.billing, shipmentId:_lblResult.shipmentId||null,
     cost:_lblResult.cost||null, ourCost:_lblResult.ourCost!=null?_lblResult.ourCost:null,
     listCost:_lblResult.listCost!=null?_lblResult.listCost:null, boxCount:_lblResult.boxCount||null, handling:_lblResult.handling||0,
@@ -18700,7 +18714,10 @@ function renderSaved(){
       <button class="btn btn-sm" onclick="openOrderSummary('${esc(s.base)}')">📋 Order Confirmation</button>
       <button class="btn btn-sm" onclick="copyOrderSummary('${esc(s.base)}')">📧 Copy Email</button>
       <button class="btn btn-sm" onclick="viewSavedPO('${esc(s.base)}')">📄 PO</button>
-      ${(()=>{ const sw=(s.whs||[]).filter(w=>w==='SC'||w==='CA'); const only=sw.length<=1; return sw.map(w=>{ const uw=upsForWh(s,w); const has=uw&&(uw.tracking||[]).length; return `<button class="btn btn-sm" style="${has?'background:#166534;color:#fff;border-color:#166534;':'background:#7c2d12;color:#fff;border-color:#7c2d12;'}" onclick="openLabelModal('${esc(s.base)}','${w}')" title="Create & print UPS label from ${w} (auto-fills boxes from ${w} packing)">🏷 UPS${only?' Label':' '+w}${has?' ✓':''}</button>`; }).join(''); })()}
+      ${(()=>{ const sw=(s.whs||[]).filter(w=>w==='SC'||w==='CA'); const only=sw.length<=1; return sw.map(w=>{ const uw=upsForWh(s,w); const has=uw&&(uw.tracking||[]).length; const ready=packReady(s.base,w);
+        const sty = has ? 'background:#166534;color:#fff;border-color:#166534;' : (ready ? 'background:#b45309;color:#fff;border-color:#b45309;' : 'background:#fff;color:#94a3b8;border-color:#e2e8f0;');
+        const tip = has ? 'Label created' : (ready ? 'Warehouse entered boxes — ready to make the label' : 'Waiting for warehouse to enter boxes');
+        return `<button class="btn btn-sm" style="${sty}" onclick="openLabelModal('${esc(s.base)}','${w}')" title="${tip} (${w})">🏷 UPS${only?' Label':' '+w}${has?' ✓':(ready?' •':'')}</button>`; }).join(''); })()}
       ${(s.meta&&s.meta._shipApproval)?`<span title="Shipping cost approval: ${esc(_apprMoney(s.meta._shipApproval.amount))} → ${esc(s.meta._shipApproval.email||'')}" style="cursor:pointer;" onclick="openLabelModal('${esc(s.base)}','${esc((s.meta._shipApproval.wh==='CA'?'CA':'SC'))}')">${apprStatusChip(s.meta._shipApproval)}</span>`:''}
       <button class="btn btn-sm" onclick="openHistory('${esc(s.base)}')" title="Change history">🕘</button>
       <button class="btn btn-sm" style="color:#7c3aed;" onclick="splitOrderOpen('${esc(s.base)}')" title="Split some items into a separate order (-S) — run urgent items separately (stock deductions transfer too)">✂ Split</button>
