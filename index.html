@@ -156,7 +156,7 @@ main{max-width:1100px;margin:0 auto;padding:16px;}
     <button class="btn btn-sm" onclick="doLogout()" style="padding:2px 8px;font-size:10px;" data-i18n="logout">Log out</button>
   </span>
   <select id="lang-sel" onchange="setLang(this.value)" style="font-size:11px;padding:3px 6px;border-radius:5px;border:none;background:#1d3f66;color:#fff;"><option value="ko">한국어</option><option value="en">English</option><option value="es">Español</option></select>
-  <span id="app-ver" style="font-size:10px;color:#9fb8d4;">v654 ↩</span>
+  <span id="app-ver" style="font-size:10px;color:#9fb8d4;">v655 ↩</span>
 </div>
 <script type="text/javascript" src="https://js.authorize.net/v1/Accept.js" charset="utf-8"></script>
 <div id="po-viewer" style="display:none;position:fixed;top:0;right:0;width:44%;height:100vh;background:#fff;border-left:2px solid var(--border);z-index:60;box-shadow:-6px 0 20px rgba(0,0,0,.15);">
@@ -8830,6 +8830,22 @@ function pchkSlotFile(slot, files){
 }
 function pchkSlotImgs(){ return PCHK_SLOTS.filter(s=>_pchkSlots[s]).map(s=>({label:s, dataUrl:_pchkSlots[s]})); }
 function pchkSlotCount(){ return PCHK_SLOTS.filter(s=>_pchkSlots[s]).length; }
+// 📷 추가 개별 사진 (박스 라벨 close-up 등) — 4칸 외에 여러 장 계속 추가. 매니저가 보고 판단.
+let _pchkExtra=[];
+function pchkAllPhotos(){ return pchkSlotImgs().concat((_pchkExtra||[]).map((d,i)=>({label:'closeup'+(i+1), dataUrl:d}))); }
+function pchkAddExtra(files){
+  const arr=Array.from(files||[]); if(!arr.length) return;
+  arr.forEach(f=>{ const reader=new FileReader();
+    reader.onload=e=>{ const img=new Image();
+      img.onload=()=>{ const max=1600; let w=img.width,h=img.height;
+        if(Math.max(w,h)>max){ const r=max/Math.max(w,h); w=Math.round(w*r); h=Math.round(h*r); }
+        const c=document.createElement('canvas'); c.width=w; c.height=h; c.getContext('2d').drawImage(img,0,0,w,h);
+        _pchkExtra.push(c.toDataURL('image/jpeg',0.8)); pchkRenderExtra(); };
+      img.src=e.target.result; };
+    reader.readAsDataURL(f); });
+}
+function pchkRenderExtra(){ const el=document.getElementById('pchk-extra-thumbs'); if(!el) return;
+  el.innerHTML=(_pchkExtra||[]).map((d,i)=>`<div style="position:relative;"><img src="${d}" style="width:74px;height:74px;object-fit:cover;border-radius:8px;border:1px solid #cbd5e1;"><button onclick="_pchkExtra.splice(${i},1);pchkRenderExtra()" style="position:absolute;top:-7px;right:-7px;background:#dc2626;color:#fff;border:none;border-radius:50%;width:22px;height:22px;font-size:13px;font-weight:800;line-height:1;">×</button></div>`).join(''); }
 function pchkRenderSlots(){
   const flags=window._pchkRetake||[];
   PCHK_SLOTS.forEach(s=>{ const cell=document.getElementById('pchk-slot-'+s); if(!cell) return; const v=_pchkSlots[s]; const flag=flags.includes(s);
@@ -8871,11 +8887,18 @@ function pchkEmpCapture(){
           ${PCHK_SLOTS.map(s=>`<div id="pchk-slot-${s}"></div>`).join('')}
         </div>
         ${PCHK_SLOTS.map(s=>`<input type="file" id="pchk-cam-${s}" accept="image/*" capture="environment" style="display:none;" onchange="pchkSlotFile('${s}',this.files)">`).join('')}
+        <div style="margin-top:12px;border-top:1px dashed #e2e8f0;padding-top:10px;">
+          <div style="font-size:11.5px;color:#64748b;margin-bottom:8px;line-height:1.5;">📎 Extra close-ups (optional) — if a <b>different box</b> is on the pallet, photograph its <b>box label up close</b> so the manager can judge. Add as many as you need.</div>
+          <input type="file" id="pchk-extra-cam" accept="image/*" capture="environment" multiple style="display:none;" onchange="pchkAddExtra(this.files)">
+          <button onclick="document.getElementById('pchk-extra-cam').click()" style="width:100%;background:#ecfeff;color:#0891b2;border:2px dashed #67e8f9;border-radius:10px;padding:12px;font-size:14px;font-weight:800;">➕ Add individual photo (label close-up)</button>
+          <div id="pchk-extra-thumbs" style="display:flex;flex-wrap:wrap;gap:8px;margin-top:10px;"></div>
+        </div>
       </div>
       <button id="pchk-analyze" onclick="pchkEmpSaveCheck()" disabled style="background:#94a3b8;color:#fff;border:none;border-radius:12px;padding:16px;font-size:17px;font-weight:800;opacity:.6;">💾 Save check</button>
       ${pchkDoneRender()}
     </div></div>`;
   pchkRenderSlots();
+  pchkRenderExtra();    // 📎 추가 close-up 사진 썸네일
   pchkDoneFetch();      // ✅ 공유 체크 목록 로드
   pchkStartPoll();      // 🔄 15초마다 자동 갱신
 }
@@ -8921,30 +8944,30 @@ async function pchkEmpSaveCheck(){
   const rows=pchkBinRowsSorted();
   const staff_check=rows.map((x,i)=>{ const m=_pchkMarks[i]||{}; return { style:x.style, color:x.color, size:x.size, sys:Number(x.n)||0, mark:m.mark||null, count:(m.count!==undefined&&String(m.count).trim()!=='')?Number(m.count):null }; });
   const btn=document.getElementById('pchk-analyze'); if(btn){ btn.disabled=true; btn.textContent='💾 Saving…'; }
-  const row={ wh:_pchkWh, bin, submitter:(_pchkWho||'').trim()||null, note:pchkEmpItem()||null, detected:[], staff_check, photos:pchkSlotImgs(), status:'pending' };
+  const row={ wh:_pchkWh, bin, submitter:(_pchkWho||'').trim()||null, note:pchkEmpItem()||null, detected:[], staff_check, photos:pchkAllPhotos(), status:'pending' };
   try{
     const r=await fetch(SB_URL+'/rest/v1/pr_physcheck',{method:'POST',headers:{apikey:SB_KEY,Authorization:'Bearer '+SB_KEY,'Content-Type':'application/json',Prefer:'return=minimal'},body:JSON.stringify([row])});
     if(!r.ok){ const t=await r.text(); throw new Error('HTTP '+r.status+' '+t.slice(0,140)); }
   }catch(e){ if(btn){ btn.disabled=false; btn.textContent='💾 Save check'; } showToast('⚠ Save failed: '+(e.message||e)); return; }
   const offN=staff_check.filter(s=>s.mark==='off').length, okN=staff_check.filter(s=>s.mark==='ok').length;
-  _pchkDone.unshift({ wh:_pchkWh, bin, item:pchkEmpItem(), summary:(offN?('⚠ '+offN+' off'):(okN?('✓ '+okN+' ok'):'saved')), t:new Date().toISOString() }); pchkDoneSave();
+  _pchkDone.unshift({ wh:_pchkWh, bin, item:pchkEmpItem(), who:(_pchkWho||'').trim()||null, summary:(offN?('⚠ '+offN+' off'):(okN?('✓ '+okN+' ok'):'saved')), t:new Date().toISOString() }); pchkDoneSave();
   _pchkBin=''; _pchkStyle=''; _pchkColor=''; _pchkSize=''; _pchkMarks={};
-  _pchkSlots={front:null,left:null,right:null,back:null}; window._pchkBinData=null;
+  _pchkSlots={front:null,left:null,right:null,back:null}; _pchkExtra=[]; window._pchkBinData=null;
   pchkEmpCapture();
   showToast('✅ Saved'+(offN?(' — '+offN+' flagged for manager'):'')+'. Next pallet ready.');
 }
 async function pchkEmpSave(detected){
   const btn=document.getElementById('pchk-analyze'); if(btn){ btn.disabled=true; btn.textContent='💾 Saving…'; btn.style.opacity='.7'; }
   const item=pchkEmpItem();
-  const row={ wh:_pchkWh, bin:_pchkBin, submitter:(_pchkWho||'').trim()||null, note:item||null, detected:detected||[], photos:pchkSlotImgs(), status:'pending' };
+  const row={ wh:_pchkWh, bin:_pchkBin, submitter:(_pchkWho||'').trim()||null, note:item||null, detected:detected||[], photos:pchkAllPhotos(), status:'pending' };
   try{
     const r=await fetch(SB_URL+'/rest/v1/pr_physcheck',{method:'POST',headers:{apikey:SB_KEY,Authorization:'Bearer '+SB_KEY,'Content-Type':'application/json',Prefer:'return=minimal'},body:JSON.stringify([row])});
     if(!r.ok){ const t=await r.text(); throw new Error('HTTP '+r.status+' '+t.slice(0,140)); }
   }catch(e){ if(btn){ btn.disabled=false; btn.textContent='🔍 Analyze & save'; btn.style.opacity='1'; } showToast('⚠ Save failed: '+(e.message||e)); return; }
   const total=(detected||[]).reduce((a,d)=>a+(Number(d.count)||0),0);
-  _pchkDone.unshift({ wh:_pchkWh, bin:_pchkBin, item, total, t:new Date().toISOString() }); pchkDoneSave();
+  _pchkDone.unshift({ wh:_pchkWh, bin:_pchkBin, item, who:(_pchkWho||'').trim()||null, total, t:new Date().toISOString() }); pchkDoneSave();
   _pchkBin=''; _pchkStyle=''; _pchkColor=''; _pchkSize='';
-  _pchkSlots={front:null,left:null,right:null,back:null};
+  _pchkSlots={front:null,left:null,right:null,back:null}; _pchkExtra=[];
   window._pchkRetake=[]; window._pchkRetakeMsg=''; window._pchkPendingDetected=null; window._pchkBinData=null;
   pchkEmpCapture();
   showToast('✅ Analyze complete — saved ('+total+' boxes). Next pallet ready.');
@@ -8955,19 +8978,29 @@ function pchkDoneLoad(){ try{ _pchkDone=JSON.parse(localStorage.getItem('pchk_do
 function pchkDoneSave(){ try{ localStorage.setItem('pchk_done', JSON.stringify((_pchkDone||[]).slice(0,80))); }catch(e){} }
 // ✅ 체크한 pallet 목록 — 서버(pr_physcheck) 공유. 모든 폰이 같은 목록을 보고, 15초마다 자동 갱신 (v614)
 function pchkDoneInner(){
-  const all = window._pchkDoneSrv;
-  if(all===undefined) return '<div style="padding:10px;color:#94a3b8;font-size:12px;">Loading…</div>';
-  const rows = (all||[]).filter(d=>String(d.wh||'').toUpperCase()===_pchkWh);
-  if(!rows.length) return '<div style="padding:10px;color:#94a3b8;font-size:12px;">No ['+_pchkWh+'] checks yet — checks from every phone show up here.</div>';
+  const srv = window._pchkDoneSrv;
+  const wh = _pchkWh;
   const fmt=iso=>{ if(!iso) return ''; const dt=new Date(iso); return dt.toLocaleDateString('en-US',{month:'numeric',day:'numeric'})+' '+dt.toLocaleTimeString('en-US',{hour:'numeric',minute:'2-digit'}); };
-  return rows.slice(0,40).map(d=>{
-    const sc=Array.isArray(d.staff_check)?d.staff_check:[];
-    const off=sc.filter(s=>s&&s.mark==='off').length, ok=sc.filter(s=>s&&s.mark==='ok').length;
+  const norm=[];
+  // 서버(전 폰 공유)
+  (srv===undefined?[]:(srv||[])).forEach(d=>{ if(String(d.wh||'').toUpperCase()!==wh) return;
+    const sc=Array.isArray(d.staff_check)?d.staff_check:[]; const off=sc.filter(s=>s&&s.mark==='off').length, ok=sc.filter(s=>s&&s.mark==='ok').length;
     const summ = d.status==='resolved'?'✓ manager done': off?('⚠ '+off+' off'): ok?('✓ '+ok+' ok'):'saved';
+    norm.push({wh:d.wh,bin:d.bin,note:d.note,who:d.submitter,summary:summ,at:d.created_at,local:false}); });
+  // 이 폰 로컬 기록 — 서버에서 지워져도 유지 ("우리가 뭘 체크했는지" 계속 표시)
+  (_pchkDone||[]).forEach(d=>{ if(String(d.wh||'').toUpperCase()!==wh) return;
+    norm.push({wh:d.wh,bin:d.bin,note:d.item,who:d.who||null,summary:d.summary||(d.total!=null?('✓ '+d.total):'saved'),at:d.t,local:true}); });
+  if(srv===undefined && !norm.length) return '<div style="padding:10px;color:#94a3b8;font-size:12px;">Loading…</div>';
+  // wh|bin 으로 중복 제거 — 가장 최근 것만 (로컬/서버 같은 팔레트는 하나로)
+  const byKey={};
+  norm.forEach(x=>{ const k=String(x.wh||'').toUpperCase()+'|'+String(x.bin||'').toUpperCase(); const cur=byKey[k]; if(!cur || new Date(x.at||0)>new Date(cur.at||0)) byKey[k]=x; });
+  const rows=Object.values(byKey).sort((a,b)=>new Date(b.at||0)-new Date(a.at||0));
+  if(!rows.length) return '<div style="padding:10px;color:#94a3b8;font-size:12px;">No ['+wh+'] checks yet — checks from every phone show up here.</div>';
+  return rows.slice(0,60).map(d=>{
     return `<div style="display:flex;align-items:center;gap:8px;padding:9px 10px;border-bottom:1px solid #f1f5f9;">
       <span style="font-size:13px;font-weight:800;color:#0891b2;white-space:nowrap;">✅ [${esc(String(d.wh||''))}] ${esc(String(d.bin||''))}</span>
       ${d.note?`<span style="font-size:11px;color:#475569;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${esc(String(d.note))}</span>`:''}
-      <span style="font-size:10px;color:#94a3b8;margin-left:auto;white-space:nowrap;text-align:right;line-height:1.35;">${d.submitter?esc(String(d.submitter))+' · ':''}${summ}<br>${fmt(d.created_at)}</span>
+      <span style="font-size:10px;color:#94a3b8;margin-left:auto;white-space:nowrap;text-align:right;line-height:1.35;">${d.who?esc(String(d.who))+' · ':''}${esc(d.summary||'')}${d.local?' 📱':''}<br>${fmt(d.at)}</span>
     </div>`; }).join('');
 }
 function pchkDoneRender(){
