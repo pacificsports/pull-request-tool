@@ -156,7 +156,7 @@ main{max-width:1100px;margin:0 auto;padding:16px;}
     <button class="btn btn-sm" onclick="doLogout()" style="padding:2px 8px;font-size:10px;" data-i18n="logout">Log out</button>
   </span>
   <select id="lang-sel" onchange="setLang(this.value)" style="font-size:11px;padding:3px 6px;border-radius:5px;border:none;background:#1d3f66;color:#fff;"><option value="ko">한국어</option><option value="en">English</option><option value="es">Español</option></select>
-  <span style="font-size:10px;color:#9fb8d4;">v645 ↩</span>
+  <span style="font-size:10px;color:#9fb8d4;">v646 ↩</span>
 </div>
 <script type="text/javascript" src="https://js.authorize.net/v1/Accept.js" charset="utf-8"></script>
 <div id="po-viewer" style="display:none;position:fixed;top:0;right:0;width:44%;height:100vh;background:#fff;border-left:2px solid var(--border);z-index:60;box-shadow:-6px 0 20px rgba(0,0,0,.15);">
@@ -2703,7 +2703,7 @@ async function enterApp(){
   if(typeof bulkBadge==='function') bulkBadge();
   if(typeof loadPackedMap==='function') loadPackedMap();   // 📦 직원 박스입력 상태 → UPS 버튼 색
   try{ clearInterval(window._mgrBoxreqPoll); }catch(e){}
-  window._mgrBoxreqPoll=setInterval(()=>{ if(typeof pchkBoxreqBadge==='function') pchkBoxreqBadge(); if(typeof bulkBadge==='function') bulkBadge(); if(typeof loadPackedMap==='function') loadPackedMap(); }, 20000);   // 📦 box request 알람 + 포장상태 20초마다 갱신
+  window._mgrBoxreqPoll=setInterval(()=>{ if(typeof pchkBoxreqBadge==='function') pchkBoxreqBadge(); if(typeof bulkBadge==='function') bulkBadge(); if(typeof apprPollAll==='function') apprPollAll(); if(typeof loadPackedMap==='function') loadPackedMap(); }, 20000);   // 📦 box request 알람 + 포장상태 + 배송비승인 20초마다 갱신
 }
 // 직원이 창고별로 박스를 넣었는지 맵 (base → Set(wh)). UPS 버튼 색상용.
 async function loadPackedMap(){
@@ -7308,6 +7308,24 @@ async function lblApprRefresh(base){
     }
   }catch(e){}
   return null;
+}
+// 대기중인 모든 승인건을 한 번에 폴링 → 거래처가 응답하면 매니저 화면 카드가 자동 갱신 (실시간 반영)
+async function apprPollAll(){
+  try{
+    const pend=(savedCache||[]).filter(s=>s.meta&&s.meta._shipApproval&&s.meta._shipApproval.status==='pending'&&s.meta._shipApproval.token);
+    if(!pend.length) return;
+    const tokens=pend.map(s=>s.meta._shipApproval.token);
+    const r=await sbFetch('/rest/v1/pr_shipappr?token=in.('+tokens.join(',')+')&select=token,status,responded_at');
+    if(!r.ok) return; const rows=await r.json(); if(!Array.isArray(rows)) return;
+    let changed=false;
+    for(const row of rows){ const s=pend.find(x=>x.meta._shipApproval.token===row.token);
+      if(s && row.status && row.status!==s.meta._shipApproval.status){
+        s.meta._shipApproval.status=row.status; s.meta._shipApproval.respondedAt=row.responded_at; changed=true;
+        try{ await sbFetch('/rest/v1/pr_orders?base=eq.'+encodeURIComponent(s.base), {method:'PATCH', headers:{Prefer:'return=minimal'}, body:JSON.stringify({meta:s.meta})}); }catch(e){}
+      }
+    }
+    if(changed){ if(typeof renderSaved==='function') renderSaved(); if(document.getElementById('modal-upslabel')&&typeof lblRender==='function') lblRender(); }
+  }catch(e){}
 }
 // ── 고객: 승인 페이지 (무로그인) ──
 async function renderShipApprPage(token){
@@ -19177,8 +19195,8 @@ function renderSaved(){
         const sty = has ? 'background:#166534;color:#fff;border-color:#166534;' : (ready ? 'background:#b45309;color:#fff;border-color:#b45309;' : 'background:#fff;color:#94a3b8;border-color:#e2e8f0;');
         const tip = has ? 'Label created' : (ready ? 'Warehouse entered boxes — ready to make the label' : 'Waiting for warehouse to enter boxes');
         return `<button class="btn btn-sm" style="${sty}" onclick="openLabelModal('${esc(s.base)}','${w}')" title="${tip} (${w})">🏷 UPS${only?' Label':' '+w}${has?' ✓':(ready?' •':'')}</button>`; }).join(''); })()}
-      ${(s.whs||[]).includes('SC') ? `<button class="btn btn-sm" style="${recShipFromCA(s)?'background:#b45309;color:#fff;border-color:#b45309;font-weight:800;':'color:#b45309;border-color:#fdba74;'}" onclick="toggleShipFromCA('${esc(s.base)}')" title="SC boxes transfer to CA on the next LTL, combine with the CA portion, and ship out from CA as one shipment. CA just receives &amp; reships — no CA inventory impact.">🚚 ${recShipFromCA(s)?'Ships from CA ✓':'Ship from CA'}</button>` : ''}
       ${(s.meta&&s.meta._shipApproval)?`<span title="Shipping cost approval: ${esc(_apprMoney(s.meta._shipApproval.amount))} → ${esc(s.meta._shipApproval.email||'')}" style="cursor:pointer;" onclick="openLabelModal('${esc(s.base)}','${esc((s.meta._shipApproval.wh==='CA'?'CA':'SC'))}')">${apprStatusChip(s.meta._shipApproval)}</span>`:''}
+      ${(s.whs||[]).includes('SC') ? `<button class="btn btn-sm" style="${recShipFromCA(s)?'background:#b45309;color:#fff;border-color:#b45309;font-weight:800;':'color:#b45309;border-color:#fdba74;'}" onclick="toggleShipFromCA('${esc(s.base)}')" title="SC boxes transfer to CA on the next LTL, combine with the CA portion, and ship out from CA as one shipment. CA just receives &amp; reships — no CA inventory impact.">🚚 ${recShipFromCA(s)?'Ships from CA ✓':'Ship from CA'}</button>` : ''}
       <button class="btn btn-sm" onclick="openHistory('${esc(s.base)}')" title="Change history">🕘</button>
       <button class="btn btn-sm" style="color:#7c3aed;" onclick="splitOrderOpen('${esc(s.base)}')" title="Split some items into a separate order (-S) — run urgent items separately (stock deductions transfer too)">✂ Split</button>
       ${!recIsReplace(s) && (s.whs||[]).some(w=>s.pl && s.pl[w] && s.pl[w].savedAt) ? `<button class="btn btn-sm" style="color:#be123c;border-color:#fda4af;" onclick="replaceOrderOpen('${esc(s.base)}')" title="Replace defective shipped items — creates a free PO#R order (no invoice)">🔁 Replace</button>` : ''}
