@@ -156,7 +156,7 @@ main{max-width:1100px;margin:0 auto;padding:16px;}
     <button class="btn btn-sm" onclick="doLogout()" style="padding:2px 8px;font-size:10px;" data-i18n="logout">Log out</button>
   </span>
   <select id="lang-sel" onchange="setLang(this.value)" style="font-size:11px;padding:3px 6px;border-radius:5px;border:none;background:#1d3f66;color:#fff;"><option value="ko">한국어</option><option value="en">English</option><option value="es">Español</option></select>
-  <span style="font-size:10px;color:#9fb8d4;">v621 ↩</span>
+  <span style="font-size:10px;color:#9fb8d4;">v623 ↩</span>
 </div>
 <script type="text/javascript" src="https://js.authorize.net/v1/Accept.js" charset="utf-8"></script>
 <div id="po-viewer" style="display:none;position:fixed;top:0;right:0;width:44%;height:100vh;background:#fff;border-left:2px solid var(--border);z-index:60;box-shadow:-6px 0 20px rgba(0,0,0,.15);">
@@ -6668,7 +6668,7 @@ async function confirmBoxLabelPrint(){
 
 // ═══════════════ 🏷 UPS Shipping Label (manager · Phase 3) ═══════════════
 const UPS_LABEL_URL = 'https://checkout.hjbae.workers.dev/label';
-const UPS_MARKUP = 1.10;   // 우리 UPS 계정(할인가)으로 보낼 때 인보이스에 붙일 마크업 (10%)
+const UPS_MARKUP = 1.10;   // (미사용) 인보이스는 UPS 정가(published)로 청구. 마크업 방식으로 바꾸려면 lblCreate의 billShip 계산에서 사용.
 const UPS_SERVICES = [
   {code:'03', name:'UPS Ground'},
   {code:'12', name:'UPS 3 Day Select'},
@@ -6697,6 +6697,10 @@ async function openLabelModal(base){
   window._lblOrigin = (_lblResult&&_lblResult.origin) || whs[0] || 'SC';
   window._lblService = (_lblResult&&_lblResult.service) || '03';
   window._lblTest = false;
+  const bill0 = custUpsFor(rec.meta.cust);
+  window._lblBillMode = (_lblResult&&_lblResult.billing) || bill0.mode || 'shipper';
+  window._lblUpsAcct = bill0.account || '';
+  window._lblUpsZip = bill0.zip || '';
   lblRender();
 }
 function lblRender(){
@@ -6708,10 +6712,22 @@ function lblRender(){
   div.id = 'modal-upslabel';
   div.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,.55);z-index:140;display:flex;align-items:center;justify-content:center;';
   div.onclick = e=>{ if(e.target===div) div.remove(); };
-  const billTxt = bill.mode==='receiver'
-    ? `Bill customer's UPS # <b>${esc(bill.account||'—')}</b>${bill.zip?' (ZIP '+esc(bill.zip)+')':''}`
-    : `Bill <b>OUR</b> UPS # &middot; charge on invoice <span style="color:#64748b;">(UPS cost +${Math.round((UPS_MARKUP-1)*100)}% auto-added to freight)</span>`;
-  const billWarn = (bill.mode==='receiver' && !bill.account) ? '<div style="color:#b91c1c;font-weight:700;font-size:11px;margin-top:3px;">⚠ Customer UPS # missing — set it in Customers → 🏷 UPS</div>' : '';
+  const bmode = window._lblBillMode==='receiver' ? 'receiver' : 'shipper';
+  const billBox = `
+    <div style="background:#fff7ed;border:1px solid #fed7aa;border-radius:9px;padding:9px 11px;">
+      <div style="font-size:11px;font-weight:800;color:#7c2d12;margin-bottom:6px;">💳 BILLING — who pays UPS?</div>
+      <div style="display:flex;gap:7px;">
+        <button class="btn btn-sm" onclick="lblSetBill('shipper')" style="flex:1;${bmode==='shipper'?'background:#7c2d12;color:#fff;border-color:#7c2d12;':''}">OUR UPS # · charge invoice</button>
+        <button class="btn btn-sm" onclick="lblSetBill('receiver')" style="flex:1;${bmode==='receiver'?'background:#7c2d12;color:#fff;border-color:#7c2d12;':''}">Customer's UPS #</button>
+      </div>
+      ${bmode==='receiver' ? `
+        <div style="display:flex;gap:7px;margin-top:8px;">
+          <input class="fi" id="lbl-ups-acct" value="${esc(window._lblUpsAcct||'')}" oninput="window._lblUpsAcct=this.value.toUpperCase();this.value=this.value.toUpperCase();" placeholder="Customer UPS Account #" style="font-size:12px;flex:1.4;text-transform:uppercase;">
+          <input class="fi" id="lbl-ups-zip" value="${esc(window._lblUpsZip||'')}" oninput="window._lblUpsZip=this.value;" placeholder="UPS acct ZIP" style="font-size:12px;flex:1;">
+        </div>
+        <div style="font-size:10.5px;color:#64748b;margin-top:4px;">Prefilled from the customer. Edit here if it changed — the new value is saved back to the customer automatically.</div>`
+      : `<div style="font-size:10.5px;color:#64748b;margin-top:5px;">We pay UPS on our account; UPS <b>list rate</b> is auto-added to this order's invoice freight.</div>`}
+    </div>`;
   const origin = window._lblOrigin;
   const originBtns = ['SC','CA'].map(w=>`<button class="btn btn-sm" onclick="lblSetOrigin('${w}')" style="${origin===w?'background:'+(w==='SC'?'#1d4ed8':'#c2410c')+';color:#fff;border-color:'+(w==='SC'?'#1d4ed8':'#c2410c')+';':''}">${w==='SC'?'Sumter, SC':'Eastvale, CA'}</button>`).join('');
   const svcOpts = UPS_SERVICES.map(s=>`<option value="${s.code}"${window._lblService===s.code?' selected':''}>${s.name}</option>`).join('');
@@ -6731,7 +6747,7 @@ function lblRender(){
       <div style="margin-top:7px;padding-top:7px;border-top:1px dashed #86efac;font-size:11.5px;color:#166534;">
         ${_oc!=null?`<div>💰 UPS cost (our rate): <b>${money(_oc)}</b>${_c.published!=null&&_c.published!==_oc?` <span style="color:#64748b;">· list ${money(_c.published)}</span>`:''}</div>`:''}
         ${_lblResult.billing==='shipper' && _lblResult.billShip>0
-          ? `<div style="margin-top:2px;">🧾 Invoice shipping (+${Math.round((UPS_MARKUP-1)*100)}%): <b style="color:#7c2d12;">${money(_lblResult.billShip)}</b> <span style="color:#64748b;">→ auto-fills this order's ${esc(_lblResult.origin)} invoice freight</span></div>`
+          ? `<div style="margin-top:2px;">🧾 Invoice shipping (UPS list): <b style="color:#7c2d12;">${money(_lblResult.billShip)}</b>${_oc!=null&&_lblResult.billShip>_oc?` <span style="color:#166534;">· margin ${money(_lblResult.billShip-_oc)}</span>`:''} <span style="color:#64748b;">→ auto-fills this order's ${esc(_lblResult.origin)} invoice freight</span></div>`
           : (_lblResult.billing==='receiver' ? `<div style="margin-top:2px;color:#64748b;">Billed to customer's UPS # — not added to invoice.</div>` : '')}
       </div>` : '';
   const resHtml = _lblResult && (_lblResult.tracking||[]).length ? `
@@ -6772,13 +6788,17 @@ function lblRender(){
         <label style="display:flex;align-items:center;gap:6px;font-size:11px;font-weight:700;color:#b45309;white-space:nowrap;padding-bottom:8px;cursor:pointer;" title="Test mode uses UPS CIE (test) — labels are NOT billable/shippable. Website rates are unaffected.">
           <input type="checkbox" id="lbl-test" ${window._lblTest?'checked':''} onchange="window._lblTest=this.checked" style="width:15px;height:15px;accent-color:#b45309;">🧪 Test</label>
       </div>
-      <div style="background:#fff7ed;border:1px solid #fed7aa;border-radius:9px;padding:8px 11px;font-size:11.5px;color:#7c2d12;">💳 ${billTxt}${billWarn}</div>
+      ${billBox}
       <div>
         <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px;">
           <span style="font-size:11px;font-weight:800;color:#0f2a4a;">BOXES (L × W × H in · weight lbs)</span>
           <button class="btn btn-sm" onclick="lblAddBox()" style="font-size:11px;padding:3px 10px;">＋ Add box</button>
         </div>
         ${boxRows}
+      </div>
+      <div style="display:flex;align-items:center;gap:9px;flex-wrap:wrap;">
+        <button class="btn btn-sm" onclick="lblEstimate()" style="background:#0e7490;color:#fff;border-color:#0e7490;font-weight:700;" title="Preview UPS cost (our negotiated rate) before creating the label">💵 Estimate cost</button>
+        <span id="lbl-est" style="font-size:11.5px;color:#0f2a4a;"></span>
       </div>
       ${resHtml}
     </div>
@@ -6803,7 +6823,33 @@ function lblReadBoxes(){
   return rows;
 }
 function lblSyncBoxes(){ _lblBoxes = lblReadBoxes(); }
-function lblSetOrigin(w){ lblSyncBoxes(); window._lblOrigin = w; lblRender(); }
+function lblSyncBill(){
+  const a = document.getElementById('lbl-ups-acct'); if(a) window._lblUpsAcct = (a.value||'').toUpperCase();
+  const z = document.getElementById('lbl-ups-zip'); if(z) window._lblUpsZip = z.value||'';
+}
+function lblSetBill(m){ lblSyncBoxes(); lblSyncBill(); window._lblBillMode = (m==='receiver'?'receiver':'shipper'); lblRender(); }
+function lblSetOrigin(w){ lblSyncBoxes(); lblSyncBill(); window._lblOrigin = w; lblRender(); }
+async function lblEstimate(){
+  const rec=_lblRec; if(!rec) return;
+  const est=document.getElementById('lbl-est');
+  const boxes = lblReadBoxes().filter(b=>b.wt>0);
+  const totalWt = boxes.reduce((a,b)=>a+(+b.wt||0),0);
+  if(!totalWt){ if(est) est.textContent='⚠ Enter box weight(s) first'; return; }
+  const shipTo = { name:($('lbl-name').value||'').trim(), addr1:($('lbl-addr').value||'').trim(), city:($('lbl-city').value||'').trim(), state:($('lbl-state').value||'').trim().toUpperCase(), zip:($('lbl-zip').value||'').trim() };
+  if(!shipTo.city||!shipTo.state||!shipTo.zip){ if(est) est.textContent='⚠ Ship-to city/state/ZIP needed'; return; }
+  if(est) est.textContent='⏳ Checking UPS…';
+  try{
+    const body={ shipTo }; body[window._lblOrigin==='CA'?'caLbs':'scLbs']=Math.max(1, Math.round(totalWt));
+    const r=await fetch(UPS_LABEL_URL.replace('/label','/rates'), {method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
+    const j=await r.json();
+    if(j.error){ if(est) est.textContent='❌ '+j.error; return; }
+    const money=n=>'$'+Number(n||0).toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2});
+    const sc=window._lblService||'03';
+    const svc=(j.services||[]).find(s=>s.code===sc);
+    const others=(j.services||[]).filter(s=>s.code!==sc).map(s=>`${(UPS_SERVICES.find(x=>x.code===s.code)||{}).name||s.code} ${money(s.total)}`).join(' · ');
+    if(est) est.innerHTML = (svc?`💵 <b>${(UPS_SERVICES.find(x=>x.code===sc)||{}).name||sc}: ${money(svc.total)}</b> <span style="color:#64748b;">(our rate, est.)</span>`:'selected service N/A') + (others?` <span style="color:#94a3b8;">· ${others}</span>`:'');
+  }catch(e){ if(est) est.textContent='❌ '+e.message; }
+}
 function lblPreset(i, v){
   const p = BOX_PRESETS[parseInt(v,10)]; if(!p) return;
   const set = (cls,val)=>{ const el = document.querySelector(`#modal-upslabel .${cls}[data-i="${i}"]`); if(el) el.value = val; };
@@ -6824,8 +6870,11 @@ async function lblCreate(){
     zip: ($('lbl-zip').value||'').trim()
   };
   if(!shipTo.addr1 || !shipTo.city || !shipTo.state || !shipTo.zip){ showToast('⚠ Ship-to address is incomplete'); return; }
-  const bill = custUpsFor(rec.meta.cust);
-  if(bill.mode==='receiver' && !bill.account){ showToast('⚠ Customer UPS # missing (Customers → 🏷 UPS)'); return; }
+  lblSyncBill();
+  const bmode = window._lblBillMode==='receiver' ? 'receiver' : 'shipper';
+  const bacct = String(window._lblUpsAcct||'').trim().toUpperCase();
+  const bzip = String(window._lblUpsZip||'').trim();
+  if(bmode==='receiver' && !bacct){ showToast('⚠ Enter the customer UPS Account #'); return; }
   const btn = $('lbl-create-btn'); if(btn){ btn.disabled=true; btn.textContent='⏳ Contacting UPS...'; }
   try{
     const r = await fetch(UPS_LABEL_URL, {
@@ -6833,7 +6882,7 @@ async function lblCreate(){
       body: JSON.stringify({
         origin: window._lblOrigin, service: window._lblService||'03',
         shipTo, packages: boxes.map(b=>({l:b.l,w:b.w,h:b.h,wt:b.wt})),
-        billing: { mode:bill.mode, account:bill.account||'', zip:bill.zip||'' },
+        billing: { mode:bmode, account:bacct, zip:bzip },
         reference: (rec.meta.po||rec.base||'').slice(0,35),
         test: !!window._lblTest
       })
@@ -6841,14 +6890,27 @@ async function lblCreate(){
     const j = await r.json();
     if(!j.ok){ showToast('❌ '+(j.error||'UPS label failed')); if(btn){ btn.disabled=false; btn.textContent='🏷 Create label'; } return; }
     const cost = j.cost || {};
-    const ourCost = (cost.negotiated!=null ? cost.negotiated : cost.published);   // 우리 실제 지불액(협상요율 우선)
-    // 우리 계정(shipper)로 보낼 때만 인보이스에 청구 (고객 계정이면 고객이 직접 UPS에 지불)
-    const billShip = (j.billing==='shipper' && ourCost!=null) ? Math.ceil(ourCost*UPS_MARKUP*100)/100 : 0;
+    const ourCost = (cost.negotiated!=null ? cost.negotiated : cost.published);   // 우리 실제 지불액(협상요율)
+    const listCost = (cost.published!=null ? cost.published : cost.negotiated);   // UPS 정가
+    // 우리 계정(shipper)로 보낼 때만 인보이스에 청구 (고객 계정이면 고객이 직접 UPS에 지불) — 정가로 청구
+    const billShip = (j.billing==='shipper' && listCost!=null) ? Math.ceil(listCost*100)/100 : 0;
     _lblResult = { tracking:j.tracking||[], labels:j.labels||[], service:j.service||window._lblService,
       origin:window._lblOrigin, billing:j.billing, test:!!j.test, shipmentId:j.shipmentId||null,
       cost, ourCost, billShip,
       at:new Date().toISOString(), by:(SESS&&SESS.email)||'' };
     if(!j.test) await lblSaveTracking();   // 실제 라벨만 주문에 저장 (테스트는 저장 안 함)
+    // 이번에 쓴 청구 방식/UPS#를 customer tab에 저장 (바뀐 값이면 자동 갱신)
+    if(!j.test) try{
+      const ck = custKey(rec.meta.cust);
+      const cur = custStore[ck] || {}; const pu = cur.ups || {};
+      const newUps = { mode:bmode,
+        account: bmode==='receiver' ? bacct : (pu.account||''),
+        zip: bmode==='receiver' ? bzip : (pu.zip||'') };
+      if((pu.mode||'shipper')!==newUps.mode || (pu.account||'')!==newUps.account || (pu.zip||'')!==newUps.zip){
+        cur.name = cur.name || rec.meta.cust; cur.ups = newUps;
+        await saveCustomer(ck, cur);
+      }
+    }catch(e){}
     showToast('✅ UPS label created — '+(j.tracking||[]).length+' tracking #');
     lblRender();
     lblPrint();   // 만들자마자 바로 Zebra로 인쇄 시도
@@ -7560,12 +7622,22 @@ function pchkPackOpen(){
   ov.innerHTML = `<div style="background:#b45309;color:#fff;padding:14px 16px;display:flex;align-items:center;gap:10px;position:sticky;top:0;z-index:5;"><button onclick="pchkEmpMenu()" style="background:rgba(255,255,255,.2);color:#fff;border:none;border-radius:8px;padding:6px 11px;font-size:13px;font-weight:700;">← Menu</button><span style="font-size:17px;font-weight:800;">📦 Pending Orders</span></div>
   <div style="flex:1;background:#f1f5f9;padding:16px 14px;">
     <div style="max-width:520px;margin:0 auto;">
+      <div id="pack-wh-tabs" style="display:flex;gap:8px;margin-bottom:10px;"></div>
       <input id="pack-q" placeholder="🔍 Search customer / PO #" autocomplete="off" oninput="pchkPackListDeb()" onkeydown="if(event.key==='Enter'){event.preventDefault();pchkPackList();}" style="width:100%;font-size:16px;padding:12px;border:2px solid #cbd5e1;border-radius:10px;box-sizing:border-box;margin-bottom:12px;">
       <div id="pack-list"><div style="color:#94a3b8;font-size:12px;padding:6px;">Loading…</div></div>
     </div>
   </div>`;
+  if(window._packWh==null) window._packWh='';
+  pchkPackWhTabs();
   pchkPackList();
 }
+function pchkPackWhTabs(){
+  const el=document.getElementById('pack-wh-tabs'); if(!el) return;
+  const cur=window._packWh||'';
+  const tab=(v,lab,c)=>`<button onclick="pchkSetPackWh('${v}')" style="flex:1;padding:10px;border-radius:10px;border:2px solid ${cur===v?c:'#cbd5e1'};background:${cur===v?c:'#fff'};color:${cur===v?'#fff':'#64748b'};font-size:14px;font-weight:800;">${lab}</button>`;
+  el.innerHTML = tab('','All','#0f2a4a') + tab('SC','SC','#1d4ed8') + tab('CA','CA','#c2410c');
+}
+function pchkSetPackWh(w){ window._packWh=w; pchkPackWhTabs(); pchkPackList(); }
 let _packListT;
 function pchkPackListDeb(){ clearTimeout(_packListT); _packListT=setTimeout(pchkPackList, 300); }
 async function pchkPackList(){
@@ -7574,9 +7646,11 @@ async function pchkPackList(){
   let rows=[];
   try{ const r=await fetch(SB_URL+'/rest/v1/rpc/pack_orders',{method:'POST',headers:{apikey:SB_KEY,Authorization:'Bearer '+SB_KEY,'Content-Type':'application/json'},body:JSON.stringify({q})}); rows=await r.json(); }
   catch(e){ el.innerHTML='<div style="color:#b91c1c;font-size:12px;">Could not load orders.</div>'; return; }
-  if(!Array.isArray(rows)||!rows.length){ el.innerHTML='<div style="color:#94a3b8;font-size:12px;padding:6px;">No orders'+(q?' for "'+esc(q)+'"':'')+'.</div>'; return; }
+  const _wh=window._packWh||'';
+  if(_wh && Array.isArray(rows)) rows=rows.filter(r=>Array.isArray(r.whs)&&r.whs.includes(_wh));
+  if(!Array.isArray(rows)||!rows.length){ el.innerHTML='<div style="color:#94a3b8;font-size:12px;padding:6px;">No '+(_wh?_wh+' ':'')+'orders'+(q?' for "'+esc(q)+'"':'')+'.</div>'; return; }
   el.innerHTML=rows.map(r=>`<button onclick="pchkPackEdit('${esc(r.base)}','${esc(String(r.cust||'').replace(/'/g,''))}','${esc(String(r.po||'').replace(/'/g,''))}')" style="display:flex;width:100%;align-items:center;gap:9px;text-align:left;background:#fff;border:1px solid #e5e7eb;border-radius:11px;padding:12px 14px;margin-bottom:8px;cursor:pointer;">
-    <div style="flex:1;min-width:0;"><div style="font-size:15px;font-weight:800;color:#0f2a4a;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">${esc(String(r.cust||'—'))}</div><div style="font-size:12px;color:#64748b;">PO ${esc(String(r.po||'—'))} · ${esc(String(r.dt||''))}</div></div>
+    <div style="flex:1;min-width:0;"><div style="font-size:15px;font-weight:800;color:#0f2a4a;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">${esc(String(r.cust||'—'))}</div><div style="font-size:12px;color:#64748b;">PO ${esc(String(r.po||'—'))} · ${esc(String(r.dt||''))} ${(Array.isArray(r.whs)?r.whs:[]).filter(w=>w==='SC'||w==='CA').map(w=>`<span style="font-size:10px;font-weight:800;color:#fff;background:${w==='SC'?'#1d4ed8':'#c2410c'};border-radius:10px;padding:1px 7px;margin-left:3px;">${w}</span>`).join('')}</div></div>
     ${r.packed?'<span style="font-size:11px;font-weight:800;color:#16a34a;background:#dcfce7;border-radius:20px;padding:3px 10px;white-space:nowrap;">📦 packed</span>':'<span style="font-size:11px;color:#b45309;font-weight:700;white-space:nowrap;">add boxes ▸</span>'}
   </button>`).join('');
 }
