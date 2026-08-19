@@ -156,7 +156,7 @@ main{max-width:1100px;margin:0 auto;padding:16px;}
     <button class="btn btn-sm" onclick="doLogout()" style="padding:2px 8px;font-size:10px;" data-i18n="logout">Log out</button>
   </span>
   <select id="lang-sel" onchange="setLang(this.value)" style="font-size:11px;padding:3px 6px;border-radius:5px;border:none;background:#1d3f66;color:#fff;"><option value="ko">한국어</option><option value="en">English</option><option value="es">Español</option></select>
-  <span style="font-size:10px;color:#9fb8d4;">v634 ↩</span>
+  <span style="font-size:10px;color:#9fb8d4;">v635 ↩</span>
 </div>
 <script type="text/javascript" src="https://js.authorize.net/v1/Accept.js" charset="utf-8"></script>
 <div id="po-viewer" style="display:none;position:fixed;top:0;right:0;width:44%;height:100vh;background:#fff;border-left:2px solid var(--border);z-index:60;box-shadow:-6px 0 20px rgba(0,0,0,.15);">
@@ -14751,9 +14751,11 @@ async function trBuilderOpen(existingId, route){
         <button class="btn" style="background:#1565c0;color:#fff;border-color:#1565c0;" onclick="trScOpen()">${trSrcIsSpec(_shipRoute)?('🏭 Pick from '+trKindShort(trSrcKind(_shipRoute))):('📦 Pick from '+trSrcKind(_shipRoute)+' Inventory')}</button>
         <button class="btn" onclick="trManualLine()">+ Add manual line</button>
         ${trSrcAutoPallet(_shipRoute)?'':'<button class="btn" onclick="trAddPallet()">📍 + Add Pallet</button>'}
+        ${_shipRoute==='SC2CA'?'<button class="btn" style="background:#7b1fa2;color:#fff;border-color:#7b1fa2;" onclick="trOrderShipOpen()" title="Load Ship-from-CA order boxes onto this truck (routed to their order at CA, not CA stock)">🚚 Ship-from-CA Orders</button>':''}
         <span style="margin-left:auto;font-size:11px;color:var(--text2);">📦 <b id="ship-pallet-count">0</b> pallet(s) · <b id="ship-line-count">0</b> line(s) · <b id="ship-box-count">0</b> box(es) · <b id="ship-pcs-count">0</b> pcs</span>
       </div>
       <div id="ship-pallets" style="display:flex;flex-direction:column;gap:10px;"></div>
+      <div id="ship-orderbox"></div>
       ${trSrcAutoPallet(_shipRoute)?`<div id="ship-hint" style="margin-top:10px;padding:14px;border:1.5px dashed #fbbf24;border-radius:8px;background:#fffbeb;font-size:12px;color:#92400e;">🏭 This route moves <b>whole pallets</b> — press <b>Pick from ${esc(trKindShort(trSrcKind(_shipRoute)))}</b> and each bin you choose becomes its own pallet automatically. No need to create Pallet 1 / Pallet 2 yourself.</div>`:''}
     </div>
     <div style="padding:12px 16px;border-top:1px solid var(--border);display:flex;gap:8px;justify-content:flex-end;background:#fff;flex-wrap:wrap;">
@@ -14771,7 +14773,7 @@ async function trBuilderOpen(existingId, route){
 function trCaptureInfo(){
   const v = id=>String((document.getElementById(id)||{}).value||'').trim();
   _shipNo = v('ship-no') || _shipNo || trGenShipNo(_shipRoute);
-  _shipMeta = { route:_shipRoute, ship_date:v('ship-date'), eta:v('ship-eta'), seal:v('ship-seal'), carrier:v('ship-carrier'), driver:v('ship-driver'), phone:v('ship-phone'), truck:v('ship-truck'), pro:v('ship-pro'), notes:v('ship-notes'), bolFiles:(_shipMeta&&_shipMeta.bolFiles)||[] };
+  _shipMeta = { route:_shipRoute, ship_date:v('ship-date'), eta:v('ship-eta'), seal:v('ship-seal'), carrier:v('ship-carrier'), driver:v('ship-driver'), phone:v('ship-phone'), truck:v('ship-truck'), pro:v('ship-pro'), notes:v('ship-notes'), bolFiles:(_shipMeta&&_shipMeta.bolFiles)||[], orderShip:(_shipMeta&&_shipMeta.orderShip)||[], designatedByPallet:(_shipMeta&&_shipMeta.designatedByPallet)||undefined };
 }
 async function _trEnsureRow(){
   if(_shipId) return _shipId;
@@ -14940,6 +14942,7 @@ function trRenderPallets(){
         <tbody>${rows}</tbody>
       </table></div></div>`;
   }).join('');
+  trRenderOrderShip();
   trSummary();
 }
 function trSummary(){
@@ -15616,7 +15619,8 @@ async function trSendShipEmail(D, toList){
 async function trPost(){
   trCaptureInfo();
   if(!_shipMeta.ship_date){ alert('Depart date is required.'); return; }
-  if(_shipPallets.every(p=>!p.lines.length)){ alert('No lines.'); return; }
+  const _hasOrderShip = ((_shipMeta.orderShip||[]).length)>0;
+  if(_shipPallets.every(p=>!p.lines.length) && !_hasOrderShip){ alert('No lines.'); return; }
   if(!_shipId){ alert('Add lines first (the Draft saves when lines are added).'); return; }
   const nL = _shipPallets.reduce((s,p)=>s+p.lines.length,0);
   const nP = _shipPallets.filter(p=>p.lines.length).length;
@@ -15625,12 +15629,106 @@ async function trPost(){
   shipNotifySet(notify);
   const D = { no:_shipNo, meta:_shipMeta, pallets:_shipPallets.map(p=>({label:p.label, lines:p.lines.slice()})), route:_shipRoute };
   await trPatchRec(_shipId, { ref:_shipNo, status:'TRANSIT', meta:_shipMeta, lines:trLinesFlat(), departed_at:new Date().toISOString(), departed_by:(SESS&&SESS.email)||'' });
+  // 🚚 실린 Ship-from-CA 오더들을 "SC몫 CA로 이동중" 표시
+  try{ for(const o of ((_shipMeta.orderShip)||[])){ await _scToCaMark(o.base, 'transit', _shipNo); } if(typeof renderSaved==='function') renderSaved(); }catch(e){}
   await trSendShipEmail(D, notify);   // 직원 알림 이메일 (실패해도 post 는 유지 — 내부에서 catch)
   const m = document.getElementById('modal-trb'); if(m) m.remove();
   _shipId = null; _shipNo = null; _shipMeta = {}; _shipPallets = [];
   showToast('✅ Shipment departed — In Transit');
   if($('bx-body')) renderBoxRoom();
   if(typeof trBarUpd==='function') trBarUpd();   // 배송 표시줄만 갱신 — Transfers 모듈 자동 팝업 안 뜨게 (v489)
+}
+// ═══════ 🚚 Ship-from-CA 오더 박스를 SC→CA 트럭에 태워 보내기 (v635) ═══════
+function trOrderShipEligible(){
+  const cur = new Set(((_shipMeta&&_shipMeta.orderShip)||[]).map(o=>o.base));
+  return (savedCache||[]).filter(r=>{
+    if(!recShipFromCA(r)) return false;
+    if(!((r.whs||[]).includes('SC'))) return false;
+    if(cur.has(r.base)) return false;
+    const st=(r.meta&&r.meta._scToCA&&r.meta._scToCA.status)||'';
+    if(st==='transit'||st==='arrived') return false;   // 이미 이동중/도착이면 제외
+    return true;
+  });
+}
+async function trOrderShipOpen(){
+  await _trEnsureRow();   // 트럭 행 생성(저장되게)
+  const elig = trOrderShipEligible();
+  let packMap={};
+  if(elig.length){
+    try{
+      const bases=elig.map(r=>r.base);
+      const r=await sbFetch('/rest/v1/pr_pack?wh=eq.SC&select=base,total_boxes,boxes&base=in.('+bases.map(b=>'"'+b+'"').join(',')+')');
+      if(r.ok){ (await r.json()).forEach(p=>{ packMap[p.base]={boxes:(p.total_boxes!=null?p.total_boxes:(Array.isArray(p.boxes)?p.boxes.length:0))}; }); }
+    }catch(e){}
+  }
+  const ex=document.getElementById('modal-oship'); if(ex) ex.remove();
+  const d=document.createElement('div'); d.id='modal-oship';
+  d.style.cssText='position:fixed;inset:0;background:rgba(0,0,0,.5);z-index:360;display:flex;align-items:center;justify-content:center;';
+  d.onclick=e=>{ if(e.target===d) d.remove(); };
+  const rows = elig.length ? elig.map(r=>{
+    const scPcs=(r.lines||[]).filter(l=>l.wh==='SC').reduce((s,l)=>s+(l.qty||0),0);
+    const bx=(packMap[r.base]||{}).boxes||0; const packed=bx>0;
+    return `<label style="display:flex;align-items:center;gap:10px;padding:9px 11px;border:1px solid #e5e7eb;border-radius:9px;margin-bottom:7px;cursor:pointer;">
+      <input type="checkbox" class="oship-cb" data-base="${esc(r.base)}" data-cust="${esc(String(r.meta.cust||'').replace(/"/g,''))}" data-po="${esc(String(r.meta.po||'').replace(/"/g,''))}" data-boxes="${bx}" data-pcs="${scPcs}" ${packed?'checked':''} style="width:16px;height:16px;">
+      <div style="flex:1;min-width:0;"><div style="font-weight:800;color:#0f2a4a;">${esc(r.meta.cust||'—')}</div><div style="font-size:11px;color:#64748b;">PO ${esc(r.meta.po||'—')} · SC ${scPcs.toLocaleString()} pcs</div></div>
+      ${packed?`<span style="font-size:11px;font-weight:800;color:#16a34a;background:#dcfce7;border-radius:20px;padding:3px 10px;">📦 ${bx} box</span>`:'<span style="font-size:11px;color:#b45309;font-weight:700;">not packed yet</span>'}
+    </label>`;
+  }).join('') : '<div style="color:#94a3b8;font-size:12.5px;padding:14px;text-align:center;">No Ship-from-CA orders waiting. Turn on 🚚 Ship from CA on an order (with SC boxes packed) first.</div>';
+  d.innerHTML=`<div style="background:#fff;border-radius:12px;width:520px;max-width:95vw;max-height:88vh;overflow-y:auto;box-shadow:0 20px 60px rgba(0,0,0,.35);">
+    <div style="background:#7b1fa2;color:#fff;padding:12px 16px;font-weight:800;display:flex;justify-content:space-between;align-items:center;">
+      <span>🚚 Ship-from-CA Orders → load on this truck</span>
+      <button onclick="document.getElementById('modal-oship').remove()" style="background:none;border:none;color:#fff;font-size:18px;cursor:pointer;">✕</button></div>
+    <div style="padding:14px 16px;">
+      <div style="font-size:11.5px;color:#64748b;margin-bottom:10px;">These orders are packed in SC and flagged to ship from CA. Check the ones on <b>this</b> truck — they ride as <b>designated</b> (routed to their order at CA, not added to CA stock).</div>
+      ${rows}
+    </div>
+    <div style="padding:0 16px 15px;display:flex;gap:8px;justify-content:flex-end;">
+      <button class="btn btn-sm" onclick="document.getElementById('modal-oship').remove()">Cancel</button>
+      <button class="btn btn-sm" style="background:#7b1fa2;color:#fff;border-color:#7b1fa2;font-weight:800;" onclick="trOrderShipAdd()">Add to shipment</button>
+    </div></div>`;
+  document.body.appendChild(d);
+}
+async function trOrderShipAdd(){
+  const cbs=[...document.querySelectorAll('#modal-oship .oship-cb:checked')];
+  if(!cbs.length){ showToast('⚠ Select at least one order'); return; }
+  _shipMeta=_shipMeta||{}; _shipMeta.orderShip=_shipMeta.orderShip||[];
+  cbs.forEach(c=>{ const base=c.getAttribute('data-base'); if(_shipMeta.orderShip.some(o=>o.base===base)) return;
+    _shipMeta.orderShip.push({ base, cust:c.getAttribute('data-cust')||'', po:c.getAttribute('data-po')||'', boxes:parseInt(c.getAttribute('data-boxes'),10)||0, pcs:parseInt(c.getAttribute('data-pcs'),10)||0, addedAt:new Date().toISOString(), addedBy:(SESS&&SESS.email)||'' }); });
+  const m=document.getElementById('modal-oship'); if(m) m.remove();
+  if(_shipId){ try{ await trPatchRec(_shipId, {meta:_shipMeta}); }catch(e){} }
+  trRenderOrderShip();
+  showToast('🚚 '+cbs.length+' order(s) added to the truck');
+}
+function trOrderShipDel(base){
+  if(!_shipMeta||!Array.isArray(_shipMeta.orderShip)) return;
+  _shipMeta.orderShip=_shipMeta.orderShip.filter(o=>o.base!==base);
+  if(_shipId){ try{ trPatchRec(_shipId, {meta:_shipMeta}); }catch(e){} }
+  trRenderOrderShip();
+}
+function trRenderOrderShip(){
+  const el=document.getElementById('ship-orderbox'); if(!el) return;
+  const arr=(_shipMeta&&_shipMeta.orderShip)||[];
+  if(!arr.length){ el.innerHTML=''; return; }
+  const tot=arr.reduce((s,o)=>s+(o.boxes||0),0);
+  el.innerHTML=`<div style="border:2px solid #f0abfc;border-radius:8px;background:#fff;margin-top:10px;">
+    <div style="background:#fdf4ff;padding:8px 14px;display:flex;align-items:center;gap:10px;border-radius:6px 6px 0 0;flex-wrap:wrap;">
+      <span style="font-weight:800;color:#a21caf;">🚚 Ship-from-CA Order Boxes</span>
+      <span style="color:var(--text2);font-size:11px;">${arr.length} order(s) · <b>${tot}</b> box(es) · routed to order at CA (not CA stock)</span>
+    </div>
+    <div style="padding:6px 10px;">${arr.map(o=>`<div style="display:flex;align-items:center;gap:9px;padding:6px 4px;border-bottom:1px dashed #f5d0fe;">
+      <div style="flex:1;min-width:0;"><b style="color:#0f2a4a;">${esc(o.cust||'—')}</b> <span style="font-size:11px;color:#64748b;">PO ${esc(o.po||'—')}</span></div>
+      <span style="font-size:11px;font-weight:800;color:#a21caf;">${o.boxes||0} box · ${(o.pcs||0).toLocaleString()} pcs</span>
+      <button onclick="trOrderShipDel('${esc(o.base)}')" style="border:none;background:none;color:#e53935;cursor:pointer;font-weight:800;" title="Remove from this truck">✕</button>
+    </div>`).join('')}</div></div>`;
+}
+async function _scToCaMark(base, status, ship){
+  let meta=null; const rec=(savedCache||[]).find(r=>r.base===base);
+  if(rec){ rec.meta=rec.meta||{}; meta=rec.meta; }
+  else { try{ const r=await sbFetch('/rest/v1/pr_orders?base=eq.'+encodeURIComponent(base)+'&select=meta'); const j=await r.json(); if(Array.isArray(j)&&j[0]) meta=j[0].meta||{}; }catch(e){} }
+  if(!meta) return;
+  meta._scToCA={ status, ship:ship||'', at:new Date().toISOString(), by:(SESS&&SESS.email)||'' };
+  try{ await sbFetch('/rest/v1/pr_orders?base=eq.'+encodeURIComponent(base), {method:'PATCH', headers:{Prefer:'return=minimal'}, body:JSON.stringify({meta, updated_at:new Date().toISOString()})}); }catch(e){}
+  const i=(savedCache||[]).findIndex(s=>s.base===base); if(i>=0) savedCache[i].meta=meta;
 }
 async function trCancelTransit(id){
   const rec = await trGet(id); if(!rec) return;
@@ -16150,6 +16248,8 @@ async function trRecvPost(){
   const savedLines = [];
   _trRecvPallets.forEach(p=>p.lines.forEach(l=>savedLines.push({...l, pallet:p.label})));
   await trPatchRec(_trRecvRec.id, { status:'RECEIVED', lines:savedLines, received_at:new Date().toISOString(), received_by:(SESS&&SESS.email)||'' });
+  // 🚚 이 트럭에 실린 Ship-from-CA 오더들 → "SC몫 CA 도착" 표시 (재고 이동 없음 · 오더에 이미 지정됨)
+  try{ const _os=(_trRecvRec.meta&&_trRecvRec.meta.orderShip)||[]; for(const o of _os){ await _scToCaMark(o.base, 'arrived', _trRecvRec.ref); } if(typeof renderSaved==='function') renderSaved(); }catch(e){}
   await bxRefetch();
   if($('bx-body')) renderBoxRoom();
   const m = document.getElementById('modal-trr'); if(m) m.remove();
@@ -18793,7 +18893,7 @@ function renderSaved(){
       ${whs.map(w=>`<span class="chip chip-${w}">${w}</span>`).join('')}
       ${recHasPendingReturn(s) ? `<span style="background:#ea580c;color:#fff;font-size:10.5px;font-weight:900;padding:3px 10px;border-radius:20px;white-space:nowrap;box-shadow:0 1px 3px rgba(234,88,12,.4);" title="Return pending — RA# ${esc((recReturns(s).find(r=>r.status==='pending')||{}).ra||'')} · awaiting goods">↩ RETURN PENDING</span>` : ''}
       ${s.meta.webCust ? `<span style="background:#0e7490;color:#fff;font-size:10.5px;font-weight:900;padding:3px 10px;border-radius:20px;white-space:nowrap;letter-spacing:0.5px;box-shadow:0 1px 3px rgba(14,116,144,.4);">🌐 WEBSITE</span>` : ''}
-      ${recShipFromCA(s) ? `<span style="background:#b45309;color:#fff;font-size:10.5px;font-weight:900;padding:3px 10px;border-radius:20px;white-space:nowrap;box-shadow:0 1px 3px rgba(180,83,9,.4);" title="SC→CA transfer — packed in SC, ships out from CA (CA just receives &amp; reships, no CA inventory)">🚚 SC→CA · SHIP FROM CA</span>` : ''}
+      ${recShipFromCA(s) ? (()=>{ const st=(s.meta&&s.meta._scToCA&&s.meta._scToCA.status)||''; const lab=st==='arrived'?'🚚 SC→CA · ✓ ARRIVED CA':(st==='transit'?'🚚 SC→CA · IN TRANSIT':'🚚 SC→CA · SHIP FROM CA'); const bg=st==='arrived'?'#166534':(st==='transit'?'#7c3aed':'#b45309'); return `<span style="background:${bg};color:#fff;font-size:10.5px;font-weight:900;padding:3px 10px;border-radius:20px;white-space:nowrap;box-shadow:0 1px 3px rgba(0,0,0,.25);" title="SC→CA transfer — packed in SC, rides the SC→CA truck, ships out combined from CA (CA just receives &amp; reships, no CA inventory)">${lab}</span>`; })() : ''}
       ${s.meta.futureShip ? `<span style="background:${new Date(s.meta.futureShip+'T00:00:00')>new Date()?'#2563eb':'#16a34a'};color:#fff;font-size:10.5px;font-weight:900;padding:3px 10px;border-radius:20px;white-space:nowrap;box-shadow:0 1px 3px rgba(37,99,235,.35);" title="Customer-requested ship date">🚀 SHIP ${new Date(s.meta.futureShip+'T00:00:00').toLocaleDateString('en-US',{month:'numeric',day:'numeric',year:'2-digit'})}</span>` : ''}
       ${_isHold?`<span style="margin-left:auto;padding:3px 10px;border-radius:20px;font-size:10.5px;font-weight:900;background:#450a0a;color:#fca5a5;white-space:nowrap;" title="A/R $${((s.meta._hold||{}).outstanding||0).toLocaleString()} + open orders $${((s.meta._hold||{}).openOrders||0).toLocaleString()} + this order $${((s.meta._hold||{}).orderAmt||0).toLocaleString()} > limit $${((s.meta._hold||{}).limit||0).toLocaleString()}">🔒 CREDIT HOLD</span><button class="btn btn-sm" style="background:#166534;color:#fff;border-color:#166534;font-weight:800;" onclick="approveHold('${esc(s.base)}')" title="Accounting approval — unlocks processing">✅ Approve</button>`:''}
       ${(()=>{ const st = recStatus(s); return `<span style="${_isHold?'':'margin-left:auto;'}padding:3px 12px;border-radius:20px;font-size:11px;font-weight:800;background:${st.bg};color:${st.color};white-space:nowrap;">${st.label}</span>`; })()}
