@@ -156,7 +156,7 @@ main{max-width:1100px;margin:0 auto;padding:16px;}
     <button class="btn btn-sm" onclick="doLogout()" style="padding:2px 8px;font-size:10px;" data-i18n="logout">Log out</button>
   </span>
   <select id="lang-sel" onchange="setLang(this.value)" style="font-size:11px;padding:3px 6px;border-radius:5px;border:none;background:#1d3f66;color:#fff;"><option value="ko">한국어</option><option value="en">English</option><option value="es">Español</option></select>
-  <span style="font-size:10px;color:#9fb8d4;">v625 ↩</span>
+  <span style="font-size:10px;color:#9fb8d4;">v626 ↩</span>
 </div>
 <script type="text/javascript" src="https://js.authorize.net/v1/Accept.js" charset="utf-8"></script>
 <div id="po-viewer" style="display:none;position:fixed;top:0;right:0;width:44%;height:100vh;background:#fff;border-left:2px solid var(--border);z-index:60;box-shadow:-6px 0 20px rgba(0,0,0,.15);">
@@ -6671,7 +6671,8 @@ async function confirmBoxLabelPrint(){
 
 // ═══════════════ 🏷 UPS Shipping Label (manager · Phase 3) ═══════════════
 const UPS_LABEL_URL = 'https://checkout.hjbae.workers.dev/label';
-const UPS_MARKUP = 1.10;   // (미사용) 인보이스는 UPS 정가(published)로 청구. 마크업 방식으로 바꾸려면 lblCreate의 billShip 계산에서 사용.
+const UPS_MARKUP = 1.10;   // (미사용) 인보이스는 UPS 정가(published)로 청구.
+const UPS_HANDLING_PER_BOX = 5;   // 박스당 핸들링 $ (자재+포장 인건비). 인보이스 배송비 = UPS 정가 + (박스수 × 이 값). 바꾸려면 이 숫자만 수정.
 const UPS_SERVICES = [
   {code:'03', name:'UPS Ground'},
   {code:'12', name:'UPS 3 Day Select'},
@@ -6679,6 +6680,17 @@ const UPS_SERVICES = [
   {code:'01', name:'UPS Next Day Air'}
 ];
 let _lblBase='', _lblRec=null, _lblBoxes=[], _lblResult=null;
+let _shipHandling=null;   // 서버 저장된 박스당 핸들링($). null이면 기본값(UPS_HANDLING_PER_BOX) 사용
+function shipHandlingRate(){ const v=Number(_shipHandling); return (isFinite(v)&&v>=0)?v:UPS_HANDLING_PER_BOX; }
+async function loadShipHandling(){
+  try{ const r=await fetch(SB_URL+'/rest/v1/pr_config?k=eq.ship_handling&select=v',{headers:{apikey:SB_KEY,Authorization:'Bearer '+SB_KEY}}); const j=await r.json(); if(Array.isArray(j)&&j[0]&&j[0].v!=null) _shipHandling=Number(j[0].v); }catch(e){}
+  return shipHandlingRate();
+}
+async function saveShipHandling(v){
+  const n=Math.max(0, Number(String(v).replace(/[^0-9.]/g,''))||0); _shipHandling=n;
+  try{ await sbFetch('/rest/v1/pr_config?on_conflict=k', {method:'POST', headers:{Prefer:'resolution=merge-duplicates,return=minimal'}, body:JSON.stringify([{k:'ship_handling', v:n, updated_at:new Date().toISOString()}])}); }catch(e){}
+  return n;
+}
 function lblSt(rec){
   const m = rec.meta||{};
   return { name:m.shipName||'', company:m.cust||'', addr1:m.shipAddr||'', city:m.shipCity||'',
@@ -6687,6 +6699,7 @@ function lblSt(rec){
 async function openLabelModal(base){
   const rec = (savedCache||[]).find(r=>r.base===base);
   if(!rec){ showToast('Order not found'); return; }
+  if(_shipHandling==null){ try{ await loadShipHandling(); }catch(e){} }
   _lblBase = base; _lblRec = rec; _lblResult = (rec.meta&&rec.meta._ups)||null;
   _lblBoxes = [];
   try{
@@ -6732,7 +6745,7 @@ function lblRender(){
           <input class="fi" id="lbl-ups-zip" value="${esc(window._lblUpsZip||'')}" oninput="window._lblUpsZip=this.value;" placeholder="UPS acct ZIP" style="font-size:12px;flex:1;">
         </div>
         <div style="font-size:10.5px;color:#64748b;margin-top:4px;">Prefilled from the customer. Edit here if it changed — the new value is saved back to the customer automatically.</div>`
-      : `<div style="font-size:10.5px;color:#64748b;margin-top:5px;">We pay UPS on our account; UPS <b>list rate</b> is auto-added to this order's invoice freight.</div>`}
+      : `<div style="font-size:10.5px;color:#64748b;margin-top:5px;">Invoice freight = UPS <b>list rate</b> + handling <b>$<input id="lbl-handling" value="${shipHandlingRate()}" onchange="saveShipHandling(this.value).then(()=>lblRender())" title="Per-box handling (materials + packing labor). Editable — saved for everyone." style="width:42px;font-size:11px;padding:2px 4px;text-align:center;border:1px solid #cbd5e1;border-radius:5px;">/box</b> × ${_lblBoxes.length} box(es), auto-added to this order's invoice.</div>`}
     </div>`;
   const _appr = (rec.meta&&rec.meta._shipApproval)||null;
   const apprBox = bmode==='shipper' ? `
@@ -6764,7 +6777,7 @@ function lblRender(){
       <div style="margin-top:7px;padding-top:7px;border-top:1px dashed #86efac;font-size:11.5px;color:#166534;">
         ${_oc!=null?`<div>💰 UPS cost (our rate): <b>${money(_oc)}</b>${_c.published!=null&&_c.published!==_oc?` <span style="color:#64748b;">· list ${money(_c.published)}</span>`:''}</div>`:''}
         ${_lblResult.billing==='shipper' && _lblResult.billShip>0
-          ? `<div style="margin-top:2px;">🧾 Invoice shipping (UPS list): <b style="color:#7c2d12;">${money(_lblResult.billShip)}</b>${_oc!=null&&_lblResult.billShip>_oc?` <span style="color:#166534;">· margin ${money(_lblResult.billShip-_oc)}</span>`:''} <span style="color:#64748b;">→ auto-fills this order's ${esc(_lblResult.origin)} invoice freight</span></div>`
+          ? `<div style="margin-top:2px;">🧾 Invoice shipping: <b style="color:#7c2d12;">${money(_lblResult.billShip)}</b> <span style="color:#64748b;">= list ${money(_lblResult.listCost!=null?_lblResult.listCost:_lblResult.billShip)}${_lblResult.handling>0?` + handling ${money(_lblResult.handling)} (${_lblResult.boxCount}×${money(shipHandlingRate())})`:''}</span></div><div style="margin-top:1px;color:#64748b;font-size:10.5px;">→ auto-fills this order's ${esc(_lblResult.origin)} invoice freight${_oc!=null?` · our cost ${money(_oc)}, margin ${money(_lblResult.billShip-_oc)}`:''}</div>`
           : (_lblResult.billing==='receiver' ? `<div style="margin-top:2px;color:#64748b;">Billed to customer's UPS # — not added to invoice.</div>` : '')}
       </div>` : '';
   const resHtml = _lblResult && (_lblResult.tracking||[]).length ? `
@@ -6910,11 +6923,13 @@ async function lblCreate(){
     const cost = j.cost || {};
     const ourCost = (cost.negotiated!=null ? cost.negotiated : cost.published);   // 우리 실제 지불액(협상요율)
     const listCost = (cost.published!=null ? cost.published : cost.negotiated);   // UPS 정가
-    // 우리 계정(shipper)로 보낼 때만 인보이스에 청구 (고객 계정이면 고객이 직접 UPS에 지불) — 정가로 청구
-    const billShip = (j.billing==='shipper' && listCost!=null) ? Math.ceil(listCost*100)/100 : 0;
+    const boxCount = boxes.length;
+    const handling = Math.round(boxCount * shipHandlingRate() * 100)/100;   // 박스당 핸들링
+    // 우리 계정(shipper)로 보낼 때만 인보이스에 청구 (고객 계정이면 고객이 직접 UPS에 지불) — 정가 + 핸들링
+    const billShip = (j.billing==='shipper' && listCost!=null) ? Math.round((Math.ceil(listCost*100)/100 + handling)*100)/100 : 0;
     _lblResult = { tracking:j.tracking||[], labels:j.labels||[], service:j.service||window._lblService,
       origin:window._lblOrigin, billing:j.billing, test:!!j.test, shipmentId:j.shipmentId||null,
-      cost, ourCost, billShip,
+      cost, ourCost, listCost, boxCount, handling, billShip,
       at:new Date().toISOString(), by:(SESS&&SESS.email)||'' };
     if(!j.test) await lblSaveTracking();   // 실제 라벨만 주문에 저장 (테스트는 저장 안 함)
     // 이번에 쓴 청구 방식/UPS#를 customer tab에 저장 (바뀐 값이면 자동 갱신)
@@ -7018,7 +7033,7 @@ function lblApprOpen(){
       <div style="font-size:11.5px;color:#64748b;">Email the customer the <b>exact shipping charge</b> that will appear on their invoice, with Approve / Decline buttons. The amount they approve is what gets invoiced — no surprises later.</div>
       <div class="ff"><label style="font-size:11px;font-weight:800;color:#0f2a4a;">Customer email</label><input class="fi" id="appr-email" value="${esc(email)}" placeholder="customer@company.com (commas for multiple)" style="font-size:12px;"></div>
       <div class="ff"><label style="font-size:11px;font-weight:800;color:#0f2a4a;">Exact shipping charge to invoice ($)</label><input class="fi" id="appr-amt" value="${esc(amt)}" inputmode="decimal" placeholder="e.g. 59.08" style="font-size:13px;font-family:Consolas,monospace;"></div>
-      <div style="font-size:10.5px;color:${hasExact?'#166534':'#b45309'};">${hasExact?'✔ This is the exact UPS list charge from the created label — same amount auto-fills the invoice freight.':'⚠ No label created yet — this is an estimate. For the exact charge, create the label first, then request approval.'}</div>
+      <div style="font-size:10.5px;color:${hasExact?'#166534':'#b45309'};">${hasExact?'✔ Exact charge from the created label (UPS list + handling) — the same amount auto-fills the invoice freight.':'⚠ No label created yet — this is an estimate. For the exact charge (list + handling), create the label first, then request approval.'}</div>
       <div id="appr-msg" style="font-size:11.5px;font-weight:700;color:#b91c1c;height:14px;"></div>
     </div>
     <div style="padding:0 16px 15px;display:flex;gap:8px;justify-content:flex-end;">
