@@ -156,7 +156,7 @@ main{max-width:1100px;margin:0 auto;padding:16px;}
     <button class="btn btn-sm" onclick="doLogout()" style="padding:2px 8px;font-size:10px;" data-i18n="logout">Log out</button>
   </span>
   <select id="lang-sel" onchange="setLang(this.value)" style="font-size:11px;padding:3px 6px;border-radius:5px;border:none;background:#1d3f66;color:#fff;"><option value="ko">한국어</option><option value="en">English</option><option value="es">Español</option></select>
-  <span style="font-size:10px;color:#9fb8d4;">v633 ↩</span>
+  <span style="font-size:10px;color:#9fb8d4;">v634 ↩</span>
 </div>
 <script type="text/javascript" src="https://js.authorize.net/v1/Accept.js" charset="utf-8"></script>
 <div id="po-viewer" style="display:none;position:fixed;top:0;right:0;width:44%;height:100vh;background:#fff;border-left:2px solid var(--border);z-index:60;box-shadow:-6px 0 20px rgba(0,0,0,.15);">
@@ -5072,14 +5072,17 @@ async function openPL(base){
 }
 function openPLInner(base){
   const rec = getSaved().find(s=>s.base===base); if(!rec) return;
-  plBase = base; plWh = (rec.whs||[])[0] || 'SC'; plShowInv = false;
+  const _consol = recShipFromCA(rec) && (rec.whs||[]).includes('CA');   // 🚚 SC+CA 를 CA 한 건으로 통합 (CA 몫이 있을 때만)
+  plBase = base; plWh = _consol ? 'CA' : ((rec.whs||[])[0] || 'SC'); plShowInv = false;
   plDrafts = {};
   const _upsM = rec.meta && rec.meta._ups;
   (rec.whs||[]).forEach(w=>{
     const i = plInfo(rec,w);
+    // 통합 발송이면 CA 드래프트는 SC+CA 라인 전부, SC 드래프트는 (고객문서 안 만드므로) 자기 몫만
+    const _lineWhs = (_consol && w==='CA') ? ['SC','CA'] : [w];
     const baseLines = (Array.isArray(i.lines) && i.lines.length)
       ? JSON.parse(JSON.stringify(i.lines))
-      : (rec.lines||[]).filter(l=>l.wh===w && (l.qty||0)>0).map(l=>({style:l.style||'', desc:l.desc||'', color:l.color||'', size:l.size||'', qty:l.qty||0, price:l.price||0, ppb:l.ppb||72, pbox:l.pbox||''}));
+      : (rec.lines||[]).filter(l=>_lineWhs.includes(l.wh) && (l.qty||0)>0).map(l=>({style:l.style||'', desc:l.desc||'', color:l.color||'', size:l.size||'', qty:l.qty||0, price:l.price||0, ppb:l.ppb||72, pbox:l.pbox||''}));
     // 저장된 PL tracking (있으면 우선). 없고 이 창고에서 UPS 라벨을 만들었으면 그 tracking#/Via/Method 자동 채움
     let _tr = (i.trackings&&i.trackings.length?i.trackings:(i.tracking?[i.tracking]:[])).filter(Boolean);
     let _via = normVia(i.via||((rec.meta&&rec.meta.via)||''));
@@ -6342,7 +6345,10 @@ function printStageDoc(kind){
 }
 function buildStageDoc(rec, wh, kind, d){
   const meta = rec.meta || {};
-  const lines = (Array.isArray(d.lines) ? d.lines : (rec.lines||[]).filter(l=>l.wh===wh)).filter(l=>(l.qty||0)>0);
+  // 🚚 CA 통합 발송: CA 문서엔 SC+CA 라인 전부 (fallback 시). 명시적 d.lines가 있으면 그걸 우선(이미 병합돼 저장됨).
+  const _consol = recShipFromCA(rec) && wh==='CA' && (rec.whs||[]).includes('CA');
+  const _fallback = _consol ? (rec.lines||[]).filter(l=>l.wh==='SC'||l.wh==='CA') : (rec.lines||[]).filter(l=>l.wh===wh);
+  const lines = (Array.isArray(d.lines) ? d.lines : _fallback).filter(l=>(l.qty||0)>0);
   lines.forEach(l=>{ const m = STYLE_MASTER[String(l.style||'').trim()]; if(m && m[0] && !l.descManual) l.desc = m[0]; }); // 마스터 공식 명칭으로 (수동 수정분은 유지)
   const num = plNum(rec.base, wh);
   const dateStr = (d.date ? new Date(d.date+'T00:00:00') : new Date()).toLocaleDateString('en-US');
@@ -7509,12 +7515,16 @@ function renderPL(){
   const tt = $('pl-card-title'), th = $('pl-card-hint');
   if(tt) tt.textContent = plShowInv ? '⑥ 🧾 Invoice' : '⑥ 📦 Packing List';
   if(th) th.style.display = plShowInv ? 'none' : '';
-  if(!(rec.whs||[]).includes(plWh)) plWh = (rec.whs||[])[0];
+  // 🚚 CA 통합 발송이면 고객문서 탭은 CA 하나만 (SC는 내부 pull request만) — CA 몫이 있을 때만
+  const _consolPL = recShipFromCA(rec) && (rec.whs||[]).includes('CA');
+  const _plWhs = _consolPL ? (rec.whs||[]).filter(w=>w==='CA') : (rec.whs||[]);
+  if(_consolPL) plWh = 'CA';
+  else if(!(rec.whs||[]).includes(plWh)) plWh = (rec.whs||[])[0];
   const d = plDrafts[plWh] || {};
   $('pl-area').innerHTML = `
-    <div class="doc-tabs" style="margin-top:0;">${(rec.whs||[]).map(w=>
+    <div class="doc-tabs" style="margin-top:0;">${_plWhs.map(w=>
       `<div class="doc-tab ${w===plWh?'active':''}" onclick="plFieldsToDraft();plWh='${w}';renderPL();">
-        ${w} <span style="font-family:Consolas,monospace;font-size:10px;">${plNum(rec.base,w)}</span>${plInfo(rec,w).savedAt?' ✓':''}
+        ${(_consolPL&&w==='CA')?'CA (SC+CA)':w} <span style="font-family:Consolas,monospace;font-size:10px;">${plNum(rec.base,w)}</span>${plInfo(rec,w).savedAt?' ✓':''}
       </div>`).join('')}
     </div>
     <div class="doc-view">
@@ -18022,7 +18032,9 @@ function updateItemRows(){
 
 function recIsReplace(s){ return !!(s && s.meta && s.meta._replaceOf); }
 function recStatus(s){
-  const whs = (s.whs||[]).filter(w=>w!=='BO' && w!=='NA');
+  let whs = (s.whs||[]).filter(w=>w!=='BO' && w!=='NA');
+  // 🚚 CA 통합 발송: SC 몫은 CA 문서로 합쳐지므로 SC를 상태 집계에서 제외 (CA 한 곳만 카운트)
+  if(recShipFromCA(s) && whs.includes('CA')) whs = whs.filter(w=>w!=='SC');
   if(!whs.length) return { label: t('st_bo'), color:'#b91c1c', bg:'#fee2e2' };
   const _locker = !!(s.meta && s.meta.lockerStock);
   const plDone = whs.filter(w=>(s.pl && s.pl[w] && s.pl[w].savedAt) || _locker).length;
@@ -18818,14 +18830,15 @@ function renderSaved(){
         const c = (mp.pr || locker) ? '#16a34a' : (w==='SC'?'#1d4ed8':(w==='CA'?'#c2410c':(w==='BO'?'#dc2626':'#6b7280')));
         const plSaved = s.pl && s.pl[w] && s.pl[w].savedAt;
         const invPr = s.inv && s.inv[w] && s.inv[w].printed;
+        const consolSC = recShipFromCA(s) && w==='SC' && (s.whs||[]).includes('CA');   // 🚚 SC 몫은 CA로 통합 — 고객문서(패킹/인보이스) 없음, pull request만 (CA 몫 있을 때만)
         return `<div style="display:flex;align-items:center;gap:6px;flex-wrap:wrap;margin-top:6px;padding-top:6px;border-top:1px dashed var(--border);">
-        ${w!=='BO' && w!=='NA' ? `<input type="checkbox" class="bship-cb" data-base="${esc(s.base)}" data-wh="${w}" onchange="updateBatchBar()" title="Include in batch (pre-ship = Batch Ship / post-ship = Invoice Print)" style="width:15px;height:15px;accent-color:#1d4ed8;cursor:pointer;">` : ''}
+        ${w!=='BO' && w!=='NA' && !consolSC ? `<input type="checkbox" class="bship-cb" data-base="${esc(s.base)}" data-wh="${w}" onchange="updateBatchBar()" title="Include in batch (pre-ship = Batch Ship / post-ship = Invoice Print)" style="width:15px;height:15px;accent-color:#1d4ed8;cursor:pointer;">` : ''}
         <span class="chip chip-${w}" style="min-width:34px;text-align:center;">${w}</span>
         <button class="btn btn-sm" style="background:${c};color:#fff;border-color:${c};" onclick="docBtnClick('${esc(s.base)}','${w}','pr')" oncontextmenu="return docBtnMenu(event,'${esc(s.base)}','${w}','pr')" title="Right-click: ${mp.pr?'clear':'mark'} done (green)">🖨 Pull Request${pby(mp.pr)}</button>
         ${w==='BO' ? (()=>{ const days = Math.floor((Date.now() - new Date(s.savedAt||s.meta.date||Date.now()).getTime())/86400000); const c2 = days>=14?'#dc2626':(days>=7?'#ea580c':'#6b7280'); return `<span style="padding:2px 8px;border-radius:20px;font-size:10px;font-weight:800;background:#fff;color:${c2};border:1.5px solid ${c2};white-space:nowrap;${days>=14?'animation:overdue-pulse 1s ease-in-out infinite;':''}">⏳ Day ${days}</span>`; })() : ''}
         ${(w==='BO'||w==='NA') ? `<button class="btn btn-sm" style="background:#f5f3ff;color:#6d28d9;border-color:#c4b5fd;font-weight:700;" onclick="processFromWh('${esc(s.base)}','${w}','SC')" title="Stock arrived — split into a separate order (-${w==='BO'?'B':'N'}) and ship from SC">⚙ Process from SC</button><button class="btn btn-sm" style="background:#fff7ed;color:#c2410c;border-color:#fed7aa;font-weight:700;" onclick="processFromWh('${esc(s.base)}','${w}','CA')" title="Stock arrived — split into a separate order (-${w==='BO'?'B':'N'}) and ship from CA">⚙ Process from CA</button><button class="btn btn-sm" style="background:#fee2e2;color:#b91c1c;border-color:#fca5a5;font-weight:700;" onclick="boAltFromList('${esc(s.base)}')" title="Replace a back-ordered item with an in-stock alternative (style / color / size / qty), then finish the order">⇄ Alternate</button>` : ''}
         ${w!=='BO' && w!=='NA' ? `<button class="btn btn-sm" style="background:${(mp.label||locker)?'#16a34a':'#7c3aed'};color:#fff;border-color:${(mp.label||locker)?'#16a34a':'#7c3aed'};" onclick="docBtnClick('${esc(s.base)}','${w}','label')" oncontextmenu="return docBtnMenu(event,'${esc(s.base)}','${w}','label')" title="Right-click: ${mp.label?'clear':'mark'} done (green)">🏷 Box Label${pby(mp.label)}</button><button class="btn btn-sm" style="background:#0f766e;color:#fff;border-color:#0f766e;" onclick="openBoxLabelForRecWh('${esc(s.base)}','${w}','full')" title="Small 2x1 label for individual full boxes (load 2x1 label stock)">🏷 Full Box</button>
-        <button class="btn btn-sm" style="${((s.pl && s.pl[w] && s.pl[w]._completed) || locker)?'background:#16a34a;border-color:#16a34a;':(plSaved?'background:#0e7490;border-color:#0e7490;':'background:#f59e0b;border-color:#f59e0b;')}color:#fff;" onclick="openPLWh('${esc(s.base)}','${w}')" oncontextmenu="return plBtnMenu(event,'${esc(s.base)}','${w}')" title="${plSaved && !(s.pl[w]&&s.pl[w]._completed)?'Saved — not Complete yet (no email sent) · ':''}Right-click: toggle Complete (without email)">📦 Packing List</button>
+        ${consolSC ? `<span style="padding:3px 10px;border-radius:20px;font-size:10.5px;font-weight:800;background:#fff7ed;color:#b45309;border:1px solid #fed7aa;white-space:nowrap;" title="This SC portion transfers to CA and ships out combined with the CA portion — the packing slip &amp; invoice are on the CA (SC+CA) document.">🚚 → ships from CA (combined doc)</span>` : `<button class="btn btn-sm" style="${((s.pl && s.pl[w] && s.pl[w]._completed) || locker)?'background:#16a34a;border-color:#16a34a;':(plSaved?'background:#0e7490;border-color:#0e7490;':'background:#f59e0b;border-color:#f59e0b;')}color:#fff;" onclick="openPLWh('${esc(s.base)}','${w}')" oncontextmenu="return plBtnMenu(event,'${esc(s.base)}','${w}')" title="${plSaved && !(s.pl[w]&&s.pl[w]._completed)?'Saved — not Complete yet (no email sent) · ':''}Right-click: toggle Complete (without email)">📦 Packing List</button>`}
         ${plSaved && recIsReplace(s) ? `<span style="padding:3px 10px;border-radius:20px;font-size:10.5px;font-weight:800;background:#fff1f2;color:#be123c;border:1px solid #fda4af;white-space:nowrap;" title="Defect replacement order — no invoice issued">🔁 Free replacement — no Invoice</span>` : ''}
         ${(plSaved || locker) && !recIsReplace(s) ? `<button class="btn btn-sm" style="${invPr?'background:#16a34a;border-color:#16a34a;':'background:#dc2626;border-color:#dc2626;'}color:#fff;" onclick="docBtnClick('${esc(s.base)}','${w}','inv')" oncontextmenu="return docBtnMenu(event,'${esc(s.base)}','${w}','inv')" title="Right-click: ${invPr?'clear':'mark'} done (green)">🧾 Invoice</button>${invPr ? `<button class="btn btn-sm" style="background:#065f46;color:#fff;border-color:#065f46;" onclick="payFromRow('${esc(s.base)}','${w}')" title="Record payment (full/partial)">💰 Payment</button><button class="btn btn-sm" style="background:#7c2d12;color:#fff;border-color:#7c2d12;" onclick="memoFromRow('${esc(s.base)}','${w}')" title="Credit Memo (returns) — MAS200 file can be attached">📝 Credit Memo</button>` : ''}` : ''}
         ${(()=>{ const iv0 = s.inv && s.inv[w]; const pd = iv0 && iv0.paid; if(!pd) return '';
