@@ -156,7 +156,7 @@ main{max-width:1100px;margin:0 auto;padding:16px;}
     <button class="btn btn-sm" onclick="doLogout()" style="padding:2px 8px;font-size:10px;" data-i18n="logout">Log out</button>
   </span>
   <select id="lang-sel" onchange="setLang(this.value)" style="font-size:11px;padding:3px 6px;border-radius:5px;border:none;background:#1d3f66;color:#fff;"><option value="ko">한국어</option><option value="en">English</option><option value="es">Español</option></select>
-  <span style="font-size:10px;color:#9fb8d4;">v624 ↩</span>
+  <span style="font-size:10px;color:#9fb8d4;">v625 ↩</span>
 </div>
 <script type="text/javascript" src="https://js.authorize.net/v1/Accept.js" charset="utf-8"></script>
 <div id="po-viewer" style="display:none;position:fixed;top:0;right:0;width:44%;height:100vh;background:#fff;border-left:2px solid var(--border);z-index:60;box-shadow:-6px 0 20px rgba(0,0,0,.15);">
@@ -5033,11 +5033,13 @@ function openPLInner(base){
     }
     plDrafts[w] = { custEmail:i.custEmail||((rec.meta&&rec.meta.custEmail)||'')||custEmailFor(rec.meta&&rec.meta.cust), serial:i.serial||nextSerial(w), via:_via, method:_method, freightCo:i.freightCo||'', trackings:(_tr.length?_tr:['']), date:i.date||((rec.meta&&rec.meta.futureShip)||'')||todayStr(), note:i.note||'', lines: baseLines, files: Array.isArray(i.files)?JSON.parse(JSON.stringify(i.files)):[] };
     const iv = (rec.inv && rec.inv[w]) || {};
-    // UPS 라벨을 우리 계정으로 만든 창고면, 아직 배송비가 비어있을 때 마크업 요금을 프리필
+    // 배송비 자동 프리필: 고객이 승인한 금액이 있으면 그걸 최우선(=청구=승인 일치), 없으면 라벨 정가
     let _fr = Number(iv.freight)||0;
     const _ups = rec.meta && rec.meta._ups;
-    if(_fr===0 && _ups && _ups.origin===w && _ups.billing==='shipper' && Number(_ups.billShip)>0 && !(iv.savedAt)){
-      _fr = Number(_ups.billShip);
+    const _appr = rec.meta && rec.meta._shipApproval;
+    if(_fr===0 && !(iv.savedAt)){
+      if(_appr && Number(_appr.amount)>0 && (!_appr.wh || _appr.wh===w)) _fr = Number(_appr.amount);
+      else if(_ups && _ups.origin===w && _ups.billing==='shipper' && Number(_ups.billShip)>0) _fr = Number(_ups.billShip);
     }
     invDrafts[w] = {
       invNo: iv.invNo||'',
@@ -7002,8 +7004,10 @@ function lblApprOpen(){
   lblSyncBoxes();
   const est = (function(){ const el=document.getElementById('lbl-est'); if(!el) return ''; const m=(el.textContent||'').match(/\$([\d,]+\.\d{2})/); return m?m[1].replace(/,/g,''):''; })();
   const cur = (rec.meta&&rec.meta._shipApproval)||{};
+  const exact = (rec.meta&&rec.meta._ups&&Number(rec.meta._ups.billShip)>0) ? Number(rec.meta._ups.billShip) : '';   // 라벨을 이미 만들었으면 인보이스에 청구될 정확한 정가
   const email = (rec.meta&&rec.meta.custEmail) || custEmailFor(rec.meta&&rec.meta.cust) || '';
-  const amt = cur.amount || est || '';
+  const amt = cur.amount || exact || est || '';
+  const hasExact = exact!=='' ;
   const ex=document.getElementById('modal-lblappr'); if(ex) ex.remove();
   const d=document.createElement('div'); d.id='modal-lblappr';
   d.style.cssText='position:fixed;inset:0;background:rgba(0,0,0,.5);z-index:150;display:flex;align-items:center;justify-content:center;';
@@ -7011,10 +7015,10 @@ function lblApprOpen(){
   d.innerHTML=`<div style="background:#fff;border-radius:12px;width:420px;max-width:94vw;box-shadow:0 20px 60px rgba(0,0,0,.35);">
     <div style="background:#0e7490;color:#fff;padding:12px 16px;font-weight:800;">📧 Request shipping approval</div>
     <div style="padding:15px 16px;display:flex;flex-direction:column;gap:11px;">
-      <div style="font-size:11.5px;color:#64748b;">Email the customer the shipping cost with Approve / Decline buttons. Their answer shows on the order.</div>
+      <div style="font-size:11.5px;color:#64748b;">Email the customer the <b>exact shipping charge</b> that will appear on their invoice, with Approve / Decline buttons. The amount they approve is what gets invoiced — no surprises later.</div>
       <div class="ff"><label style="font-size:11px;font-weight:800;color:#0f2a4a;">Customer email</label><input class="fi" id="appr-email" value="${esc(email)}" placeholder="customer@company.com (commas for multiple)" style="font-size:12px;"></div>
-      <div class="ff"><label style="font-size:11px;font-weight:800;color:#0f2a4a;">Shipping amount to approve ($)</label><input class="fi" id="appr-amt" value="${esc(amt)}" inputmode="decimal" placeholder="e.g. 59.08" style="font-size:13px;font-family:Consolas,monospace;"></div>
-      <div style="font-size:10.5px;color:#94a3b8;">Prefilled from the estimate — edit to the exact amount you'll invoice.</div>
+      <div class="ff"><label style="font-size:11px;font-weight:800;color:#0f2a4a;">Exact shipping charge to invoice ($)</label><input class="fi" id="appr-amt" value="${esc(amt)}" inputmode="decimal" placeholder="e.g. 59.08" style="font-size:13px;font-family:Consolas,monospace;"></div>
+      <div style="font-size:10.5px;color:${hasExact?'#166534':'#b45309'};">${hasExact?'✔ This is the exact UPS list charge from the created label — same amount auto-fills the invoice freight.':'⚠ No label created yet — this is an estimate. For the exact charge, create the label first, then request approval.'}</div>
       <div id="appr-msg" style="font-size:11.5px;font-weight:700;color:#b91c1c;height:14px;"></div>
     </div>
     <div style="padding:0 16px 15px;display:flex;gap:8px;justify-content:flex-end;">
