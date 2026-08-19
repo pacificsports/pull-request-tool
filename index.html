@@ -156,7 +156,7 @@ main{max-width:1100px;margin:0 auto;padding:16px;}
     <button class="btn btn-sm" onclick="doLogout()" style="padding:2px 8px;font-size:10px;" data-i18n="logout">Log out</button>
   </span>
   <select id="lang-sel" onchange="setLang(this.value)" style="font-size:11px;padding:3px 6px;border-radius:5px;border:none;background:#1d3f66;color:#fff;"><option value="ko">한국어</option><option value="en">English</option><option value="es">Español</option></select>
-  <span style="font-size:10px;color:#9fb8d4;">v635 ↩</span>
+  <span style="font-size:10px;color:#9fb8d4;">v636 ↩</span>
 </div>
 <script type="text/javascript" src="https://js.authorize.net/v1/Accept.js" charset="utf-8"></script>
 <div id="po-viewer" style="display:none;position:fixed;top:0;right:0;width:44%;height:100vh;background:#fff;border-left:2px solid var(--border);z-index:60;box-shadow:-6px 0 20px rgba(0,0,0,.15);">
@@ -14718,6 +14718,8 @@ async function trBuilderOpen(existingId, route){
     });
     if(!trSrcAutoPallet(_shipRoute)) _shipPallets.forEach((p,i)=>p.label='Pallet '+(i+1));
   }
+  // 🚚 오더 박스만 실린 팔레트도 유지 (라인이 없어도 사라지지 않게)
+  try{ ((_shipMeta.orderShip)||[]).forEach(o=>{ if(o.pallet && !_shipPallets.some(p=>p.label===o.pallet)) _shipPallets.push({ id:'p_'+Math.random().toString(36).slice(2,9), label:o.pallet, lines:[] }); }); }catch(e){}
   // 3rd party 출발은 bin(=팔레트) 단위로 통째로 오므로 빈 팔레트를 미리 만들지 않는다
   if(_shipPallets.length===0 && !trSrcAutoPallet(_shipRoute)) _shipPallets.push({ id:'p_'+Math.random().toString(36).slice(2,9), label:'Pallet 1', lines:[] });
   const today = new Date().toISOString().slice(0,10);
@@ -14893,8 +14895,11 @@ function trRenderPallets(){
   // 사이즈 정렬 (in-place): 재고 라인은 스타일→칼라→사이즈, 수동(manual) 라인은 맨 뒤 원래 순서 유지
   _shipPallets.forEach(p=>{ if(Array.isArray(p.lines)) p.lines.sort((a,b)=>{ const am=a.is_manual?1:0, bm=b.is_manual?1:0; if(am!==bm) return am-bm; if(am) return 0; return String(a.style||'').localeCompare(String(b.style||'')) || bxBaseColor(String(a.color||'').toUpperCase()).localeCompare(bxBaseColor(String(b.color||'').toUpperCase())) || bxSizeCmp(a.size,b.size); }); });
   el.innerHTML = _shipPallets.map(p=>{
-    const pB = p.lines.reduce((s,l)=>s+trLineBoxes(l),0);
-    const pP = p.lines.reduce((s,l)=>s+trLinePcs(l),0);
+    const _pOrders = ((_shipMeta&&_shipMeta.orderShip)||[]).filter(o=>o.pallet===p.label);
+    const pOB = _pOrders.reduce((s,o)=>s+(o.boxes||0),0);
+    const pOP = _pOrders.reduce((s,o)=>s+(o.pcs||0),0);
+    const pB = p.lines.reduce((s,l)=>s+trLineBoxes(l),0) + pOB;
+    const pP = p.lines.reduce((s,l)=>s+trLinePcs(l),0) + pOP;
     const _spSrc = trSrcAutoPallet(_shipRoute);
     const _srcLbl = trIsSpecKind(trSrcKind(_shipRoute)) ? '3rd Party' : trSrcKind(_shipRoute);
     const rows = p.lines.length===0
@@ -14940,17 +14945,19 @@ function trRenderPallets(){
       <table class="etbl" style="font-size:12px;">
         <thead><tr style="background:${_spSrc?'#fef3c7':'#fce7f3'};"><th class="tl">Style</th><th class="tl">Color</th><th>Size</th><th>From Bin</th><th>Boxes</th><th>Pcs</th><th>pcs/box</th><th></th><th style="width:30px;"></th></tr></thead>
         <tbody>${rows}</tbody>
-      </table></div></div>`;
+      </table></div>${trOrderShipRowsForPallet(p.label)}</div>`;
   }).join('');
   trRenderOrderShip();
   trSummary();
 }
 function trSummary(){
   const set = (id,v)=>{ const e=document.getElementById(id); if(e) e.textContent = v; };
+  const _ob=((_shipMeta&&_shipMeta.orderShip)||[]).reduce((s,o)=>s+(o.boxes||0),0);
+  const _op=((_shipMeta&&_shipMeta.orderShip)||[]).reduce((s,o)=>s+(o.pcs||0),0);
   set('ship-pallet-count', _shipPallets.length);
   set('ship-line-count', _shipPallets.reduce((s,p)=>s+p.lines.length,0));
-  set('ship-box-count', _shipPallets.reduce((s,p)=>s+p.lines.reduce((ss,l)=>ss+trLineBoxes(l),0),0));
-  set('ship-pcs-count', _shipPallets.reduce((s,p)=>s+p.lines.reduce((ss,l)=>ss+trLinePcs(l),0),0).toLocaleString());
+  set('ship-box-count', _shipPallets.reduce((s,p)=>s+p.lines.reduce((ss,l)=>ss+trLineBoxes(l),0),0) + _ob);
+  set('ship-pcs-count', (_shipPallets.reduce((s,p)=>s+p.lines.reduce((ss,l)=>ss+trLinePcs(l),0),0) + _op).toLocaleString());
 }
 // ── SC Inventory Selector (bin 그룹) ──
 let _scvCache = [], _scvSel = {}, _scvTarget = null, _scvLimit = 40, _scvDebT = null;
@@ -15674,52 +15681,85 @@ async function trOrderShipOpen(){
       ${packed?`<span style="font-size:11px;font-weight:800;color:#16a34a;background:#dcfce7;border-radius:20px;padding:3px 10px;">📦 ${bx} box</span>`:'<span style="font-size:11px;color:#b45309;font-weight:700;">not packed yet</span>'}
     </label>`;
   }).join('') : '<div style="color:#94a3b8;font-size:12.5px;padding:14px;text-align:center;">No Ship-from-CA orders waiting. Turn on 🚚 Ship from CA on an order (with SC boxes packed) first.</div>';
+  const palOpts = _shipPallets.map(p=>`<option value="${esc(p.label)}">${esc(p.label)}</option>`).join('')+'<option value="__new__">+ New pallet</option>';
   d.innerHTML=`<div style="background:#fff;border-radius:12px;width:520px;max-width:95vw;max-height:88vh;overflow-y:auto;box-shadow:0 20px 60px rgba(0,0,0,.35);">
     <div style="background:#7b1fa2;color:#fff;padding:12px 16px;font-weight:800;display:flex;justify-content:space-between;align-items:center;">
       <span>🚚 Ship-from-CA Orders → load on this truck</span>
       <button onclick="document.getElementById('modal-oship').remove()" style="background:none;border:none;color:#fff;font-size:18px;cursor:pointer;">✕</button></div>
     <div style="padding:14px 16px;">
       <div style="font-size:11.5px;color:#64748b;margin-bottom:10px;">These orders are packed in SC and flagged to ship from CA. Check the ones on <b>this</b> truck — they ride as <b>designated</b> (routed to their order at CA, not added to CA stock).</div>
+      <div style="display:flex;align-items:center;gap:8px;margin-bottom:12px;padding:8px 10px;background:#faf5ff;border:1px solid #e9d5ff;border-radius:8px;">
+        <span style="font-size:12px;font-weight:800;color:#7b1fa2;">📍 Put on pallet:</span>
+        <select id="oship-pallet" class="fi" style="font-size:12px;padding:5px 8px;flex:1;">${palOpts}</select>
+      </div>
       ${rows}
     </div>
     <div style="padding:0 16px 15px;display:flex;gap:8px;justify-content:flex-end;">
       <button class="btn btn-sm" onclick="document.getElementById('modal-oship').remove()">Cancel</button>
-      <button class="btn btn-sm" style="background:#7b1fa2;color:#fff;border-color:#7b1fa2;font-weight:800;" onclick="trOrderShipAdd()">Add to shipment</button>
+      <button class="btn btn-sm" style="background:#7b1fa2;color:#fff;border-color:#7b1fa2;font-weight:800;" onclick="trOrderShipAdd()">Add to pallet</button>
     </div></div>`;
   document.body.appendChild(d);
 }
 async function trOrderShipAdd(){
   const cbs=[...document.querySelectorAll('#modal-oship .oship-cb:checked')];
   if(!cbs.length){ showToast('⚠ Select at least one order'); return; }
+  let pal=String((document.getElementById('oship-pallet')||{}).value||'');
+  if(pal==='__new__'){ trAddPallet(); pal=_shipPallets[_shipPallets.length-1].label; }
+  if(!pal){ pal=(_shipPallets[0]||{}).label||'Pallet 1'; }
   _shipMeta=_shipMeta||{}; _shipMeta.orderShip=_shipMeta.orderShip||[];
-  cbs.forEach(c=>{ const base=c.getAttribute('data-base'); if(_shipMeta.orderShip.some(o=>o.base===base)) return;
-    _shipMeta.orderShip.push({ base, cust:c.getAttribute('data-cust')||'', po:c.getAttribute('data-po')||'', boxes:parseInt(c.getAttribute('data-boxes'),10)||0, pcs:parseInt(c.getAttribute('data-pcs'),10)||0, addedAt:new Date().toISOString(), addedBy:(SESS&&SESS.email)||'' }); });
+  cbs.forEach(c=>{ const base=c.getAttribute('data-base');
+    const ex=_shipMeta.orderShip.find(o=>o.base===base);
+    if(ex){ ex.pallet=pal; return; }
+    _shipMeta.orderShip.push({ base, cust:c.getAttribute('data-cust')||'', po:c.getAttribute('data-po')||'', boxes:parseInt(c.getAttribute('data-boxes'),10)||0, pcs:parseInt(c.getAttribute('data-pcs'),10)||0, pallet:pal, addedAt:new Date().toISOString(), addedBy:(SESS&&SESS.email)||'' }); });
   const m=document.getElementById('modal-oship'); if(m) m.remove();
   if(_shipId){ try{ await trPatchRec(_shipId, {meta:_shipMeta}); }catch(e){} }
-  trRenderOrderShip();
-  showToast('🚚 '+cbs.length+' order(s) added to the truck');
+  trRenderPallets();
+  showToast('🚚 '+cbs.length+' order(s) → '+pal);
 }
 function trOrderShipDel(base){
   if(!_shipMeta||!Array.isArray(_shipMeta.orderShip)) return;
   _shipMeta.orderShip=_shipMeta.orderShip.filter(o=>o.base!==base);
   if(_shipId){ try{ trPatchRec(_shipId, {meta:_shipMeta}); }catch(e){} }
-  trRenderOrderShip();
+  trRenderPallets();
 }
+function trOrderShipEditBoxes(base, val){
+  const o=((_shipMeta&&_shipMeta.orderShip)||[]).find(x=>x.base===base); if(!o) return;
+  o.boxes=Math.max(0, parseInt(val,10)||0);
+  if(_shipId){ try{ trPatchRec(_shipId, {meta:_shipMeta}); }catch(e){} }
+  trSummary();
+}
+// 팔레트별 오더 박스 행 (팔레트 카드 안에 렌더)
+function trOrderShipRowsForPallet(label){
+  const arr=((_shipMeta&&_shipMeta.orderShip)||[]).filter(o=>o.pallet===label);
+  if(!arr.length) return '';
+  return `<div style="border-top:2px dashed #f0abfc;background:#fdf4ff;">
+    <div style="padding:5px 12px;font-size:10.5px;font-weight:800;color:#a21caf;">🚚 SHIP-FROM-CA ORDER BOXES ON THIS PALLET — routed to order at CA (not CA stock)</div>
+    ${arr.map(o=>`<div style="display:flex;align-items:center;gap:9px;padding:5px 12px;border-top:1px dashed #f5d0fe;">
+      <div style="flex:1;min-width:0;"><b style="color:#0f2a4a;font-size:12px;">${esc(o.cust||'—')}</b> <span style="font-size:11px;color:#64748b;">PO ${esc(o.po||'—')} · ${(o.pcs||0).toLocaleString()} pcs</span></div>
+      <label style="font-size:10px;color:#7b1fa2;font-weight:800;display:flex;align-items:center;gap:4px;">boxes <input type="number" min="0" value="${o.boxes||0}" onchange="trOrderShipEditBoxes('${esc(o.base)}',this.value)" style="width:56px;font-size:12px;padding:3px 5px;text-align:center;font-weight:800;border:1px solid #e9d5ff;border-radius:6px;"></label>
+      <button onclick="trOrderShipDel('${esc(o.base)}')" style="border:none;background:none;color:#e53935;cursor:pointer;font-weight:800;" title="Remove from truck">✕</button>
+    </div>`).join('')}</div>`;
+}
+// 어느 팔레트에도 안 붙은(orphan) 오더 박스 — 하단 별도 표시 + 팔레트 재배정
 function trRenderOrderShip(){
   const el=document.getElementById('ship-orderbox'); if(!el) return;
-  const arr=(_shipMeta&&_shipMeta.orderShip)||[];
-  if(!arr.length){ el.innerHTML=''; return; }
-  const tot=arr.reduce((s,o)=>s+(o.boxes||0),0);
-  el.innerHTML=`<div style="border:2px solid #f0abfc;border-radius:8px;background:#fff;margin-top:10px;">
-    <div style="background:#fdf4ff;padding:8px 14px;display:flex;align-items:center;gap:10px;border-radius:6px 6px 0 0;flex-wrap:wrap;">
-      <span style="font-weight:800;color:#a21caf;">🚚 Ship-from-CA Order Boxes</span>
-      <span style="color:var(--text2);font-size:11px;">${arr.length} order(s) · <b>${tot}</b> box(es) · routed to order at CA (not CA stock)</span>
-    </div>
-    <div style="padding:6px 10px;">${arr.map(o=>`<div style="display:flex;align-items:center;gap:9px;padding:6px 4px;border-bottom:1px dashed #f5d0fe;">
-      <div style="flex:1;min-width:0;"><b style="color:#0f2a4a;">${esc(o.cust||'—')}</b> <span style="font-size:11px;color:#64748b;">PO ${esc(o.po||'—')}</span></div>
-      <span style="font-size:11px;font-weight:800;color:#a21caf;">${o.boxes||0} box · ${(o.pcs||0).toLocaleString()} pcs</span>
-      <button onclick="trOrderShipDel('${esc(o.base)}')" style="border:none;background:none;color:#e53935;cursor:pointer;font-weight:800;" title="Remove from this truck">✕</button>
+  const labels=new Set(_shipPallets.map(p=>p.label));
+  const orphan=((_shipMeta&&_shipMeta.orderShip)||[]).filter(o=>!o.pallet||!labels.has(o.pallet));
+  if(!orphan.length){ el.innerHTML=''; return; }
+  const palOpts=_shipPallets.map(p=>`<option value="${esc(p.label)}">${esc(p.label)}</option>`).join('');
+  el.innerHTML=`<div style="border:2px solid #fca5a5;border-radius:8px;background:#fff;margin-top:10px;">
+    <div style="background:#fef2f2;padding:8px 14px;font-weight:800;color:#b91c1c;font-size:12px;">⚠ Order boxes not on any pallet — assign a pallet so CA can find them</div>
+    <div style="padding:6px 10px;">${orphan.map(o=>`<div style="display:flex;align-items:center;gap:9px;padding:6px 4px;border-bottom:1px dashed #fecaca;">
+      <div style="flex:1;min-width:0;"><b style="color:#0f2a4a;">${esc(o.cust||'—')}</b> <span style="font-size:11px;color:#64748b;">PO ${esc(o.po||'—')} · ${o.boxes||0} box</span></div>
+      <select class="fi" onchange="trOrderShipSetPallet('${esc(o.base)}',this.value)" style="font-size:11px;padding:3px 6px;"><option value="">— pallet —</option>${palOpts}</select>
+      <button onclick="trOrderShipDel('${esc(o.base)}')" style="border:none;background:none;color:#e53935;cursor:pointer;font-weight:800;">✕</button>
     </div>`).join('')}</div></div>`;
+}
+function trOrderShipSetPallet(base, label){
+  const o=((_shipMeta&&_shipMeta.orderShip)||[]).find(x=>x.base===base); if(!o||!label) return;
+  o.pallet=label;
+  if(_shipId){ try{ trPatchRec(_shipId, {meta:_shipMeta}); }catch(e){} }
+  trRenderPallets();
 }
 async function _scToCaMark(base, status, ship){
   let meta=null; const rec=(savedCache||[]).find(r=>r.base===base);
