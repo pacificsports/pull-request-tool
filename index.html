@@ -156,7 +156,7 @@ main{max-width:1100px;margin:0 auto;padding:16px;}
     <button class="btn btn-sm" onclick="doLogout()" style="padding:2px 8px;font-size:10px;" data-i18n="logout">Log out</button>
   </span>
   <select id="lang-sel" onchange="setLang(this.value)" style="font-size:11px;padding:3px 6px;border-radius:5px;border:none;background:#1d3f66;color:#fff;"><option value="ko">한국어</option><option value="en">English</option><option value="es">Español</option></select>
-  <span style="font-size:10px;color:#9fb8d4;">v618 ↩</span>
+  <span style="font-size:10px;color:#9fb8d4;">v619 ↩</span>
 </div>
 <script type="text/javascript" src="https://js.authorize.net/v1/Accept.js" charset="utf-8"></script>
 <div id="po-viewer" style="display:none;position:fixed;top:0;right:0;width:44%;height:100vh;background:#fff;border-left:2px solid var(--border);z-index:60;box-shadow:-6px 0 20px rgba(0,0,0,.15);">
@@ -6648,6 +6648,209 @@ async function confirmBoxLabelPrint(){
   const ok = await sendToZebraBrowserPrint(zplAll, sel.length);
   if(ok && !isFull && window._blCtx) markDocPrinted(window._blCtx.base, window._blCtx.wh, 'label');
   window._blCtx = null;
+}
+
+// ═══════════════ 🏷 UPS Shipping Label (manager · Phase 3) ═══════════════
+const UPS_LABEL_URL = 'https://checkout.hjbae.workers.dev/label';
+const UPS_SERVICES = [
+  {code:'03', name:'UPS Ground'},
+  {code:'12', name:'UPS 3 Day Select'},
+  {code:'02', name:'UPS 2nd Day Air'},
+  {code:'01', name:'UPS Next Day Air'}
+];
+let _lblBase='', _lblRec=null, _lblBoxes=[], _lblResult=null;
+function lblSt(rec){
+  const m = rec.meta||{};
+  return { name:m.shipName||'', company:m.cust||'', addr1:m.shipAddr||'', city:m.shipCity||'',
+           state:String(m.shipState||'').toUpperCase(), zip:m.shipZip||'' };
+}
+async function openLabelModal(base){
+  const rec = (savedCache||[]).find(r=>r.base===base);
+  if(!rec){ showToast('Order not found'); return; }
+  _lblBase = base; _lblRec = rec; _lblResult = (rec.meta&&rec.meta._ups)||null;
+  _lblBoxes = [];
+  try{
+    const r = await sbFetch('/rest/v1/pr_pack?base=eq.'+encodeURIComponent(base)+'&select=total_boxes,boxes');
+    const j = await r.json();
+    if(Array.isArray(j) && j[0] && Array.isArray(j[0].boxes))
+      _lblBoxes = j[0].boxes.map(b=>({name:b.name||'', l:+b.l||0, w:+b.w||0, h:+b.h||0, wt:+b.wt||0}));
+  }catch(e){}
+  if(!_lblBoxes.length) _lblBoxes = [{name:'',l:'',w:'',h:'',wt:''}];
+  const whs = (rec.whs||[]).filter(w=>w==='SC'||w==='CA');
+  window._lblOrigin = (_lblResult&&_lblResult.origin) || whs[0] || 'SC';
+  window._lblService = (_lblResult&&_lblResult.service) || '03';
+  window._lblTest = false;
+  lblRender();
+}
+function lblRender(){
+  const rec = _lblRec; if(!rec) return;
+  const st = lblSt(rec);
+  const bill = custUpsFor(rec.meta.cust);
+  const ex = document.getElementById('modal-upslabel'); if(ex) ex.remove();
+  const div = document.createElement('div');
+  div.id = 'modal-upslabel';
+  div.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,.55);z-index:140;display:flex;align-items:center;justify-content:center;';
+  div.onclick = e=>{ if(e.target===div) div.remove(); };
+  const billTxt = bill.mode==='receiver'
+    ? `Bill customer's UPS # <b>${esc(bill.account||'—')}</b>${bill.zip?' (ZIP '+esc(bill.zip)+')':''}`
+    : `Bill <b>OUR</b> UPS # &middot; charge on invoice`;
+  const billWarn = (bill.mode==='receiver' && !bill.account) ? '<div style="color:#b91c1c;font-weight:700;font-size:11px;margin-top:3px;">⚠ Customer UPS # missing — set it in Customers → 🏷 UPS</div>' : '';
+  const origin = window._lblOrigin;
+  const originBtns = ['SC','CA'].map(w=>`<button class="btn btn-sm" onclick="lblSetOrigin('${w}')" style="${origin===w?'background:'+(w==='SC'?'#1d4ed8':'#c2410c')+';color:#fff;border-color:'+(w==='SC'?'#1d4ed8':'#c2410c')+';':''}">${w==='SC'?'Sumter, SC':'Eastvale, CA'}</button>`).join('');
+  const svcOpts = UPS_SERVICES.map(s=>`<option value="${s.code}"${window._lblService===s.code?' selected':''}>${s.name}</option>`).join('');
+  const boxRows = _lblBoxes.map((b,i)=>`<div style="display:flex;gap:5px;align-items:center;margin-bottom:6px;">
+    <span style="font-family:Consolas,monospace;font-size:11px;color:#64748b;min-width:20px;">#${i+1}</span>
+    <select class="fi lbl-preset" data-i="${i}" onchange="lblPreset(${i},this.value)" style="font-size:11px;padding:4px;width:120px;"><option value="">— preset —</option>${BOX_PRESETS.map((p,pi)=>`<option value="${pi}"${b.name===p.n?' selected':''}>${esc(p.n)}</option>`).join('')}</select>
+    <input class="fi lbl-l" data-i="${i}" value="${esc(b.l)}" placeholder="L" style="width:46px;font-size:11px;padding:4px;text-align:center;">
+    <input class="fi lbl-w" data-i="${i}" value="${esc(b.w)}" placeholder="W" style="width:46px;font-size:11px;padding:4px;text-align:center;">
+    <input class="fi lbl-h" data-i="${i}" value="${esc(b.h)}" placeholder="H" style="width:46px;font-size:11px;padding:4px;text-align:center;">
+    <input class="fi lbl-wt" data-i="${i}" value="${esc(b.wt)}" placeholder="lbs" style="width:52px;font-size:11px;padding:4px;text-align:center;">
+    <button class="btn btn-sm" onclick="lblDelBox(${i})" style="color:#b91c1c;padding:3px 8px;" title="Remove box">✕</button>
+  </div>`).join('');
+  const resHtml = _lblResult && (_lblResult.tracking||[]).length ? `
+    <div style="margin-top:12px;padding:11px 13px;background:#f0fdf4;border:1.5px solid #86efac;border-radius:10px;">
+      <div style="font-size:12px;font-weight:800;color:#166534;margin-bottom:6px;">✅ Label created${_lblResult.test?' <span style="color:#b45309;">(TEST / CIE)</span>':''} — ${_lblResult.tracking.length} package(s)${_lblResult.service?' · '+esc((UPS_SERVICES.find(s=>s.code===_lblResult.service)||{}).name||_lblResult.service):''}</div>
+      ${_lblResult.tracking.map((tn,i)=>`<div style="font-family:Consolas,monospace;font-size:12px;color:#0f2a4a;display:flex;align-items:center;gap:8px;"><b>Box ${i+1}:</b> ${esc(tn)} <button class="btn btn-sm" style="padding:1px 7px;font-size:10px;" onclick="navigator.clipboard&&navigator.clipboard.writeText('${esc(tn)}');showToast('📋 Copied');">📋</button></div>`).join('')}
+      <div style="display:flex;gap:8px;margin-top:9px;flex-wrap:wrap;">
+        <button class="btn btn-sm" style="background:#0f766e;color:#fff;border-color:#0f766e;font-weight:700;" onclick="lblPrint()">🖨 Print to Zebra (4×6)</button>
+        <button class="btn btn-sm" onclick="lblDownload()" title="Download raw ZPL if Browser Print isn't available">⬇ Download ZPL</button>
+      </div>
+    </div>` : '';
+  div.innerHTML = `<div style="background:#fff;border-radius:12px;width:560px;max-width:95vw;max-height:90vh;overflow-y:auto;box-shadow:0 20px 60px rgba(0,0,0,.35);">
+    <div style="background:#7c2d12;color:#fff;padding:12px 16px;font-weight:800;display:flex;justify-content:space-between;align-items:center;">
+      <span>🏷 UPS Label — ${esc(rec.meta.cust||'')} · PO ${esc(rec.meta.po||'')}</span>
+      <button onclick="document.getElementById('modal-upslabel').remove()" style="background:none;border:none;color:#fff;font-size:18px;cursor:pointer;">✕</button></div>
+    <div style="padding:15px 16px;display:flex;flex-direction:column;gap:13px;">
+      <div>
+        <div style="font-size:11px;font-weight:800;color:#0f2a4a;margin-bottom:5px;">SHIP FROM (origin warehouse)</div>
+        <div style="display:flex;gap:8px;">${originBtns}</div>
+      </div>
+      <div>
+        <div style="font-size:11px;font-weight:800;color:#0f2a4a;margin-bottom:5px;">SHIP TO</div>
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:7px;">
+          <input class="fi" id="lbl-name" value="${esc(st.name||st.company)}" placeholder="Name / Company" style="font-size:12px;grid-column:1/3;">
+          <input class="fi" id="lbl-addr" value="${esc(st.addr1)}" placeholder="Street address" style="font-size:12px;grid-column:1/3;">
+          <input class="fi" id="lbl-city" value="${esc(st.city)}" placeholder="City" style="font-size:12px;">
+          <div style="display:flex;gap:7px;">
+            <input class="fi" id="lbl-state" value="${esc(st.state)}" placeholder="ST" style="font-size:12px;width:52px;text-transform:uppercase;">
+            <input class="fi" id="lbl-zip" value="${esc(st.zip)}" placeholder="ZIP" style="font-size:12px;flex:1;">
+          </div>
+        </div>
+      </div>
+      <div style="display:flex;gap:10px;align-items:flex-end;">
+        <div style="flex:1;"><div style="font-size:11px;font-weight:800;color:#0f2a4a;margin-bottom:5px;">SERVICE</div>
+          <select class="fi" id="lbl-service" onchange="window._lblService=this.value" style="font-size:12px;">${svcOpts}</select></div>
+        <label style="display:flex;align-items:center;gap:6px;font-size:11px;font-weight:700;color:#b45309;white-space:nowrap;padding-bottom:8px;cursor:pointer;" title="Test mode uses UPS CIE (test) — labels are NOT billable/shippable. Website rates are unaffected.">
+          <input type="checkbox" id="lbl-test" ${window._lblTest?'checked':''} onchange="window._lblTest=this.checked" style="width:15px;height:15px;accent-color:#b45309;">🧪 Test</label>
+      </div>
+      <div style="background:#fff7ed;border:1px solid #fed7aa;border-radius:9px;padding:8px 11px;font-size:11.5px;color:#7c2d12;">💳 ${billTxt}${billWarn}</div>
+      <div>
+        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px;">
+          <span style="font-size:11px;font-weight:800;color:#0f2a4a;">BOXES (L × W × H in · weight lbs)</span>
+          <button class="btn btn-sm" onclick="lblAddBox()" style="font-size:11px;padding:3px 10px;">＋ Add box</button>
+        </div>
+        ${boxRows}
+      </div>
+      ${resHtml}
+    </div>
+    <div style="padding:0 16px 15px;display:flex;gap:8px;justify-content:flex-end;">
+      <button class="btn btn-sm" onclick="document.getElementById('modal-upslabel').remove()">Close</button>
+      <button class="btn btn-sm" id="lbl-create-btn" style="background:#7c2d12;border-color:#7c2d12;color:#fff;font-weight:800;" onclick="lblCreate()">🏷 Create label</button>
+    </div>
+  </div>`;
+  document.body.appendChild(div);
+  initModalDrag(div);
+}
+function lblReadBoxes(){
+  const rows = [];
+  document.querySelectorAll('#modal-upslabel .lbl-l').forEach(el=>{
+    const i = el.getAttribute('data-i');
+    const g = cls => (document.querySelector(`#modal-upslabel .${cls}[data-i="${i}"]`)||{}).value||'';
+    const psel = document.querySelector(`#modal-upslabel .lbl-preset[data-i="${i}"]`);
+    const pv = psel ? psel.value : '';
+    const name = (pv!=='') ? ((BOX_PRESETS[parseInt(pv,10)]||{}).n||'') : '';
+    rows.push({ name, l:+g('lbl-l')||0, w:+g('lbl-w')||0, h:+g('lbl-h')||0, wt:+g('lbl-wt')||0 });
+  });
+  return rows;
+}
+function lblSyncBoxes(){ _lblBoxes = lblReadBoxes(); }
+function lblSetOrigin(w){ lblSyncBoxes(); window._lblOrigin = w; lblRender(); }
+function lblPreset(i, v){
+  const p = BOX_PRESETS[parseInt(v,10)]; if(!p) return;
+  const set = (cls,val)=>{ const el = document.querySelector(`#modal-upslabel .${cls}[data-i="${i}"]`); if(el) el.value = val; };
+  set('lbl-l',p.l); set('lbl-w',p.w); set('lbl-h',p.h);
+}
+function lblAddBox(){ lblSyncBoxes(); _lblBoxes.push({name:'',l:'',w:'',h:'',wt:''}); lblRender(); }
+function lblDelBox(i){ lblSyncBoxes(); _lblBoxes.splice(i,1); if(!_lblBoxes.length) _lblBoxes=[{name:'',l:'',w:'',h:'',wt:''}]; lblRender(); }
+async function lblCreate(){
+  const rec = _lblRec; if(!rec) return;
+  const boxes = lblReadBoxes().filter(b=>b.l>0 && b.w>0 && b.h>0 && b.wt>0);
+  if(!boxes.length){ showToast('⚠ Enter box dimensions and weight (all 4 values)'); return; }
+  const shipTo = {
+    name: ($('lbl-name').value||'').trim(),
+    company: rec.meta.cust||'',
+    addr1: ($('lbl-addr').value||'').trim(),
+    city: ($('lbl-city').value||'').trim(),
+    state: ($('lbl-state').value||'').trim().toUpperCase(),
+    zip: ($('lbl-zip').value||'').trim()
+  };
+  if(!shipTo.addr1 || !shipTo.city || !shipTo.state || !shipTo.zip){ showToast('⚠ Ship-to address is incomplete'); return; }
+  const bill = custUpsFor(rec.meta.cust);
+  if(bill.mode==='receiver' && !bill.account){ showToast('⚠ Customer UPS # missing (Customers → 🏷 UPS)'); return; }
+  const btn = $('lbl-create-btn'); if(btn){ btn.disabled=true; btn.textContent='⏳ Contacting UPS...'; }
+  try{
+    const r = await fetch(UPS_LABEL_URL, {
+      method:'POST', headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({
+        origin: window._lblOrigin, service: window._lblService||'03',
+        shipTo, packages: boxes.map(b=>({l:b.l,w:b.w,h:b.h,wt:b.wt})),
+        billing: { mode:bill.mode, account:bill.account||'', zip:bill.zip||'' },
+        reference: (rec.meta.po||rec.base||'').slice(0,35),
+        test: !!window._lblTest
+      })
+    });
+    const j = await r.json();
+    if(!j.ok){ showToast('❌ '+(j.error||'UPS label failed')); if(btn){ btn.disabled=false; btn.textContent='🏷 Create label'; } return; }
+    _lblResult = { tracking:j.tracking||[], labels:j.labels||[], service:j.service||window._lblService,
+      origin:window._lblOrigin, billing:j.billing, test:!!j.test,
+      at:new Date().toISOString(), by:(SESS&&SESS.email)||'' };
+    if(!j.test) await lblSaveTracking();   // 실제 라벨만 주문에 저장 (테스트는 저장 안 함)
+    showToast('✅ UPS label created — '+(j.tracking||[]).length+' tracking #');
+    lblRender();
+    lblPrint();   // 만들자마자 바로 Zebra로 인쇄 시도
+  }catch(e){
+    showToast('❌ '+e.message);
+    if(btn){ btn.disabled=false; btn.textContent='🏷 Create label'; }
+  }
+}
+async function lblSaveTracking(){
+  const rec = _lblRec; if(!rec||!_lblResult) return;
+  rec.meta = rec.meta||{};
+  rec.meta._ups = { tracking:_lblResult.tracking, service:_lblResult.service, origin:_lblResult.origin,
+    billing:_lblResult.billing, at:_lblResult.at, by:_lblResult.by };
+  try{
+    await sbFetch('/rest/v1/pr_orders?base=eq.'+encodeURIComponent(rec.base), {method:'PATCH', headers:{Prefer:'return=minimal'}, body:JSON.stringify({meta:rec.meta, updated_at:new Date().toISOString()})});
+    const i = savedCache.findIndex(s=>s.base===rec.base); if(i>=0) savedCache[i]=rec;
+    if(typeof renderSaved==='function') renderSaved();
+  }catch(e){}
+}
+async function lblPrint(){
+  if(!_lblResult || !(_lblResult.labels||[]).length){ showToast('No label to print'); return; }
+  let zpl='';
+  try{ zpl = _lblResult.labels.map(b64=>atob(b64)).join('\n'); }
+  catch(e){ showToast('Label decode error'); return; }
+  await sendToZebraBrowserPrint(zpl, _lblResult.labels.length);
+}
+function lblDownload(){
+  if(!_lblResult || !(_lblResult.labels||[]).length){ showToast('No label'); return; }
+  let zpl='';
+  try{ zpl = _lblResult.labels.map(b64=>atob(b64)).join('\n'); }catch(e){ showToast('decode error'); return; }
+  const blob = new Blob([zpl], {type:'text/plain'});
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob);
+  a.download = 'UPS-'+(_lblRec?_lblRec.base:'label')+'.zpl';
+  document.body.appendChild(a); a.click();
+  setTimeout(()=>{ URL.revokeObjectURL(a.href); a.remove(); }, 500);
 }
 
 let plEditOpen = true, invEditOpen = true;
@@ -18061,6 +18264,7 @@ function renderSaved(){
       <button class="btn btn-sm" onclick="openOrderSummary('${esc(s.base)}')">📋 Order Confirmation</button>
       <button class="btn btn-sm" onclick="copyOrderSummary('${esc(s.base)}')">📧 Copy Email</button>
       <button class="btn btn-sm" onclick="viewSavedPO('${esc(s.base)}')">📄 PO</button>
+      <button class="btn btn-sm" style="${(s.meta&&s.meta._ups&&(s.meta._ups.tracking||[]).length)?'background:#166534;color:#fff;border-color:#166534;':'background:#7c2d12;color:#fff;border-color:#7c2d12;'}" onclick="openLabelModal('${esc(s.base)}')" title="Create & print UPS shipping label (auto-fills box dimensions/weight from packing)">🏷 UPS Label${(s.meta&&s.meta._ups&&(s.meta._ups.tracking||[]).length)?' ✓':''}</button>
       <button class="btn btn-sm" onclick="openHistory('${esc(s.base)}')" title="Change history">🕘</button>
       <button class="btn btn-sm" style="color:#7c3aed;" onclick="splitOrderOpen('${esc(s.base)}')" title="Split some items into a separate order (-S) — run urgent items separately (stock deductions transfer too)">✂ Split</button>
       ${!recIsReplace(s) && (s.whs||[]).some(w=>s.pl && s.pl[w] && s.pl[w].savedAt) ? `<button class="btn btn-sm" style="color:#be123c;border-color:#fda4af;" onclick="replaceOrderOpen('${esc(s.base)}')" title="Replace defective shipped items — creates a free PO#R order (no invoice)">🔁 Replace</button>` : ''}
