@@ -156,7 +156,7 @@ main{max-width:1100px;margin:0 auto;padding:16px;}
     <button class="btn btn-sm" onclick="doLogout()" style="padding:2px 8px;font-size:10px;" data-i18n="logout">Log out</button>
   </span>
   <select id="lang-sel" onchange="setLang(this.value)" style="font-size:11px;padding:3px 6px;border-radius:5px;border:none;background:#1d3f66;color:#fff;"><option value="ko">한국어</option><option value="en">English</option><option value="es">Español</option></select>
-  <span style="font-size:10px;color:#9fb8d4;">v646 ↩</span>
+  <span style="font-size:10px;color:#9fb8d4;">v647 ↩</span>
 </div>
 <script type="text/javascript" src="https://js.authorize.net/v1/Accept.js" charset="utf-8"></script>
 <div id="po-viewer" style="display:none;position:fixed;top:0;right:0;width:44%;height:100vh;background:#fff;border-left:2px solid var(--border);z-index:60;box-shadow:-6px 0 20px rgba(0,0,0,.15);">
@@ -7052,6 +7052,8 @@ async function lblEstimate(opts){
     const money=n=>'$'+Number(n||0).toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2});
     const sc=window._lblService||'03';
     const svc=(j.services||[]).find(s=>s.code===sc);
+    // 승인 금액용: 협상요율(neg) + 정가(list) + 박스수 저장 (정가는 worker 재배포 후 제공; 없으면 neg로 폴백)
+    window._lblEst = svc ? { neg:Number(svc.total)||0, list:Number(svc.list!=null?svc.list:svc.total)||0, boxCount:boxes.length, service:sc } : null;
     const others=(j.services||[]).filter(s=>s.code!==sc).map(s=>`${(UPS_SERVICES.find(x=>x.code===s.code)||{}).name||s.code} ${money(s.total)}`).join(' · ');
     window._lblEstSig=sig;
     setEst((svc?`💵 <b>${(UPS_SERVICES.find(x=>x.code===sc)||{}).name||sc}: ${money(svc.total)}</b> <span style="color:#64748b;">(our rate, est.)</span>`:'selected service N/A') + (others?` <span style="color:#94a3b8;">· ${others}</span>`:''));
@@ -7224,12 +7226,20 @@ function apprStatusChip(a){
 function lblApprOpen(){
   const rec=_lblRec; if(!rec) return;
   lblSyncBoxes();
-  const est = (function(){ const el=document.getElementById('lbl-est'); if(!el) return ''; const m=(el.textContent||'').match(/\$([\d,]+\.\d{2})/); return m?m[1].replace(/,/g,''):''; })();
+  const _h = shipHandlingRate();
+  const _estSpan = (function(){ const el=document.getElementById('lbl-est'); if(!el) return ''; const m=(el.textContent||'').match(/\$([\d,]+\.\d{2})/); return m?parseFloat(m[1].replace(/,/g,'')):''; })();
   const cur = (rec.meta&&rec.meta._shipApproval)||{};
   const _uw = upsForWh(rec, window._lblOrigin);
   const exact = (_uw&&Number(_uw.billShip)>0) ? Number(_uw.billShip) : '';   // 이 창고 라벨의 정확한 청구액(정가+핸들링)
   const email = (rec.meta&&rec.meta.custEmail) || custEmailFor(rec.meta&&rec.meta.cust) || '';
-  const amt = cur.amount || exact || est || '';
+  // 라벨 없을 때: 견적으로 (정가 or 협상요율) + 박스당 핸들링 계산 — 청구액과 맞추기 위해 핸들링 포함
+  let estBill='';
+  const _e=window._lblEst;
+  const _bc=(_e&&_e.boxCount)||(_lblBoxes?_lblBoxes.length:0)||1;
+  const _rate=_e?(_e.list||_e.neg||0):(Number(_estSpan)||0);
+  if(_rate>0) estBill = Math.round((Math.ceil(_rate*100)/100 + _bc*_h)*100)/100;
+  const usingList = !!(_e && _e.list && _e.list>0 && _e.list!==_e.neg);   // worker가 정가 반환하는지
+  const amt = cur.amount || exact || estBill || '';
   const hasExact = exact!=='' ;
   const ex=document.getElementById('modal-lblappr'); if(ex) ex.remove();
   const d=document.createElement('div'); d.id='modal-lblappr';
@@ -7241,7 +7251,7 @@ function lblApprOpen(){
       <div style="font-size:11.5px;color:#64748b;">Email the customer the <b>exact shipping charge</b> that will appear on their invoice, with Approve / Decline buttons. The amount they approve is what gets invoiced — no surprises later.</div>
       <div class="ff"><label style="font-size:11px;font-weight:800;color:#0f2a4a;">Customer email</label><input class="fi" id="appr-email" value="${esc(email)}" placeholder="customer@company.com (commas for multiple)" style="font-size:12px;"></div>
       <div class="ff"><label style="font-size:11px;font-weight:800;color:#0f2a4a;">Exact shipping charge to invoice ($)</label><input class="fi" id="appr-amt" value="${esc(amt)}" inputmode="decimal" placeholder="e.g. 59.08" style="font-size:13px;font-family:Consolas,monospace;"></div>
-      <div style="font-size:10.5px;color:${hasExact?'#166534':'#b45309'};">${hasExact?'✔ Exact charge from the created label (UPS list + handling) — the same amount auto-fills the invoice freight.':'⚠ No label created yet — this is an estimate. For the exact charge (list + handling), create the label first, then request approval.'}</div>
+      <div style="font-size:10.5px;color:${hasExact?'#166534':'#b45309'};">${hasExact?'✔ Exact charge from the created label (UPS list + handling) — the same amount auto-fills the invoice freight.':('⚠ Estimate — includes '+_bc+' box × $'+_h+' handling'+(usingList?' on UPS list rate':' (on our rate — create the label for exact list price)')+'. Includes the $'+_h+'/box handling. Create the label first for the exact charge.')}</div>
       <div id="appr-msg" style="font-size:11.5px;font-weight:700;color:#b91c1c;height:14px;"></div>
     </div>
     <div style="padding:0 16px 15px;display:flex;gap:8px;justify-content:flex-end;">
@@ -7742,7 +7752,8 @@ async function plRenderEmpBoxes(){
   const uw=upsForWh(rec, wh);
   const whc=(wh==='CA'?'#c2410c':'#1d4ed8');
   const boxList=boxes.length?boxes.map((b,i)=>`<span style="display:inline-block;background:#f1f5f9;border:1px solid #e2e8f0;border-radius:7px;padding:2px 8px;margin:2px 3px 0 0;font-size:11px;">#${i+1} ${b.name?esc(b.name)+' ':''}${b.l}×${b.w}×${b.h} · ${b.wt}lb</span>`).join(''):'<span style="color:#94a3b8;font-size:12px;">No box details entered by warehouse yet.</span>';
-  const upsBtn = (viaSel==='UPS'||viaSel==='') ? `<button class="btn btn-sm" style="${uw&&(uw.tracking||[]).length?'background:#166534;color:#fff;border-color:#166534;':'background:#7c2d12;color:#fff;border-color:#7c2d12;'}font-weight:800;" onclick="openLabelModal('${esc(base)}','${wh}')" title="Create & print the UPS label for ${wh} (uses these boxes)">🏷 UPS Label${uw&&(uw.tracking||[]).length?' ✓':''}</button>` : `<span style="font-size:11px;color:#64748b;">UPS label available when Via = UPS</span>`;
+  const _effVia = (empVia||viaSel||'').toUpperCase();   // 직원이 /pic에서 고른 실제 발송수단 우선 (LTL이면 UPS 라벨 X)
+  const upsBtn = (_effVia==='UPS'||_effVia==='') ? `<button class="btn btn-sm" style="${uw&&(uw.tracking||[]).length?'background:#166534;color:#fff;border-color:#166534;':'background:#7c2d12;color:#fff;border-color:#7c2d12;'}font-weight:800;" onclick="openLabelModal('${esc(base)}','${wh}')" title="Create & print the UPS label for ${wh} (uses these boxes)">🏷 UPS Label${uw&&(uw.tracking||[]).length?' ✓':''}</button>` : `<span style="font-size:11px;font-weight:800;color:#166534;background:#dcfce7;border:1px solid #86efac;border-radius:8px;padding:3px 10px;white-space:nowrap;">🚛 ${esc(_effVia)} shipment — no UPS label</span>`;
   host.innerHTML=`<div style="border:1.5px solid ${whc}33;background:#f8fafc;border-radius:10px;padding:10px 12px;">
     <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;">
       <span style="font-size:10px;font-weight:800;color:#fff;background:${whc};border-radius:8px;padding:2px 8px;">${wh}</span>
@@ -8087,7 +8098,8 @@ async function pchkPackList(){
   try{ const r=await fetch(SB_URL+'/rest/v1/rpc/pack_orders',{method:'POST',headers:{apikey:SB_KEY,Authorization:'Bearer '+SB_KEY,'Content-Type':'application/json'},body:JSON.stringify({q})}); rows=await r.json(); }
   catch(e){ el.innerHTML='<div style="color:#b91c1c;font-size:12px;">Could not load orders.</div>'; return; }
   const _wh=window._packWh||'SC';
-  if(Array.isArray(rows)) rows=rows.filter(r=>Array.isArray(r.whs)&&r.whs.includes(_wh));
+  // 이 창고 몫이면서 + 아직 발송(패킹리스트 저장) 안 된 것만 (이미 나간 오더 제외)
+  if(Array.isArray(rows)) rows=rows.filter(r=>Array.isArray(r.whs)&&r.whs.includes(_wh)&&!(Array.isArray(r.shipped_whs)&&r.shipped_whs.includes(_wh)));
   if(!Array.isArray(rows)||!rows.length){ el.innerHTML='<div style="color:#94a3b8;font-size:12px;padding:6px;">No '+_wh+' orders'+(q?' for "'+esc(q)+'"':'')+'.</div>'; return; }
   const c=(_wh==='SC'?'#1d4ed8':'#c2410c');
   window._packSel=window._packSel||{};
