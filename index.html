@@ -156,7 +156,7 @@ main{max-width:1100px;margin:0 auto;padding:16px;}
     <button class="btn btn-sm" onclick="doLogout()" style="padding:2px 8px;font-size:10px;" data-i18n="logout">Log out</button>
   </span>
   <select id="lang-sel" onchange="setLang(this.value)" style="font-size:11px;padding:3px 6px;border-radius:5px;border:none;background:#1d3f66;color:#fff;"><option value="ko">한국어</option><option value="en">English</option><option value="es">Español</option></select>
-  <span id="app-ver" style="font-size:10px;color:#9fb8d4;">v671 ↩</span>
+  <span id="app-ver" style="font-size:10px;color:#9fb8d4;">v672 ↩</span>
 </div>
 <script type="text/javascript" src="https://js.authorize.net/v1/Accept.js" charset="utf-8"></script>
 <div id="po-viewer" style="display:none;position:fixed;top:0;right:0;width:44%;height:100vh;background:#fff;border-left:2px solid var(--border);z-index:60;box-shadow:-6px 0 20px rgba(0,0,0,.15);">
@@ -8682,7 +8682,7 @@ function pchkReqMgrRender(){
         <span style="margin-left:auto;font-size:10px;font-weight:800;padding:3px 10px;border-radius:20px;background:${done?'#16a34a':'#f59e0b'};color:#fff;">${done?'✓ DONE':'OPEN'}</span>
       </div>
       <div style="font-size:11px;color:#94a3b8;margin-top:3px;">${dstr}${r.requested_by?' · '+esc(String(r.requested_by)):''}${done&&r.done_by?' · done by '+esc(String(r.done_by)):''}</div>
-      ${done?`<div style="margin-top:9px;"><button onclick="pchkReqReprint(${r.id})" style="background:#fff;color:#334155;border:1px solid #cbd5e1;border-radius:8px;padding:7px 12px;font-size:12px;font-weight:700;">🖨 Reprint work order</button></div>`:`${(function(){ if(r.left_qty==null) return ''; const info=pchkReqPcInfo(r.style,r.color,r.size,r.wh); const curTxt=(info.qty==null)?'—':info.qty; return `<div style="margin-top:9px;display:flex;align-items:center;gap:8px;flex-wrap:wrap;background:#ecfeff;border:1px solid #a5f3fc;border-radius:9px;padding:7px 11px;">
+      ${done?`<div style="margin-top:9px;display:flex;align-items:center;gap:10px;flex-wrap:wrap;">${r.done_loc?`<span style="font-size:12px;font-weight:800;color:#166534;background:#dcfce7;border:1px solid #86efac;border-radius:8px;padding:5px 10px;">📍 pulled from ${esc(String(r.done_loc))}${r.done_pcs?` · +${r.done_pcs} pcs`:''}</span>`:''}<button onclick="pchkReqReprint(${r.id})" style="background:#fff;color:#334155;border:1px solid #cbd5e1;border-radius:8px;padding:7px 12px;font-size:12px;font-weight:700;">🖨 Reprint work order</button></div>`:`${(function(){ if(r.left_qty==null) return ''; const info=pchkReqPcInfo(r.style,r.color,r.size,r.wh); const curTxt=(info.qty==null)?'—':info.qty; return `<div style="margin-top:9px;display:flex;align-items:center;gap:8px;flex-wrap:wrap;background:#ecfeff;border:1px solid #a5f3fc;border-radius:9px;padding:7px 11px;">
         <span style="font-size:12.5px;color:#0e7490;font-weight:700;">🧺 PC Room now: <b style="font-size:14px;">${curTxt}</b>${info.qty==null?' <span style="color:#94a3b8;font-weight:500;font-size:11px;">(no PC row yet)</span>':' pcs'}</span>
         <span style="font-size:12px;color:#94a3b8;">counted on floor: <b style="color:#b45309;">${r.left_qty}</b></span>
         <button onclick="pchkReqSetPc(${r.id})" style="margin-left:auto;background:#0e7490;color:#fff;border:none;border-radius:8px;padding:6px 12px;font-size:12px;font-weight:800;white-space:nowrap;" title="Set PC Room qty to the counted floor qty (asks to confirm first — nothing changes silently)">Set PC Room = ${r.left_qty}</button>
@@ -8697,11 +8697,13 @@ function pchkReqMgrRender(){
     </div>`;
   }).join('');
 }
-async function pchkReqDone(id){
+async function pchkReqDone(id, extra){
   const by=(SESS&&SESS.email)||'';
-  try{ const r=await sbFetch('/rest/v1/pr_boxreq?id=eq.'+id,{method:'PATCH',headers:{Prefer:'return=minimal'},body:JSON.stringify({status:'done',done_by:by,done_at:new Date().toISOString()})}); if(!r.ok) throw new Error('HTTP '+r.status); }
+  const patch={status:'done',done_by:by,done_at:new Date().toISOString()};
+  if(extra){ if(extra.loc!=null) patch.done_loc=String(extra.loc); if(extra.pcs!=null) patch.done_pcs=Number(extra.pcs)||0; }
+  try{ const r=await sbFetch('/rest/v1/pr_boxreq?id=eq.'+id,{method:'PATCH',headers:{Prefer:'return=minimal'},body:JSON.stringify(patch)}); if(!r.ok) throw new Error('HTTP '+r.status); }
   catch(e){ showToast('⚠ Failed: '+(e.message||e)); return; }
-  const row=(window._boxreqRows||[]).find(x=>x.id===id); if(row){ row.status='done'; row.done_by=by; row.done_at=new Date().toISOString(); }
+  const row=(window._boxreqRows||[]).find(x=>x.id===id); if(row){ row.status='done'; row.done_by=by; row.done_at=patch.done_at; if(patch.done_loc!=null) row.done_loc=patch.done_loc; if(patch.done_pcs!=null) row.done_pcs=patch.done_pcs; }
   showToast('✓ Request marked done'); pchkReqMgrRender(); pchkBoxreqBadge();
 }
 async function pchkReqMgrDelete(id){
@@ -8854,20 +8856,22 @@ function pchkReqPrintWorkOrder(reqId){
 function pchkReqPrintComplete(reqId){
   const ok=pchkReqPrintWorkOrder(reqId);
   if(!ok){ showToast('⚠ Allow popups to print, then try again — not marked complete yet'); return; }
-  pchkReqDone(reqId);
+  const m=(window._reqMove||{})[reqId];
+  pchkReqDone(reqId, m?{loc:('['+m.wh+'] '+m.loc), pcs:m.add}:null);   // 어느 bin에서 뺐는지 기록 (추적용)
 }
 // 완료된 요청 재인쇄 — 이동 스냅샷 있으면 그대로, 없으면(새로고침 후 등) 요청 기록으로 work order 재구성
 function pchkReqReprint(reqId){
   if((window._reqMove||{})[reqId]){ if(!pchkReqPrintWorkOrder(reqId)) showToast('⚠ Allow popups to print'); return; }
   const r=(window._boxreqRows||[]).find(x=>x.id===reqId); if(!r){ showToast('⚠ Request not found'); return; }
   const wh=String(r.wh||'SC').toUpperCase(); const pcWh=(wh==='CA')?'CA':'SC';
-  const bins=(typeof pchkReqBins==='function')?pchkReqBins(r.style,r.color,r.size,wh):[];
-  let loc=bins.length?bins[0].loc:'(moved)';
-  let ppb=0;
-  if(typeof bxLocList==='function' && bins.length){ const bl=bxLocList(r.style,r.color,r.size,wh,bins[0].loc); if(bl.length) ppb=Number(bl[0].pcs)||0; }
+  // 완료 기록(done_loc)이 있으면 그걸로 정확 재구성, 없으면 현재 재고에서 추정
+  let loc, ppb=0;
+  if(r.done_loc){ loc=String(r.done_loc).replace(/^\[[^\]]*\]\s*/,''); }
+  else { const bins=(typeof pchkReqBins==='function')?pchkReqBins(r.style,r.color,r.size,wh):[]; loc=bins.length?bins[0].loc:'(moved)'; if(typeof bxLocList==='function' && bins.length){ const bl=bxLocList(r.style,r.color,r.size,wh,bins[0].loc); if(bl.length) ppb=Number(bl[0].pcs)||0; } }
+  if(!ppb) ppb=Number(r.done_pcs)||0;
   if(!ppb) ppb=(typeof autoPpb==='function')?(autoPpb({style:r.style,size:r.size})||0):0; if(!ppb) ppb=72;
   const info=(typeof pchkReqPcInfo==='function')?pchkReqPcInfo(r.style,r.color,r.size,wh):{qty:null};
-  const ok=(typeof bxPcWorkOrder==='function')?bxPcWorkOrder(wh,pcWh,{loc,style:r.style,color:r.color,size:r.size,ppb,n:1,pcs:ppb,bal:(info&&info.qty!=null)?info.qty:0,by:(r.done_by||r.requested_by||'')}):false;
+  const ok=(typeof bxPcWorkOrder==='function')?bxPcWorkOrder(wh,pcWh,{loc,style:r.style,color:r.color,size:r.size,ppb,n:1,pcs:(Number(r.done_pcs)||ppb),bal:(info&&info.qty!=null)?info.qty:0,by:(r.done_by||r.requested_by||'')}):false;
   if(ok===false) showToast('⚠ Allow popups to print');
 }
 let _pchkWho='', _pchkStyle='', _pchkColor='', _pchkSize='';
