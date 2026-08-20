@@ -156,7 +156,7 @@ main{max-width:1100px;margin:0 auto;padding:16px;}
     <button class="btn btn-sm" onclick="doLogout()" style="padding:2px 8px;font-size:10px;" data-i18n="logout">Log out</button>
   </span>
   <select id="lang-sel" onchange="setLang(this.value)" style="font-size:11px;padding:3px 6px;border-radius:5px;border:none;background:#1d3f66;color:#fff;"><option value="ko">한국어</option><option value="en">English</option><option value="es">Español</option></select>
-  <span id="app-ver" style="font-size:10px;color:#9fb8d4;">v667 ↩</span>
+  <span id="app-ver" style="font-size:10px;color:#9fb8d4;">v668 ↩</span>
 </div>
 <script type="text/javascript" src="https://js.authorize.net/v1/Accept.js" charset="utf-8"></script>
 <div id="po-viewer" style="display:none;position:fixed;top:0;right:0;width:44%;height:100vh;background:#fff;border-left:2px solid var(--border);z-index:60;box-shadow:-6px 0 20px rgba(0,0,0,.15);">
@@ -8676,7 +8676,7 @@ function pchkReqMgrRender(){
         <span style="margin-left:auto;font-size:10px;font-weight:800;padding:3px 10px;border-radius:20px;background:${done?'#16a34a':'#f59e0b'};color:#fff;">${done?'✓ DONE':'OPEN'}</span>
       </div>
       <div style="font-size:11px;color:#94a3b8;margin-top:3px;">${dstr}${r.requested_by?' · '+esc(String(r.requested_by)):''}${done&&r.done_by?' · done by '+esc(String(r.done_by)):''}</div>
-      ${done?'':`${(function(){ if(r.left_qty==null) return ''; const info=pchkReqPcInfo(r.style,r.color,r.size,r.wh); const curTxt=(info.qty==null)?'—':info.qty; return `<div style="margin-top:9px;display:flex;align-items:center;gap:8px;flex-wrap:wrap;background:#ecfeff;border:1px solid #a5f3fc;border-radius:9px;padding:7px 11px;">
+      ${done?`<div style="margin-top:9px;"><button onclick="pchkReqReprint(${r.id})" style="background:#fff;color:#334155;border:1px solid #cbd5e1;border-radius:8px;padding:7px 12px;font-size:12px;font-weight:700;">🖨 Reprint work order</button></div>`:`${(function(){ if(r.left_qty==null) return ''; const info=pchkReqPcInfo(r.style,r.color,r.size,r.wh); const curTxt=(info.qty==null)?'—':info.qty; return `<div style="margin-top:9px;display:flex;align-items:center;gap:8px;flex-wrap:wrap;background:#ecfeff;border:1px solid #a5f3fc;border-radius:9px;padding:7px 11px;">
         <span style="font-size:12.5px;color:#0e7490;font-weight:700;">🧺 PC Room now: <b style="font-size:14px;">${curTxt}</b>${info.qty==null?' <span style="color:#94a3b8;font-weight:500;font-size:11px;">(no PC row yet)</span>':' pcs'}</span>
         <span style="font-size:12px;color:#94a3b8;">counted on floor: <b style="color:#b45309;">${r.left_qty}</b></span>
         <button onclick="pchkReqSetPc(${r.id})" style="margin-left:auto;background:#0e7490;color:#fff;border:none;border-radius:8px;padding:6px 12px;font-size:12px;font-weight:800;white-space:nowrap;" title="Set PC Room qty to the counted floor qty (asks to confirm first — nothing changes silently)">Set PC Room = ${r.left_qty}</button>
@@ -8789,7 +8789,7 @@ async function pchkBoxToPc(style,color,size,wh,loc,n){
     await pcSaveRow(row); if(typeof pcLogMove==='function') pcLogMove(row,size,add,row.qty[size],'📦 Box move @'+loc);
     await bxRefetch(); if(typeof renderBoxRoom==='function') renderBoxRoom();
     if($('pc-body')&&typeof renderPcRoom==='function'&&document.getElementById('pc-body').offsetParent!==null) renderPcRoom(); else window._pcDirty=true;
-    return {ok:true, add, ppb};
+    return {ok:true, add, ppb, n, bal:Number(row.qty[size])||0, loc, wh, pcWh, style, color, size, by};
   }catch(e){ return {ok:false, err:(e.message||String(e))}; }
 }
 async function pchkReqMovePc(reqId){
@@ -8802,12 +8802,28 @@ async function pchkReqMovePc(reqId){
   const res=await pchkBoxToPc(c.style,c.color,c.size,c.wh,c.loc,1);
   if(!res.ok){ showToast('⚠ '+(res.err||'Move failed')); pchkReqBinShow(reqId,c.style,c.color,c.size,c.wh,c.loc); return; }
   showToast('🧺 1 box → PC Room · +'+res.add+' pcs');
+  window._reqMove=window._reqMove||{}; window._reqMove[reqId]=res;  // 프린트/재프린트용 이동 스냅샷 보관
   if(host) host.innerHTML=`<div style="margin-top:8px;background:#ecfdf5;border:1.5px solid #6ee7b7;border-radius:10px;padding:11px 13px;">
     <div style="font-size:13px;font-weight:800;color:#166534;">✅ Moved 1 box → PC Room (+${res.add} pcs) from ${esc(c.loc)}</div>
-    <div style="margin-top:9px;"><button onclick="pchkReqPrintComplete(${reqId})" style="background:#334155;color:#fff;border:none;border-radius:9px;padding:10px 16px;font-size:13.5px;font-weight:800;cursor:pointer;">🖨 Print pull slip &amp; mark complete</button></div>
+    <div style="margin-top:9px;"><button onclick="pchkReqPrintComplete(${reqId})" style="background:#334155;color:#fff;border:none;border-radius:9px;padding:10px 16px;font-size:13.5px;font-weight:800;cursor:pointer;">🖨 Print work order &amp; mark complete</button></div>
   </div>`;
 }
-function pchkReqPrintComplete(reqId){ try{ pchkReqPrint(reqId); }catch(e){} pchkReqDone(reqId); }
+// PC ROOM WORK ORDER 포맷으로 인쇄 (풀박스→PC Room 이동 때 쓰는 표준 양식). 팝업 열렸을 때만 complete 처리.
+function pchkReqPrintWorkOrder(reqId){
+  const m=(window._reqMove||{})[reqId]; if(!m) return false;
+  try{ return bxPcWorkOrder(m.wh, m.pcWh, {loc:m.loc, style:m.style, color:m.color, size:m.size, ppb:m.ppb, n:m.n, pcs:m.add, bal:m.bal, by:m.by})!==false; }
+  catch(e){ return false; }
+}
+function pchkReqPrintComplete(reqId){
+  const ok=pchkReqPrintWorkOrder(reqId);
+  if(!ok){ showToast('⚠ Allow popups to print, then try again — not marked complete yet'); return; }
+  pchkReqDone(reqId);
+}
+// 완료된 요청 재인쇄 — 이동 스냅샷 있으면 표준 work order, 없으면 일반 pull slip
+function pchkReqReprint(reqId){
+  if((window._reqMove||{})[reqId]){ if(!pchkReqPrintWorkOrder(reqId)) showToast('⚠ Allow popups to print'); return; }
+  pchkReqPrint(reqId);
+}
 let _pchkWho='', _pchkStyle='', _pchkColor='', _pchkSize='';
 function pchkEmpGrab(){   // 재렌더 전에 현재 입력값 보존
   const g=id=>{ const e=document.getElementById(id); return e?e.value:null; };
@@ -12292,7 +12308,7 @@ async function bxLocToPc(){
 // 직원에게 주는 작업지시서 (박스 열기)
 function bxPcWorkOrder(wh, pcWh, l){
   const w = window.open('', '_blank');
-  if(!w){ showToast('⚠ Popup blocked — the move was saved, printing skipped'); return; }
+  if(!w){ showToast('⚠ Popup blocked — the move was saved, printing skipped'); return false; }
   const now = new Date().toLocaleString('en-US');
   w.document.write(`<html><head><meta charset="utf-8"><title>PC Room Work Order</title><style>
     body{font-family:Helvetica,Arial,sans-serif;padding:30px;color:#111;}
@@ -12326,6 +12342,7 @@ function bxPcWorkOrder(wh, pcWh, l){
     </div>
     <script>window.print();<\/script></body></html>`);
   w.document.close();
+  return true;
 }
 function bxFillOrderPick(){
   const sel = $('bx-order-pick'); if(!sel) return;
