@@ -156,7 +156,7 @@ main{max-width:1100px;margin:0 auto;padding:16px;}
     <button class="btn btn-sm" onclick="doLogout()" style="padding:2px 8px;font-size:10px;" data-i18n="logout">Log out</button>
   </span>
   <select id="lang-sel" onchange="setLang(this.value)" style="font-size:11px;padding:3px 6px;border-radius:5px;border:none;background:#1d3f66;color:#fff;"><option value="ko">한국어</option><option value="en">English</option><option value="es">Español</option></select>
-  <span id="app-ver" style="font-size:10px;color:#9fb8d4;">v682 ↩</span>
+  <span id="app-ver" style="font-size:10px;color:#9fb8d4;">v683</span>
 </div>
 <script type="text/javascript" src="https://js.authorize.net/v1/Accept.js" charset="utf-8"></script>
 <div id="po-viewer" style="display:none;position:fixed;top:0;right:0;width:44%;height:100vh;background:#fff;border-left:2px solid var(--border);z-index:60;box-shadow:-6px 0 20px rgba(0,0,0,.15);">
@@ -8062,6 +8062,8 @@ async function pchkAnalyze(){
   pchkRenderMatch(res.detected||[]);
 }
 function pchkNorm(s){ return String(s||'').toUpperCase().replace(/\s+/g,' ').trim(); }
+// bin 이름 비교용: 대문자 + 영숫자만 (직원이 "2G11"로 -빼고 쳐도 "2G-11"과 매칭)
+function binNorm(s){ return String(s||'').toUpperCase().replace(/[^A-Z0-9]/g,''); }
 function pchkRenderMatch(detected){
   const sys=pchkSysList(_pchkBin); const map={};
   sys.forEach(s=>{ map[pchkNorm(s.style)+'|'+pchkNorm(s.color)+'|'+pchkNorm(s.size)]={style:s.style,color:s.color,size:s.size,sys:s.n,photo:0}; });
@@ -9339,14 +9341,14 @@ function pchkSetWho(name){
 
 // ═══════════════ 🧑‍💼 매니저 검토함 (Physical Check review) (v560) ═══════════════
 function pchkCompare(bin, wh, detected, staffCheck){
-  const b=String(bin||'').trim().toUpperCase(); const map={};
+  const b=String(bin||'').trim().toUpperCase(); const bN=binNorm(bin); const map={};
   // 시스템/직원 줄은 "정확한 색" 그대로 (MONACO BLUE vs MONACO BLUE (SIDE SEAM) 구분 유지)
   const exactKey=(style,color,size)=> pchkNorm(style)+'|'+pchkNorm(color)+'|'+pchkNorm(size);
   // AI가 읽은 라벨은 코드(RT/BCI/SS)·(SIDE SEAM)·약어 무시하고 "느슨하게" — 시스템 줄에 근사 매칭용
   const matchKey=(style,color,size)=> pchkStyleNorm(style)+'|'+pchkColorNorm(color)+'|'+pchkNorm(size);
   const blank=(style,color,size)=>({style:style||'?',color:String(color||'?').toUpperCase(),size:String(size||'?').toUpperCase(),sys:0,photo:0,staffMark:null,staffCount:null,sysAtCheck:null,hasStaff:false});
   // 시스템 bin 내용 (location 검색과 동일) — 이게 기준 줄
-  (typeof bxStore!=='undefined'?bxStore:[]).forEach(x=>{ if(String(x.loc||'').toUpperCase()!==b) return; if(bxWh(x)!==wh) return;
+  (typeof bxStore!=='undefined'?bxStore:[]).forEach(x=>{ if(binNorm(x.loc)!==bN) return; if(bxWh(x)!==wh) return;
     const k=exactKey(x.style,x.color,x.size);
     if(!map[k]) map[k]=blank(x.style,x.color,x.size); map[k].sys++; });
   // 직원 눈체크 (시스템 색 그대로 봤으므로 정확 매칭)
@@ -9430,11 +9432,14 @@ async function pchkLineSave(id,i){
 }
 async function pchkApplyFix(line, wh, bin, target){
   const W=(String(wh||'SC').trim().toUpperCase()==='CA')?'CA':'SC';
-  const LOC=String(bin||'').toUpperCase();
+  const LOCN=binNorm(bin);
   const cur=(typeof bxStore!=='undefined'?bxStore:[]).filter(b=> String(b.style)===String(line.style)
     && String(b.size||'').toUpperCase()===String(line.size).toUpperCase()
-    && String(b.loc||'').toUpperCase()===LOC && bxWh(b)===W
+    && binNorm(b.loc)===LOCN && bxWh(b)===W
     && pchkNorm(b.color)===pchkNorm(line.color));
+  // 캐노니컬 bin: 그 bin에 이미 있는 실제 박스의 loc(대시 포함) 사용, 없으면 원문 그대로
+  const anyAtBin=(typeof bxStore!=='undefined'?bxStore:[]).find(b=> binNorm(b.loc)===LOCN && bxWh(b)===W);
+  const LOC=cur.length?cur[0].loc:(anyAtBin?anyAtBin.loc:String(bin||'').toUpperCase());
   const diff=target-cur.length; const by=(SESS&&SESS.email)||'';
   if(diff===0) return;
   if(diff>0){
@@ -15646,7 +15651,7 @@ function trRenderPallets(){
         <td style="text-align:center;font-family:Consolas,monospace;font-weight:800;">${trLineBoxes(l)}</td>
         <td style="text-align:right;font-family:Consolas,monospace;font-weight:700;">${trLinePcs(l).toLocaleString()}</td>
         <td style="text-align:center;font-size:11px;color:var(--text2);">${Number(l.ppb)||'—'}</td>
-        <td style="text-align:center;">${(!l.is_manual && (l.ids||[]).length>1)?`<button onclick="trReturnBoxes('${p.id}',${li})" style="border:1px solid #cbd5e1;background:#fff;color:#0f766e;cursor:pointer;font-weight:800;border-radius:6px;padding:2px 7px;font-size:10.5px;" title="Return some boxes back to the bin (keep the rest on this shipment)">↩ return</button>`:''}</td>
+        <td style="text-align:center;">${(!l.is_manual && (l.ids||[]).length>=1)?`<button onclick="trReturnBoxes('${p.id}',${li})" style="border:1px solid #cbd5e1;background:#fff;color:#0f766e;cursor:pointer;font-weight:800;border-radius:6px;padding:2px 7px;font-size:10.5px;" title="Return boxes back to a bin (qty + destination)">↩ return</button>`:''}</td>
         <td style="text-align:center;"><button onclick="trDelLine('${p.id}',${li})" style="border:none;background:none;color:#e53935;cursor:pointer;font-weight:800;" title="Delete whole line + return all boxes to bin">✕</button></td>
         </tr>`;
       }).join('');
