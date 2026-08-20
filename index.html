@@ -156,7 +156,7 @@ main{max-width:1100px;margin:0 auto;padding:16px;}
     <button class="btn btn-sm" onclick="doLogout()" style="padding:2px 8px;font-size:10px;" data-i18n="logout">Log out</button>
   </span>
   <select id="lang-sel" onchange="setLang(this.value)" style="font-size:11px;padding:3px 6px;border-radius:5px;border:none;background:#1d3f66;color:#fff;"><option value="ko">한국어</option><option value="en">English</option><option value="es">Español</option></select>
-  <span id="app-ver" style="font-size:10px;color:#9fb8d4;">v677 ↩</span>
+  <span id="app-ver" style="font-size:10px;color:#9fb8d4;">v678 ↩</span>
 </div>
 <script type="text/javascript" src="https://js.authorize.net/v1/Accept.js" charset="utf-8"></script>
 <div id="po-viewer" style="display:none;position:fixed;top:0;right:0;width:44%;height:100vh;background:#fff;border-left:2px solid var(--border);z-index:60;box-shadow:-6px 0 20px rgba(0,0,0,.15);">
@@ -2754,6 +2754,7 @@ async function loadSavedList(){
   if(ok){
     // 30일 지난 휴지통 자동 비우기
     sbFetch('/rest/v1/pr_orders?deleted_at=lt.'+encodeURIComponent(new Date(Date.now()-30*86400000).toISOString()), {method:'DELETE', headers:{Prefer:'return=minimal'}}).catch(()=>{});
+    if(typeof bulkBasesDirty==='function') bulkBasesDirty();   // LTL 처리 판정용 bulk 목록도 갱신
   }
   renderSaved();
   if(!ok){
@@ -19472,7 +19473,22 @@ function savedMatches(s, q){
   const toks = q.split(/\s+/).filter(Boolean);
   return toks.every(t=>hayNS.includes(t));
 }
-// 🚚 준비됨(직원 팩킹 저장) 미진행(라벨/트래킹·인보이스 전) 오더-레그 목록 — KPI 카운트와 리스트 모듈이 공유 (v677)
+// LTL bulk shipment에 편입된 오더 base 집합 — LTL "처리됨" 판정용 (v678)
+window._bulkBases = window._bulkBases || new Set();
+window._bulkBasesLoaded = window._bulkBasesLoaded || false;
+async function loadBulkBases(){
+  window._bulkBasesLoaded = true;   // 중복 로드 방지 (실패해도 재시도는 dirty flag로)
+  try{
+    const r = await sbFetch('/rest/v1/pr_bulkship?select=pos&limit=500');
+    if(!r.ok){ window._bulkBasesLoaded=false; return; }
+    const rows = await r.json(); const set = new Set();
+    (rows||[]).forEach(row=>(row.pos||[]).forEach(p=>{ if(p&&p.base) set.add(String(p.base)); }));
+    window._bulkBases = set;
+    if(typeof renderKpi==='function') renderKpi();   // 로드되면 KPI 다시 그림
+  }catch(e){ window._bulkBasesLoaded=false; }
+}
+function bulkBasesDirty(){ window._bulkBasesLoaded=false; if(typeof loadBulkBases==='function') loadBulkBases(); }
+// 🚚 준비됨(직원 팩킹 저장) 미진행(UPS 라벨 전 / LTL bulk 전, 인보이스 전) 오더-레그 목록 — KPI 카운트와 리스트 모듈이 공유 (v677/v678)
 function laneReadyLegs(){
   const out=[];
   (savedCache||[]).forEach(s=>{
@@ -19480,14 +19496,18 @@ function laneReadyLegs(){
     (s.whs||[]).forEach(w=>{
       if(w!=='SC' && w!=='CA') return;
       const plSaved = s.pl && s.pl[w] && s.pl[w].savedAt;
-      if(!plSaved) return;                                       // 아직 준비 전
+      if(!plSaved) return;                                       // 아직 팩킹 준비 전
       const invPr = s.inv && s.inv[w] && s.inv[w].printed;       // 인보이스 완료 = 마감
-      const uw = s.meta && s.meta._ups && s.meta._ups[w];
-      const hasLabel = uw && (uw.tracking||[]).length>0;         // 라벨/트래킹(또는 LTL PRO) 발급됨 = 진행됨
-      if(invPr || hasLabel) return;
-      const eff = (w==='SC' && s.meta && s.meta._shipFromCA) ? 'CA' : w;
+      if(invPr) return;
+      // 배송방식이 UPS/LTL로 지정된(직원이 그 방식으로 준비한) 오더만 레인 집계 — via 미지정/기타는 제외
       const via = (typeof packVia==='function') ? String(packVia(s.base, w)||'').toUpperCase() : '';
+      if(via!=='UPS' && via!=='LTL') return;
       const isLtl = via==='LTL';
+      const uw = s.meta && s.meta._ups && s.meta._ups[w];
+      const hasLabel = uw && (uw.tracking||[]).length>0;
+      if(!isLtl && hasLabel) return;                             // UPS: 라벨/트래킹 발급 시 처리됨 → 제외
+      if(isLtl && window._bulkBases && window._bulkBases.has(String(s.base))) return; // LTL: bulk shipment 편입 시 처리됨 → 제외
+      const eff = (w==='SC' && s.meta && s.meta._shipFromCA) ? 'CA' : w;
       out.push({ base:s.base, wh:w, eff, isLtl,
         cust:(s.meta&&s.meta.cust)||'', po:(s.meta&&s.meta.po)||'',
         date:(s.meta&&s.meta.date)||(s.pl[w]&&s.pl[w].savedAt)||'' });
@@ -19527,6 +19547,7 @@ function renderKpi(){
   const el = document.getElementById('kpi-bar'); if(!el) return;
   const cache = savedCache||[];
   let open=0, rush=0, uninv=0, pret=0, refund=0;
+  if(!window._bulkBasesLoaded && typeof loadBulkBases==='function') loadBulkBases();   // LTL 처리 판정용 bulk 목록 로드
   let scUps=0, scLtl=0, caUps=0, caLtl=0;   // 준비된(packed, 미진행) 물량 — 창고×배송방식 (v675/v677)
   cache.forEach(s=>{
     const done = recIsDone(s);
