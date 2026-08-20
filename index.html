@@ -156,7 +156,7 @@ main{max-width:1100px;margin:0 auto;padding:16px;}
     <button class="btn btn-sm" onclick="doLogout()" style="padding:2px 8px;font-size:10px;" data-i18n="logout">Log out</button>
   </span>
   <select id="lang-sel" onchange="setLang(this.value)" style="font-size:11px;padding:3px 6px;border-radius:5px;border:none;background:#1d3f66;color:#fff;"><option value="ko">한국어</option><option value="en">English</option><option value="es">Español</option></select>
-  <span id="app-ver" style="font-size:10px;color:#9fb8d4;">v661 ↩</span>
+  <span id="app-ver" style="font-size:10px;color:#9fb8d4;">v662 ↩</span>
 </div>
 <script type="text/javascript" src="https://js.authorize.net/v1/Accept.js" charset="utf-8"></script>
 <div id="po-viewer" style="display:none;position:fixed;top:0;right:0;width:44%;height:100vh;background:#fff;border-left:2px solid var(--border);z-index:60;box-shadow:-6px 0 20px rgba(0,0,0,.15);">
@@ -358,6 +358,7 @@ main{max-width:1100px;margin:0 auto;padding:16px;}
       <button id="bb-inv" class="btn btn-sm" style="display:none;background:#065f46;color:#fff;border-color:#065f46;" onclick="printBatchInvoices()">🧾 Invoice Print (<span id="bb-inv-n">0</span>)</button>
       </span>
     </div>
+    <div id="bulk-banner"></div>
     <div id="saved-list"><div class="muted" data-i18n="saved_empty">Nothing saved yet.</div></div>
   </div>
 
@@ -8258,8 +8259,38 @@ async function pchkLtlBatchSave(){
   }catch(e){ if(msg){ msg.style.color='#dc2626'; msg.textContent='Could not save: '+(e.message||e); } if(btn){ btn.disabled=false; btn.textContent='💾 Save & create bulk shipment'; } }
 }
 // ═══════ 📦 Bulk LTL Shipments (매니저) — 직원이 /pic에서 묶은 LTL 트럭 검토 ═══════
+// 🚛 직원이 /pic에서 묶어 저장한 LTL 배치 → 매니저 오더 화면 상단 배너. 한 번 눌러 그 PO들 자동 선택 + Inform Customer 자동 채움.
 async function bulkBadge(){
-  try{ const r=await sbFetch('/rest/v1/pr_bulkship?select=id&status=eq.PENDING'); const n=r.ok?(await r.json()).length:0; const el=document.getElementById('bulk-badge'); if(el) el.textContent=n>0?(' '+n):''; }catch(e){}
+  const host=document.getElementById('bulk-banner'); if(!host) return;
+  let list=[]; try{ const r=await sbFetch('/rest/v1/pr_bulkship?select=*&status=eq.PENDING&order=created_at.desc&limit=20'); if(r.ok) list=await r.json(); }catch(e){ return; }
+  if(!Array.isArray(list)||!list.length){ host.innerHTML=''; return; }
+  host.innerHTML=list.map(b=>{ const n=(b.pos||[]).length, boxes=b.total_boxes||0, pal=b.pallets||0;
+    return `<div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;background:#ecfdf5;border:1.5px solid #6ee7b7;border-left:5px solid #16a34a;border-radius:10px;padding:10px 14px;margin-bottom:10px;">
+      <span style="font-size:13px;font-weight:800;color:#166534;">🚛 Staff LTL batch ready — <b>${n}</b> PO · <b>${boxes}</b> boxes · <b>${pal}</b> pallet(s) <span style="color:#059669;font-weight:600;">[${esc(String(b.wh||''))}]</span></span>
+      <button onclick="bulkLoadBatch('${b.id}')" style="margin-left:auto;background:#16a34a;color:#fff;border:none;border-radius:9px;padding:9px 16px;font-size:13px;font-weight:800;cursor:pointer;">✅ Select these &amp; Inform Customer ▸</button>
+      <button onclick="bulkDismiss('${b.id}')" title="Hide this batch (won't affect orders)" style="background:transparent;color:#059669;border:1px solid #6ee7b7;border-radius:9px;padding:8px 11px;font-size:12px;font-weight:700;cursor:pointer;">Dismiss</button>
+    </div>`; }).join('');
+}
+async function bulkLoadBatch(id){
+  let b=null; try{ const r=await sbFetch('/rest/v1/pr_bulkship?id=eq.'+id+'&select=*'); b=(r.ok?await r.json():[])[0]; }catch(e){}
+  if(!b){ showToast('Batch not found'); return; }
+  const wh=b.wh==='CA'?'CA':'SC';
+  const wantBases=new Set((b.pos||[]).map(p=>p.base));
+  let checked=0;
+  document.querySelectorAll('.bship-cb').forEach(cb=>{ if(cb.dataset.wh===wh && wantBases.has(cb.dataset.base)){ cb.checked=true; checked++; } });
+  if(typeof updateBatchBar==='function') updateBatchBar();
+  const dims=(b.pallet_dims||[]);
+  const custs=[...new Set((b.pos||[]).map(p=>String(p.cust||'').trim()).filter(Boolean))];
+  window._icPreload={ boxes:Number(b.total_boxes)||0, lbsPer:33,
+    pos:(b.pos||[]).map(p=>String(p.po||p.base||'')).filter(Boolean).join('\n'),
+    cust: custs.length===1?custs[0]:'',
+    pallets: dims.length?dims.map(d=>({l:d.l,w:d.w,h:d.h,bx:d.bx})):[{l:48,w:43,h:84,bx:0}] };
+  if(typeof openInformCustomer==='function') openInformCustomer();
+}
+async function bulkDismiss(id){
+  if(!confirm('Hide this staff LTL batch from the banner?\n\n(The orders themselves are not changed.)')) return;
+  try{ await sbFetch('/rest/v1/pr_bulkship?id=eq.'+encodeURIComponent(id),{method:'PATCH',headers:{Prefer:'return=minimal'},body:JSON.stringify({status:'SHIPPED'})}); }catch(e){}
+  bulkBadge();
 }
 async function bulkOpen(){
   let list=[]; try{ const r=await sbFetch('/rest/v1/pr_bulkship?select=*&order=created_at.desc&limit=100'); if(r.ok) list=await r.json(); }catch(e){}
@@ -18615,7 +18646,7 @@ function updateBatchBar(){
 // ══ 📧 Inform Customer — 출고 준비 알림 이메일 (선택된 PO + pallet 치수 + 박스/무게) 초안 만들어 copy ══
 function openInformCustomer(){
   const cbs=[...document.querySelectorAll('.bship-cb:checked')];
-  if(!cbs.length){ showToast('⚠ Check the orders to include first'); return; }
+  if(!cbs.length && !window._icPreload){ showToast('⚠ Check the orders to include first'); return; }
   const seen=new Set(); const orders=[]; let boxes=0;
   cbs.forEach(c=>{ const b=c.dataset.base, w=c.dataset.wh; const r=(savedCache||[]).find(s=>s.base===b); if(!r) return;
     // 총 박스수 = Print PR(1st)/Packing List/BOL 과 동일 로직: full 합 + 서로 다른 P.Box# + pbox 미지정 loose 라인 (주문·창고별로 계산 후 합산)
@@ -18627,7 +18658,15 @@ function openInformCustomer(){
   });
   const custs=[...new Set(orders.map(r=>String((r.meta&&r.meta.cust)||'').trim()).filter(Boolean))];
   const pos=orders.map(r=>{ const po=String((r.meta&&r.meta.po)||r.base); const rep=(typeof recIsReplace==='function'&&recIsReplace(r)); return po+(rep?' (replacement)':''); });
-  window._ic={ cust: custs.length===1?custs[0]:'', time:'3pm', pos:pos.join('\n'), boxes, lbsPer:33, pallets:[{l:48,w:43,h:84}] };
+  window._ic={ cust: custs.length===1?custs[0]:'', time:'3pm', pos:pos.join('\n'), boxes, lbsPer:33, pallets:[{l:48,w:43,h:84,bx:0}] };
+  // 🚛 직원이 /pic에서 LTL로 넣은 정보(pr_bulkship) 자동 채움 — 총박스·팔레트(수·치수·박스수)
+  if(window._icPreload){ const pl=window._icPreload;
+    if(pl.boxes!=null && Number(pl.boxes)>0) window._ic.boxes=Number(pl.boxes);
+    if(pl.lbsPer!=null) window._ic.lbsPer=Number(pl.lbsPer);
+    if(pl.pos) window._ic.pos=pl.pos;
+    if(pl.cust) window._ic.cust=pl.cust;
+    if(Array.isArray(pl.pallets)&&pl.pallets.length) window._ic.pallets=pl.pallets.map(p=>({l:Number(p.l)||48,w:Number(p.w)||43,h:Number(p.h)||0,bx:Number(p.bx)||0}));
+    window._icPreload=null; }
   // 방금 저장/복원한 클라우드 draft가 지금 선택과 같은 오더면, 그때 입력했던 설정(pallet/무게/문구)을 되살림
   const d=window._shipDraftActive;
   if(d && d.ic && Array.isArray(d.sel)){
@@ -18727,7 +18766,8 @@ async function shipDraftAfterShip(shipped){
 }
 function icEmailText(){
   const s=window._ic||{}; const pal=s.pallets||[]; const P=pal.length;
-  const dims=pal.map((p,i)=>`${p.l} in X ${p.w} in X ${p.h} in for Pallet ${i+1}`).join('\n');
+  const lbsPer=Number(s.lbsPer)||0;
+  const dims=pal.map((p,i)=>`Pallet ${i+1}: ${Number(p.bx)||0} boxes, ${p.l} X ${p.w} X ${p.h} in, ${Math.round((Number(p.bx)||0)*lbsPer)} lbs`).join('\n');
   const weight=Math.round((Number(s.boxes)||0)*(Number(s.lbsPer)||0));
   const greeting=s.cust?('Hi '+s.cust+','):'Hi,';
   return `${greeting}
@@ -18750,7 +18790,8 @@ function icEmailHtml(){
   const s=window._ic||{}; const pal=s.pallets||[]; const P=pal.length;
   const weight=Math.round((Number(s.boxes)||0)*(Number(s.lbsPer)||0));
   const poRows=String(s.pos||'').split('\n').map(x=>x.trim()).filter(Boolean).map(po=>`<tr><td style="padding:5px 12px;font-family:monospace;font-size:13px;border-bottom:1px solid #f1f5f9;">${esc(po)}</td></tr>`).join('');
-  const dimRows=pal.map((p,i)=>`<tr><td style="padding:5px 12px;font-size:12px;border-bottom:1px solid #f1f5f9;">Pallet ${i+1}</td><td style="padding:5px 12px;font-size:12px;text-align:right;border-bottom:1px solid #f1f5f9;font-family:monospace;">${esc(p.l)} in × ${esc(p.w)} in × ${esc(p.h)} in</td></tr>`).join('');
+  const lbsPer=Number(s.lbsPer)||0;
+  const dimRows=pal.map((p,i)=>{ const wt=Math.round((Number(p.bx)||0)*lbsPer); return `<tr><td style="padding:5px 12px;font-size:12px;border-bottom:1px solid #f1f5f9;">Pallet ${i+1}</td><td style="padding:5px 12px;font-size:12px;text-align:center;font-weight:700;border-bottom:1px solid #f1f5f9;">${Number(p.bx)||0}</td><td style="padding:5px 12px;font-size:12px;text-align:right;border-bottom:1px solid #f1f5f9;font-family:monospace;">${esc(p.l)} × ${esc(p.w)} × ${esc(p.h)} in</td><td style="padding:5px 12px;font-size:12px;text-align:right;border-bottom:1px solid #f1f5f9;">${wt} lbs</td></tr>`; }).join('');
   const greet=s.cust?('Dear <strong>'+esc(s.cust)+'</strong>,'):'Hello,';
   return `<div style="font-family:'Pretendard Variable',Pretendard,Arial,sans-serif;max-width:640px;margin:0 auto;color:#111;font-size:13px;">
     <table width="100%" cellpadding="0" cellspacing="0" style="background:#0f2a4a;"><tr>
@@ -18770,7 +18811,8 @@ function icEmailHtml(){
         <td style="padding:12px 16px;text-align:center;border-left:1px solid #e5e7eb;"><div style="font-size:11px;color:#6b7280;">Est. Weight</div><div style="font-size:20px;font-weight:800;color:#0f2a4a;">${weight.toLocaleString()} lbs</div></td>
       </tr></table>
       <table width="100%" cellpadding="0" cellspacing="0" style="border:1px solid #e5e7eb;border-radius:6px;margin-bottom:16px;">
-        <tr><td colspan="2" style="background:#f8fafc;padding:8px 12px;font-size:12px;font-weight:700;color:#0f2a4a;border-bottom:1px solid #e5e7eb;">Pallet Dimensions (L × W × H)</td></tr>
+        <tr><td colspan="4" style="background:#f8fafc;padding:8px 12px;font-size:12px;font-weight:700;color:#0f2a4a;border-bottom:1px solid #e5e7eb;">Pallet Details</td></tr>
+        <tr style="color:#6b7280;font-size:10.5px;font-weight:700;"><td style="padding:3px 12px;">Pallet</td><td style="padding:3px 12px;text-align:center;">Boxes</td><td style="padding:3px 12px;text-align:right;">L × W × H</td><td style="padding:3px 12px;text-align:right;">Weight</td></tr>
         ${dimRows}
       </table>
       <p style="font-size:12.5px;color:#374151;margin:16px 0 2px;">Thank you,</p>
@@ -18780,16 +18822,19 @@ function icEmailHtml(){
 }
 function icPreview(){ const t=document.getElementById('ic-preview-html'); if(t) t.innerHTML=icEmailHtml(); const wl=document.getElementById('ic-weight'); if(wl) wl.textContent=Math.round((Number((window._ic||{}).boxes)||0)*(Number((window._ic||{}).lbsPer)||0)).toLocaleString()+' lbs'; }
 function icField(k,v){ if(!window._ic) return; window._ic[k]=(k==='boxes'||k==='lbsPer')?(Number(v)||0):v; icPreview(); }
-function icSyncPallets(){ if(!window._ic) return; const rows=document.querySelectorAll('#ic-pallets .ic-prow'); const arr=[]; rows.forEach(row=>{ const g=cl=>{ const el=row.querySelector('.'+cl); return el?(Number(el.value)||0):0; }; arr.push({l:g('ic-pl'),w:g('ic-pw'),h:g('ic-ph')}); }); window._ic.pallets=arr; }
-function icPalletsHtml(){ const pal=(window._ic&&window._ic.pallets)||[]; return pal.map((p,i)=>`<div class="ic-prow" style="display:flex;align-items:center;gap:6px;margin-bottom:5px;">
-  <span style="font-size:11px;font-weight:800;color:#0f2a4a;min-width:58px;">Pallet ${i+1}</span>
-  <input class="fi ic-pl" type="number" min="0" value="${p.l}" oninput="icSyncPallets();icPreview();" style="width:56px;font-size:12px;text-align:center;"> <span style="color:#94a3b8;">×</span>
-  <input class="fi ic-pw" type="number" min="0" value="${p.w}" oninput="icSyncPallets();icPreview();" style="width:56px;font-size:12px;text-align:center;"> <span style="color:#94a3b8;">×</span>
-  <input class="fi ic-ph" type="number" min="0" value="${p.h}" oninput="icSyncPallets();icPreview();" style="width:56px;font-size:12px;text-align:center;"> <span style="font-size:10px;color:#94a3b8;">in (L×W×H)</span>
+function icSyncPallets(){ if(!window._ic) return; const rows=document.querySelectorAll('#ic-pallets .ic-prow'); const arr=[]; rows.forEach(row=>{ const g=cl=>{ const el=row.querySelector('.'+cl); return el?(Number(el.value)||0):0; }; arr.push({bx:g('ic-pbx'),l:g('ic-pl'),w:g('ic-pw'),h:g('ic-ph')}); }); window._ic.pallets=arr; }
+function icPalletsHtml(){ const s=window._ic||{}; const lbsPer=Number(s.lbsPer)||0; const pal=s.pallets||[]; return pal.map((p,i)=>{ const wt=Math.round((Number(p.bx)||0)*lbsPer); return `<div class="ic-prow" style="display:flex;align-items:center;gap:5px;margin-bottom:5px;flex-wrap:wrap;">
+  <span style="font-size:11px;font-weight:800;color:#0f2a4a;min-width:52px;">Pallet ${i+1}</span>
+  <input class="fi ic-pbx" type="number" min="0" value="${p.bx!=null?p.bx:''}" placeholder="box" oninput="icSyncPallets();icPreview();" title="Boxes on this pallet" style="width:50px;font-size:12px;text-align:center;font-weight:800;background:#f0fdf4;border-color:#86efac;"><span style="font-size:10px;color:#94a3b8;">bx</span>
+  <span style="color:#cbd5e1;font-weight:800;">·</span>
+  <input class="fi ic-pl" type="number" min="0" value="${p.l}" oninput="icSyncPallets();icPreview();" style="width:46px;font-size:12px;text-align:center;"> <span style="color:#94a3b8;">×</span>
+  <input class="fi ic-pw" type="number" min="0" value="${p.w}" oninput="icSyncPallets();icPreview();" style="width:46px;font-size:12px;text-align:center;"> <span style="color:#94a3b8;">×</span>
+  <input class="fi ic-ph" type="number" min="0" value="${p.h}" oninput="icSyncPallets();icPreview();" style="width:46px;font-size:12px;text-align:center;"><span style="font-size:10px;color:#94a3b8;">in</span>
+  <span style="font-size:11.5px;font-weight:800;color:#0f766e;min-width:56px;text-align:right;" title="Auto = boxes × lbs/box">${wt} lb</span>
   ${pal.length>1?`<button class="btn btn-sm" onclick="icDelPallet(${i})" title="Remove this pallet" style="border:none;color:#dc2626;padding:0 6px;">✕</button>`:''}
-</div>`).join(''); }
+</div>`; }).join(''); }
 function icRenderPallets(){ const el=document.getElementById('ic-pallets'); if(el) el.innerHTML=icPalletsHtml(); icPreview(); }
-function icAddPallet(){ icSyncPallets(); const pal=window._ic.pallets; const last=pal[pal.length-1]||{l:48,w:43,h:48}; pal.push({l:last.l,w:last.w,h:48}); icRenderPallets(); }
+function icAddPallet(){ icSyncPallets(); const pal=window._ic.pallets; const last=pal[pal.length-1]||{l:48,w:43,h:48,bx:0}; pal.push({l:last.l,w:last.w,h:48,bx:0}); icRenderPallets(); }
 function icDelPallet(i){ icSyncPallets(); window._ic.pallets.splice(i,1); icRenderPallets(); }
 async function icCopy(){
   const html=icEmailHtml(); const text=icEmailText();
