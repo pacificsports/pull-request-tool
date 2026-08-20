@@ -156,7 +156,7 @@ main{max-width:1100px;margin:0 auto;padding:16px;}
     <button class="btn btn-sm" onclick="doLogout()" style="padding:2px 8px;font-size:10px;" data-i18n="logout">Log out</button>
   </span>
   <select id="lang-sel" onchange="setLang(this.value)" style="font-size:11px;padding:3px 6px;border-radius:5px;border:none;background:#1d3f66;color:#fff;"><option value="ko">한국어</option><option value="en">English</option><option value="es">Español</option></select>
-  <span id="app-ver" style="font-size:10px;color:#9fb8d4;">v681 ↩</span>
+  <span id="app-ver" style="font-size:10px;color:#9fb8d4;">v682 ↩</span>
 </div>
 <script type="text/javascript" src="https://js.authorize.net/v1/Accept.js" charset="utf-8"></script>
 <div id="po-viewer" style="display:none;position:fixed;top:0;right:0;width:44%;height:100vh;background:#fff;border-left:2px solid var(--border);z-index:60;box-shadow:-6px 0 20px rgba(0,0,0,.15);">
@@ -15485,10 +15485,10 @@ async function trDelPallet(pid){
 async function _trAddLine(pid, line){
   const shipId = await _trEnsureRow(); if(!shipId) return false;
   if(!line.is_manual && (line.ids||[]).length){
-    try{ await trPatchBoxes(line.ids, {wh:'TRANSIT'}); }
-    catch(e){ showToast('⚠ Stock reservation failed'); return false; }
+    try{ await trPatchBoxes(line.ids, {loc:'TRANSFER'}); }   // 원래 bin에서 빠져 TRANSFER bin으로 (SC 재고엔 유지) — v682
+    catch(e){ showToast('⚠ Stock staging failed'); return false; }
     const idSet = new Set(line.ids);
-    bxStore.forEach(b=>{ if(idSet.has(b.id)) b.wh = 'TRANSIT'; });
+    bxStore.forEach(b=>{ if(idSet.has(b.id)) b.loc = 'TRANSFER'; });
   }
   const p = _shipPallets.find(x=>x.id===pid); if(!p) return false;
   p.lines.push(line);
@@ -15502,10 +15502,10 @@ async function _trAddLinesBulk(items){
   const allIds = [];
   items.forEach(it=>{ if(!it.line.is_manual) (it.line.ids||[]).forEach(id=>allIds.push(id)); });
   if(allIds.length){
-    try{ await trPatchBoxes(allIds, {wh:'TRANSIT'}); }
-    catch(e){ showToast('⚠ Stock reservation failed'); return 0; }
+    try{ await trPatchBoxes(allIds, {loc:'TRANSFER'}); }   // 원래 bin → TRANSFER bin (SC 재고 유지) — v682
+    catch(e){ showToast('⚠ Stock staging failed'); return 0; }
     const idSet = new Set(allIds);
-    bxStore.forEach(b=>{ if(idSet.has(b.id)) b.wh = 'TRANSIT'; });
+    bxStore.forEach(b=>{ if(idSet.has(b.id)) b.loc = 'TRANSFER'; });
   }
   let ok = 0;
   items.forEach(it=>{ const p = _shipPallets.find(x=>x.id===it.pid); if(p){ p.lines.push(it.line); ok++; } });
@@ -15516,12 +15516,13 @@ async function _trRemoveLine(pid, li, silent){
   const p = _shipPallets.find(x=>x.id===pid); if(!p) return false;
   const l = p.lines[li]; if(!l) return false;
   if(!l.is_manual && (l.ids||[]).length){
-    if(!silent && !confirm('Delete this line and restore '+trKindShort(trSrcKind(_shipRoute))+' stock?\n'+(l.bin||'?')+' / '+l.style+' '+l.color+' '+l.size+' / '+trLineBoxes(l)+' box(es)')) return false;
-    try{ await trPatchBoxes(l.ids, {wh: trWhOfKind(trSrcKind(_shipRoute))}); }
+    if(!silent && !confirm('Delete this line and return '+trLineBoxes(l)+' box(es) to bin '+(l.bin||'?')+'?\n'+l.style+' '+l.color+' '+l.size)) return false;
+    const _rw = trWhOfKind(trSrcKind(_shipRoute));
+    const _back = String(l.bin||'').toUpperCase();   // 원래 bin으로 복구
+    try{ await trPatchBoxes(l.ids, _back?{wh:_rw, loc:_back}:{wh:_rw}); }
     catch(e){ showToast('⚠ Restore failed'); return false; }
     const idSet = new Set(l.ids);
-    const _rw = trWhOfKind(trSrcKind(_shipRoute));
-    bxStore.forEach(b=>{ if(idSet.has(b.id)) b.wh = _rw; });
+    bxStore.forEach(b=>{ if(idSet.has(b.id)){ b.wh = _rw; if(_back) b.loc = _back; } });
   }
   p.lines.splice(li,1);
   await trSaveDraftLines();
