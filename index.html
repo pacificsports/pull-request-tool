@@ -156,7 +156,7 @@ main{max-width:1100px;margin:0 auto;padding:16px;}
     <button class="btn btn-sm" onclick="doLogout()" style="padding:2px 8px;font-size:10px;" data-i18n="logout">Log out</button>
   </span>
   <select id="lang-sel" onchange="setLang(this.value)" style="font-size:11px;padding:3px 6px;border-radius:5px;border:none;background:#1d3f66;color:#fff;"><option value="ko">한국어</option><option value="en">English</option><option value="es">Español</option></select>
-  <span id="app-ver" style="font-size:10px;color:#9fb8d4;">v675 ↩</span>
+  <span id="app-ver" style="font-size:10px;color:#9fb8d4;">v676 ↩</span>
 </div>
 <script type="text/javascript" src="https://js.authorize.net/v1/Accept.js" charset="utf-8"></script>
 <div id="po-viewer" style="display:none;position:fixed;top:0;right:0;width:44%;height:100vh;background:#fff;border-left:2px solid var(--border);z-index:60;box-shadow:-6px 0 20px rgba(0,0,0,.15);">
@@ -6952,7 +6952,7 @@ function lblRender(){
       ${costHtml}
       <div style="display:flex;gap:8px;margin-top:9px;flex-wrap:wrap;">
         <button class="btn btn-sm" style="background:#0f766e;color:#fff;border-color:#0f766e;font-weight:700;" onclick="lblPrint()">🖨 Print to Zebra (4×6)</button>
-        <button class="btn btn-sm" onclick="lblDownload()" title="Download raw ZPL if Browser Print isn't available">⬇ Download ZPL</button>
+        <button class="btn btn-sm" onclick="lblDownload()" title="Download the label as a PDF (falls back to raw ZPL if conversion fails)">⬇ Download PDF</button>
         ${_lblResult.shipmentId?`<button class="btn btn-sm" style="background:#fff;color:#b91c1c;border-color:#fca5a5;margin-left:auto;" onclick="lblVoid()" title="Cancel this label at UPS (no charge if voided before pickup)">✕ Void label</button>`:''}
       </div>
     </div>` : '';
@@ -7191,17 +7191,31 @@ async function lblPrint(){
   catch(e){ showToast('Label decode error'); return; }
   await sendToZebraBrowserPrint(zpl, sel.length);
 }
-function lblDownload(){
+function _lblSaveBlob(blob, name){
+  const a=document.createElement('a'); a.href=URL.createObjectURL(blob); a.download=name;
+  document.body.appendChild(a); a.click();
+  setTimeout(()=>{ URL.revokeObjectURL(a.href); a.remove(); }, 800);
+}
+// ZPL → PDF 변환(Labelary 렌더 API) 후 다운로드. 실패 시 원본 .zpl로 폴백. (v676)
+async function lblDownload(){
   if(!_lblResult || !(_lblResult.labels||[]).length){ showToast('No label'); return; }
   const sel=_lblSelected(); if(!sel.length){ showToast('⚠ Select at least one box'); return; }
   let zpl='';
   try{ zpl = sel.map(b64=>atob(b64)).join('\n'); }catch(e){ showToast('decode error'); return; }
-  const blob = new Blob([zpl], {type:'text/plain'});
-  const a = document.createElement('a');
-  a.href = URL.createObjectURL(blob);
-  a.download = 'UPS-'+(_lblRec?_lblRec.base:'label')+'.zpl';
-  document.body.appendChild(a); a.click();
-  setTimeout(()=>{ URL.revokeObjectURL(a.href); a.remove(); }, 500);
+  const fname='UPS-'+(_lblRec?_lblRec.base:'label');
+  showToast('⏳ Building PDF…');
+  try{
+    // 4x6 @ 203dpi(8dpmm) — 여러 라벨이면 멀티페이지 PDF로 반환
+    const res=await fetch('https://api.labelary.com/v1/printers/8dpmm/labels/4x6/',{method:'POST',headers:{'Accept':'application/pdf'},body:zpl});
+    if(!res.ok){ const et=await res.text().catch(()=>''); throw new Error('HTTP '+res.status+' '+et.slice(0,80)); }
+    const blob=await res.blob();
+    if(blob.size<300 || (blob.type && blob.type.indexOf('pdf')<0 && blob.type.indexOf('octet')<0)) throw new Error('unexpected format');
+    _lblSaveBlob(blob, fname+'.pdf');
+    showToast('⬇ PDF downloaded ('+sel.length+' label'+(sel.length>1?'s':'')+')');
+  }catch(e){
+    _lblSaveBlob(new Blob([zpl],{type:'text/plain'}), fname+'.zpl');
+    showToast('⚠ PDF convert failed ('+(e.message||e)+') — saved raw ZPL instead');
+  }
 }
 async function lblVoid(){
   if(!_lblResult || !_lblResult.shipmentId){ showToast('No shipment to void'); return; }
