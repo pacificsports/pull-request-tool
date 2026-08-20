@@ -156,7 +156,7 @@ main{max-width:1100px;margin:0 auto;padding:16px;}
     <button class="btn btn-sm" onclick="doLogout()" style="padding:2px 8px;font-size:10px;" data-i18n="logout">Log out</button>
   </span>
   <select id="lang-sel" onchange="setLang(this.value)" style="font-size:11px;padding:3px 6px;border-radius:5px;border:none;background:#1d3f66;color:#fff;"><option value="ko">한국어</option><option value="en">English</option><option value="es">Español</option></select>
-  <span id="app-ver" style="font-size:10px;color:#9fb8d4;">v680 ↩</span>
+  <span id="app-ver" style="font-size:10px;color:#9fb8d4;">v681 ↩</span>
 </div>
 <script type="text/javascript" src="https://js.authorize.net/v1/Accept.js" charset="utf-8"></script>
 <div id="po-viewer" style="display:none;position:fixed;top:0;right:0;width:44%;height:100vh;background:#fff;border-left:2px solid var(--border);z-index:60;box-shadow:-6px 0 20px rgba(0,0,0,.15);">
@@ -9344,13 +9344,13 @@ function pchkCompare(bin, wh, detected, staffCheck){
   const exactKey=(style,color,size)=> pchkNorm(style)+'|'+pchkNorm(color)+'|'+pchkNorm(size);
   // AI가 읽은 라벨은 코드(RT/BCI/SS)·(SIDE SEAM)·약어 무시하고 "느슨하게" — 시스템 줄에 근사 매칭용
   const matchKey=(style,color,size)=> pchkStyleNorm(style)+'|'+pchkColorNorm(color)+'|'+pchkNorm(size);
-  const blank=(style,color,size)=>({style:style||'?',color:String(color||'?').toUpperCase(),size:String(size||'?').toUpperCase(),sys:0,photo:0,staffMark:null,staffCount:null,hasStaff:false});
+  const blank=(style,color,size)=>({style:style||'?',color:String(color||'?').toUpperCase(),size:String(size||'?').toUpperCase(),sys:0,photo:0,staffMark:null,staffCount:null,sysAtCheck:null,hasStaff:false});
   // 시스템 bin 내용 (location 검색과 동일) — 이게 기준 줄
   (typeof bxStore!=='undefined'?bxStore:[]).forEach(x=>{ if(String(x.loc||'').toUpperCase()!==b) return; if(bxWh(x)!==wh) return;
     const k=exactKey(x.style,x.color,x.size);
     if(!map[k]) map[k]=blank(x.style,x.color,x.size); map[k].sys++; });
   // 직원 눈체크 (시스템 색 그대로 봤으므로 정확 매칭)
-  (staffCheck||[]).forEach(s=>{ const k=exactKey(s.style,s.color,s.size); if(!map[k]) map[k]=blank(s.style,s.color,s.size); map[k].staffMark=s.mark||null; map[k].staffCount=(s.count!=null?s.count:null); map[k].hasStaff=true; });
+  (staffCheck||[]).forEach(s=>{ const k=exactKey(s.style,s.color,s.size); if(!map[k]) map[k]=blank(s.style,s.color,s.size); map[k].staffMark=s.mark||null; map[k].staffCount=(s.count!=null?s.count:null); map[k].sysAtCheck=(s.sys!=null?Number(s.sys):null); map[k].hasStaff=true; });
   // 기존 줄들의 matchKey → exact키 index
   const mIdx={};
   Object.keys(map).forEach(k=>{ const r=map[k]; const mk=matchKey(r.style,r.color,r.size); (mIdx[mk]=mIdx[mk]||[]).push(k); });
@@ -9404,7 +9404,14 @@ function pchkActBtns(id,i){ return `<button onclick="pchkLineConfirm(${id},${i})
 function pchkLineConfirm(id,i){ const c=document.getElementById('pchkact-'+id+'-'+i); if(c) c.innerHTML='<span style="color:#16a34a;font-weight:800;font-size:12px;">✓ ok</span>'; }
 function pchkLineCancel(id,i){ const c=document.getElementById('pchkact-'+id+'-'+i); if(c) c.innerHTML=pchkActBtns(id,i); }
 function pchkLineFix(id,i){ const c=document.getElementById('pchkact-'+id+'-'+i); const line=((window._pchkRevRows||{})[id]||[])[i]; if(!c||!line) return;
-  c.innerHTML=`<input id="pchkfix-${id}-${i}" type="number" inputmode="numeric" value="${line.sys}" style="width:54px;font-size:13px;padding:5px 3px;text-align:center;border:1.5px solid #f59e0b;border-radius:6px;box-sizing:border-box;"> <button onclick="pchkLineSave(${id},${i})" style="background:#16a34a;color:#fff;border:none;border-radius:6px;padding:5px 9px;font-size:12px;font-weight:800;">Save</button> <button onclick="pchkLineCancel(${id},${i})" style="background:#e2e8f0;color:#334155;border:none;border-radius:6px;padding:5px 7px;font-size:12px;">✕</button>`;
+  // 권장 target = 현재 재고 + (직원 실측 − 체크 당시 시스템값). 체크 이후 정상 변동은 보존, 발견된 차이만 반영.
+  const cur=Number(line.sys)||0, sc=(line.staffCount!=null?Number(line.staffCount):null), sac=(line.sysAtCheck!=null?Number(line.sysAtCheck):null);
+  let rec=cur;
+  if(sc!=null && sac!=null) rec=Math.max(0, cur+(sc-sac));
+  else if(sc!=null) rec=sc;
+  const changed = (sac!=null && sac!==cur);   // 체크 이후 bin 변동 있었나
+  const hint = changed ? `<div style="font-size:10px;color:#b45309;font-weight:700;margin-top:3px;line-height:1.3;">⚠ changed since check (was ${sac} → now ${cur})${sc!=null?`. Staff counted ${sc}. Reconciled = ${rec}`:''}</div>` : (sc!=null&&sc!==cur?`<div style="font-size:10px;color:#64748b;margin-top:3px;">Staff counted ${sc} → ${rec}</div>`:'');
+  c.innerHTML=`<input id="pchkfix-${id}-${i}" type="number" inputmode="numeric" value="${rec}" style="width:54px;font-size:13px;padding:5px 3px;text-align:center;border:1.5px solid #f59e0b;border-radius:6px;box-sizing:border-box;"> <button onclick="pchkLineSave(${id},${i})" style="background:#16a34a;color:#fff;border:none;border-radius:6px;padding:5px 9px;font-size:12px;font-weight:800;">Save</button> <button onclick="pchkLineCancel(${id},${i})" style="background:#e2e8f0;color:#334155;border:none;border-radius:6px;padding:5px 7px;font-size:12px;">✕</button>${hint}`;
   const inp=document.getElementById('pchkfix-'+id+'-'+i); if(inp){ inp.focus(); inp.select(); }
 }
 async function pchkLineSave(id,i){
