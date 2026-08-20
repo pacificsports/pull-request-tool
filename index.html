@@ -156,7 +156,7 @@ main{max-width:1100px;margin:0 auto;padding:16px;}
     <button class="btn btn-sm" onclick="doLogout()" style="padding:2px 8px;font-size:10px;" data-i18n="logout">Log out</button>
   </span>
   <select id="lang-sel" onchange="setLang(this.value)" style="font-size:11px;padding:3px 6px;border-radius:5px;border:none;background:#1d3f66;color:#fff;"><option value="ko">한국어</option><option value="en">English</option><option value="es">Español</option></select>
-  <span id="app-ver" style="font-size:10px;color:#9fb8d4;">v676 ↩</span>
+  <span id="app-ver" style="font-size:10px;color:#9fb8d4;">v677 ↩</span>
 </div>
 <script type="text/javascript" src="https://js.authorize.net/v1/Accept.js" charset="utf-8"></script>
 <div id="po-viewer" style="display:none;position:fixed;top:0;right:0;width:44%;height:100vh;background:#fff;border-left:2px solid var(--border);z-index:60;box-shadow:-6px 0 20px rgba(0,0,0,.15);">
@@ -6879,7 +6879,7 @@ function lblRender(){
   const ex = document.getElementById('modal-upslabel'); if(ex) ex.remove();
   const div = document.createElement('div');
   div.id = 'modal-upslabel';
-  div.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,.55);z-index:140;display:flex;align-items:center;justify-content:center;';
+  div.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,.55);z-index:140;display:flex;overflow-y:auto;padding:16px;';
   div.onclick = e=>{ if(e.target===div) div.remove(); };
   const bmode = window._lblBillMode==='receiver' ? 'receiver' : (window._lblBillMode==='free' ? 'free' : 'shipper');
   const _bBtn = (m,lab)=>`<button class="btn btn-sm" onclick="lblSetBill('${m}')" style="flex:1;min-width:110px;${bmode===m?'background:#7c2d12;color:#fff;border-color:#7c2d12;':''}">${lab}</button>`;
@@ -6956,7 +6956,7 @@ function lblRender(){
         ${_lblResult.shipmentId?`<button class="btn btn-sm" style="background:#fff;color:#b91c1c;border-color:#fca5a5;margin-left:auto;" onclick="lblVoid()" title="Cancel this label at UPS (no charge if voided before pickup)">✕ Void label</button>`:''}
       </div>
     </div>` : '';
-  div.innerHTML = `<div style="background:#fff;border-radius:12px;width:560px;max-width:95vw;max-height:90vh;overflow-y:auto;box-shadow:0 20px 60px rgba(0,0,0,.35);">
+  div.innerHTML = `<div style="background:#fff;border-radius:12px;width:560px;max-width:95vw;margin:auto;box-shadow:0 20px 60px rgba(0,0,0,.35);">
     <div style="background:#7c2d12;color:#fff;padding:12px 16px;font-weight:800;display:flex;justify-content:space-between;align-items:center;">
       <span>🏷 UPS Label — ${esc(rec.meta.cust||'')} · PO ${esc(rec.meta.po||'')}</span>
       <button onclick="document.getElementById('modal-upslabel').remove()" style="background:none;border:none;color:#fff;font-size:18px;cursor:pointer;">✕</button></div>
@@ -7205,9 +7205,10 @@ async function lblDownload(){
   const fname='UPS-'+(_lblRec?_lblRec.base:'label');
   showToast('⏳ Building PDF…');
   try{
-    // 4x6 @ 203dpi(8dpmm) — 여러 라벨이면 멀티페이지 PDF로 반환
-    const res=await fetch('https://api.labelary.com/v1/printers/8dpmm/labels/4x6/',{method:'POST',headers:{'Accept':'application/pdf'},body:zpl});
-    if(!res.ok){ const et=await res.text().catch(()=>''); throw new Error('HTTP '+res.status+' '+et.slice(0,80)); }
+    // 4x6 @ 203dpi(8dpmm) — ZPL을 file 필드(multipart)로 올려야 415 안 남. 여러 라벨이면 멀티페이지 PDF.
+    const fd=new FormData(); fd.append('file', new Blob([zpl],{type:'text/plain'}), 'label.zpl');
+    const res=await fetch('https://api.labelary.com/v1/printers/8dpmm/labels/4x6/',{method:'POST',headers:{'Accept':'application/pdf'},body:fd});
+    if(!res.ok){ const et=await res.text().catch(()=>''); throw new Error('HTTP '+res.status+(et?' '+et.slice(0,80):'')); }
     const blob=await res.blob();
     if(blob.size<300 || (blob.type && blob.type.indexOf('pdf')<0 && blob.type.indexOf('octet')<0)) throw new Error('unexpected format');
     _lblSaveBlob(blob, fname+'.pdf');
@@ -19471,11 +19472,62 @@ function savedMatches(s, q){
   const toks = q.split(/\s+/).filter(Boolean);
   return toks.every(t=>hayNS.includes(t));
 }
+// 🚚 준비됨(직원 팩킹 저장) 미진행(라벨/트래킹·인보이스 전) 오더-레그 목록 — KPI 카운트와 리스트 모듈이 공유 (v677)
+function laneReadyLegs(){
+  const out=[];
+  (savedCache||[]).forEach(s=>{
+    if(recIsDone(s)) return;
+    (s.whs||[]).forEach(w=>{
+      if(w!=='SC' && w!=='CA') return;
+      const plSaved = s.pl && s.pl[w] && s.pl[w].savedAt;
+      if(!plSaved) return;                                       // 아직 준비 전
+      const invPr = s.inv && s.inv[w] && s.inv[w].printed;       // 인보이스 완료 = 마감
+      const uw = s.meta && s.meta._ups && s.meta._ups[w];
+      const hasLabel = uw && (uw.tracking||[]).length>0;         // 라벨/트래킹(또는 LTL PRO) 발급됨 = 진행됨
+      if(invPr || hasLabel) return;
+      const eff = (w==='SC' && s.meta && s.meta._shipFromCA) ? 'CA' : w;
+      const via = (typeof packVia==='function') ? String(packVia(s.base, w)||'').toUpperCase() : '';
+      const isLtl = via==='LTL';
+      out.push({ base:s.base, wh:w, eff, isLtl,
+        cust:(s.meta&&s.meta.cust)||'', po:(s.meta&&s.meta.po)||'',
+        date:(s.meta&&s.meta.date)||(s.pl[w]&&s.pl[w].savedAt)||'' });
+    });
+  });
+  return out;
+}
+// 레인 타일 클릭 → 준비된 PO 목록 모듈. PO 클릭 시 UPS는 라벨 모듈, LTL은 packing list 오픈 (v677)
+function laneListOpen(eff, isLtl){
+  const legs = laneReadyLegs().filter(l=> l.eff===eff && l.isLtl===!!isLtl);
+  const ex=document.getElementById('modal-laneready'); if(ex) ex.remove();
+  const div=document.createElement('div'); div.id='modal-laneready';
+  div.style.cssText='position:fixed;inset:0;background:rgba(0,0,0,.5);z-index:135;display:flex;overflow-y:auto;padding:20px;';
+  div.onclick=e=>{ if(e.target===div) div.remove(); };
+  const laneLbl=(isLtl?'🚛 LTL':'📦 UPS')+' · '+eff;
+  const rows = legs.length ? legs.map(l=>`<div style="display:flex;align-items:center;gap:10px;padding:11px 13px;border-bottom:1px solid #f1f5f9;cursor:pointer;" onclick="laneProcess('${esc(l.base)}','${esc(l.wh)}',${isLtl?'true':'false'})" onmouseover="this.style.background='#f8fafc'" onmouseout="this.style.background=''">
+      <div style="flex:1;min-width:0;">
+        <div style="font-size:13.5px;font-weight:800;color:#0f2a4a;">${esc(l.cust||'(no name)')} <span style="color:#64748b;font-weight:600;">· PO ${esc(l.po||'—')}</span></div>
+        <div style="font-size:11px;color:#94a3b8;margin-top:2px;">[${esc(l.wh)}]${l.eff!==l.wh?' → ships '+esc(l.eff):''} · ${esc(String(l.date).slice(0,10))}</div>
+      </div>
+      <span style="font-size:12px;font-weight:800;color:${isLtl?'#0e7490':'#7c2d12'};white-space:nowrap;">${isLtl?'📋 Open':'🏷 UPS Label'} ›</span>
+    </div>`).join('') : '<div style="padding:22px;text-align:center;color:#94a3b8;font-size:13px;">No prepared orders in this lane. 🎉</div>';
+  div.innerHTML=`<div style="background:#fff;border-radius:12px;width:520px;max-width:95vw;margin:auto;box-shadow:0 20px 60px rgba(0,0,0,.35);overflow:hidden;">
+    <div style="background:${isLtl?'#0e7490':(eff==='CA'?'#c2410c':'#1d4ed8')};color:#fff;padding:12px 16px;font-weight:800;display:flex;justify-content:space-between;align-items:center;">
+      <span>${laneLbl} — ready to process (${legs.length})</span>
+      <button onclick="document.getElementById('modal-laneready').remove()" style="background:none;border:none;color:#fff;font-size:18px;cursor:pointer;">✕</button></div>
+    <div style="max-height:70vh;overflow-y:auto;">${rows}</div>
+  </div>`;
+  document.body.appendChild(div);
+}
+function laneProcess(base, wh, isLtl){
+  const m=document.getElementById('modal-laneready'); if(m) m.remove();
+  if(isLtl){ if(typeof openPL==='function') openPL(base); else if(typeof openOrderSummary==='function') openOrderSummary(base); }
+  else { if(typeof openLabelModal==='function') openLabelModal(base, wh); else if(typeof openPL==='function') openPL(base); }
+}
 function renderKpi(){
   const el = document.getElementById('kpi-bar'); if(!el) return;
   const cache = savedCache||[];
   let open=0, rush=0, uninv=0, pret=0, refund=0;
-  let scUps=0, scLtl=0, caUps=0, caLtl=0;   // 준비된(packed, 미출고) 물량 — 창고×배송방식 (v675)
+  let scUps=0, scLtl=0, caUps=0, caLtl=0;   // 준비된(packed, 미진행) 물량 — 창고×배송방식 (v675/v677)
   cache.forEach(s=>{
     const done = recIsDone(s);
     if(!done) open++;
@@ -19483,21 +19535,14 @@ function renderKpi(){
     if(!recIsReplace(s) && (s.whs||[]).some(w=> s.pl && s.pl[w] && s.pl[w].savedAt && !(s.inv && s.inv[w] && s.inv[w].printed))) uninv++;
     if(recHasPendingReturn(s)) pret++;
     if(recReturns(s).some(r=>r && r.status==='received' && r.cc && !r.refunded)) refund++;
-    if(!done) (s.whs||[]).forEach(w=>{
-      if(w!=='SC' && w!=='CA') return;
-      const plDone = s.pl && s.pl[w] && s.pl[w].savedAt && s.pl[w]._completed;   // 팩킹 완료
-      const shipped = s.inv && s.inv[w] && s.inv[w].printed;                     // 출고(인보이스 인쇄) 완료면 제외
-      if(!plDone || shipped) return;
-      const eff = (w==='SC' && s.meta && s.meta._shipFromCA) ? 'CA' : w;          // ship-from-CA는 CA로 집계
-      const via = (typeof packVia==='function') ? String(packVia(s.base, w)||'').toUpperCase() : '';
-      const isLtl = via==='LTL';
-      if(eff==='CA'){ isLtl?caLtl++:caUps++; } else { isLtl?scLtl++:scUps++; }
-    });
+  });
+  (typeof laneReadyLegs==='function'?laneReadyLegs():[]).forEach(l=>{
+    if(l.eff==='CA'){ l.isLtl?caLtl++:caUps++; } else { l.isLtl?scLtl++:scUps++; }
   });
   const tile=(label,n,color,bg)=>`<div style="flex:1;min-width:118px;background:${bg};border:1px solid ${color}44;border-left:5px solid ${color};border-radius:8px;padding:8px 13px;">
     <div style="font-size:23px;font-weight:900;color:${color};line-height:1;">${n.toLocaleString()}</div>
     <div style="font-size:10px;font-weight:800;color:#4b5563;letter-spacing:.3px;margin-top:4px;text-transform:uppercase;white-space:nowrap;">${label}</div></div>`;
-  const laneTile=(label,n,color,bg)=>`<div style="flex:1;min-width:110px;background:${bg};border:1px solid ${color}44;border-left:5px solid ${color};border-radius:8px;padding:8px 13px;" title="Packed & ready to ship (not shipped yet)">
+  const laneTile=(label,n,color,bg,eff,isLtl)=>`<div onclick="laneListOpen('${eff}',${isLtl?'true':'false'})" style="flex:1;min-width:110px;background:${bg};border:1px solid ${color}44;border-left:5px solid ${color};border-radius:8px;padding:8px 13px;cursor:pointer;" title="Prepared by staff, not processed yet — click to see the orders & process">
     <div style="font-size:23px;font-weight:900;color:${color};line-height:1;">${n.toLocaleString()}</div>
     <div style="font-size:10px;font-weight:800;color:#4b5563;letter-spacing:.3px;margin-top:4px;text-transform:uppercase;white-space:nowrap;">${label}</div></div>`;
   el.innerHTML = `<div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:8px;">
@@ -19511,10 +19556,10 @@ function renderKpi(){
       <div style="font-size:10px;font-weight:800;color:#4b5563;letter-spacing:.3px;margin-top:4px;text-transform:uppercase;white-space:nowrap;">🔒 Reserved Boxes</div></div>`; })()}
   </div>
   <div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:12px;">
-    ${laneTile('📦 SC · UPS ready', scUps, '#1d4ed8', '#eff6ff')}
-    ${laneTile('🚛 SC · LTL ready', scLtl, '#0e7490', '#ecfeff')}
-    ${laneTile('📦 CA · UPS ready', caUps, '#c2410c', '#fff7ed')}
-    ${laneTile('🚛 CA · LTL ready', caLtl, '#b45309', '#fffbeb')}
+    ${laneTile('📦 SC · UPS ready', scUps, '#1d4ed8', '#eff6ff', 'SC', false)}
+    ${laneTile('🚛 SC · LTL ready', scLtl, '#0e7490', '#ecfeff', 'SC', true)}
+    ${laneTile('📦 CA · UPS ready', caUps, '#c2410c', '#fff7ed', 'CA', false)}
+    ${laneTile('🚛 CA · LTL ready', caLtl, '#b45309', '#fffbeb', 'CA', true)}
     ${(typeof pchkBoxreqPend==='function')?`<div id="boxreq-kpi-sc" class="${pchkBoxreqPend('SC')>0?'breq-blink':''}" onclick="pchkReqMgrOpenWh('SC')" style="flex:1;min-width:118px;background:#eff6ff;border:1px solid #93c5fd;border-left:5px solid #1d4ed8;border-radius:8px;padding:8px 13px;cursor:pointer;" title="SC staff box requests → move to PC Room. Click to process now.">
       <div style="font-size:23px;font-weight:900;color:#1d4ed8;line-height:1;"><span id="boxreq-kpi-sc-n">${pchkBoxreqPend('SC')}</span></div>
       <div style="font-size:10px;font-weight:800;color:#4b5563;letter-spacing:.3px;margin-top:4px;text-transform:uppercase;white-space:nowrap;">📦 SC Box Request</div></div>
