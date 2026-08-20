@@ -156,7 +156,7 @@ main{max-width:1100px;margin:0 auto;padding:16px;}
     <button class="btn btn-sm" onclick="doLogout()" style="padding:2px 8px;font-size:10px;" data-i18n="logout">Log out</button>
   </span>
   <select id="lang-sel" onchange="setLang(this.value)" style="font-size:11px;padding:3px 6px;border-radius:5px;border:none;background:#1d3f66;color:#fff;"><option value="ko">한국어</option><option value="en">English</option><option value="es">Español</option></select>
-  <span id="app-ver" style="font-size:10px;color:#9fb8d4;">v666 ↩</span>
+  <span id="app-ver" style="font-size:10px;color:#9fb8d4;">v667 ↩</span>
 </div>
 <script type="text/javascript" src="https://js.authorize.net/v1/Accept.js" charset="utf-8"></script>
 <div id="po-viewer" style="display:none;position:fixed;top:0;right:0;width:44%;height:100vh;background:#fff;border-left:2px solid var(--border);z-index:60;box-shadow:-6px 0 20px rgba(0,0,0,.15);">
@@ -8722,6 +8722,19 @@ function pchkReqPrint(id){
   w.document.close();
 }
 // 📍 bin 칩 → 그 자리(박스요청 카드 안)에서 bin 내용 + Move to PC Room 인라인 처리 (v666)
+// 📦 그 물리적 팔렛(wh+loc)에 들어있는 모든 SKU를 그룹핑 — location bin 뷰처럼 통째로 보여줌
+function pchkBinAllSkus(wh, loc){
+  const L=String(loc||'?').toUpperCase();
+  const groups={};
+  (typeof bxStore!=='undefined'?bxStore:[]).forEach(b=>{
+    if(bxWh(b)!==wh) return;
+    if(String(b.loc||'?').toUpperCase()!==L) return;
+    const k=bxK(b.style,b.color,b.size);
+    if(!groups[k]) groups[k]={style:b.style,color:b.color,size:b.size,n:0,ppb:Number(b.pcs)||0};
+    groups[k].n++; if(!groups[k].ppb) groups[k].ppb=Number(b.pcs)||0;
+  });
+  return Object.values(groups).sort((a,b)=>String(a.style+a.color+a.size).localeCompare(String(b.style+b.color+b.size)));
+}
 function pchkReqBinShow(reqId, style, color, size, wh, loc){
   window._reqBin=window._reqBin||{}; window._reqBin[reqId]={style,color,size,wh,loc};
   const host=document.getElementById('reqbin-'+reqId); if(!host) return;
@@ -8729,14 +8742,34 @@ function pchkReqBinShow(reqId, style, color, size, wh, loc){
   const ppb=list.length?(Number(list[0].pcs)||72):72;
   const rsv=(typeof reservedBoxes==='function')?reservedBoxes(style,color,size,wh):0;
   const free=Math.max(0,list.length-rsv);
+  const reqK=bxK(style,color,size);
+  const all=pchkBinAllSkus(wh,loc);
+  const totBx=all.reduce((a,g)=>a+g.n,0);
+  const rowsHtml=all.length?all.map(g=>{
+    const isReq=bxK(g.style,g.color,g.size)===reqK;
+    return `<tr style="${isReq?'background:#ede9fe;':''}border-bottom:1px solid #eef2f7;">
+      <td style="padding:6px 8px;font-size:12.5px;font-weight:${isReq?'800':'600'};color:#0f2a4a;">${isReq?'👉 ':''}${esc(String(g.style))}</td>
+      <td style="padding:6px 8px;font-size:12px;color:#334155;">${esc(String(g.color))}</td>
+      <td style="padding:6px 8px;font-size:12px;font-weight:700;color:#334155;text-align:center;">${esc(String(g.size))}</td>
+      <td style="padding:6px 8px;font-size:12.5px;font-weight:800;color:#0f2a4a;text-align:right;white-space:nowrap;">${g.n} <span style="font-weight:500;color:#64748b;">box · ${g.ppb||'?'}/bx</span></td>
+    </tr>`;
+  }).join(''):`<tr><td colspan="4" style="padding:8px;color:#94a3b8;font-size:12px;">No boxes in this bin.</td></tr>`;
   host.innerHTML=`<div style="margin-top:8px;background:#f5f3ff;border:1.5px solid #c4b5fd;border-radius:10px;padding:11px 13px;">
     <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;">
       <span style="font-size:13px;font-weight:800;color:#0f2a4a;">📍 [${esc(wh)}] ${esc(loc)}</span>
-      <span style="font-size:12.5px;color:#475569;">in this bin: <b>${list.length}</b> box(es) × ${ppb} pcs/box</span>
-      ${rsv>0?`<span style="font-size:11px;color:#7c3aed;font-weight:800;">🔒 ${rsv} reserved · ${free} free</span>`:''}
+      <span style="font-size:12px;color:#64748b;">whole pallet · <b>${totBx}</b> box(es) total · ${all.length} SKU(s)</span>
       <button onclick="document.getElementById('reqbin-${reqId}').innerHTML=''" title="Close" style="margin-left:auto;background:transparent;border:none;color:#94a3b8;font-size:17px;font-weight:800;cursor:pointer;line-height:1;">×</button>
     </div>
-    <div style="margin-top:9px;">${list.length?`<button onclick="pchkReqMovePc(${reqId})" style="background:#7c3aed;color:#fff;border:none;border-radius:9px;padding:10px 16px;font-size:13.5px;font-weight:800;cursor:pointer;">🧺 Move 1 box → PC Room</button> <span style="font-size:11.5px;color:#64748b;">−1 box here · +${ppb} pcs into PC Room</span>`:`<span style="color:#dc2626;font-size:12.5px;font-weight:700;">No boxes left in this bin.</span>`}</div>
+    <div style="margin-top:8px;background:#fff;border:1px solid #e5e7eb;border-radius:8px;overflow:hidden;">
+      <table style="width:100%;border-collapse:collapse;">
+        <thead><tr style="background:#f8fafc;"><th style="padding:5px 8px;text-align:left;font-size:10.5px;color:#64748b;font-weight:700;">STYLE</th><th style="padding:5px 8px;text-align:left;font-size:10.5px;color:#64748b;font-weight:700;">COLOR</th><th style="padding:5px 8px;text-align:center;font-size:10.5px;color:#64748b;font-weight:700;">SIZE</th><th style="padding:5px 8px;text-align:right;font-size:10.5px;color:#64748b;font-weight:700;">QTY</th></tr></thead>
+        <tbody>${rowsHtml}</tbody>
+      </table>
+    </div>
+    <div style="margin-top:9px;display:flex;align-items:center;gap:8px;flex-wrap:wrap;">
+      <span style="font-size:11.5px;font-weight:800;color:#7c3aed;">👉 Requested: ${esc(String(style))} ${esc(String(color))} ${esc(String(size))} — ${list.length} box${rsv>0?` · 🔒 ${rsv} rsv · ${free} free`:''}</span>
+    </div>
+    <div style="margin-top:7px;">${list.length?`<button onclick="pchkReqMovePc(${reqId})" style="background:#7c3aed;color:#fff;border:none;border-radius:9px;padding:10px 16px;font-size:13.5px;font-weight:800;cursor:pointer;">🧺 Move 1 box → PC Room</button> <span style="font-size:11.5px;color:#64748b;">−1 box here · +${ppb} pcs into PC Room</span>`:`<span style="color:#dc2626;font-size:12.5px;font-weight:700;">No boxes left for the requested item in this bin.</span>`}</div>
   </div>`;
 }
 // 박스 1개(또는 n개) → PC Room 이동 코어 (모달 없이 재사용) — bxPcQuickGo 로직 발췌, 자동 work order 인쇄는 생략(풀슬립 따로 인쇄)
