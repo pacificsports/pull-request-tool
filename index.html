@@ -159,7 +159,7 @@ main{max-width:1100px;margin:0 auto;padding:16px;}
     <button class="btn btn-sm" onclick="doLogout()" style="padding:2px 8px;font-size:10px;" data-i18n="logout">Log out</button>
   </span>
   <select id="lang-sel" onchange="setLang(this.value)" style="font-size:11px;padding:3px 6px;border-radius:5px;border:none;background:#1d3f66;color:#fff;"><option value="ko">한국어</option><option value="en">English</option><option value="es">Español</option></select>
-  <span id="app-ver" style="font-size:10px;color:#9fb8d4;">v725</span>
+  <span id="app-ver" style="font-size:10px;color:#9fb8d4;">v726</span>
 </div>
 <script type="text/javascript" src="https://js.authorize.net/v1/Accept.js" charset="utf-8"></script>
 <div id="po-viewer" style="display:none;position:fixed;top:0;right:0;width:44%;height:100vh;background:#fff;border-left:2px solid var(--border);z-index:60;box-shadow:-6px 0 20px rgba(0,0,0,.15);">
@@ -8458,7 +8458,7 @@ async function bulkLoadBatch(id){
 async function bulkDismiss(id){
   if(!confirm('Hide this staff LTL batch from the banner?\n\n(The orders themselves are not changed.)')) return;
   try{ await sbFetch('/rest/v1/pr_bulkship?id=eq.'+encodeURIComponent(id),{method:'PATCH',headers:{Prefer:'return=minimal'},body:JSON.stringify({status:'SHIPPED'})}); }catch(e){}
-  bulkBadge();
+  if(typeof bulkBasesDirty==='function') bulkBasesDirty(); bulkBadge();
 }
 async function bulkOpen(){
   let list=[]; try{ const r=await sbFetch('/rest/v1/pr_bulkship?select=*&order=created_at.desc&limit=100'); if(r.ok) list=await r.json(); }catch(e){}
@@ -8524,13 +8524,13 @@ async function bulkDetail(id){
 async function bulkMarkShipped(id){
   try{ await sbFetch('/rest/v1/pr_bulkship?id=eq.'+id,{method:'PATCH',headers:{Prefer:'return=minimal'},body:JSON.stringify({status:'SHIPPED',shipped_at:new Date().toISOString(),shipped_by:(SESS&&SESS.email)||''})}); }catch(e){}
   const m=document.getElementById('modal-bulkd'); if(m) m.remove();
-  showToast('✅ Marked shipped'); bulkBadge(); bulkOpen();
+  showToast('✅ Marked shipped'); if(typeof bulkBasesDirty==='function') bulkBasesDirty(); bulkBadge(); bulkOpen();
 }
 async function bulkDelete(id){
   if(!confirm('Delete this bulk shipment grouping?\n\n(The PO packing stays saved — this only removes the truck grouping.)')) return;
   try{ await sbFetch('/rest/v1/pr_bulkship?id=eq.'+id,{method:'DELETE',headers:{Prefer:'return=minimal'}}); }catch(e){}
   const m=document.getElementById('modal-bulkd'); if(m) m.remove();
-  showToast('🗑 Deleted'); bulkBadge(); bulkOpen();
+  showToast('🗑 Deleted'); if(typeof bulkBasesDirty==='function') bulkBasesDirty(); bulkBadge(); bulkOpen();
 }
 async function pchkPackEdit(base, cust, po, wh){
   _packBase=base; _packCust=cust; _packPo=po; _packBoxes=[]; _packTotal=''; _packBoxWh=(wh==='CA'?'CA':'SC'); _packVia='UPS';
@@ -20476,10 +20476,11 @@ window._bulkBasesLoaded = window._bulkBasesLoaded || false;
 async function loadBulkBases(){
   window._bulkBasesLoaded = true;   // 중복 로드 방지 (실패해도 재시도는 dirty flag로)
   try{
-    const r = await sbFetch('/rest/v1/pr_bulkship?select=pos&limit=500');
+    const r = await sbFetch('/rest/v1/pr_bulkship?select=pos,status&limit=500');
     if(!r.ok){ window._bulkBasesLoaded=false; return; }
     const rows = await r.json(); const set = new Set();
-    (rows||[]).forEach(row=>(row.pos||[]).forEach(p=>{ if(p&&p.base) set.add(String(p.base)); }));
+    // SHIPPED(=처리 완료/dismiss)된 배치의 PO만 LTL ready 에서 제외. PENDING(직원이 방금 묶은 것)은 LTL ready 에 같이 뜨게 함 (v726)
+    (rows||[]).forEach(row=>{ if(String(row.status||'').toUpperCase()==='PENDING') return; (row.pos||[]).forEach(p=>{ if(p&&p.base) set.add(String(p.base)); }); });
     window._bulkBases = set;
     if(typeof renderKpi==='function') renderKpi();   // 로드되면 KPI 다시 그림
   }catch(e){ window._bulkBasesLoaded=false; }
