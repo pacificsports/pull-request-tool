@@ -159,7 +159,7 @@ main{max-width:1100px;margin:0 auto;padding:16px;}
     <button class="btn btn-sm" onclick="doLogout()" style="padding:2px 8px;font-size:10px;" data-i18n="logout">Log out</button>
   </span>
   <select id="lang-sel" onchange="setLang(this.value)" style="font-size:11px;padding:3px 6px;border-radius:5px;border:none;background:#1d3f66;color:#fff;"><option value="ko">한국어</option><option value="en">English</option><option value="es">Español</option></select>
-  <span id="app-ver" style="font-size:10px;color:#9fb8d4;">v732</span>
+  <span id="app-ver" style="font-size:10px;color:#9fb8d4;">v733</span>
 </div>
 <script type="text/javascript" src="https://js.authorize.net/v1/Accept.js" charset="utf-8"></script>
 <div id="po-viewer" style="display:none;position:fixed;top:0;right:0;width:44%;height:100vh;background:#fff;border-left:2px solid var(--border);z-index:60;box-shadow:-6px 0 20px rgba(0,0,0,.15);">
@@ -8461,6 +8461,7 @@ async function bulkLoadBatch(id){
     pos:(b.pos||[]).map(p=>String(p.po||p.base||'')).filter(Boolean).join('\n'),
     cust: custs.length===1?custs[0]:'',
     pallets: dims.length?dims.map(d=>({l:d.l,w:d.w,h:d.h,bx:d.bx})):[{l:48,w:43,h:84,bx:0}] };
+  window._icBatchId = id;   // 🚛 이 Inform Customer 는 이 LTL 배치에서 열림 → 이멜 보내면 그 배치 SHIPPED 처리 (v733)
   if(typeof openInformCustomer==='function') openInformCustomer();
 }
 async function bulkDismiss(id){
@@ -18057,7 +18058,8 @@ async function hiReceive(id){
   if(!rec){ showToast('⚠ Load failed'); return; }
   // 📧 discrepancy report 용 — 원래 예상(패킹리스트) 라인 스냅샷 저장 (v720)
   window._hircvRef = rec.ref||'';
-  window._hircvExp = (rec.lines||[]).map(l=>({ style:String(l.style||'').trim(), color:bxFixColor(String(l.color||'')), size:String(l.size||'').trim().toUpperCase(), boxes:Number(l.pboxes!=null?l.pboxes:l.boxes)||0, pcs:Number(l.pcs)||0 }));
+  // 원래 패킹리스트 기준(discrepancy 비교용) — 직원이 ➕추가한 라인(added)은 리스트에 없던 것이므로 제외해서 EXTRA 로 계속 잡히게 함 (v733)
+  window._hircvExp = (rec.lines||[]).filter(l=>!l.added).map(l=>({ style:String(l.style||'').trim(), color:bxFixColor(String(l.color||'')), size:String(l.size||'').trim().toUpperCase(), boxes:Number(l.pboxes!=null?l.pboxes:l.boxes)||0, pcs:Number(l.pcs)||0 }));
   const ex = document.getElementById('modal-hi'); if(ex) ex.remove();
   const ex2 = document.getElementById('modal-hircv'); if(ex2) ex2.remove();
   if(!bxLoaded) await bxFetchStore();
@@ -18079,7 +18081,7 @@ async function hiReceive(id){
       </div>
       <table class="etbl" style="font-size:12px;">
         <thead><tr><th style="width:26px;"><input type="checkbox" id="hircv-selall" title="Select / deselect all" onclick="hiRecvSelAll(this.checked)"></th><th>Style</th><th class="tl">Color</th><th>Size</th><th title="How many boxes arrived (correct if wrong)">Arrived</th><th style="background:#ecfdf5;color:#065f46;" title="How many boxes to receive into SC stock (defaults to arrived; lower for a partial)">📥 Recv now</th><th>Pcs/Box</th><th>📍 Location</th><th></th></tr></thead>
-        <tbody id="hircv-rows">${(rec.lines||[]).map((l,i)=>`<tr>
+        <tbody id="hircv-rows">${(rec.lines||[]).map((l,i)=>`<tr${l.added?' style="background:#fefce8;" title="Added item — not on the original packing list (shows as EXTRA in the discrepancy report)"':''}>
           <td style="text-align:center;"><input type="checkbox" class="hr-sel" data-i="${i}" title="Tick to include in Receive selected"></td>
           <td><input class="fi hr-style" data-i="${i}" value="${esc(l.style)}" style="width:70px;font-weight:700;"></td>
           <td><input class="fi hr-color" data-i="${i}" value="${esc(l.color)}" style="width:150px;text-transform:uppercase;"></td>
@@ -18221,7 +18223,10 @@ async function hiRcvSaveDraft(id, ref){
   const expMap={}; exp.forEach(e=>{ expMap[norm(e.style,e.color,e.size)]=e; });
   const lines = rows.map(r=>{
     const e = expMap[norm(r.style,r.color,r.size)];
-    return { style:r.style, color:r.color, size:r.size, boxes:r.boxes, pcs:r.pcs, loc:r.loc, recv:r.recv, pboxes: e ? e.boxes : r.boxes };
+    const base = { style:r.style, color:r.color, size:r.size, boxes:r.boxes, pcs:r.pcs, loc:r.loc, recv:r.recv };
+    if(e) base.pboxes = e.boxes;   // 리스트에 있던 라인 → 원래 선적수량 보존 (discrepancy 기준)
+    else base.added = true;        // 리스트에 없던 추가 아이템 → EXTRA 로 계속 잡히게 표시 (v733)
+    return base;
   });
   const btn = document.getElementById('hircv-save-btn');
   if(btn){ btn.disabled=true; btn.textContent='Saving…'; }
@@ -19864,6 +19869,7 @@ function updateBatchBar(){
 function openInformCustomer(){
   const cbs=[...document.querySelectorAll('.bship-cb:checked')];
   if(!cbs.length && !window._icPreload){ showToast('⚠ Check the orders to include first'); return; }
+  if(!window._icPreload) window._icBatchId = null;   // 배치에서 연 게 아니면(수동 선택) 배치 연결 해제 — 엉뚱한 배치 SHIPPED 방지 (v733)
   const seen=new Set(); const orders=[]; let boxes=0;
   cbs.forEach(c=>{ const b=c.dataset.base, w=c.dataset.wh; const r=(savedCache||[]).find(s=>s.base===b); if(!r) return;
     // 총 박스수 = Print PR(1st)/Packing List/BOL 과 동일 로직: full 합 + 서로 다른 P.Box# + pbox 미지정 loose 라인 (주문·창고별로 계산 후 합산)
@@ -20085,6 +20091,14 @@ async function icSend(){
   }catch(e){ showToast('❌ Send failed: '+(e.message||e)); if(btn){ btn.disabled=false; btn.textContent='✉️ Send email'; } return; }
   showToast('✅ Ready-to-ship email sent to '+to.join(', '));
   if(btn){ btn.textContent='✅ Sent'; btn.style.background='#15803d'; }
+  // 🚛 이 이멜이 LTL 배치에서 열린 거면 → 그 배치 SHIPPED 처리. Staff LTL 배너 + SC/CA LTL ready 카운트에서 빠짐 (v733)
+  if(window._icBatchId){
+    const bid=window._icBatchId; window._icBatchId=null;
+    try{ await sbFetch('/rest/v1/pr_bulkship?id=eq.'+encodeURIComponent(bid),{method:'PATCH',headers:{Prefer:'return=minimal'},body:JSON.stringify({status:'SHIPPED',shipped_at:new Date().toISOString(),shipped_by:(SESS&&SESS.email)||''})}); }catch(e){}
+    if(typeof bulkBasesDirty==='function') bulkBasesDirty();   // _bulkPending 재로드 → LTL ready 카운트 감소 + KPI 재그림
+    if(typeof bulkBadge==='function') bulkBadge();             // Staff LTL 배너 갱신(사라짐)
+    showToast('🚛 LTL batch marked shipped — cleared from Staff LTL banner & LTL ready');
+  }
 }
 function icBuild(){
   const s=window._ic; const ex=document.getElementById('modal-ic'); if(ex) ex.remove();
