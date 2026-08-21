@@ -156,7 +156,7 @@ main{max-width:1100px;margin:0 auto;padding:16px;}
     <button class="btn btn-sm" onclick="doLogout()" style="padding:2px 8px;font-size:10px;" data-i18n="logout">Log out</button>
   </span>
   <select id="lang-sel" onchange="setLang(this.value)" style="font-size:11px;padding:3px 6px;border-radius:5px;border:none;background:#1d3f66;color:#fff;"><option value="ko">한국어</option><option value="en">English</option><option value="es">Español</option></select>
-  <span id="app-ver" style="font-size:10px;color:#9fb8d4;">v706</span>
+  <span id="app-ver" style="font-size:10px;color:#9fb8d4;">v707</span>
 </div>
 <script type="text/javascript" src="https://js.authorize.net/v1/Accept.js" charset="utf-8"></script>
 <div id="po-viewer" style="display:none;position:fixed;top:0;right:0;width:44%;height:100vh;background:#fff;border-left:2px solid var(--border);z-index:60;box-shadow:-6px 0 20px rgba(0,0,0,.15);">
@@ -17821,6 +17821,9 @@ async function hiDelete(id){
 }
 // 🤖 Haiti 입고 배치 추천 — 현재 SC 재고를 보고 각 라인의 bin(합치기/새 bin) + 팔렛 그룹 제안 (v703)
 function _hiZone(loc){ const m=String(loc||'').toUpperCase().match(/^([A-Z]+\d*)/); return m?m[1]:String(loc||'').toUpperCase(); }
+// 팔렛 최대 박스 수 — XL~5XL 은 팔렛당 35박스, XS~L 은 48박스
+function hiSizeBig(sz){ const s=String(sz||'').toUpperCase().replace(/[\s\-_]/g,''); if(s==='XS'||s==='S'||s==='M'||s==='L') return false; if(/XL$/.test(s)) return true; if(/^\d+X$/.test(s)) return true; return false; }
+function hiPalletCap(big){ return big?35:48; }
 // 순수 계산 — lines:[{st,co,sz,nb}] (co는 base color) → 배치 추천 결과
 function hiSuggestCompute(lines){
   const own = bxStore.filter(b=>bxWh(b)==='SC' && String(b.loc||'').toUpperCase() && String(b.loc||'').toUpperCase()!=='TRANSFER' && !trIs3PLoc(b.loc,'SC'));
@@ -17839,18 +17842,26 @@ function hiSuggestCompute(lines){
     } else { sugg.push({st,co,sz,nb,type:'new',loc:'',detail:'🆕 no existing SC bin for this — assign a fresh bin'}); }
   });
   const zones={};
-  sugg.forEach(s=>{ const z = s.loc ? _hiZone(s.loc) : '(new — assign bin)'; (zones[z]=zones[z]||{lines:0,boxes:0,bins:new Set()}); zones[z].lines++; zones[z].boxes+=s.nb; if(s.loc) zones[z].bins.add(s.loc); });
+  sugg.forEach(s=>{ const z = s.loc ? _hiZone(s.loc) : '(new — assign bin)'; (zones[z]=zones[z]||{lines:0,boxes:0,bins:new Set(),big:0,small:0}); zones[z].lines++; zones[z].boxes+=s.nb; if(s.loc) zones[z].bins.add(s.loc); if(hiSizeBig(s.sz)) zones[z].big+=s.nb; else zones[z].small+=s.nb; });
   const zoneKeys=Object.keys(zones).sort((a,b)=>a.localeCompare(b,undefined,{numeric:true}));
-  return {sugg, zones, zoneKeys, mergeN:sugg.filter(s=>s.type==='merge').length, newN:sugg.filter(s=>s.type==='new').length};
+  // 팔렛 분할 — 각 zone 을 사이즈 그룹별 최대 박스 수(XL~5XL:35, XS~L:48)로 나눠 팔렛 카드 생성
+  const pallets=[];
+  zoneKeys.forEach(z=>{ const zz=zones[z]; const bins=[...zz.bins].sort((a,b)=>a.localeCompare(b,undefined,{numeric:true}));
+    [['XL–5XL',zz.big,35],['XS–L',zz.small,48]].forEach(([cat,tot,cap])=>{ if(tot<=0) return; const n=Math.ceil(tot/cap);
+      for(let i=0;i<n;i++){ const boxes = (i<n-1)?cap:(tot-cap*(n-1)); pallets.push({zone:z, cat, cap, boxes, part:i+1, of:n, bins}); } });
+  });
+  return {sugg, zones, zoneKeys, pallets, mergeN:sugg.filter(s=>s.type==='merge').length, newN:sugg.filter(s=>s.type==='new').length};
 }
 function hiSuggestPanelHtml(res, noteAutofill){
-  const {sugg, zones, zoneKeys, mergeN, newN}=res;
+  const {sugg, zones, zoneKeys, pallets, mergeN, newN}=res;
+  const palList = pallets && pallets.length ? pallets : zoneKeys.map(z=>({zone:z, cat:'', cap:0, boxes:zones[z].boxes, part:1, of:1, bins:[...zones[z].bins].sort((a,b)=>a.localeCompare(b,undefined,{numeric:true}))}));
   return `<div style="border:1.5px solid #c4b5fd;background:#faf5ff;border-radius:10px;padding:10px 12px;margin:8px 0;">
     <div style="font-size:12.5px;font-weight:800;color:#4c1d95;margin-bottom:6px;">🤖 Placement suggestion — <span style="color:#16a34a;">${mergeN} merge</span> · <span style="color:#c2410c;">${newN} new bin</span>${noteAutofill?' <span style="font-weight:500;color:#7c3aed;font-size:11px;">(green = auto-filled below · review before confirming)</span>':''}</div>
     <div style="display:flex;flex-direction:column;gap:3px;max-height:220px;overflow-y:auto;">${sugg.map(s=>`<div style="font-size:11.5px;color:#334155;"><b>#${esc(s.st)}</b> ${esc(bxBaseColor(s.co))} ${esc(s.sz)} <span style="color:#94a3b8;">·${s.nb}bx</span> → ${s.detail}</div>`).join('')||'<div style="font-size:11.5px;color:#94a3b8;">No lines.</div>'}</div>
     <div style="border-top:1px dashed #ddd6fe;margin-top:8px;padding-top:7px;">
-      <div style="font-size:12px;font-weight:800;color:#5b21b6;margin-bottom:4px;">📚 Suggested pallets (group boxes going to the same area):</div>
-      <div style="display:flex;gap:6px;flex-wrap:wrap;">${zoneKeys.map((z,i)=>{ const zz=zones[z]; const bins=[...zz.bins].sort((a,b)=>a.localeCompare(b,undefined,{numeric:true})); return `<span style="display:inline-flex;flex-direction:column;gap:1px;background:#fff;border:1.5px solid #c4b5fd;border-radius:8px;padding:5px 10px;font-size:11px;"><b style="color:#5b21b6;">Pallet ${i+1} · zone ${esc(z)}</b><span style="color:#64748b;">${zz.lines} line(s) · ${zz.boxes} box(es)</span>${bins.length?`<span style="font-family:Consolas,monospace;color:#334155;">${bins.map(esc).join(', ')}</span>`:''}</span>`; }).join('')}</div>
+      <div style="font-size:12px;font-weight:800;color:#5b21b6;margin-bottom:2px;">📚 Suggested pallets — <span style="color:#7c3aed;">${palList.length} pallet(s)</span></div>
+      <div style="font-size:10.5px;color:#8b5cf6;margin-bottom:5px;">Max per pallet: XS–L = 48 boxes · XL–5XL = 35 boxes. Big sizes and small sizes are split onto separate pallets.</div>
+      <div style="display:flex;gap:6px;flex-wrap:wrap;">${palList.map((p,i)=>{ const full = p.cap && p.boxes>=p.cap; return `<span style="display:inline-flex;flex-direction:column;gap:1px;background:${full?'#f5f3ff':'#fff'};border:1.5px solid ${full?'#a78bfa':'#c4b5fd'};border-radius:8px;padding:5px 10px;font-size:11px;"><b style="color:#5b21b6;">Pallet ${i+1} · zone ${esc(p.zone)}${p.of>1?` <span style="color:#94a3b8;font-weight:600;">(${p.part}/${p.of})</span>`:''}</b><span style="color:#64748b;">${p.cat?esc(p.cat)+' · ':''}${p.boxes}${p.cap?' / '+p.cap:''} box(es)${full?' <b style="color:#7c3aed;">FULL</b>':''}</span>${p.bins&&p.bins.length?`<span style="font-family:Consolas,monospace;color:#334155;">${p.bins.map(esc).join(', ')}</span>`:''}</span>`; }).join('')}</div>
     </div></div>`;
 }
 // Receive 창 안에서 자동 채우기 — 열릴 때 blank 위치를 추천으로 채우고 패널 표시
