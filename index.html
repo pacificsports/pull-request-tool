@@ -159,7 +159,7 @@ main{max-width:1100px;margin:0 auto;padding:16px;}
     <button class="btn btn-sm" onclick="doLogout()" style="padding:2px 8px;font-size:10px;" data-i18n="logout">Log out</button>
   </span>
   <select id="lang-sel" onchange="setLang(this.value)" style="font-size:11px;padding:3px 6px;border-radius:5px;border:none;background:#1d3f66;color:#fff;"><option value="ko">한국어</option><option value="en">English</option><option value="es">Español</option></select>
-  <span id="app-ver" style="font-size:10px;color:#9fb8d4;">v718</span>
+  <span id="app-ver" style="font-size:10px;color:#9fb8d4;">v719</span>
 </div>
 <script type="text/javascript" src="https://js.authorize.net/v1/Accept.js" charset="utf-8"></script>
 <div id="po-viewer" style="display:none;position:fixed;top:0;right:0;width:44%;height:100vh;background:#fff;border-left:2px solid var(--border);z-index:60;box-shadow:-6px 0 20px rgba(0,0,0,.15);">
@@ -19238,6 +19238,21 @@ async function psSet(style, field, val, elm){
       const r = await sbFetch('/rest/v1/customer_prices', {method:'POST', headers:{Prefer:'return=representation'}, body: JSON.stringify([ins])});
       if(!r.ok) throw new Error('save ' + r.status);
       const j = await r.json(); ps.rows[style] = j[0];
+    }
+    // XS–XL(base) 를 바꾸면, 이전 base+upcharge 를 그대로 따라가던 2XL~5XL override 는 해제해서 새 base 를 자동으로 따라가게 (직접 커스텀한 값은 그대로 둠) (v719)
+    if(field === 'base_price'){
+      const numf = z => (z==null||z===''||isNaN(parseFloat(z)))?null:Math.round(parseFloat(z)*100)/100;
+      const oldB = numf(row && row.base_price);
+      const cur = ps.rows[style];
+      if(oldB != null && cur && cur.id){
+        for(const [f,sz] of [['price_2xl','2XL'],['price_3xl','3XL'],['price_4xl','4XL'],['price_5xl','5XL']]){
+          const ov = numf(cur[f]); if(ov==null) continue;              // 이미 자동(빈칸) → 그대로
+          const oldAuto = Math.round((oldB + psUp(sz))*100)/100;
+          if(Math.abs(ov - oldAuto) < 0.005){                          // 공식대로 따라가던 값 → 해제
+            try{ await sbFetch('/rest/v1/customer_prices?id=eq.'+cur.id, {method:'PATCH', headers:{Prefer:'return=minimal'}, body:JSON.stringify({[f]:null, updated_at:new Date().toISOString()})}); cur[f]=null; }catch(e){}
+          }
+        }
+      }
     }
     if(field === 'base_price' || field === 'included') renderPsSheet(); else psFootUpdate();
   }catch(e){ showToast('⚠ Save failed: ' + (e.message||e)); }
