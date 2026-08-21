@@ -156,7 +156,7 @@ main{max-width:1100px;margin:0 auto;padding:16px;}
     <button class="btn btn-sm" onclick="doLogout()" style="padding:2px 8px;font-size:10px;" data-i18n="logout">Log out</button>
   </span>
   <select id="lang-sel" onchange="setLang(this.value)" style="font-size:11px;padding:3px 6px;border-radius:5px;border:none;background:#1d3f66;color:#fff;"><option value="ko">한국어</option><option value="en">English</option><option value="es">Español</option></select>
-  <span id="app-ver" style="font-size:10px;color:#9fb8d4;">v689</span>
+  <span id="app-ver" style="font-size:10px;color:#9fb8d4;">v690</span>
 </div>
 <script type="text/javascript" src="https://js.authorize.net/v1/Accept.js" charset="utf-8"></script>
 <div id="po-viewer" style="display:none;position:fixed;top:0;right:0;width:44%;height:100vh;background:#fff;border-left:2px solid var(--border);z-index:60;box-shadow:-6px 0 20px rgba(0,0,0,.15);">
@@ -9379,6 +9379,8 @@ async function pchkReviewBadge(){
     const b=document.getElementById('pchk-review-badge'); if(b) b.textContent=c.total?(' '+c.total):'';
     const s=document.getElementById('pchk-tile-sc-n'); if(s) s.textContent=c.SC;
     const a=document.getElementById('pchk-tile-ca-n'); if(a) a.textContent=c.CA;
+    const ks=document.getElementById('kpi-pchk-sc-n'); if(ks) ks.textContent=c.SC;
+    const ka=document.getElementById('kpi-pchk-ca-n'); if(ka) ka.textContent=c.CA;
     if(typeof wqRenderAll==='function') wqRenderAll();
   }catch(e){}
 }
@@ -10970,7 +10972,7 @@ function bxTmpHtml(){
 function wqReqTilesHtml(){
   const br = window._boxreqPend || {}; const brSc=Number(br.SC)||0, brCa=Number(br.CA)||0;
   const pc = window._pchkPending || {}; const pcSc=Number(pc.SC)||0, pcCa=Number(pc.CA)||0;
-  if(!brSc && !brCa && !pcSc && !pcCa) return '';
+  if(!brSc && !brCa) return '';   // 재고체크 검토(Inventory reviews)는 Orders 탭의 카드로 이동 (v690) — 여기선 Box requests만
   const tile=(icon,label,scN,caN,scAct,caAct,accent,bg,bd)=>{
     if(!scN && !caN) return '';
     const one=(w,n,act)=> n ? `<button onclick="${act}" title="Open ${w} ${label}" style="display:inline-flex;align-items:center;gap:5px;background:#fff;border:1.5px solid ${bd};border-radius:8px;padding:4px 10px;font-size:12px;font-weight:800;color:${accent};cursor:pointer;">${w} <span style="background:${accent};color:#fff;border-radius:9px;padding:0 7px;font-size:11px;">${n}</span></button>` : '';
@@ -10978,9 +10980,8 @@ function wqReqTilesHtml(){
       <span style="font-size:12.5px;font-weight:800;color:${accent};">${icon} ${label}</span>${one('SC',scN,scAct)}${one('CA',caN,caAct)}</span>`;
   };
   const t1=tile('📦','Box requests', brSc, brCa, "pchkReqMgrOpenWh('SC')", "pchkReqMgrOpenWh('CA')", '#7c3aed', '#faf5ff', '#c4b5fd');
-  const t2=tile('🔍','Inventory reviews', pcSc, pcCa, "pchkReviewOpen('SC')", "pchkReviewOpen('CA')", '#155e75', '#ecfeff', '#67e8f9');
-  if(!t1 && !t2) return '';
-  return `<div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin-bottom:10px;">${t1}${t2}</div>`;
+  if(!t1) return '';
+  return `<div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin-bottom:10px;">${t1}</div>`;
 }
 function wqBodyHtml(){
   return (typeof hiBarHtml==='function'?hiBarHtml():'')
@@ -11008,6 +11009,8 @@ async function wqLoad(force){
   try{ await Promise.all(jobs); }catch(e){}
   _wqBusy = false;
   wqRenderAll();
+  // Orders 탭 KPI(창고 합계 + 재고체크 카드)도 최신 재고로 다시 그림
+  try{ const ov=document.getElementById('orders-view'); if(ov && ov.style.display!=='none' && typeof renderKpi==='function') renderKpi(); }catch(e){}
 }
 // ═══ 🎨 SKU Master (pr_skus) — style+color 마스터. 미등록 조합은 DB 트리거가 입고 거부 ═══
 let skuStore = []; let skuLoaded = false;
@@ -19872,6 +19875,33 @@ function laneProcess(base, wh, isLtl){
   if(isLtl){ if(typeof openPL==='function') openPL(base); else if(typeof openOrderSummary==='function') openOrderSummary(base); }
   else { if(typeof openLabelModal==='function') openLabelModal(base, wh); else if(typeof openPL==='function') openPL(base); }
 }
+// 📦 Orders 탭 — SC UPS ready 줄 아래에 창고 재고 합계 + 재고체크 검토 카드 (Full Box By Location 과 동일 스타일) (v690)
+function kpiWhInvRowHtml(){
+  const S = (typeof bxStore!=='undefined' && Array.isArray(bxStore)) ? bxStore : [];
+  const sum = arr=>({b:arr.length, p:arr.reduce((s,x)=>s+(Number(x.pcs)||0),0)});
+  const all  = sum(S.filter(b=>bxWh(b)!=='TRANSIT'));
+  const scOwn= sum(S.filter(b=>bxWh(b)==='SC' && !trIs3PLoc(b.loc,'SC')));
+  const sc3P = sum(S.filter(b=>bxWh(b)==='SC' &&  trIs3PLoc(b.loc,'SC')));
+  const caOwn= sum(S.filter(b=>bxWh(b)==='CA' && !bxIsLockerLoc(b.loc,'CA')));
+  const ca3P = sum(S.filter(b=>bxWh(b)==='CA' &&  bxIsLockerLoc(b.loc,'CA')));
+  const wt=(label,d,accent,bg,bd,click)=>`<div ${click?`onclick="${click}"`:''} title="${click?'Click to list the bins':''}" style="flex:1;min-width:150px;max-width:252px;border:${bd?'1.5px solid '+bd:'1px solid var(--border)'};border-radius:8px;padding:8px 13px;background:${bg||'#fff'};${click?'cursor:pointer;':''}">
+    <div style="font-size:10.5px;font-weight:800;color:${accent};line-height:1.3;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">${label}${click?' <span style="font-size:9px;color:#94a3b8;">🗺</span>':''}</div>
+    <div style="font-size:20px;font-weight:900;color:${accent};font-family:Consolas,monospace;line-height:1.15;">${d.b.toLocaleString()}<span style="font-size:10px;font-weight:700;color:var(--text2);"> boxes</span></div>
+    <div style="font-size:10px;color:var(--text2);font-family:Consolas,monospace;">${d.p.toLocaleString()} pcs</div></div>`;
+  const inv=(wh,accent,bg,bd)=>`<div onclick="pchkReviewOpen('${wh}')" title="Staff physical checks — ${wh}. Click to review photos & confirm." style="flex:1;min-width:150px;max-width:252px;border:1.5px solid ${bd};border-radius:8px;padding:8px 13px;background:${bg};cursor:pointer;">
+    <div style="font-size:10.5px;font-weight:800;color:${accent};line-height:1.3;">🔍 ${wh} Inventory check review <span style="font-size:9px;color:#94a3b8;">click</span></div>
+    <div style="font-size:20px;font-weight:900;color:${accent};font-family:Consolas,monospace;line-height:1.15;"><span id="kpi-pchk-${wh.toLowerCase()}-n">${(typeof pchkPending==='function'?pchkPending(wh):0)}</span><span style="font-size:10px;font-weight:700;"> pending</span></div>
+    <div style="font-size:10px;color:${accent};font-family:Consolas,monospace;">staff photo checks</div></div>`;
+  return `<div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:12px;">
+    ${wt('📦 All', all, '#0f2a4a', '#fff', '', '')}
+    ${wt('📍 SC Warehouse (our bins)', scOwn, '#1d4ed8', '#fff', '', "showView('box');bxOpenLoc('SC','own')")}
+    ${sc3P.b?wt('🏭 3rd Party Warehouse (SC)', sc3P, '#92400e', '#fffbeb', '#fbbf24', "showView('box');bxOpenLoc('SC','3p')"):''}
+    ${wt('📍 CA Warehouse (our bins)', caOwn, '#9a3412', '#fff', '', "showView('box');bxOpenLoc('CA','own')")}
+    ${ca3P.b?wt('🔒 3rd Party Warehouse (CA)', ca3P, '#5b21b6', '#faf5ff', '#c4b5fd', "showView('box');bxOpenLoc('CA','3p')"):''}
+    ${inv('SC', '#1d4ed8', '#eff6ff', '#93c5fd')}
+    ${inv('CA', '#9a3412', '#fff7ed', '#fdba74')}
+  </div>`;
+}
 function renderKpi(){
   const el = document.getElementById('kpi-bar'); if(!el) return;
   const cache = savedCache||[];
@@ -19916,7 +19946,8 @@ function renderKpi(){
     <div id="boxreq-kpi-ca" class="${pchkBoxreqPend('CA')>0?'breq-blink':''}" onclick="pchkReqMgrOpenWh('CA')" style="flex:1;min-width:118px;background:#fff7ed;border:1px solid #fdba74;border-left:5px solid #c2410c;border-radius:8px;padding:8px 13px;cursor:pointer;" title="CA staff box requests → move to PC Room. Click to process now.">
       <div style="font-size:23px;font-weight:900;color:#c2410c;line-height:1;"><span id="boxreq-kpi-ca-n">${pchkBoxreqPend('CA')}</span></div>
       <div style="font-size:10px;font-weight:800;color:#4b5563;letter-spacing:.3px;margin-top:4px;text-transform:uppercase;white-space:nowrap;">📦 CA Box Request</div></div>`:''}
-  </div>`;
+  </div>
+  ${kpiWhInvRowHtml()}`;
   if(typeof pchkBoxreqBadge==='function') pchkBoxreqBadge();   // 알람 수 최신화 (Orders 화면 열 때)
 }
 function renderSaved(){
