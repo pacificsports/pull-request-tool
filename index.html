@@ -132,8 +132,8 @@ main{max-width:1100px;margin:0 auto;padding:16px;}
 .date-hdr::after{content:'';flex:1;height:1px;background:var(--border);}
 .rushblink{animation:rushblink 1s steps(1) infinite;}
 @keyframes rushblink{0%,100%{background:#dc2626;color:#fff;}50%{background:#fff;color:#dc2626;box-shadow:inset 0 0 0 1.5px #dc2626;}}
-.breq-blink{animation:breqBlink 1s ease-in-out infinite;}
-@keyframes breqBlink{0%,100%{box-shadow:0 0 0 0 rgba(220,38,38,.55);border-color:#dc2626;}50%{box-shadow:0 0 0 5px rgba(220,38,38,0);border-color:#f59e0b;}}
+.breq-blink{animation:breqBlink 1.05s ease-in-out infinite;}
+@keyframes breqBlink{0%,100%{background:#fef2f2 !important;box-shadow:0 0 0 0 rgba(220,38,38,.55);border-color:#dc2626 !important;}50%{background:#f87171 !important;box-shadow:0 0 0 7px rgba(220,38,38,0);border-color:#dc2626 !important;}}
 .ccspin{display:inline-block;width:11px;height:11px;border:2.5px solid #92400e;border-top-color:transparent;border-radius:50%;animation:ccspin .7s linear infinite;vertical-align:-1.5px;margin-right:4px;}
 @keyframes ccspin{to{transform:rotate(360deg)}}
 .saved-item .n{font-family:Consolas,monospace;font-weight:800;color:var(--primary);}
@@ -156,7 +156,7 @@ main{max-width:1100px;margin:0 auto;padding:16px;}
     <button class="btn btn-sm" onclick="doLogout()" style="padding:2px 8px;font-size:10px;" data-i18n="logout">Log out</button>
   </span>
   <select id="lang-sel" onchange="setLang(this.value)" style="font-size:11px;padding:3px 6px;border-radius:5px;border:none;background:#1d3f66;color:#fff;"><option value="ko">한국어</option><option value="en">English</option><option value="es">Español</option></select>
-  <span id="app-ver" style="font-size:10px;color:#9fb8d4;">v691</span>
+  <span id="app-ver" style="font-size:10px;color:#9fb8d4;">v693</span>
 </div>
 <script type="text/javascript" src="https://js.authorize.net/v1/Accept.js" charset="utf-8"></script>
 <div id="po-viewer" style="display:none;position:fixed;top:0;right:0;width:44%;height:100vh;background:#fff;border-left:2px solid var(--border);z-index:60;box-shadow:-6px 0 20px rgba(0,0,0,.15);">
@@ -191,12 +191,13 @@ main{max-width:1100px;margin:0 auto;padding:16px;}
 <main id="app-main" style="display:none;">
 <div class="navbar">
   <button id="nav-orders" class="nav-btn nav-active" onclick="showView('orders')" data-i18n="nav_orders">📝 Orders</button>
+  <button id="nav-box" class="nav-btn" onclick="showView('box')">📦 Full Box</button>
+  <button id="nav-pc" class="nav-btn" onclick="showView('pc')">🧺 PC Room</button>
   <button id="nav-dash" class="nav-btn" onclick="showView('dash')">📊 Dashboard</button>
   <button id="nav-cust" class="nav-btn" onclick="showView('cust')">👥 Customers</button>
-  <button id="nav-pc" class="nav-btn" onclick="showView('pc')">🧺 PC Room</button>
-  <button id="nav-box" class="nav-btn" onclick="showView('box')">📦 Full Box</button>
   <button id="nav-tx" class="nav-btn" onclick="showView('tx')">💳 Transactions</button>
   <button id="nav-act" class="nav-btn" onclick="showView('act')">📜 Activity</button>
+  <button id="nav-logins" class="nav-btn" onclick="loginLogOpen()" style="display:none;background:#0f2a4a;color:#fff;border-color:#0f2a4a;font-weight:800;" title="Login history — who/when/where logged in (owner only)">🔐 Logins</button>
 </div>
 <div id="orders-view">
   <div id="kpi-bar"></div>
@@ -2622,6 +2623,50 @@ async function checkStaff(){
 // 원가(cost)는 아래 이메일만 볼 수 있음 — 실제 보호는 서버(RLS), 이건 화면 표시용 게이트
 const COST_EMAILS = ['hjbae@peacepacificsports.com','yeonchoi@peacepacificsports.com','erikanam@peacepacificsports.com'];
 function canSeeCost(){ return COST_EMAILS.indexOf(String((SESS&&SESS.email)||'').trim().toLowerCase()) >= 0; }
+// 🔐 로그인 기록 (owner 전용 열람) — 누가·언제·어디서·어떤 기기로 로그인했는지 (v693)
+function isOwner(){ return String((SESS&&SESS.role)||window._myRole||'').trim().toLowerCase()==='owner'; }
+async function logLogin(kind){
+  try{
+    if(!SESS) return;
+    const ev = { email: SESS.email||'', user_id: SESS.userId||null, kind: kind||'login',
+      ua: String(navigator.userAgent||'').slice(0,400),
+      tz: (Intl.DateTimeFormat().resolvedOptions().timeZone)||'', lang: navigator.language||'' };
+    try{ const c=new AbortController(); const to=setTimeout(()=>c.abort(),3500);
+      const gr=await fetch('https://ipapi.co/json/', {signal:c.signal}); clearTimeout(to);
+      if(gr.ok){ const g=await gr.json(); ev.ip=g.ip||''; ev.city=g.city||''; ev.region=g.region||g.region_code||''; ev.country=g.country_name||g.country||''; }
+    }catch(e){}
+    await sbFetch('/rest/v1/pr_loginlog', {method:'POST', headers:{Prefer:'return=minimal'}, body:JSON.stringify([ev])});
+  }catch(e){}
+}
+async function loginLogOpen(){
+  if(!isOwner()){ showToast('🔐 Owner only'); return; }
+  const ex=document.getElementById('modal-loginlog'); if(ex) ex.remove();
+  const div=document.createElement('div'); div.id='modal-loginlog';
+  div.style.cssText='position:fixed;inset:0;background:rgba(15,23,42,.6);z-index:300;display:flex;align-items:flex-start;justify-content:center;padding:20px 12px;overflow-y:auto;';
+  div.onclick=e=>{ if(e.target===div) div.remove(); };
+  div.innerHTML=`<div style="background:#fff;border-radius:14px;max-width:980px;width:100%;max-height:92vh;display:flex;flex-direction:column;overflow:hidden;">
+    <div style="background:#0f2a4a;color:#fff;padding:12px 18px;display:flex;align-items:center;gap:10px;"><span style="font-weight:800;font-size:15px;">🔐 Login history</span><span style="font-size:11px;color:#9fb8d4;">owner only</span>
+      <button onclick="loginLogOpen()" title="Refresh" style="background:rgba(255,255,255,.15);color:#fff;border:none;border-radius:8px;padding:5px 10px;font-size:13px;">🔄</button>
+      <button onclick="document.getElementById('modal-loginlog').remove()" style="margin-left:auto;background:rgba(255,255,255,.2);color:#fff;border:none;border-radius:8px;padding:6px 12px;font-weight:800;">✕</button></div>
+    <div id="loginlog-body" style="flex:1;overflow-y:auto;padding:14px;background:#f1f5f9;"><div style="text-align:center;color:#64748b;padding:30px;">Loading…</div></div>
+  </div>`;
+  document.body.appendChild(div);
+  let rows=[];
+  try{ const r=await sbFetch('/rest/v1/pr_loginlog?select=at,email,kind,ip,city,region,country,tz,ua&order=at.desc&limit=300'); if(!r.ok) throw new Error('HTTP '+r.status); rows=await r.json(); }
+  catch(e){ const b=document.getElementById('loginlog-body'); if(b) b.innerHTML=`<div style="padding:20px;color:#b91c1c;">Load failed: ${esc(e.message||e)}</div>`; return; }
+  const body=document.getElementById('loginlog-body'); if(!body) return;
+  if(!Array.isArray(rows) || !rows.length){ body.innerHTML='<div style="padding:24px;text-align:center;color:#64748b;">No logins recorded yet.</div>'; return; }
+  const fmt=s=>{ try{ return new Date(s).toLocaleString(); }catch(e){ return String(s||''); } };
+  const loc=r=>[r.city,r.region,r.country].filter(Boolean).join(', ')||'—';
+  const dev=ua=>{ ua=String(ua||''); const os=/Windows/.test(ua)?'Windows':/(Mac OS X|Macintosh)/.test(ua)?'Mac':/Android/.test(ua)?'Android':/(iPhone|iPad|iOS)/.test(ua)?'iOS':/Linux/.test(ua)?'Linux':'?'; const br=/Edg\//.test(ua)?'Edge':/Chrome\//.test(ua)?'Chrome':/Firefox\//.test(ua)?'Firefox':/Safari\//.test(ua)?'Safari':'?'; return br+' · '+os; };
+  body.innerHTML=`<table class="etbl" style="font-size:12px;background:#fff;"><thead><tr><th class="tl">When</th><th class="tl">Who</th><th class="tl">Where</th><th class="tl">IP</th><th class="tl">Device</th><th>Time zone</th></tr></thead><tbody>${rows.map(r=>`<tr>
+    <td class="tl" style="white-space:nowrap;font-weight:700;">${esc(fmt(r.at))}</td>
+    <td class="tl">${esc(r.email||'')}${(r.kind&&r.kind!=='login')?` <span style="font-size:9px;color:#94a3b8;">${esc(r.kind)}</span>`:''}</td>
+    <td class="tl">${esc(loc(r))}</td>
+    <td class="tl" style="font-family:Consolas,monospace;font-size:11px;">${esc(r.ip||'—')}</td>
+    <td class="tl">${esc(dev(r.ua))}</td>
+    <td style="text-align:center;font-size:10px;color:#64748b;">${esc(r.tz||'')}</td></tr>`).join('')}</tbody></table>`;
+}
 async function doLogin(){
   const email = $('auth-email').value.trim(), pw = $('auth-pw').value;
   const errEl = $('auth-err'); errEl.textContent = '';
@@ -2635,6 +2680,7 @@ async function doLogin(){
     saveSess();
     if(!(await checkStaff())){ SESS = null; saveSess(); throw new Error(t('a_staffonly')); }
     enterApp();
+    logLogin('login');
   }catch(e){ errEl.textContent = e.message; }
   finally{ btn.disabled = false; btn.textContent = 'Log in →'; }
 }
@@ -2676,7 +2722,7 @@ async function doResetPw(){
     SESS = { token:_recoverySess.token, refresh:_recoverySess.refresh, expires_at:_recoverySess.expires_at, userId:d.id, email:d.email };
     saveSess();
     $('reset-page').style.display = 'none';
-    if(await checkStaff()){ enterApp(); }
+    if(await checkStaff()){ enterApp(); logLogin('reset'); }
     else { SESS = null; saveSess(); $('login-page').style.display = 'flex'; }
     showToast('✅ Password changed');
   }catch(e){ errEl.textContent = e.message; }
@@ -2690,6 +2736,7 @@ async function enterApp(){
   $('user-info').style.display = 'inline-flex';
   $('user-email').textContent = SESS.email || '';
   try{ const cb=document.getElementById('bx-costbtn'); if(cb) cb.style.display = canSeeCost() ? '' : 'none'; }catch(e){}
+  try{ const lb=document.getElementById('nav-logins'); if(lb) lb.style.display = isOwner() ? '' : 'none'; }catch(e){}
   await migrateLocal();
   await loadSavedList();
   // 오더 파싱 화면에서 재고 힌트(📦풀박스+location · PC자투리)가 바로 보이도록 백그라운드 로드
@@ -19919,6 +19966,10 @@ function renderKpi(){
   const whTile=(label,d,accent,bg,bd,click)=>lblTile(label+(click?' <span style="font-size:9px;color:#94a3b8;">🗺</span>':''),
     `${d.b.toLocaleString()}<span style="font-size:10px;font-weight:700;color:var(--text2);"> boxes</span>`,
     `${d.p.toLocaleString()} pcs`, accent, bg, bd, click);
+  // 준비된 물량 레인 — 숫자가 있으면 배경을 그 색으로 꽉 채워서 매니저가 바로 인지 (0이면 흐리게)
+  const laneTile=(label,n,color,click)=>{ const on=n>0; return `<div onclick="${click}" title="Prepared by staff, not processed yet — click to see the orders & process" style="${CELL}background:${on?color:'#f1f5f9'};border:1px solid ${color}44;border-left:5px solid ${color};cursor:pointer;${on?'box-shadow:0 2px 9px '+color+'66;':''}">
+    <div style="font-size:23px;font-weight:900;color:${on?'#fff':'#94a3b8'};line-height:1;">${n.toLocaleString()}</div>
+    <div style="font-size:10px;font-weight:800;color:${on?'rgba(255,255,255,.92)':'#94a3b8'};letter-spacing:.3px;margin-top:4px;text-transform:uppercase;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">${label}</div></div>`; };
   el.innerHTML = `<div style="display:grid;grid-template-columns:repeat(6,minmax(0,1fr));gap:8px;margin-bottom:12px;align-items:stretch;">
     ${numTile('Open Orders', open.toLocaleString(), '#1d4ed8', '#eff6ff')}
     ${numTile('🔥 Rush', rush.toLocaleString(), '#dc2626', '#fef2f2')}
@@ -19926,10 +19977,10 @@ function renderKpi(){
     ${numTile('↩ Pending Return', pret.toLocaleString(), '#ea580c', '#fff7ed')}
     ${numTile('💳 Refund Pending', refund.toLocaleString(), '#7c2d12', '#faf5ff')}
     ${EMPTY}
-    ${numTile('📦 SC · UPS ready', scUps.toLocaleString(), '#1d4ed8', '#eff6ff', "laneListOpen('SC',false)")}
-    ${numTile('🚛 SC · LTL ready', scLtl.toLocaleString(), '#0e7490', '#ecfeff', "laneListOpen('SC',true)")}
-    ${numTile('📦 CA · UPS ready', caUps.toLocaleString(), '#c2410c', '#fff7ed', "laneListOpen('CA',false)")}
-    ${numTile('🚛 CA · LTL ready', caLtl.toLocaleString(), '#b45309', '#fffbeb', "laneListOpen('CA',true)")}
+    ${laneTile('📦 SC · UPS ready', scUps, '#1d4ed8', "laneListOpen('SC',false)")}
+    ${laneTile('🚛 SC · LTL ready', scLtl, '#0e7490', "laneListOpen('SC',true)")}
+    ${laneTile('📦 CA · UPS ready', caUps, '#c2410c', "laneListOpen('CA',false)")}
+    ${laneTile('🚛 CA · LTL ready', caLtl, '#b45309', "laneListOpen('CA',true)")}
     ${EMPTY}${EMPTY}
     ${(typeof pchkBoxreqPend==='function')?numTile('📦 SC Box Request', `<span id="boxreq-kpi-sc-n">${pchkBoxreqPend('SC')}</span>`, '#1d4ed8', '#eff6ff', "pchkReqMgrOpenWh('SC')", 'id="boxreq-kpi-sc"', pchkBoxreqPend('SC')>0?'breq-blink':''):EMPTY}
     ${(typeof pchkBoxreqPend==='function')?numTile('📦 CA Box Request', `<span id="boxreq-kpi-ca-n">${pchkBoxreqPend('CA')}</span>`, '#c2410c', '#fff7ed', "pchkReqMgrOpenWh('CA')", 'id="boxreq-kpi-ca"', pchkBoxreqPend('CA')>0?'breq-blink':''):EMPTY}
