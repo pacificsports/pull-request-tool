@@ -159,7 +159,7 @@ main{max-width:1100px;margin:0 auto;padding:16px;}
     <button class="btn btn-sm" onclick="doLogout()" style="padding:2px 8px;font-size:10px;" data-i18n="logout">Log out</button>
   </span>
   <select id="lang-sel" onchange="setLang(this.value)" style="font-size:11px;padding:3px 6px;border-radius:5px;border:none;background:#1d3f66;color:#fff;"><option value="ko">한국어</option><option value="en">English</option><option value="es">Español</option></select>
-  <span id="app-ver" style="font-size:10px;color:#9fb8d4;">v719</span>
+  <span id="app-ver" style="font-size:10px;color:#9fb8d4;">v720</span>
 </div>
 <script type="text/javascript" src="https://js.authorize.net/v1/Accept.js" charset="utf-8"></script>
 <div id="po-viewer" style="display:none;position:fixed;top:0;right:0;width:44%;height:100vh;background:#fff;border-left:2px solid var(--border);z-index:60;box-shadow:-6px 0 20px rgba(0,0,0,.15);">
@@ -17976,6 +17976,9 @@ async function hiReceive(id){
     if(r.ok) rec = (await r.json())[0];
   }catch(e){}
   if(!rec){ showToast('⚠ Load failed'); return; }
+  // 📧 discrepancy report 용 — 원래 예상(패킹리스트) 라인 스냅샷 저장 (v720)
+  window._hircvRef = rec.ref||'';
+  window._hircvExp = (rec.lines||[]).map(l=>({ style:String(l.style||'').trim(), color:bxFixColor(String(l.color||'')), size:String(l.size||'').trim().toUpperCase(), boxes:Number(l.boxes)||0, pcs:Number(l.pcs)||0 }));
   const ex = document.getElementById('modal-hi'); if(ex) ex.remove();
   const ex2 = document.getElementById('modal-hircv'); if(ex2) ex2.remove();
   if(!bxLoaded) await bxFetchStore();
@@ -17989,7 +17992,8 @@ async function hiReceive(id){
     <div style="overflow-y:auto;padding:10px 16px;flex:1;">
       <div style="display:flex;align-items:center;gap:8px;margin-bottom:6px;flex-wrap:wrap;">
         <button class="btn btn-sm" style="background:#eef2ff;border-color:#a5b4fc;color:#4338ca;font-weight:800;" onclick="hiRcvAddRow()" title="Goods arrived that aren't on the list (wrong / extra items)? Add a row and receive it too">➕ Add item</button>
-        <span class="muted" style="font-size:10.5px;">for goods that arrived but aren't on the list (wrong / extra shipment)</span>
+        <button class="btn btn-sm" style="background:#fef2f2;border-color:#fca5a5;color:#b91c1c;font-weight:800;" onclick="hiDiscrepancyReport()" title="Compare what arrived vs the packing list → build an email to send Haiti (short / extra / qty mismatch)">📧 Discrepancy report</button>
+        <span class="muted" style="font-size:10.5px;">➕ add wrong/extra items · 📧 email Haiti about mismatches</span>
         <span style="margin-left:auto;display:inline-flex;gap:6px;align-items:center;background:#ecfeff;border:1px solid #a5f3fc;border-radius:8px;padding:4px 8px;">
           <span style="font-size:10.5px;font-weight:800;color:#0e7490;">📍 Bulk bin:</span>
           <input id="hircv-bulkbin" class="fi" list="hi-dl-loc" placeholder="e.g. 1C-1" style="width:96px;text-transform:uppercase;font-weight:700;font-size:11.5px;padding:3px 6px;" onkeydown="if(event.key==='Enter'){event.preventDefault();hiRcvApplyBin();}">
@@ -18052,6 +18056,60 @@ function hiRcvApplyBin(){
   if(!rows.length){ showToast('⚠ Tick the rows you want first'); return; }
   rows.forEach(tr=>{ const loc=tr.querySelector('.hr-loc'); if(loc){ loc.value=bin; loc.style.background='#e0f2fe'; } });
   showToast('📍 '+bin+' → '+rows.length+' item(s)');
+}
+// 📧 Haiti Discrepancy Report — 지금 입력한 Arrived vs 원래 패킹리스트 비교 → Haiti 보낼 이메일 초안 (v720)
+function hiDiscrepancyReport(){
+  const ref = window._hircvRef||'';
+  const exp = window._hircvExp||[];
+  const cur = (typeof hiCollectReceive==='function') ? hiCollectReceive() : [];
+  const norm = (st,co,sz)=> String(st||'').trim().toUpperCase()+'|'+bxFixColor(String(co||'')).toUpperCase()+'|'+String(sz||'').trim().toUpperCase();
+  const expMap={}, curMap={};
+  exp.forEach(e=>{ expMap[norm(e.style,e.color,e.size)]=e; });
+  cur.forEach(c=>{ curMap[norm(c.style,c.color,c.size)]=c; });
+  const changed=[], missing=[], extra=[];
+  exp.forEach(e=>{ const c=curMap[norm(e.style,e.color,e.size)]; const got=c?c.boxes:0;
+    if(got===0) missing.push({style:e.style,color:e.color,size:e.size,exp:e.boxes});
+    else if(got!==e.boxes) changed.push({style:e.style,color:e.color,size:e.size,exp:e.boxes,got}); });
+  cur.forEach(c=>{ if(!expMap[norm(c.style,c.color,c.size)] && c.boxes>0) extra.push({style:c.style,color:c.color,size:c.size,got:c.boxes}); });
+  if(!changed.length && !missing.length && !extra.length){ showToast('✅ No discrepancies — everything matches the packing list'); return; }
+  const nm=x=>'  - #'+x.style+' '+bxBaseColor(String(x.color))+' '+x.size;
+  const L=[];
+  L.push('Subject: Discrepancy Report — '+ref);
+  L.push('');
+  L.push('Hi Haiti team,');
+  L.push('');
+  L.push('We received shipment '+ref+' and found the following discrepancies against the packing list:');
+  L.push('');
+  if(changed.length){ L.push('QTY MISMATCH (received ≠ shipped):'); changed.forEach(x=>L.push(nm(x)+': shipped '+x.exp+' box, received '+x.got+' box ('+(x.got>x.exp?('over +'+(x.got-x.exp)):('short '+(x.exp-x.got)))+')')); L.push(''); }
+  if(missing.length){ L.push('MISSING (on the list but NOT received):'); missing.forEach(x=>L.push(nm(x)+': '+x.exp+' box expected, 0 received')); L.push(''); }
+  if(extra.length){ L.push('EXTRA (received but NOT on the list):'); extra.forEach(x=>L.push(nm(x)+': '+x.got+' box received — not on packing list')); L.push(''); }
+  L.push('Everything else matched. Please review and confirm so we can correct future shipments.');
+  L.push('');
+  L.push('Thanks,');
+  L.push('Pacific Sports');
+  const text=L.join('\n');
+  const ex=document.getElementById('modal-hidisc'); if(ex) ex.remove();
+  const div=document.createElement('div'); div.id='modal-hidisc';
+  div.style.cssText='position:fixed;inset:0;background:rgba(15,23,42,.6);z-index:210;display:flex;align-items:center;justify-content:center;padding:14px;';
+  div.onclick=e=>{ if(e.target===div) div.remove(); };
+  const chip=(n,lbl,bg,fg)=>`<span style="background:${bg};color:${fg};border-radius:20px;padding:3px 11px;font-size:11.5px;font-weight:800;">${lbl}: ${n}</span>`;
+  const mailto='mailto:?subject='+encodeURIComponent('Discrepancy Report — '+ref)+'&body='+encodeURIComponent(text.split('\n').slice(2).join('\n'));
+  div.innerHTML=`<div style="background:#fff;border-radius:14px;max-width:640px;width:100%;max-height:92vh;display:flex;flex-direction:column;overflow:hidden;">
+    <div style="background:#b91c1c;color:#fff;padding:12px 18px;display:flex;align-items:center;gap:10px;"><span style="font-weight:800;font-size:15px;">📧 Discrepancy Report</span><span style="font-size:11px;color:#fecaca;">${esc(ref)} — send to Haiti</span>
+      <button onclick="document.getElementById('modal-hidisc').remove()" style="margin-left:auto;background:rgba(255,255,255,.2);color:#fff;border:none;border-radius:8px;padding:6px 12px;font-weight:800;">✕</button></div>
+    <div style="padding:12px 18px;display:flex;gap:8px;flex-wrap:wrap;border-bottom:1px solid #eee;">
+      ${chip(changed.length,'Qty mismatch','#fef9c3','#854d0e')}${chip(missing.length,'Missing','#fee2e2','#b91c1c')}${chip(extra.length,'Extra','#ecfeff','#0e7490')}
+    </div>
+    <div style="padding:12px 18px;overflow-y:auto;flex:1;">
+      <textarea id="hidisc-text" readonly style="width:100%;height:300px;font-family:Consolas,monospace;font-size:12px;line-height:1.6;border:1px solid #e5e7eb;border-radius:8px;padding:10px;resize:vertical;">${esc(text)}</textarea>
+      <div class="muted" style="font-size:10.5px;margin-top:6px;">Copy this and paste into your email to Haiti, or open your mail app pre-filled. This is based on the <b>Arrived</b> column vs the original packing list — edit Arrived above first if needed, then reopen this.</div>
+    </div>
+    <div style="padding:10px 16px;border-top:1px solid #eee;display:flex;gap:8px;justify-content:flex-end;flex-wrap:wrap;">
+      <button class="btn" onclick="document.getElementById('modal-hidisc').remove()">Close</button>
+      <a class="btn" href="${mailto}" style="text-decoration:none;background:#334155;color:#fff;border-color:#334155;font-weight:800;">✉️ Open in email</a>
+      <button class="btn btn-primary" style="background:#b91c1c;border-color:#b91c1c;font-weight:800;" onclick="(function(){var t=document.getElementById('hidisc-text');t.select();try{navigator.clipboard.writeText(t.value);}catch(e){document.execCommand('copy');}showToast('📋 Copied — paste into your email to Haiti');})()">📋 Copy to clipboard</button>
+    </div></div>`;
+  document.body.appendChild(div);
 }
 // ➕ 수동 아이템 추가 — 리스트에 없던 물건이 잘못/추가로 들어왔을 때 (v713)
 function hiRcvAddRow(){
