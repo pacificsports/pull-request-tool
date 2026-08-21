@@ -156,7 +156,7 @@ main{max-width:1100px;margin:0 auto;padding:16px;}
     <button class="btn btn-sm" onclick="doLogout()" style="padding:2px 8px;font-size:10px;" data-i18n="logout">Log out</button>
   </span>
   <select id="lang-sel" onchange="setLang(this.value)" style="font-size:11px;padding:3px 6px;border-radius:5px;border:none;background:#1d3f66;color:#fff;"><option value="ko">한국어</option><option value="en">English</option><option value="es">Español</option></select>
-  <span id="app-ver" style="font-size:10px;color:#9fb8d4;">v704</span>
+  <span id="app-ver" style="font-size:10px;color:#9fb8d4;">v706</span>
 </div>
 <script type="text/javascript" src="https://js.authorize.net/v1/Accept.js" charset="utf-8"></script>
 <div id="po-viewer" style="display:none;position:fixed;top:0;right:0;width:44%;height:100vh;background:#fff;border-left:2px solid var(--border);z-index:60;box-shadow:-6px 0 20px rgba(0,0,0,.15);">
@@ -14088,7 +14088,7 @@ function hiBarHtml(){
         <span style="background:#cffafe;border-radius:6px;padding:0 8px;font-weight:800;color:#0e7490;">🇭🇹 Haiti</span>
         <span>${lines.length} line · <b>${nb}</b> box · ${np.toLocaleString()} pcs</span>
         <span class="muted" style="font-size:10.5px;">${r.created_at?('uploaded '+new Date(r.created_at).toLocaleDateString()):''}</span>
-        <span style="margin-left:auto;display:flex;gap:6px;"><button class="btn btn-sm" onclick="hiEditDraft('${r.id}')" title="Fix the name or lines before receiving">✏️ Edit</button><button class="btn btn-sm btn-primary" style="background:#0e7490;border-color:#0e7490;font-weight:800;" onclick="hiReceive('${r.id}')" title="Boxes arrived — verify qty & assign bins, then confirm into SC stock">📦 Receive</button></span>
+        <span style="margin-left:auto;display:flex;gap:6px;"><button class="btn btn-sm" onclick="hiEditDraft('${r.id}')" title="Fix the name or lines before receiving">✏️ Edit</button><button class="btn btn-sm" style="background:#4c1d95;color:#fff;border-color:#4c1d95;font-weight:800;" onclick="hiPlanOpen('${r.id}')" title="Before it arrives — AI plan: which bin to put each item / merge with existing stock, and how to build the pallets">🤖 Plan</button><button class="btn btn-sm btn-primary" style="background:#0e7490;border-color:#0e7490;font-weight:800;" onclick="hiReceive('${r.id}')" title="Boxes arrived — verify qty & assign bins, then confirm into SC stock">📦 Receive</button></span>
         ${chips?`<div style="flex:1 1 100%;display:flex;gap:5px;align-items:center;padding-top:4px;"><span class="muted" style="font-size:10px;">styles:</span>${chips}</div>`:''}</div>`;
     }).join('')}</div>`;
 }
@@ -15718,6 +15718,7 @@ async function trBuilderOpen(existingId, route){
       <button class="btn" style="background:#f5f5f5;" onclick="trBuilderClose()">📝 Close (keep Draft)</button>
       <button class="btn" style="background:#0f766e;color:#fff;border-color:#0f766e;font-weight:700;" onclick="trReserveDraft()" title="Move the pulled boxes into the TRANSFER bin — leaves the original bin (matches physical), still counted as SC stock">📦 Move to TRANSFER bin</button>
       <button class="btn" style="background:#fee2e2;color:#c62828;border-color:#fecaca;" onclick="trCancelDraft()">🗑 Delete Draft (restore stock)</button>
+      <button class="btn" style="background:#fff7ed;color:#c2410c;border-color:#fdba74;font-weight:700;" onclick="trPutBackHistOpen()" title="See past Put Back Requests and reprint any of them">↩ Put-back history</button>
       ${trSrcIsSpec(_shipRoute)?'<button class="btn" style="background:#b45309;color:#fff;border-color:#b45309;" onclick="trPickupReq()">🖨 Pickup Request</button>':''}
       <button class="btn" style="background:#0f4c8a;color:#fff;border-color:#0f4c8a;" onclick="trPL()">🖨 Packing List Preview/Print</button>
       <button class="btn" style="background:#166534;color:#fff;border-color:#166534;" onclick="trPR()">🖨 Pull Request (per pallet)</button>
@@ -15913,9 +15914,11 @@ function trPbEdit(i, field, val){
   if(field==='qty'){ let n=parseInt(val,10)||0; if(n<1)n=1; if(n>r.max)n=r.max; r.qty=n; const inp=document.querySelectorAll('#modal-pb input[type=number]')[i]; if(inp) inp.value=n; }
   else if(field==='dest'){ r.dest=String(val||'').trim().toUpperCase(); }
 }
-function trPutBackPrint(){
-  const rows = window._pbRows||[]; if(!rows.length) return;
-  const srcWh = trWhOfKind(trSrcKind(_shipRoute));
+function trPutBackPrint(){ trPutBackPrintFrom(window._pbRows||[], _shipNo, trWhOfKind(trSrcKind(_shipRoute))); }
+function trPutBackPrintFrom(rows, shipNo, srcWh){
+  if(!rows||!rows.length){ showToast('⚠ Nothing to print'); return; }
+  const _shipNo = shipNo;
+  srcWh = srcWh || 'SC';
   const totB = rows.reduce((s,r)=>s+r.qty,0);
   const totP = rows.reduce((s,r)=>s+r.qty*(r.ppb||0),0);
   const byBin = {}; rows.forEach(r=>{ const b=r.dest||'?'; (byBin[b]=byBin[b]||[]).push(r); });
@@ -15952,7 +15955,7 @@ async function trPutBackConfirm(){
   const rows = window._pbRows||[]; if(!rows.length) return;
   const btn = document.getElementById('pb-go'); if(btn){ btn.disabled=true; btn.textContent='Working…'; }
   const _rw = trWhOfKind(trSrcKind(_shipRoute));
-  let done = 0;
+  let done = 0; const savedLines=[];
   const ordered = rows.slice().sort((a,b)=> String(a.pid).localeCompare(String(b.pid)) || b.li - a.li);
   for(const r of ordered){
     const p = _shipPallets.find(x=>x.id===r.pid); if(!p) continue;
@@ -15967,15 +15970,57 @@ async function trPutBackConfirm(){
     l.ids = l.ids.slice(qty);
     if(typeof l.boxes==='number') l.boxes = l.ids.length;
     if(!l.ids.length) p.lines.splice(r.li, 1);
+    savedLines.push({style:r.style,color:r.color,size:r.size,qty,dest,ppb:r.ppb||0});
     done++;
   }
   await trSaveDraftLines();
+  // 📝 기록 저장 — 나중에 다시 보고 프린트 가능 (프린트 놓쳐도 History에서 재출력)
+  if(savedLines.length){ try{ await sbFetch('/rest/v1/pr_putback', {method:'POST', headers:{Prefer:'return=minimal'}, body:JSON.stringify([{ref:_shipNo||'', wh:_rw, lines:savedLines, created_by:(SESS&&SESS.email)||''}])}); }catch(e){} }
   const m = document.getElementById('modal-pb'); if(m) m.remove();
   if(typeof bxRefetch==='function'){ try{ await bxRefetch(); }catch(e){} }
   trRenderPallets();
   if($('bx-body') && typeof renderBoxRoom==='function') setTimeout(renderBoxRoom, 0);
   if(typeof wqRenderAll==='function') wqRenderAll();
-  showToast('✅ Put back '+done+' line(s) to bins — returned to stock');
+  showToast('✅ Put back '+done+' line(s) to bins — returned to stock · saved to History');
+}
+// ↩ Put Back Request 이력 — 저장된 기록 목록에서 언제든 다시 프린트 (v705)
+async function trPutBackHistOpen(){
+  const ex=document.getElementById('modal-pbhist'); if(ex) ex.remove();
+  const div=document.createElement('div'); div.id='modal-pbhist';
+  div.style.cssText='position:fixed;inset:0;background:rgba(15,23,42,.6);z-index:220;display:flex;align-items:flex-start;justify-content:center;padding:20px 12px;overflow-y:auto;';
+  div.onclick=e=>{ if(e.target===div) div.remove(); };
+  div.innerHTML=`<div style="background:#fff;border-radius:14px;max-width:760px;width:100%;max-height:90vh;display:flex;flex-direction:column;overflow:hidden;">
+    <div style="background:#c2410c;color:#fff;padding:12px 18px;display:flex;align-items:center;gap:10px;"><span style="font-weight:800;font-size:15px;">↩ Put Back Request history</span>
+      <button onclick="trPutBackHistOpen()" title="Refresh" style="background:rgba(255,255,255,.15);color:#fff;border:none;border-radius:8px;padding:5px 10px;font-size:13px;">🔄</button>
+      <button onclick="document.getElementById('modal-pbhist').remove()" style="margin-left:auto;background:rgba(255,255,255,.2);color:#fff;border:none;border-radius:8px;padding:6px 12px;font-weight:800;">✕</button></div>
+    <div id="pbhist-body" style="flex:1;overflow-y:auto;padding:14px;background:#f1f5f9;"><div style="text-align:center;color:#64748b;padding:30px;">Loading…</div></div>
+  </div>`;
+  document.body.appendChild(div);
+  let rows=[];
+  try{ const r=await sbFetch('/rest/v1/pr_putback?select=id,created_at,ref,wh,lines,created_by&order=created_at.desc&limit=100'); if(!r.ok) throw new Error('HTTP '+r.status); rows=await r.json(); }
+  catch(e){ const b=document.getElementById('pbhist-body'); if(b) b.innerHTML=`<div style="padding:20px;color:#b91c1c;">Load failed: ${esc(e.message||e)}</div>`; return; }
+  window._pbHist={}; (rows||[]).forEach(x=>{ window._pbHist[x.id]=x; });
+  const b=document.getElementById('pbhist-body'); if(!b) return;
+  if(!Array.isArray(rows)||!rows.length){ b.innerHTML='<div style="padding:24px;text-align:center;color:#64748b;">No put-back requests recorded yet.</div>'; return; }
+  b.innerHTML=rows.map(x=>{
+    const ls=Array.isArray(x.lines)?x.lines:[];
+    const tb=ls.reduce((s,l)=>s+(Number(l.qty)||0),0);
+    const dests=[...new Set(ls.map(l=>String(l.dest||'').toUpperCase()).filter(Boolean))];
+    const when=(x.created_at||'').replace('T',' ').slice(0,16);
+    const preview=ls.slice(0,4).map(l=>esc(l.style)+' '+esc(bxBaseColor(l.color))+' '+esc(l.size)+'×'+l.qty).join(' · ')+(ls.length>4?' …':'');
+    return `<div style="background:#fff;border:1px solid #e2e8f0;border-radius:10px;padding:10px 13px;margin-bottom:8px;display:flex;align-items:center;gap:10px;flex-wrap:wrap;">
+      <div style="flex:1;min-width:0;">
+        <div style="font-size:12.5px;font-weight:800;color:#7c2d12;">↩ ${esc(x.ref||'(no ref)')} <span style="font-size:10.5px;font-weight:600;color:#94a3b8;">${esc(x.wh||'')} · ${when} · ${esc(String(x.created_by||'').split('@')[0])}</span></div>
+        <div style="font-size:11px;color:#475569;margin-top:2px;">${ls.length} line(s) · <b>${tb}</b> box(es) → 📍 ${dests.map(esc).join(', ')||'—'}</div>
+        <div style="font-size:10.5px;color:#94a3b8;margin-top:2px;">${preview}</div>
+      </div>
+      <button class="btn btn-sm" style="background:#166534;color:#fff;border-color:#166534;font-weight:800;" onclick="trPutBackReprint(${x.id})">🖨 Reprint</button>
+    </div>`;
+  }).join('');
+}
+function trPutBackReprint(id){
+  const x=(window._pbHist||{})[id]; if(!x){ showToast('⚠ Not found'); return; }
+  trPutBackPrintFrom((Array.isArray(x.lines)?x.lines:[]), x.ref, x.wh||'SC');
 }
 // 라인에서 N박스만 bin으로 반환 (나머지는 shipment에 유지) — 다른 오더용으로 몇 박스만 뺄 때 (v680)
 async function trReturnBoxes(pid, li){
@@ -17776,55 +17821,77 @@ async function hiDelete(id){
 }
 // 🤖 Haiti 입고 배치 추천 — 현재 SC 재고를 보고 각 라인의 bin(합치기/새 bin) + 팔렛 그룹 제안 (v703)
 function _hiZone(loc){ const m=String(loc||'').toUpperCase().match(/^([A-Z]+\d*)/); return m?m[1]:String(loc||'').toUpperCase(); }
-function hiSuggest(){
-  if(typeof bxStore==='undefined' || !Array.isArray(bxStore) || !bxStore.length){ showToast('⚠ Inventory still loading — try again in a moment'); return; }
-  // 우리 SC 자체 bin만 (TRANSFER/3rd party 제외)
+// 순수 계산 — lines:[{st,co,sz,nb}] (co는 base color) → 배치 추천 결과
+function hiSuggestCompute(lines){
   const own = bxStore.filter(b=>bxWh(b)==='SC' && String(b.loc||'').toUpperCase() && String(b.loc||'').toUpperCase()!=='TRANSFER' && !trIs3PLoc(b.loc,'SC'));
-  const scIdx={};   // style|baseColor -> { loc: count }
-  const scIdxSz={}; // style|baseColor|size -> { loc: count }
+  const scIdx={}, scIdxSz={};
   own.forEach(b=>{ const st=String(b.style), co=bxBaseColor(String(b.color).toUpperCase()), sz=String(b.size).toUpperCase(), L=String(b.loc).toUpperCase();
     const k=st+'|'+co; (scIdx[k]=scIdx[k]||{}); scIdx[k][L]=(scIdx[k][L]||0)+1;
     const k2=k+'|'+sz; (scIdxSz[k2]=scIdxSz[k2]||{}); scIdxSz[k2][L]=(scIdxSz[k2][L]||0)+1; });
-  const rows=[...document.querySelectorAll('#hircv-rows tr')];
   const sugg=[];
-  rows.forEach(tr=>{
-    const st=(tr.querySelector('.hr-style')||{}).value?.trim()||'';
-    const coRaw=(tr.querySelector('.hr-color')||{}).value?.trim().toUpperCase()||'';
-    const co=bxBaseColor(coRaw);
-    const sz=(tr.querySelector('.hr-size')||{}).value?.trim().toUpperCase()||'';
-    const nb=parseInt((tr.querySelector('.hr-boxes')||{}).value,10)||0;
-    const locInp=tr.querySelector('.hr-loc');
-    if(!st){ return; }
+  (lines||[]).forEach(l=>{ const st=l.st, co=l.co, sz=l.sz, nb=l.nb||0; if(!st) return;
     const kSz=st+'|'+co+'|'+sz, k=st+'|'+co;
-    let bins = scIdxSz[kSz] ? Object.entries(scIdxSz[kSz]) : [];
-    let basis='same style+color+size';
+    let bins = scIdxSz[kSz] ? Object.entries(scIdxSz[kSz]) : []; let basis='same style+color+size';
     if(!bins.length && scIdx[k]){ bins=Object.entries(scIdx[k]); basis='same style+color'; }
     bins.sort((a,b)=>b[1]-a[1]);
-    if(bins.length){
-      const best=bins[0][0];
-      if(locInp && !locInp.value.trim()){ locInp.value=best; }
-      if(locInp){ locInp.style.background='#dcfce7'; locInp.style.borderColor='#16a34a'; }
-      sugg.push({st,co,sz,nb,type:'merge',loc:best,
-        detail:'📥 merge into <b>'+esc(best)+'</b> — already '+bins[0][1]+' box'+(bins[0][1]>1?'es':'')+' ('+basis+')'+(bins.length>1?' · also in '+bins.slice(1,4).map(x=>esc(x[0])).join(', '):'')});
-    } else {
-      if(locInp){ locInp.style.background='#fff7ed'; locInp.style.borderColor='#f59e0b'; }
-      sugg.push({st,co,sz,nb,type:'new',loc:(locInp&&locInp.value.trim().toUpperCase())||'',detail:'🆕 no existing SC bin for this — assign a fresh bin'});
-    }
+    if(bins.length){ const best=bins[0][0];
+      sugg.push({st,co,sz,nb,type:'merge',loc:best,detail:'📥 merge into <b>'+esc(best)+'</b> — already '+bins[0][1]+' box'+(bins[0][1]>1?'es':'')+' ('+basis+')'+(bins.length>1?' · also in '+bins.slice(1,4).map(x=>esc(x[0])).join(', '):'')});
+    } else { sugg.push({st,co,sz,nb,type:'new',loc:'',detail:'🆕 no existing SC bin for this — assign a fresh bin'}); }
   });
-  // 팔렛 그룹: 추천 bin의 zone(예: 1G, 2P)별로 묶기 · 새 bin은 따로
   const zones={};
   sugg.forEach(s=>{ const z = s.loc ? _hiZone(s.loc) : '(new — assign bin)'; (zones[z]=zones[z]||{lines:0,boxes:0,bins:new Set()}); zones[z].lines++; zones[z].boxes+=s.nb; if(s.loc) zones[z].bins.add(s.loc); });
   const zoneKeys=Object.keys(zones).sort((a,b)=>a.localeCompare(b,undefined,{numeric:true}));
-  const mergeN=sugg.filter(s=>s.type==='merge').length, newN=sugg.filter(s=>s.type==='new').length;
-  const el=document.getElementById('hircv-suggest'); if(!el) return;
-  el.innerHTML=`<div style="border:1.5px solid #c4b5fd;background:#faf5ff;border-radius:10px;padding:10px 12px;margin:8px 0;">
-    <div style="font-size:12.5px;font-weight:800;color:#4c1d95;margin-bottom:6px;">🤖 Placement suggestion — <span style="color:#16a34a;">${mergeN} merge</span> · <span style="color:#c2410c;">${newN} new bin</span> <span style="font-weight:500;color:#7c3aed;font-size:11px;">(green = auto-filled below · review before confirming)</span></div>
-    <div style="display:flex;flex-direction:column;gap:3px;max-height:150px;overflow-y:auto;">${sugg.map(s=>`<div style="font-size:11.5px;color:#334155;"><b>#${esc(s.st)}</b> ${esc(bxBaseColor(s.co))} ${esc(s.sz)} <span style="color:#94a3b8;">·${s.nb}bx</span> → ${s.detail}</div>`).join('')||'<div style="font-size:11.5px;color:#94a3b8;">No lines.</div>'}</div>
+  return {sugg, zones, zoneKeys, mergeN:sugg.filter(s=>s.type==='merge').length, newN:sugg.filter(s=>s.type==='new').length};
+}
+function hiSuggestPanelHtml(res, noteAutofill){
+  const {sugg, zones, zoneKeys, mergeN, newN}=res;
+  return `<div style="border:1.5px solid #c4b5fd;background:#faf5ff;border-radius:10px;padding:10px 12px;margin:8px 0;">
+    <div style="font-size:12.5px;font-weight:800;color:#4c1d95;margin-bottom:6px;">🤖 Placement suggestion — <span style="color:#16a34a;">${mergeN} merge</span> · <span style="color:#c2410c;">${newN} new bin</span>${noteAutofill?' <span style="font-weight:500;color:#7c3aed;font-size:11px;">(green = auto-filled below · review before confirming)</span>':''}</div>
+    <div style="display:flex;flex-direction:column;gap:3px;max-height:220px;overflow-y:auto;">${sugg.map(s=>`<div style="font-size:11.5px;color:#334155;"><b>#${esc(s.st)}</b> ${esc(bxBaseColor(s.co))} ${esc(s.sz)} <span style="color:#94a3b8;">·${s.nb}bx</span> → ${s.detail}</div>`).join('')||'<div style="font-size:11.5px;color:#94a3b8;">No lines.</div>'}</div>
     <div style="border-top:1px dashed #ddd6fe;margin-top:8px;padding-top:7px;">
       <div style="font-size:12px;font-weight:800;color:#5b21b6;margin-bottom:4px;">📚 Suggested pallets (group boxes going to the same area):</div>
       <div style="display:flex;gap:6px;flex-wrap:wrap;">${zoneKeys.map((z,i)=>{ const zz=zones[z]; const bins=[...zz.bins].sort((a,b)=>a.localeCompare(b,undefined,{numeric:true})); return `<span style="display:inline-flex;flex-direction:column;gap:1px;background:#fff;border:1.5px solid #c4b5fd;border-radius:8px;padding:5px 10px;font-size:11px;"><b style="color:#5b21b6;">Pallet ${i+1} · zone ${esc(z)}</b><span style="color:#64748b;">${zz.lines} line(s) · ${zz.boxes} box(es)</span>${bins.length?`<span style="font-family:Consolas,monospace;color:#334155;">${bins.map(esc).join(', ')}</span>`:''}</span>`; }).join('')}</div>
     </div></div>`;
-  showToast('🤖 Suggested '+mergeN+' merge + '+newN+' new — review the green locations');
+}
+// Receive 창 안에서 자동 채우기 — 열릴 때 blank 위치를 추천으로 채우고 패널 표시
+function hiSuggest(silent){
+  if(typeof bxStore==='undefined' || !Array.isArray(bxStore) || !bxStore.length){ if(!silent) showToast('⚠ Inventory still loading — try again in a moment'); return; }
+  const rows=[...document.querySelectorAll('#hircv-rows tr')];
+  const lines=[], inps=[];
+  rows.forEach(tr=>{ const st=((tr.querySelector('.hr-style')||{}).value||'').trim(); if(!st) return;
+    const co=bxBaseColor(((tr.querySelector('.hr-color')||{}).value||'').trim().toUpperCase());
+    const sz=((tr.querySelector('.hr-size')||{}).value||'').trim().toUpperCase();
+    const nb=parseInt((tr.querySelector('.hr-boxes')||{}).value,10)||0;
+    lines.push({st,co,sz,nb}); inps.push(tr.querySelector('.hr-loc')); });
+  const res=hiSuggestCompute(lines);
+  res.sugg.forEach((s,i)=>{ const locInp=inps[i]; if(!locInp) return;
+    if(s.type==='merge'){ if(!locInp.value.trim()) locInp.value=s.loc; locInp.style.background='#dcfce7'; locInp.style.borderColor='#16a34a'; }
+    else { locInp.style.background='#fff7ed'; locInp.style.borderColor='#f59e0b'; } });
+  const el=document.getElementById('hircv-suggest'); if(el) el.innerHTML=hiSuggestPanelHtml(res, true);
+  if(!silent) showToast('🤖 Suggested '+res.mergeN+' merge + '+res.newN+' new — review the green locations');
+}
+// 도착 전 미리보기 — Incoming 패널에서 (Receive 왼쪽 버튼)
+async function hiPlanOpen(id){
+  if(!bxLoaded){ showToast('⏳ Loading inventory…'); try{ await bxFetchStore(); }catch(e){} }
+  let rec=(window._hiPending||[]).find(x=>String(x.id)===String(id));
+  if(!rec){ try{ const r=await sbFetch('/rest/v1/pr_inbound?id=eq.'+id+'&select=id,ref,lines'); if(r.ok) rec=(await r.json())[0]; }catch(e){} }
+  if(!rec){ showToast('⚠ Load failed'); return; }
+  const lines=(rec.lines||[]).map(l=>({st:String(l.style||'').trim(), co:bxBaseColor(String(l.color||'').trim().toUpperCase()), sz:String(l.size||'').trim().toUpperCase(), nb:Number(l.boxes)||0})).filter(l=>l.st);
+  const res=hiSuggestCompute(lines);
+  const ex=document.getElementById('modal-hiplan'); if(ex) ex.remove();
+  const div=document.createElement('div'); div.id='modal-hiplan';
+  div.style.cssText='position:fixed;inset:0;background:rgba(15,23,42,.6);z-index:210;display:flex;align-items:flex-start;justify-content:center;padding:20px 12px;overflow-y:auto;';
+  div.onclick=e=>{ if(e.target===div) div.remove(); };
+  div.innerHTML=`<div style="background:#fff;border-radius:14px;max-width:720px;width:100%;max-height:92vh;display:flex;flex-direction:column;overflow:hidden;">
+    <div style="background:#4c1d95;color:#fff;padding:12px 18px;display:flex;align-items:center;gap:10px;"><span style="font-weight:800;font-size:15px;">🤖 Arrival plan · ${esc(rec.ref||'')}</span><span style="font-size:11px;color:#c4b5fd;">preview before it arrives — where to put / merge, and how to build pallets</span>
+      <button onclick="document.getElementById('modal-hiplan').remove()" style="margin-left:auto;background:rgba(255,255,255,.2);color:#fff;border:none;border-radius:8px;padding:6px 12px;font-weight:800;">✕</button></div>
+    <div style="flex:1;overflow-y:auto;padding:6px 16px 14px;">${hiSuggestPanelHtml(res, false)}
+      <div style="font-size:10.5px;color:#94a3b8;padding:2px 2px 6px;">Suggestion based on current SC stock. When it arrives, open <b>Receive</b> — the locations pre-fill automatically.</div></div>
+    <div style="padding:10px 16px;border-top:1px solid #eee;display:flex;gap:8px;justify-content:flex-end;">
+      <button class="btn" onclick="document.getElementById('modal-hiplan').remove()">Close</button>
+      <button class="btn" style="background:#166534;color:#fff;border-color:#166534;font-weight:800;" onclick="document.getElementById('modal-hiplan').remove(); hiReceive('${esc(String(rec.id))}')">📦 Receive now</button>
+    </div></div>`;
+  document.body.appendChild(div);
 }
 async function hiReceive(id){
   let rec = null;
@@ -17843,10 +17910,6 @@ async function hiReceive(id){
   div.innerHTML = `<div style="background:#fff;border-radius:12px;max-width:880px;width:100%;max-height:90vh;display:flex;flex-direction:column;overflow:hidden;">
     <div style="background:#166534;color:#fff;padding:10px 16px;font-weight:800;">📦 Arrival Receiving · ${esc(rec.ref||'')}
       <div style="font-weight:400;font-size:11px;opacity:.85;">Verify against the goods, fix quantities and assign 📍 locations (bins) — confirming adds them to SC stock</div></div>
-    <div style="padding:8px 16px;border-bottom:1px solid var(--border);background:#f0fdf4;display:flex;align-items:center;gap:10px;flex-wrap:wrap;">
-      <button class="btn btn-sm" style="background:#4c1d95;color:#fff;border-color:#4c1d95;font-weight:800;" onclick="hiSuggest()" title="Look at current SC stock and suggest which bin to put each item in (merge with existing stock), which need a fresh bin, and how to build the pallets">🤖 Suggest bins &amp; pallets</button>
-      <span style="font-size:11px;color:#166534;">Recommends merging with existing bins, flags new items, and groups a pallet plan.</span>
-    </div>
     <div id="hircv-suggest" style="padding:0 16px;"></div>
     <div style="overflow-y:auto;padding:10px 16px;flex:1;">
       <table class="etbl" style="font-size:12px;">
@@ -17869,6 +17932,7 @@ async function hiReceive(id){
       <button class="btn btn-primary" style="background:#166534;border-color:#166534;" onclick="hiConfirm('${rec.id}','${esc(rec.ref||'')}')">✅ Confirm into SC Stock</button>
     </div></div>`;
   document.body.appendChild(div);
+  try{ hiSuggest(true); }catch(e){}   // 열릴 때 자동으로 추천 위치 채우기 + 패널 표시
 }
 async function hiConfirm(id, ref){
   const lines = hiCollectRows('hircv');
