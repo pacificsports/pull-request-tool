@@ -159,7 +159,7 @@ main{max-width:1100px;margin:0 auto;padding:16px;}
     <button class="btn btn-sm" onclick="doLogout()" style="padding:2px 8px;font-size:10px;" data-i18n="logout">Log out</button>
   </span>
   <select id="lang-sel" onchange="setLang(this.value)" style="font-size:11px;padding:3px 6px;border-radius:5px;border:none;background:#1d3f66;color:#fff;"><option value="ko">한국어</option><option value="en">English</option><option value="es">Español</option></select>
-  <span id="app-ver" style="font-size:10px;color:#9fb8d4;">v724b</span>
+  <span id="app-ver" style="font-size:10px;color:#9fb8d4;">v725</span>
 </div>
 <script type="text/javascript" src="https://js.authorize.net/v1/Accept.js" charset="utf-8"></script>
 <div id="po-viewer" style="display:none;position:fixed;top:0;right:0;width:44%;height:100vh;background:#fff;border-left:2px solid var(--border);z-index:60;box-shadow:-6px 0 20px rgba(0,0,0,.15);">
@@ -19843,7 +19843,8 @@ function openInformCustomer(){
   });
   const custs=[...new Set(orders.map(r=>String((r.meta&&r.meta.cust)||'').trim()).filter(Boolean))];
   const pos=orders.map(r=>{ const po=String((r.meta&&r.meta.po)||r.base); const rep=(typeof recIsReplace==='function'&&recIsReplace(r)); return po+(rep?' (replacement)':''); });
-  window._ic={ cust: custs.length===1?custs[0]:'', time:'3pm', pos:pos.join('\n'), boxes, lbsPer:33, pallets:[{l:48,w:43,h:84,bx:0}] };
+  const emails=[...new Set(orders.flatMap(r=>{ const e1=(r.meta&&r.meta.custEmail)||''; const e2=(typeof custEmailFor==='function')?(custEmailFor((r.meta&&r.meta.cust)||'')||''):''; return [e1,e2]; }).map(x=>String(x||'').trim()).filter(x=>x.includes('@')))];   // 거래처 이메일 자동 채움 (v725)
+  window._ic={ cust: custs.length===1?custs[0]:'', time:'3pm', pos:pos.join('\n'), boxes, lbsPer:33, pallets:[{l:48,w:43,h:84,bx:0}], emails };
   // 🚛 직원이 /pic에서 LTL로 넣은 정보(pr_bulkship) 자동 채움 — 총박스·팔레트(수·치수·박스수)
   if(window._icPreload){ const pl=window._icPreload;
     if(pl.boxes!=null && Number(pl.boxes)>0) window._ic.boxes=Number(pl.boxes);
@@ -20035,6 +20036,24 @@ async function icCopy(){
   }
 }
 function icCopyText(){ const text=icEmailText(); const done=()=>showToast('📋 Plain text copied'); if(navigator.clipboard&&navigator.clipboard.writeText){ navigator.clipboard.writeText(text).then(done,done); } }
+// ✉️ 거래처에 직접 발송 — 기존 이메일 워커(/send-pl) 사용 (v725)
+async function icSend(){
+  const s=window._ic||{};
+  const toRaw=String((document.getElementById('ic-to')||{}).value||'').trim();
+  const to=toRaw.split(/[,;\s]+/).map(x=>x.trim()).filter(x=>x.includes('@'));
+  if(!to.length){ showToast('⚠ Enter a valid customer email in the ✉️ To field'); const el=document.getElementById('ic-to'); if(el) el.focus(); return; }
+  const nPo=String(s.pos||'').split('\n').map(x=>x.trim()).filter(Boolean).length;
+  const subj='Ready to Ship — '+(String(s.cust||'').trim()||'Pacific Sports')+(nPo?(' · '+nPo+' PO'):'');
+  if(!confirm('✉️ Send this "Ready to Ship" email now?\n\nTo: '+to.join(', ')+'\nSubject: '+subj)) return;
+  const btn=document.getElementById('ic-send-btn'); if(btn){ btn.disabled=true; btn.textContent='Sending…'; }
+  try{
+    const r=await fetch('https://po-confirm-email.hjbae.workers.dev/send-pl', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({ to, subject:subj, html:icEmailHtml(), reply_to:(typeof STAFF_EMAILS!=='undefined'?STAFF_EMAILS:undefined) })});
+    const j=await r.json().catch(()=>({}));
+    if(!r.ok || j.ok===false) throw new Error(j.error||('HTTP '+r.status));
+  }catch(e){ showToast('❌ Send failed: '+(e.message||e)); if(btn){ btn.disabled=false; btn.textContent='✉️ Send email'; } return; }
+  showToast('✅ Ready-to-ship email sent to '+to.join(', '));
+  if(btn){ btn.textContent='✅ Sent'; btn.style.background='#15803d'; }
+}
 function icBuild(){
   const s=window._ic; const ex=document.getElementById('modal-ic'); if(ex) ex.remove();
   const div=document.createElement('div'); div.id='modal-ic';
@@ -20045,6 +20064,7 @@ function icBuild(){
       <div>
         <div class="ff" style="margin-bottom:8px;"><label style="font-size:11px;font-weight:700;color:#64748b;">Customer (greeting)</label><input class="fi" value="${esc(s.cust)}" oninput="icField('cust',this.value)" placeholder="e.g. all / customer name" style="width:100%;font-size:12.5px;"></div>
         <div class="ff" style="margin-bottom:8px;"><label style="font-size:11px;font-weight:700;color:#64748b;">Ready time</label><input class="fi" value="${esc(s.time)}" oninput="icField('time',this.value)" placeholder="e.g. 3pm" style="width:100%;font-size:12.5px;"></div>
+        <div class="ff" style="margin-bottom:8px;"><label style="font-size:11px;font-weight:700;color:#64748b;">✉️ To — customer email(s) <span style="font-weight:400;color:#94a3b8;">comma-separated</span></label><input class="fi" id="ic-to" value="${esc((s.emails||[]).join(', '))}" placeholder="customer@email.com" style="width:100%;font-size:12.5px;${(s.emails||[]).length?'':'border-color:#fca5a5;background:#fff7f7;'}"></div>
         <div class="ff" style="margin-bottom:8px;"><label style="font-size:11px;font-weight:700;color:#64748b;">PO list (one per line — edit freely)</label><textarea oninput="icField('pos',this.value)" style="width:100%;height:150px;font-size:12.5px;font-family:Consolas,monospace;padding:8px;border:1.5px solid #cbd5e1;border-radius:8px;box-sizing:border-box;">${esc(s.pos)}</textarea></div>
       </div>
       <div>
@@ -20063,7 +20083,8 @@ function icBuild(){
       <span style="margin-left:auto;display:flex;gap:8px;">
       <button class="btn btn-sm" onclick="document.getElementById('modal-ic').remove()">Close</button>
       <button class="btn btn-sm" onclick="icCopyText()" title="Copy as plain text instead">Copy as text</button>
-      <button class="btn btn-sm btn-primary" style="background:#0891b2;border-color:#0891b2;" onclick="icCopy()">📋 Copy email</button>
+      <button class="btn btn-sm" onclick="icCopy()" title="Copy the formatted email to paste into your mail app">📋 Copy email</button>
+      <button class="btn btn-sm btn-primary" id="ic-send-btn" style="background:#166534;border-color:#166534;font-weight:800;" onclick="icSend()" title="Send this Ready-to-Ship email directly to the customer">✉️ Send email</button>
       </span>
     </div>
   </div>`;
