@@ -159,7 +159,7 @@ main{max-width:1100px;margin:0 auto;padding:16px;}
     <button class="btn btn-sm" onclick="doLogout()" style="padding:2px 8px;font-size:10px;" data-i18n="logout">Log out</button>
   </span>
   <select id="lang-sel" onchange="setLang(this.value)" style="font-size:11px;padding:3px 6px;border-radius:5px;border:none;background:#1d3f66;color:#fff;"><option value="ko">한국어</option><option value="en">English</option><option value="es">Español</option></select>
-  <span id="app-ver" style="font-size:10px;color:#9fb8d4;">v766</span>
+  <span id="app-ver" style="font-size:10px;color:#9fb8d4;">v767</span>
 </div>
 <script type="text/javascript" src="https://js.authorize.net/v1/Accept.js" charset="utf-8"></script>
 <div id="po-viewer" style="display:none;position:fixed;top:0;right:0;width:44%;height:100vh;background:#fff;border-left:2px solid var(--border);z-index:60;box-shadow:-6px 0 20px rgba(0,0,0,.15);">
@@ -18173,16 +18173,20 @@ async function hiPlanOpen(id){
   if(!rec){ try{ const r=await sbFetch('/rest/v1/pr_inbound?id=eq.'+id+'&select=id,ref,lines'); if(r.ok) rec=(await r.json())[0]; }catch(e){} }
   if(!rec){ showToast('⚠ Load failed'); return; }
   const lines=(rec.lines||[]).map(l=>({st:String(l.style||'').trim(), co:bxBaseColor(String(l.color||'').trim().toUpperCase()), sz:String(l.size||'').trim().toUpperCase(), nb:Number(l.boxes)||0})).filter(l=>l.st);
-  window._hiPlanCtx={ref:rec.ref||'', lines};   // 🖨 pallet build sheet 용 (v751)
+  window._hiPlanCtx={id:rec.id, ref:rec.ref||'', lines};   // 🖨 pallet build sheet 용 (v751)
   const ex=document.getElementById('modal-hiplan'); if(ex) ex.remove();
   const div=document.createElement('div'); div.id='modal-hiplan';
   div.style.cssText='position:fixed;inset:0;background:rgba(15,23,42,.6);z-index:210;display:flex;align-items:flex-start;justify-content:center;padding:20px 12px;overflow-y:auto;';
   div.onclick=e=>{ if(e.target===div) div.remove(); };
-  const pallets=hiBuildPalletPlan(lines);
+  const _hiSavedPlan=hiPlanGetSaved(rec.id);   // 💾 저장된 수동 배치 (v767)
+  const _useSaved=_hiSavedPlan && Array.isArray(_hiSavedPlan.pallets) && _hiSavedPlan.pallets.length && hiPlanMatchesLines(_hiSavedPlan, lines);
+  if(_hiSavedPlan && !_useSaved){ try{ localStorage.removeItem(LS_HIPLAN+rec.id); }catch(e){} }   // 라인 바뀌면 stale 배치 폐기
+  const pallets=_useSaved ? hiPlanFromSaved(_hiSavedPlan) : hiBuildPalletPlan(lines);
   window._hiPlanPallets=pallets;   // 드래그 편집용 상태
+  window._hiPlanIsManual=!!_useSaved;
   const totBoxes=lines.reduce((a,l)=>a+(Number(l.nb)||0),0);
   div.innerHTML=`<div style="background:#fff;border-radius:14px;max-width:760px;width:100%;max-height:92vh;display:flex;flex-direction:column;overflow:hidden;">
-    <div style="background:#4c1d95;color:#fff;padding:12px 18px;display:flex;align-items:center;gap:10px;"><span style="font-weight:800;font-size:16px;">📦 Unload Plan · ${esc(rec.ref||'')}</span><span style="font-size:11.5px;color:#c4b5fd;">drag any item row to another pallet to rearrange</span>
+    <div style="background:#4c1d95;color:#fff;padding:12px 18px;display:flex;align-items:center;gap:10px;"><span style="font-weight:800;font-size:16px;">📦 Unload Plan · ${esc(rec.ref||'')}</span><span style="font-size:11.5px;color:#c4b5fd;">drag any item row to another pallet to rearrange</span><span id="hiplan-savest" style="font-size:11px;font-weight:800;color:#ddd6fe;margin-left:8px;white-space:nowrap;"></span>
       <button onclick="document.getElementById('modal-hiplan').remove()" style="margin-left:auto;background:rgba(255,255,255,.2);color:#fff;border:none;border-radius:8px;padding:6px 12px;font-weight:800;">✕</button></div>
     <div id="hiplan-summary" style="background:#f5f3ff;color:#4c1d95;font-size:12.5px;font-weight:800;padding:8px 18px;border-bottom:1px solid #ede9fe;"></div>
     <div style="flex:1;overflow-y:auto;padding:12px 16px 14px;background:#fafafa;"><div id="hiplan-cards"></div><div style="font-size:10.5px;color:#94a3b8;padding:2px 4px;line-height:1.5;">✋ <b>Drag an item row onto another pallet</b> to move it — totals update live. Pallets split by <b>adult vs kids</b>, then <b>small XS–L (max 48 = 8×6) vs big XL–5XL (max 35 = 7×5)</b>, then grouped by <b>style &amp; color</b> (same style kept together). The bar shows how full each pallet is. <b>(N now)</b> = boxes already in that bin. (Kids treated as one size class — tell me if kids boxes stack differently.)</div></div>
@@ -18194,9 +18198,37 @@ async function hiPlanOpen(id){
     </div></div>`;
   document.body.appendChild(div);
   hiPlanRenderCards();
+  const _ss=document.getElementById('hiplan-savest'); if(_ss) _ss.textContent = window._hiPlanIsManual ? '💾 manual layout (saved)' : '✓ auto layout';
 }
+// 💾 Unload Plan 수동 배치 저장 (localStorage — 이 기기 기준) (v767)
+const LS_HIPLAN='psi_unloadplan_';
+function hiPlanSave(){ const ctx=window._hiPlanCtx||{}; if(!ctx.id) return;
+  const pallets=(window._hiPlanPallets||[]).filter(p=>p.items&&p.items.length).map(p=>({stream:p.stream, cap:p.cap, items:p.items.map(x=>({st:x.st, co:x.co, sz:x.sz, boxes:x.boxes, big:!!x.big, kids:!!x.kids, loc:x.loc||''}))}));
+  try{ localStorage.setItem(LS_HIPLAN+ctx.id, JSON.stringify({savedAt:new Date().toISOString(), pallets})); }catch(e){} }
+function hiPlanGetSaved(id){ try{ const s=localStorage.getItem(LS_HIPLAN+id); return s?JSON.parse(s):null; }catch(e){ return null; } }
+function hiPlanClearSaved(){ const ctx=window._hiPlanCtx||{}; if(!ctx.id) return; try{ localStorage.removeItem(LS_HIPLAN+ctx.id); }catch(e){} }
+// 저장된 배치가 현재 inbound 라인과 일치하는지 (박스 수까지) — 라인 바뀌면 무효
+function hiPlanMatchesLines(saved, lines){
+  const key=x=>String(x.st)+'|'+bxBaseColor(String(x.co||'').toUpperCase())+'|'+String(x.sz||'').toUpperCase();
+  const want={}; (lines||[]).forEach(l=>{ want[key(l)]=(want[key(l)]||0)+(Number(l.nb)||0); });
+  const got={}; (saved.pallets||[]).forEach(p=>(p.items||[]).forEach(x=>{ got[key(x)]=(got[key(x)]||0)+(Number(x.boxes)||0); }));
+  const ks=new Set([...Object.keys(want),...Object.keys(got)]);
+  for(const k of ks){ if((want[k]||0)!==(got[k]||0)) return false; }
+  return true;
+}
+// 저장 데이터 → 팔렛 객체 재구성 (파생 필드는 recompute)
+function hiPlanFromSaved(saved){
+  const binNow={};
+  (typeof bxStore!=='undefined'?bxStore:[]).forEach(b=>{ if(bxWh(b)!=='SC') return; const L=String(b.loc||'').toUpperCase(); if(!L||L==='TRANSFER'||trIs3PLoc(b.loc,'SC')) return; binNow[L]=(binNow[L]||0)+1; });
+  window._hiBinNow=binNow;
+  const pallets=(saved.pallets||[]).map(p=>({ stream:p.stream, cap:p.cap, items:(p.items||[]).map(x=>({st:x.st, co:x.co, sz:x.sz, boxes:Number(x.boxes)||0, big:!!x.big, kids:!!x.kids, loc:x.loc||''})) }));
+  pallets.forEach(hiPalletRecompute);
+  return pallets;
+}
+let _hiPlanSaveT=null;
+function hiPlanSaveDebounced(){ const s=document.getElementById('hiplan-savest'); if(s) s.textContent='💾 saving…'; clearTimeout(_hiPlanSaveT); _hiPlanSaveT=setTimeout(()=>{ hiPlanSave(); window._hiPlanIsManual=true; const s2=document.getElementById('hiplan-savest'); if(s2) s2.textContent='💾 manual layout (saved)'; },350); }
 // 자동 배치 다시 계산 (수동 이동 초기화)
-function hiPlanReset(){ const ctx=window._hiPlanCtx||{}; window._hiPlanPallets=hiBuildPalletPlan(ctx.lines||[]); hiPlanRenderCards(); showToast('↺ Auto-plan restored'); }
+function hiPlanReset(){ const ctx=window._hiPlanCtx||{}; window._hiPlanPallets=hiBuildPalletPlan(ctx.lines||[]); window._hiPlanIsManual=false; hiPlanClearSaved(); hiPlanRenderCards(); const _ss=document.getElementById('hiplan-savest'); if(_ss) _ss.textContent='✓ auto layout'; showToast('↺ Auto-plan restored'); }
 // 카드 영역만 다시 그림 + 요약 갱신
 function hiPlanRenderCards(){
   const host=document.getElementById('hiplan-cards'); if(!host) return;
@@ -18227,6 +18259,7 @@ function hiPlanDrop(ev, targetPi){
   src.items.splice(d.ii,1);
   hiPalletRecompute(src); hiPalletRecompute(tgt);
   hiPlanRenderCards();
+  hiPlanSaveDebounced();   // 💾 드래그 변경 저장 (v767)
 }
 // 🧱 Pallet 카드 HTML (모달 표시용) — 팔렛별 아이템 목록을 크고 직관적으로 (v751)
 function hiPalletCardsHtml(pallets){
