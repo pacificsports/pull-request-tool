@@ -159,7 +159,7 @@ main{max-width:1100px;margin:0 auto;padding:16px;}
     <button class="btn btn-sm" onclick="doLogout()" style="padding:2px 8px;font-size:10px;" data-i18n="logout">Log out</button>
   </span>
   <select id="lang-sel" onchange="setLang(this.value)" style="font-size:11px;padding:3px 6px;border-radius:5px;border:none;background:#1d3f66;color:#fff;"><option value="ko">한국어</option><option value="en">English</option><option value="es">Español</option></select>
-  <span id="app-ver" style="font-size:10px;color:#9fb8d4;">v764</span>
+  <span id="app-ver" style="font-size:10px;color:#9fb8d4;">v765</span>
 </div>
 <script type="text/javascript" src="https://js.authorize.net/v1/Accept.js" charset="utf-8"></script>
 <div id="po-viewer" style="display:none;position:fixed;top:0;right:0;width:44%;height:100vh;background:#fff;border-left:2px solid var(--border);z-index:60;box-shadow:-6px 0 20px rgba(0,0,0,.15);">
@@ -14182,12 +14182,13 @@ function trBarHtml(){
       const np = lines.reduce((a,l)=>a+trLinePcs(l),0);
       const rt = TR_ROUTES[trRoute(r)] || TR_ROUTES.SC2CA;
       const st = r.status==='TRANSIT' ? {lb:'In Transit',c:'#b45309',bg:'#fef3c7'} : {lb:'Draft',c:'#92400e',bg:'#fde68a'};
-      const orders = (r.meta && Array.isArray(r.meta.orders)) ? r.meta.orders.filter(Boolean) : [];
-      const ordersBtn = `<button class="btn btn-sm" style="font-size:10px;background:#faf5ff;border-color:#c4b5fd;color:#6d28d9;font-weight:800;" onclick="trOrdersEdit('${r.id}')" title="Add / edit the customer orders that are also on this truck — so CA knows to expect them">🧾 Orders${orders.length?' ('+orders.length+')':''}</button>`;
+      // 🧾 Ship-from-CA customer orders riding along on this same truck (auto — pulled during build) (v765)
+      const oShip = (r.meta && Array.isArray(r.meta.orderShip)) ? r.meta.orderShip.filter(Boolean) : [];
       const act = r.status==='TRANSIT'
-        ? `${ordersBtn} <button class="btn btn-sm btn-primary" style="background:#0f766e;border-color:#0f766e;font-weight:800;" onclick="trRecvOpen('${r.id}')" title="Boxes arrived — assign ${trKindShort(trDstKind(trRoute(r)))} bin">📦 Receive</button> <button class="btn btn-sm" style="font-size:10px;" onclick="trCancelTransit('${r.id}')" title="Cancel departure — revert to Draft">↩</button>`
-        : `${ordersBtn} <button class="btn btn-sm" onclick="trBuilderOpen('${r.id}')" title="Keep editing this Draft">✏️ Edit</button>`;
-      const ordersLine = orders.length ? `<div style="font-size:11px;color:#6d28d9;margin-top:4px;padding-left:2px;background:#faf5ff;border:1px solid #ddd6fe;border-radius:7px;padding:5px 9px;">🧾 <b>${orders.length} customer order${orders.length>1?'s':''} also on this truck:</b> ${esc(orders.join(' · '))} <span style="color:#a78bfa;font-weight:600;">— hand to fulfillment after receiving at ${esc(rt.short.split('→')[1]||'CA')}</span></div>` : '';
+        ? `<button class="btn btn-sm btn-primary" style="background:#0f766e;border-color:#0f766e;font-weight:800;" onclick="trRecvOpen('${r.id}')" title="Boxes arrived — assign ${trKindShort(trDstKind(trRoute(r)))} bin">📦 Receive</button> <button class="btn btn-sm" style="font-size:10px;" onclick="trCancelTransit('${r.id}')" title="Cancel departure — revert to Draft">↩</button>`
+        : `<button class="btn btn-sm" onclick="trBuilderOpen('${r.id}')" title="Keep editing this Draft">✏️ Edit</button>`;
+      const oBoxes = oShip.reduce((s,o)=>s+(Number(o.boxes)||0),0);
+      const ordersLine = oShip.length ? `<div style="font-size:11px;color:#6d28d9;margin-top:4px;background:#faf5ff;border:1px solid #ddd6fe;border-radius:7px;padding:5px 10px;">🧾 <b>+ ${oShip.length} customer order${oShip.length>1?'s':''} also on this truck</b> <span style="color:#7c3aed;">(${oBoxes} box)</span>: ${oShip.map(o=>esc(o.cust||o.po||'Order')+(o.po?` <span style="color:#a78bfa;font-weight:700;">${esc(o.po)}</span>`:'')+(o.boxes?` · ${o.boxes} box`:'')).join(' &nbsp;|&nbsp; ')} <span style="color:#a78bfa;font-weight:600;">— prepped at SC, route to their order after receiving at ${esc(trKindShort(rt.dest))}</span></div>` : '';
       return `<div style="padding:6px 0;border-top:1px solid #ede9fe;">
         <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;font-size:12px;">
         <b style="font-family:Consolas,monospace;color:#7b1fa2;cursor:pointer;text-decoration:underline;" onclick="${r.status==='LOADING'?`trBuilderOpen('${r.id}')`:`trView('${r.id}')`}" title="Open">${esc(r.ref||'(no #)')}</b>
@@ -15692,17 +15693,6 @@ function trNewOpen(){
 }
 async function trGet(id){ try{ const r = await sbFetch('/rest/v1/pr_transfers?id=eq.'+id+'&select=*'); if(r.ok) return (await r.json())[0]; }catch(e){} return null; }
 async function trPatchRec(id, body){ try{ await sbFetch('/rest/v1/pr_transfers?id=eq.'+id, {method:'PATCH', headers:{Prefer:'return=minimal'}, body:JSON.stringify(body)}); }catch(e){} }
-async function trOrdersEdit(id){
-  const rec = await trGet(id); if(!rec){ showToast('⚠ Load failed'); return; }
-  const cur = (rec.meta && Array.isArray(rec.meta.orders)) ? rec.meta.orders.join('\n') : '';
-  const val = window.prompt('Customer orders also on this truck (one per line)\nCA receiver will see these so they know what to expect:\n\ne.g.\nLA T Shirt\nMassive Prints\nMassive Prints', cur);
-  if(val===null) return;
-  const orders = val.split(/\n/).map(s=>s.trim()).filter(Boolean);
-  const meta = Object.assign({}, rec.meta||{}, {orders});
-  await trPatchRec(id, {meta});
-  showToast(orders.length ? ('🧾 '+orders.length+' order'+(orders.length>1?'s':'')+' saved') : '🧾 Orders cleared');
-  trBarUpd();
-}
 function trLinesFlat(){ return _shipPallets.reduce((a,p)=>a.concat(p.lines.map(l=>({...l, pallet:p.label}))),[]); }
 async function trSaveDraftLines(){ if(_shipId) await trPatchRec(_shipId, {lines: trLinesFlat()}); }
 function trLineBoxes(l){ return l.is_manual ? (Number(l.boxes)||0) : (l.ids||[]).length; }
@@ -17290,7 +17280,9 @@ async function trRecvOpen(id){
         <div><b>Seal:</b> ${esc(M.seal||'—')}</div>
         <div style="margin-left:auto;font-size:11px;background:#fff;padding:3px 10px;border-radius:10px;border:1px solid #a7f3d0;">📦 <b>${_trRecvPallets.length}</b> pallet(s) · <b>${lines.length}</b> line(s) · <b>${totP.toLocaleString()}</b> pcs · <b>${totB}</b> box(es)</div>
       </div>
-      ${(Array.isArray(M.orders)&&M.orders.filter(Boolean).length)?`<div style="margin-bottom:10px;padding:9px 14px;background:#faf5ff;border:1px solid #ddd6fe;border-radius:8px;font-size:12px;color:#6d28d9;">🧾 <b>${M.orders.filter(Boolean).length} customer order${M.orders.filter(Boolean).length>1?'s':''} also on this truck:</b> ${esc(M.orders.filter(Boolean).join(' · '))} <span style="color:#a78bfa;font-weight:600;">— these are prepped orders to hand to fulfillment, not warehouse stock</span></div>`:''}
+      ${(function(){ const _os=(Array.isArray(M.orderShip)?M.orderShip.filter(Boolean):[]); if(!_os.length) return ''; const _ob=_os.reduce((s,o)=>s+(Number(o.boxes)||0),0), _op=_os.reduce((s,o)=>s+(Number(o.pcs)||0),0); return `<div style="margin-bottom:10px;padding:10px 14px;background:#faf5ff;border:1px solid #ddd6fe;border-radius:8px;font-size:12px;color:#6d28d9;">
+        <div style="font-weight:800;margin-bottom:5px;">🧾 + ${_os.length} customer order${_os.length>1?'s':''} also on this truck <span style="font-weight:600;color:#7c3aed;">(${_ob} box · ${_op.toLocaleString()} pcs — prepped at SC, NOT warehouse stock; route to their order)</span></div>
+        <div style="display:flex;flex-direction:column;gap:2px;">${_os.map(o=>`<div>• <b>${esc(o.cust||'—')}</b> <span style="color:#a78bfa;font-weight:700;">${esc(o.po||'')}</span> — ${(Number(o.boxes)||0)} box · ${(Number(o.pcs)||0).toLocaleString()} pcs${o.pallet?` <span style="color:#9ca3af;">(${esc(o.pallet)})</span>`:''}</div>`).join('')}</div></div>`; })()}
       <datalist id="trr-ca-bins">${caLocs.map(L=>'<option value="'+esc(L)+'">').join('')}</datalist>
       <datalist id="trr-h-bins">${hLocs.map(L=>'<option value="'+esc(L)+'">').join('')}</datalist>
       <div style="margin-bottom:8px;display:flex;gap:8px;align-items:center;flex-wrap:wrap;">
