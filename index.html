@@ -159,7 +159,7 @@ main{max-width:1100px;margin:0 auto;padding:16px;}
     <button class="btn btn-sm" onclick="doLogout()" style="padding:2px 8px;font-size:10px;" data-i18n="logout">Log out</button>
   </span>
   <select id="lang-sel" onchange="setLang(this.value)" style="font-size:11px;padding:3px 6px;border-radius:5px;border:none;background:#1d3f66;color:#fff;"><option value="ko">한국어</option><option value="en">English</option><option value="es">Español</option></select>
-  <span id="app-ver" style="font-size:10px;color:#9fb8d4;">v750</span>
+  <span id="app-ver" style="font-size:10px;color:#9fb8d4;">v751</span>
 </div>
 <script type="text/javascript" src="https://js.authorize.net/v1/Accept.js" charset="utf-8"></script>
 <div id="po-viewer" style="display:none;position:fixed;top:0;right:0;width:44%;height:100vh;background:#fff;border-left:2px solid var(--border);z-index:60;box-shadow:-6px 0 20px rgba(0,0,0,.15);">
@@ -14208,7 +14208,7 @@ function hiBarHtml(){
         <span style="background:#cffafe;border-radius:6px;padding:0 8px;font-weight:800;color:#0e7490;">🇭🇹 Haiti</span>
         <span>${lines.length} line · <b>${nb}</b> box · ${np.toLocaleString()} pcs</span>
         <span class="muted" style="font-size:10.5px;">${r.created_at?('uploaded '+new Date(r.created_at).toLocaleDateString()):''}</span>
-        <span style="margin-left:auto;display:flex;gap:6px;"><button class="btn btn-sm" onclick="hiEditDraft('${r.id}')" title="Fix the name or lines before receiving">✏️ Edit</button><button class="btn btn-sm" style="background:#4c1d95;color:#fff;border-color:#4c1d95;font-weight:800;" onclick="hiPlanOpen('${r.id}')" title="Before it arrives — AI plan: which bin to put each item / merge with existing stock, and how to build the pallets">🤖 Plan</button><button class="btn btn-sm btn-primary" style="background:#0e7490;border-color:#0e7490;font-weight:800;" onclick="hiReceive('${r.id}')" title="Boxes arrived — verify qty & assign bins, then confirm into SC stock">📦 Receive</button></span>
+        <span style="margin-left:auto;display:flex;gap:6px;"><button class="btn btn-sm" onclick="hiEditDraft('${r.id}')" title="Fix the name or lines before receiving">✏️ Edit</button><button class="btn btn-sm" style="background:#4c1d95;color:#fff;border-color:#4c1d95;font-weight:800;" onclick="hiPlanOpen('${r.id}')" title="See how to split this arrival onto pallets — Pallet 1 gets these items, Pallet 2 gets those. Print it for staff to unload the container.">📦 Unload Plan</button><button class="btn btn-sm btn-primary" style="background:#0e7490;border-color:#0e7490;font-weight:800;" onclick="hiReceive('${r.id}')" title="Boxes arrived — verify qty & assign bins, then confirm into SC stock">📦 Receive</button></span>
         ${chips?`<div style="flex:1 1 100%;display:flex;gap:5px;align-items:center;padding-top:4px;"><span class="muted" style="font-size:10px;">styles:</span>${chips}</div>`:''}</div>`;
     }).join('')}</div>`;
 }
@@ -17990,6 +17990,8 @@ async function hiDelete(id){
 }
 // 🤖 Haiti 입고 배치 추천 — 현재 SC 재고를 보고 각 라인의 bin(합치기/새 bin) + 팔렛 그룹 제안 (v703)
 function _hiZone(loc){ const m=String(loc||'').toUpperCase().match(/^([A-Z]+\d*)/); return m?m[1]:String(loc||'').toUpperCase(); }
+// 🧭 저장 aisle 추출 — bin 슬롯 번호(끝의 -숫자)를 떼고 구역만: "3C-1"→"3C", "7A-12"→"7A", "1-4"→"1" (v751)
+function _hiAisle(loc){ const s=String(loc||'').toUpperCase().trim(); if(!s) return ''; const m=s.match(/^(.*?)-\d+$/); return m?m[1]:s; }
 // 팔렛 최대 박스 수 — XL~5XL 은 팔렛당 35박스, XS~L 은 48박스
 function hiSizeBig(sz){ const s=String(sz||'').toUpperCase().replace(/[\s\-_]/g,''); if(s==='XS'||s==='S'||s==='M'||s==='L') return false; if(/XL$/.test(s)) return true; if(/^\d+X$/.test(s)) return true; return false; }
 function hiPalletCap(big){ return big?35:48; }
@@ -18057,21 +18059,140 @@ async function hiPlanOpen(id){
   if(!rec){ try{ const r=await sbFetch('/rest/v1/pr_inbound?id=eq.'+id+'&select=id,ref,lines'); if(r.ok) rec=(await r.json())[0]; }catch(e){} }
   if(!rec){ showToast('⚠ Load failed'); return; }
   const lines=(rec.lines||[]).map(l=>({st:String(l.style||'').trim(), co:bxBaseColor(String(l.color||'').trim().toUpperCase()), sz:String(l.size||'').trim().toUpperCase(), nb:Number(l.boxes)||0})).filter(l=>l.st);
-  const res=hiSuggestCompute(lines);
+  window._hiPlanCtx={ref:rec.ref||'', lines};   // 🖨 pallet build sheet 용 (v751)
   const ex=document.getElementById('modal-hiplan'); if(ex) ex.remove();
   const div=document.createElement('div'); div.id='modal-hiplan';
   div.style.cssText='position:fixed;inset:0;background:rgba(15,23,42,.6);z-index:210;display:flex;align-items:flex-start;justify-content:center;padding:20px 12px;overflow-y:auto;';
   div.onclick=e=>{ if(e.target===div) div.remove(); };
-  div.innerHTML=`<div style="background:#fff;border-radius:14px;max-width:720px;width:100%;max-height:92vh;display:flex;flex-direction:column;overflow:hidden;">
-    <div style="background:#4c1d95;color:#fff;padding:12px 18px;display:flex;align-items:center;gap:10px;"><span style="font-weight:800;font-size:15px;">🤖 Arrival plan · ${esc(rec.ref||'')}</span><span style="font-size:11px;color:#c4b5fd;">preview before it arrives — where to put / merge, and how to build pallets</span>
+  const pallets=hiBuildPalletPlan(lines);
+  const totBoxes=lines.reduce((a,l)=>a+(Number(l.nb)||0),0);
+  div.innerHTML=`<div style="background:#fff;border-radius:14px;max-width:760px;width:100%;max-height:92vh;display:flex;flex-direction:column;overflow:hidden;">
+    <div style="background:#4c1d95;color:#fff;padding:12px 18px;display:flex;align-items:center;gap:10px;"><span style="font-weight:800;font-size:16px;">📦 Unload Plan · ${esc(rec.ref||'')}</span><span style="font-size:11.5px;color:#c4b5fd;">stack each pallet like this when unloading the container</span>
       <button onclick="document.getElementById('modal-hiplan').remove()" style="margin-left:auto;background:rgba(255,255,255,.2);color:#fff;border:none;border-radius:8px;padding:6px 12px;font-weight:800;">✕</button></div>
-    <div style="flex:1;overflow-y:auto;padding:6px 16px 14px;">${hiSuggestPanelHtml(res, false)}
-      <div style="font-size:10.5px;color:#94a3b8;padding:2px 2px 6px;">Suggestion based on current SC stock. When it arrives, open <b>Receive</b> — the locations pre-fill automatically.</div></div>
-    <div style="padding:10px 16px;border-top:1px solid #eee;display:flex;gap:8px;justify-content:flex-end;">
-      <button class="btn" onclick="document.getElementById('modal-hiplan').remove()">Close</button>
+    <div style="background:#f5f3ff;color:#4c1d95;font-size:12.5px;font-weight:800;padding:8px 18px;border-bottom:1px solid #ede9fe;">${lines.length} items · ${totBoxes} boxes → <span style="color:#7c3aed;">${pallets.length} pallet${pallets.length===1?'':'s'}</span> <span style="font-weight:600;color:#8b5cf6;font-size:11px;">· combined by where each item lives in your SC stock</span></div>
+    <div style="flex:1;overflow-y:auto;padding:12px 16px 14px;background:#fafafa;">${hiPalletCardsHtml(pallets)}<div style="font-size:10.5px;color:#94a3b8;padding:2px 4px;line-height:1.5;"><b>(N now)</b> = boxes already in that bin right now — send the pallet to that aisle and drop it in any open slot. Pallet size (48 / 35) is the only hard limit.</div></div>
+    <div style="padding:10px 16px;border-top:1px solid #eee;display:flex;gap:8px;align-items:center;flex-wrap:wrap;">
+      <button class="btn" style="background:#7c3aed;color:#fff;border-color:#7c3aed;font-weight:800;" onclick="hiPalletSheet()" title="Print this plan to hand to staff — they check off each item as it's stacked">🖨 Print for staff</button>
+      <button class="btn" style="margin-left:auto;" onclick="document.getElementById('modal-hiplan').remove()">Close</button>
       <button class="btn" style="background:#166534;color:#fff;border-color:#166534;font-weight:800;" onclick="document.getElementById('modal-hiplan').remove(); hiReceive('${esc(String(rec.id))}')">📦 Receive now</button>
     </div></div>`;
   document.body.appendChild(div);
+}
+// 🧱 Pallet 카드 HTML (모달 표시용) — 팔렛별 아이템 목록을 크고 직관적으로 (v751)
+function hiPalletCardsHtml(pallets){
+  if(!pallets || !pallets.length) return '<div style="color:#94a3b8;font-size:12.5px;padding:16px;text-align:center;">No lines to plan.</div>';
+  return pallets.map((p,i)=>{
+    const rows=p.items.map(it=>`<div style="display:flex;align-items:center;gap:8px;padding:4px 2px;border-top:1px solid #f1f5f9;font-size:13px;">
+      <span style="font-weight:800;color:#111;min-width:52px;">#${esc(it.st)}</span>
+      <span style="flex:1;color:#334155;">${esc(bxBaseColor(it.co))}</span>
+      <span style="font-weight:700;color:#475569;min-width:44px;text-align:center;">${esc(it.sz)}</span>
+      <span style="font-weight:800;color:#5b21b6;background:#f5f3ff;border-radius:6px;padding:1px 8px;min-width:42px;text-align:center;">${it.boxes} bx</span>
+    </div>`).join('');
+    const isNew = !(p.bins && p.bins.length);
+    const dest = isNew ? '🆕 New item — assign bin on receive' : ('📍 Aisle '+esc(p.zone)+' · '+p.bins.map(b=>esc(b.loc)+' <span style="color:#94a3b8;font-weight:600;">('+b.now+' now)</span>').join(', '));
+    return `<div style="background:#fff;border:2px solid #c4b5fd;border-radius:12px;margin-bottom:12px;overflow:hidden;box-shadow:0 1px 3px rgba(76,29,149,.08);">
+      <div style="background:#4c1d95;color:#fff;padding:8px 14px;display:flex;align-items:center;justify-content:space-between;">
+        <span style="font-size:16px;font-weight:800;letter-spacing:.5px;">PALLET ${i+1}${isNew?'':` <span style="font-weight:600;color:#c4b5fd;font-size:12px;">→ Aisle ${esc(p.zone)}</span>`}</span>
+        <span style="font-size:13px;font-weight:800;background:rgba(255,255,255,.18);border-radius:20px;padding:2px 12px;">${p.total} boxes</span>
+      </div>
+      <div style="background:#f5f3ff;color:#5b21b6;font-size:11px;font-weight:700;padding:3px 14px;display:flex;justify-content:space-between;"><span>${dest}</span><span style="color:#8b5cf6;">${esc(p.cat)}</span></div>
+      <div style="padding:4px 14px 8px;">${rows}</div>
+    </div>`;
+  }).join('');
+}
+// 🖨 Container-unload pallet build sheet — 들어오는 리스트를 팔렛별로 나눠 직원이 컨테이너 내리며 팔렛 쌓게 (v751)
+// 각 라인을 저장 zone(merge 추천 위치)별로 묶고, 사이즈 그룹(XS–L 48 / XL–5XL 35)별 최대 박스수로 팔렛에 채워 배정
+function hiBuildPalletPlan(lines){
+  // hiSuggestCompute reads live SC stock (bxStore) → each incoming line gets its best target bin
+  // (co-locate with existing stock, else new). We then group by STORAGE AISLE so every pallet
+  // travels to one section (fewest pallets + shortest put-away), split big/small sizes apart.
+  const res=hiSuggestCompute(lines||[]);
+  // 📊 현재 각 SC bin 에 들어있는 박스 수 (용량은 모르지만 "지금 얼마나 차있나"는 재고로 셀 수 있음) (v751/A)
+  const binNow={};
+  (typeof bxStore!=='undefined'?bxStore:[]).forEach(b=>{ if(bxWh(b)!=='SC') return; const L=String(b.loc||'').toUpperCase(); if(!L||L==='TRANSFER'||trIs3PLoc(b.loc,'SC')) return; binNow[L]=(binNow[L]||0)+1; });
+  const groups={};
+  res.sugg.forEach(s=>{
+    if(!(s.nb>0)) return;
+    const aisle = s.loc ? _hiAisle(s.loc) : 'NEW';
+    const big = hiSizeBig(s.sz);
+    const cat = big ? 'XL–5XL' : 'XS–L';
+    const cap = big ? 35 : 48;
+    const key = aisle+'|'+(big?'1':'0');
+    (groups[key]=groups[key]||{aisle, cat, cap, items:[]});
+    groups[key].items.push({st:s.st, co:s.co, sz:s.sz, boxes:s.nb, loc:s.loc?String(s.loc).toUpperCase():''});
+  });
+  const pallets=[];
+  Object.keys(groups).sort((a,b)=>a.localeCompare(b,undefined,{numeric:true})).forEach(key=>{
+    const g=groups[key], cap=g.cap;
+    // keep same style/color/size adjacent so a pallet is tidy to stack & scan
+    g.items.sort((a,b)=> (a.st+'|'+a.co+'|'+a.sz).localeCompare(b.st+'|'+b.co+'|'+b.sz,undefined,{numeric:true}));
+    let cur=null;
+    const flush=()=>{ if(cur && cur.items.length){ const locs=[...new Set(cur.items.map(x=>x.loc).filter(Boolean))].sort((a,b)=>a.localeCompare(b,undefined,{numeric:true})); cur.bins=locs.map(L=>({loc:L, now:binNow[L]||0})); pallets.push(cur); } cur=null; };
+    g.items.forEach(it=>{
+      let remain=it.boxes;
+      while(remain>0){
+        if(!cur){ cur={zone:g.aisle, cat:g.cat, cap, items:[], total:0}; }
+        const take=Math.min(cap-cur.total, remain);
+        const ex=cur.items.find(x=>x.st===it.st && x.co===it.co && x.sz===it.sz);
+        if(ex) ex.boxes+=take; else cur.items.push({st:it.st, co:it.co, sz:it.sz, boxes:take, loc:it.loc});
+        cur.total+=take; remain-=take;
+        if(cur.total>=cap) flush();
+      }
+    });
+    flush();
+  });
+  return pallets;
+}
+function hiPalletSheet(){
+  const ctx=window._hiPlanCtx||{}; const lines=ctx.lines||[];
+  if(!lines.length){ showToast('⚠ No incoming lines to plan'); return; }
+  const pallets=hiBuildPalletPlan(lines);
+  if(!pallets.length){ showToast('⚠ Nothing to build'); return; }
+  const totBoxes=lines.reduce((a,l)=>a+(Number(l.nb)||0),0);
+  const totItems=lines.length;
+  const w=window.open('','_blank'); if(!w){ showToast('⚠ Allow popups to print'); return; }
+  const zoneLbl=z=> z==='NEW' ? 'New items — assign fresh bin' : ('Aisle '+esc(z));
+  const cards=pallets.map((p,i)=>{
+    const rows=p.items.map(it=>`<tr><td class="ck"></td><td class="st">#${esc(it.st)}</td><td>${esc(bxBaseColor(it.co))}</td><td class="sz">${esc(it.sz)}</td><td class="bx">${it.boxes}</td></tr>`).join('');
+    const dest = p.bins&&p.bins.length ? ('Store at: '+p.bins.map(b=>esc(b.loc)+' ('+b.now+' now)').join(', ')) : 'New location — assign on receive';
+    return `<div class="pallet">
+      <div class="phdr"><span class="pno">PALLET ${i+1}</span><span class="pmeta">${zoneLbl(p.zone)} &nbsp;·&nbsp; ${esc(p.cat)}</span></div>
+      <div class="pdest">${dest}</div>
+      <table class="ptbl"><thead><tr><th class="ck">✓</th><th>Style</th><th>Color</th><th>Size</th><th class="bx">Boxes</th></tr></thead><tbody>${rows}</tbody></table>
+      <div class="pfoot">TOTAL &nbsp; <b>${p.total}</b> boxes <span class="cap">(pallet max ${p.cap})</span></div>
+    </div>`;
+  }).join('');
+  w.document.write(`<html><head><title>Pallet Build Sheet — ${esc(ctx.ref||'')}</title><style>
+    *{-webkit-print-color-adjust:exact!important;print-color-adjust:exact!important;box-sizing:border-box;}
+    body{font-family:Arial,Helvetica,sans-serif;color:#111;margin:0;padding:20px 22px;}
+    h1{font-size:22px;margin:0 0 2px;}
+    .sub{color:#555;font-size:13px;margin-bottom:4px;}
+    .totbar{font-size:14px;font-weight:800;color:#3730a3;background:#eef2ff;border:1px solid #c7d2fe;border-radius:8px;padding:8px 12px;margin:10px 0 16px;}
+    .grid{display:grid;grid-template-columns:1fr 1fr;gap:14px;}
+    .pallet{border:2px solid #4c1d95;border-radius:10px;overflow:hidden;page-break-inside:avoid;break-inside:avoid;}
+    .phdr{background:#4c1d95;color:#fff;padding:7px 12px;display:flex;align-items:center;justify-content:space-between;}
+    .pno{font-size:17px;font-weight:800;letter-spacing:.5px;}
+    .pmeta{font-size:12px;font-weight:700;color:#ddd6fe;}
+    .pdest{background:#f5f3ff;color:#5b21b6;font-size:11.5px;font-weight:700;padding:4px 12px;border-bottom:1px solid #ede9fe;}
+    table.ptbl{border-collapse:collapse;width:100%;}
+    .ptbl th,.ptbl td{border-bottom:1px solid #e5e7eb;padding:5px 8px;font-size:13px;text-align:left;}
+    .ptbl th{background:#f8fafc;font-size:11px;color:#475569;text-transform:uppercase;letter-spacing:.4px;}
+    .ptbl td.st{font-weight:800;}
+    .ptbl .sz{font-weight:700;}
+    .ptbl th.bx,.ptbl td.bx{text-align:center;font-weight:800;width:58px;}
+    .ptbl th.ck,.ptbl td.ck{width:26px;text-align:center;}
+    .ptbl td.ck{border-right:1px solid #e5e7eb;}
+    .ptbl td.ck::before{content:"";display:inline-block;width:13px;height:13px;border:1.5px solid #94a3b8;border-radius:3px;}
+    .pfoot{background:#faf5ff;padding:6px 12px;font-size:13px;font-weight:700;color:#3730a3;border-top:1px solid #ede9fe;}
+    .pfoot .cap{color:#94a3b8;font-weight:600;font-size:11px;}
+    @media print{ .grid{gap:10px;} body{padding:10px;} }
+    </style></head><body>
+    <h1>📦 Container Unload — Pallet Build Sheet</h1>
+    <div class="sub">${esc(ctx.ref||'')} &nbsp;·&nbsp; ${esc(new Date().toLocaleString())}</div>
+    <div class="totbar">${totItems} item lines &nbsp;·&nbsp; ${totBoxes} boxes &nbsp;·&nbsp; ${pallets.length} pallet(s) &nbsp;—&nbsp; unload the container and stack each box onto its pallet below, then tick it off</div>
+    <div class="grid">${cards}</div>
+    <script>window.onload=function(){window.print();};<\/script></body></html>`);
+  w.document.close();
 }
 async function hiReceive(id){
   let rec = null;
