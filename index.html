@@ -159,7 +159,7 @@ main{max-width:1100px;margin:0 auto;padding:16px;}
     <button class="btn btn-sm" onclick="doLogout()" style="padding:2px 8px;font-size:10px;" data-i18n="logout">Log out</button>
   </span>
   <select id="lang-sel" onchange="setLang(this.value)" style="font-size:11px;padding:3px 6px;border-radius:5px;border:none;background:#1d3f66;color:#fff;"><option value="ko">한국어</option><option value="en">English</option><option value="es">Español</option></select>
-  <span id="app-ver" style="font-size:10px;color:#9fb8d4;">v752</span>
+  <span id="app-ver" style="font-size:10px;color:#9fb8d4;">v754</span>
 </div>
 <script type="text/javascript" src="https://js.authorize.net/v1/Accept.js" charset="utf-8"></script>
 <div id="po-viewer" style="display:none;position:fixed;top:0;right:0;width:44%;height:100vh;background:#fff;border-left:2px solid var(--border);z-index:60;box-shadow:-6px 0 20px rgba(0,0,0,.15);">
@@ -17994,6 +17994,26 @@ function _hiZone(loc){ const m=String(loc||'').toUpperCase().match(/^([A-Z]+\d*)
 function _hiAisle(loc){ const s=String(loc||'').toUpperCase().trim(); if(!s) return ''; const m=s.match(/^(.*?)-\d+$/); return m?m[1]:s; }
 // 팔렛 최대 박스 수 — XL~5XL 은 팔렛당 35박스, XS~L 은 48박스
 function hiSizeBig(sz){ const s=String(sz||'').toUpperCase().replace(/[\s\-_]/g,''); if(s==='XS'||s==='S'||s==='M'||s==='L') return false; if(/XL$/.test(s)) return true; if(/^\d+X$/.test(s)) return true; return false; }
+// 📏 사이즈 정렬 순서 (S→M→L→XL→2XL…) — 정렬용 순위 (v752)
+const HI_SIZE_ORDER=['3XS','2XS','XS','S','M','L','XL','2XL','3XL','4XL','5XL','6XL'];
+function hiSizeRank(sz){ const n=(typeof _szNorm==='function')?_szNorm(sz):String(sz||'').toUpperCase().replace(/[^A-Z0-9]/g,''); const i=HI_SIZE_ORDER.indexOf(n); return i<0?99:i; }
+// 아이템 정렬: 색 → 스타일 → 사이즈(S,M,L,XL,2XL…)
+function hiItemSort(a,b){ const ca=bxBaseColor(a.co), cb=bxBaseColor(b.co); if(ca!==cb) return ca.localeCompare(cb); if(String(a.st)!==String(b.st)) return String(a.st).localeCompare(String(b.st),undefined,{numeric:true}); return hiSizeRank(a.sz)-hiSizeRank(b.sz); }
+// 팔렛 파생값 재계산 (드래그로 아이템 옮긴 뒤 호출)
+function hiPalletRecompute(p){
+  const binNow=window._hiBinNow||{};
+  const locs=[...new Set(p.items.map(x=>x.loc).filter(Boolean))].sort((a,b)=>a.localeCompare(b,undefined,{numeric:true}));
+  p.bins=locs.map(L=>({loc:L, now:binNow[L]||0}));
+  p.items=p.items.slice().sort(hiItemSort);
+  const cols=[...new Set(p.items.map(x=>bxBaseColor(x.co)))];
+  p.colorLabel = cols.length===1 ? (cols[0]||'') : (cols.length+' colors');
+  p.total=p.items.reduce((a,x)=>a+(Number(x.boxes)||0),0);
+  const cap=p.cap|| (p.stream==='big'?35:48);
+  p.cap=cap; p.cat=p.stream==='big'?'XL–5XL':'XS–L';
+  p.fillPct=Math.min(100, Math.round(p.total/cap*100));
+  p.full=(cap-p.total)<=0;
+  p._ck=cols[0]||'';
+}
 function hiPalletCap(big){ return big?35:48; }
 // 순수 계산 — lines:[{st,co,sz,nb}] (co는 base color) → 배치 추천 결과
 function hiSuggestCompute(lines){
@@ -18065,24 +18085,61 @@ async function hiPlanOpen(id){
   div.style.cssText='position:fixed;inset:0;background:rgba(15,23,42,.6);z-index:210;display:flex;align-items:flex-start;justify-content:center;padding:20px 12px;overflow-y:auto;';
   div.onclick=e=>{ if(e.target===div) div.remove(); };
   const pallets=hiBuildPalletPlan(lines);
+  window._hiPlanPallets=pallets;   // 드래그 편집용 상태
   const totBoxes=lines.reduce((a,l)=>a+(Number(l.nb)||0),0);
   div.innerHTML=`<div style="background:#fff;border-radius:14px;max-width:760px;width:100%;max-height:92vh;display:flex;flex-direction:column;overflow:hidden;">
-    <div style="background:#4c1d95;color:#fff;padding:12px 18px;display:flex;align-items:center;gap:10px;"><span style="font-weight:800;font-size:16px;">📦 Unload Plan · ${esc(rec.ref||'')}</span><span style="font-size:11.5px;color:#c4b5fd;">stack each pallet like this when unloading the container</span>
+    <div style="background:#4c1d95;color:#fff;padding:12px 18px;display:flex;align-items:center;gap:10px;"><span style="font-weight:800;font-size:16px;">📦 Unload Plan · ${esc(rec.ref||'')}</span><span style="font-size:11.5px;color:#c4b5fd;">drag any item row to another pallet to rearrange</span>
       <button onclick="document.getElementById('modal-hiplan').remove()" style="margin-left:auto;background:rgba(255,255,255,.2);color:#fff;border:none;border-radius:8px;padding:6px 12px;font-weight:800;">✕</button></div>
-    <div style="background:#f5f3ff;color:#4c1d95;font-size:12.5px;font-weight:800;padding:8px 18px;border-bottom:1px solid #ede9fe;">${lines.length} items · ${totBoxes} boxes → <span style="color:#7c3aed;">${pallets.length} pallet${pallets.length===1?'':'s'}</span> <span style="font-weight:600;color:#8b5cf6;font-size:11px;">· fewest pallets, same colors kept together</span></div>
-    <div style="flex:1;overflow-y:auto;padding:12px 16px 14px;background:#fafafa;">${hiPalletCardsHtml(pallets)}<div style="font-size:10.5px;color:#94a3b8;padding:2px 4px;line-height:1.5;">Pallets are packed tight (up to 48 small boxes, or 35 big XL–5XL) and same colors kept together to cut pallet count. <b>(N now)</b> = boxes already in that bin — drop the pallet in any open slot near there.</div></div>
+    <div id="hiplan-summary" style="background:#f5f3ff;color:#4c1d95;font-size:12.5px;font-weight:800;padding:8px 18px;border-bottom:1px solid #ede9fe;"></div>
+    <div style="flex:1;overflow-y:auto;padding:12px 16px 14px;background:#fafafa;"><div id="hiplan-cards"></div><div style="font-size:10.5px;color:#94a3b8;padding:2px 4px;line-height:1.5;">✋ <b>Drag an item row onto another pallet</b> to move it — totals update live. Each pallet is one size class (small XS–L max 48 = 8×6 · big XL–5XL max 35 = 7×5), never mixed. The bar shows how full each pallet is. <b>(N now)</b> = boxes already in that bin.</div></div>
     <div style="padding:10px 16px;border-top:1px solid #eee;display:flex;gap:8px;align-items:center;flex-wrap:wrap;">
-      <button class="btn" style="background:#7c3aed;color:#fff;border-color:#7c3aed;font-weight:800;" onclick="hiPalletSheet()" title="Print this plan to hand to staff — they check off each item as it's stacked">🖨 Print for staff</button>
+      <button class="btn btn-sm" style="border-color:#cbd5e1;color:#475569;font-weight:700;" onclick="hiPlanReset()" title="Undo all manual moves and rebuild the automatic plan">↺ Reset auto-plan</button>
+      <button class="btn" style="background:#7c3aed;color:#fff;border-color:#7c3aed;font-weight:800;" onclick="hiPalletSheet()" title="Print this plan (with your manual changes) to hand to staff">🖨 Print for staff</button>
       <button class="btn" style="margin-left:auto;" onclick="document.getElementById('modal-hiplan').remove()">Close</button>
       <button class="btn" style="background:#166534;color:#fff;border-color:#166534;font-weight:800;" onclick="document.getElementById('modal-hiplan').remove(); hiReceive('${esc(String(rec.id))}')">📦 Receive now</button>
     </div></div>`;
   document.body.appendChild(div);
+  hiPlanRenderCards();
+}
+// 자동 배치 다시 계산 (수동 이동 초기화)
+function hiPlanReset(){ const ctx=window._hiPlanCtx||{}; window._hiPlanPallets=hiBuildPalletPlan(ctx.lines||[]); hiPlanRenderCards(); showToast('↺ Auto-plan restored'); }
+// 카드 영역만 다시 그림 + 요약 갱신
+function hiPlanRenderCards(){
+  const host=document.getElementById('hiplan-cards'); if(!host) return;
+  const pallets=(window._hiPlanPallets||[]).filter(p=>p.items&&p.items.length);
+  window._hiPlanPallets=pallets;   // 빈 팔렛 제거
+  host.innerHTML=hiPalletCardsHtml(pallets);
+  const sum=document.getElementById('hiplan-summary');
+  if(sum){ const ctx=window._hiPlanCtx||{}; const li=(ctx.lines||[]).length; const tb=(ctx.lines||[]).reduce((a,l)=>a+(Number(l.nb)||0),0);
+    sum.innerHTML=`${li} items · ${tb} boxes → <span style="color:#7c3aed;">${pallets.length} pallet${pallets.length===1?'':'s'}</span> <span style="font-weight:600;color:#8b5cf6;font-size:11px;">· grouped by color · small &amp; big on separate pallets · drag to adjust</span>`; }
+}
+// 드래그 시작 — 어느 팔렛의 몇 번째 아이템인지 기억
+function hiPlanDragStart(ev, pi, ii){ window._hiDrag={pi, ii}; try{ ev.dataTransfer.effectAllowed='move'; ev.dataTransfer.setData('text/plain', pi+':'+ii); }catch(e){} }
+// 드롭 — 아이템을 대상 팔렛으로 이동 (targetPi = -1 이면 새 팔렛)
+function hiPlanDrop(ev, targetPi){
+  ev.preventDefault();
+  const d=window._hiDrag; window._hiDrag=null;
+  if(!d) return;
+  const pallets=window._hiPlanPallets||[];
+  const src=pallets[d.pi]; if(!src) return;
+  const item=src.items[d.ii]; if(!item) return;
+  if(targetPi===d.pi) return;   // 같은 팔렛
+  let tgt;
+  if(targetPi===-1){ tgt={items:[], stream:item.big?'big':'small', cap:item.big?35:48}; pallets.push(tgt); }
+  else { tgt=pallets[targetPi]; if(!tgt) return; }
+  // 대상에 같은 아이템 있으면 합침
+  const ex=tgt.items.find(x=>x.st===item.st && x.co===item.co && x.sz===item.sz);
+  if(ex) ex.boxes+=item.boxes; else tgt.items.push(Object.assign({}, item));
+  src.items.splice(d.ii,1);
+  hiPalletRecompute(src); hiPalletRecompute(tgt);
+  hiPlanRenderCards();
 }
 // 🧱 Pallet 카드 HTML (모달 표시용) — 팔렛별 아이템 목록을 크고 직관적으로 (v751)
 function hiPalletCardsHtml(pallets){
   if(!pallets || !pallets.length) return '<div style="color:#94a3b8;font-size:12.5px;padding:16px;text-align:center;">No lines to plan.</div>';
-  return pallets.map((p,i)=>{
-    const rows=p.items.map(it=>`<div style="display:flex;align-items:center;gap:8px;padding:4px 2px;border-top:1px solid #f1f5f9;font-size:13px;">
+  const cards = pallets.map((p,i)=>{
+    const rows=p.items.map((it,ii)=>`<div draggable="true" ondragstart="hiPlanDragStart(event,${i},${ii})" title="Drag to another pallet" style="display:flex;align-items:center;gap:8px;padding:4px 6px;border-top:1px solid #f1f5f9;font-size:13px;cursor:grab;border-radius:6px;">
+      <span style="color:#c4b5fd;font-weight:800;">⠿</span>
       <span style="font-weight:800;color:#111;min-width:52px;">#${esc(it.st)}</span>
       <span style="flex:1;color:#334155;">${esc(bxBaseColor(it.co))}</span>
       <span style="font-weight:700;color:#475569;min-width:44px;text-align:center;">${esc(it.sz)}</span>
@@ -18092,62 +18149,102 @@ function hiPalletCardsHtml(pallets){
     const binTxt = b=>esc(b.loc)+' <span style="color:#94a3b8;font-weight:600;">('+b.now+' now)</span>';
     const shown = (p.bins||[]).slice(0,4).map(binTxt).join(', ') + ((p.bins||[]).length>4 ? ' +'+((p.bins.length)-4)+' more' : '');
     const dest = isNew ? '🆕 New item — assign bin on receive' : ('📍 '+shown);
-    return `<div style="background:#fff;border:2px solid #c4b5fd;border-radius:12px;margin-bottom:12px;overflow:hidden;box-shadow:0 1px 3px rgba(76,29,149,.08);">
-      <div style="background:#4c1d95;color:#fff;padding:8px 14px;display:flex;align-items:center;justify-content:space-between;">
-        <span style="font-size:16px;font-weight:800;letter-spacing:.5px;">PALLET ${i+1} <span style="font-weight:700;color:#e9d5ff;font-size:13px;">· ${esc(p.colorLabel||'')}</span></span>
-        <span style="font-size:13px;font-weight:800;background:rgba(255,255,255,.18);border-radius:20px;padding:2px 12px;">${p.total} boxes</span>
+    const catChip = `<span style="font-weight:800;font-size:10.5px;background:${p.stream==='big'?'#7c3aed':'#0e7490'};color:#fff;border-radius:6px;padding:1px 7px;margin-left:8px;">${esc(p.cat||'')}</span>`;
+    const over = p.total>p.cap;
+    const badge = over
+      ? '<span style="background:#dc2626;color:#fff;border-radius:20px;padding:1px 9px;font-size:10px;font-weight:800;">OVER by '+(p.total-p.cap)+'</span>'
+      : (p.full ? '<span style="background:#16a34a;color:#fff;border-radius:20px;padding:1px 9px;font-size:10px;font-weight:800;">FULL</span>' : '<span style="background:#fde68a;color:#92400e;border-radius:20px;padding:1px 9px;font-size:10px;font-weight:800;">partial</span>');
+    const barColor = over ? '#dc2626' : (p.full ? '#16a34a' : '#c4b5fd');
+    return `<div ondragover="event.preventDefault()" ondrop="hiPlanDrop(event,${i})" style="background:#fff;border:2px solid #c4b5fd;border-radius:12px;margin-bottom:12px;overflow:hidden;box-shadow:0 1px 3px rgba(76,29,149,.08);">
+      <div style="background:#4c1d95;color:#fff;padding:8px 14px;display:flex;align-items:center;justify-content:space-between;gap:8px;">
+        <span style="font-size:16px;font-weight:800;letter-spacing:.5px;">PALLET ${i+1} <span style="font-weight:700;color:#e9d5ff;font-size:13px;">· ${esc(p.colorLabel||'')}</span>${catChip}</span>
+        <span style="font-size:13px;font-weight:800;background:rgba(255,255,255,.18);border-radius:20px;padding:2px 12px;white-space:nowrap;">${p.total} / ${p.cap} bx</span>
+      </div>
+      <div style="padding:5px 14px 2px;display:flex;align-items:center;gap:8px;">
+        <div style="flex:1;height:7px;background:#eee;border-radius:20px;overflow:hidden;"><div style="width:${Math.min(100,p.fillPct||0)}%;height:100%;background:${barColor};"></div></div>
+        ${badge}
       </div>
       <div style="background:#f5f3ff;color:#5b21b6;font-size:11px;font-weight:700;padding:3px 14px;">${dest}</div>
-      <div style="padding:4px 14px 8px;">${rows}</div>
+      <div style="padding:2px 10px 8px;">${rows}</div>
     </div>`;
   }).join('');
+  // 새 팔렛 드롭존
+  const newZone = `<div ondragover="event.preventDefault()" ondrop="hiPlanDrop(event,-1)" style="border:2px dashed #cbd5e1;border-radius:12px;padding:14px;text-align:center;color:#94a3b8;font-size:12px;font-weight:700;background:#fafafa;">⊕ Drag an item here to start a new pallet</div>`;
+  return cards + newZone;
 }
 // 🖨 Container-unload pallet build sheet — 들어오는 리스트를 팔렛별로 나눠 직원이 컨테이너 내리며 팔렛 쌓게 (v751)
-// 목표(v752): 팔렛 수 최소화 + 같은 칼라끼리 모으기.
-//   → 칼라(그다음 style/size) 순으로 정렬한 뒤 팔렛을 꽉 채움. 연속 채움이라 팔렛 수 = ceil(총용량/48) = 이론상 최소.
-//   → 큰 사이즈(XL~5XL) 박스는 자리를 더 먹으므로 "용량 단위"(작은박스 1, 큰박스 48/35≈1.371)로 계산해 한 팔렛에 섞음.
-const HI_PALLET_CAP = 48;                 // 팔렛 용량(작은박스 환산 단위)
-function hiBoxUnits(sz){ return hiSizeBig(sz) ? (48/35) : 1; }   // 큰 박스가 차지하는 팔렛 공간
+// 규칙(v753):
+//   1) 큰박스(XL~5XL, 팔렛당 35=7×5줄) 와 작은박스(XS~L, 48=8×6줄) 는 절대 안 섞음 → 층이 깔끔.
+//   2) 같은 사이즈 안에서 같은 칼라 우선. 한 칼라가 팔렛을 넘으면 균등 분배(예: 60 → 30/30).
+//   3) 한 팔렛 못 채우는 칼라 자투리는 같은 사이즈끼리 합침(예: ARTICHOKE S-L + BLACK PEARL S-L).
+const HI_SM_CAP = 48;   // 작은박스 팔렛 최대 (8×6)
+const HI_BIG_CAP = 35;  // 큰박스 팔렛 최대 (7×5)
 function hiBuildPalletPlan(lines){
-  // hiSuggestCompute reads live SC stock (bxStore) → each incoming line gets its best target bin (co-locate / new)
   const res=hiSuggestCompute(lines||[]);
-  // 📊 현재 각 SC bin 에 들어있는 박스 수 (용량은 모르지만 "지금 얼마나 차있나"는 재고로 셀 수 있음)
+  // 📊 현재 각 SC bin 에 들어있는 박스 수 (참고용 — 남은 자리는 모르지만 지금 얼마나 차있나는 셀 수 있음)
   const binNow={};
   (typeof bxStore!=='undefined'?bxStore:[]).forEach(b=>{ if(bxWh(b)!=='SC') return; const L=String(b.loc||'').toUpperCase(); if(!L||L==='TRANSFER'||trIs3PLoc(b.loc,'SC')) return; binNow[L]=(binNow[L]||0)+1; });
-  // 전체 아이템 → 칼라 우선 정렬(같은 칼라 붙임), 그다음 style·size
-  const items=res.sugg.filter(s=>s.nb>0).map(s=>({st:s.st, co:s.co, sz:s.sz, boxes:s.nb, big:hiSizeBig(s.sz), loc:s.loc?String(s.loc).toUpperCase():''}));
-  items.sort((a,b)=> (bxBaseColor(a.co)+'|'+a.st+'|'+a.sz).localeCompare(bxBaseColor(b.co)+'|'+b.st+'|'+b.sz, undefined,{numeric:true}));
-  const pallets=[];
-  let cur=null;
-  const flush=()=>{ if(cur && cur.items.length){
-      const locs=[...new Set(cur.items.map(x=>x.loc).filter(Boolean))].sort((a,b)=>a.localeCompare(b,undefined,{numeric:true}));
-      cur.bins=locs.map(L=>({loc:L, now:binNow[L]||0}));
-      const cols=[...new Set(cur.items.map(x=>bxBaseColor(x.co)))];
-      cur.colorLabel = cols.length===1 ? cols[0] : (cols.length+' colors');
-      cur.mixed = cur.items.some(x=>x.big) && cur.items.some(x=>!x.big);
-      pallets.push(cur);
-    } cur=null; };
-  items.forEach(it=>{
-    const u=hiBoxUnits(it.sz);
-    let remain=it.boxes;
-    while(remain>0){
-      if(!cur) cur={items:[], units:0, total:0};
-      const canFit=Math.floor((HI_PALLET_CAP - cur.units)/u + 1e-9);   // 이 팔렛에 몇 박스 더 들어가나
-      if(canFit<=0){ flush(); continue; }
-      const take=Math.min(canFit, remain);
-      const ex=cur.items.find(x=>x.st===it.st && x.co===it.co && x.sz===it.sz);
-      if(ex) ex.boxes+=take; else cur.items.push({st:it.st, co:it.co, sz:it.sz, boxes:take, big:it.big, loc:it.loc});
-      cur.units+=take*u; cur.total+=take; remain-=take;
-      if(cur.units >= HI_PALLET_CAP - 1e-9) flush();
+  window._hiBinNow=binNow;   // 드래그 후 재계산에서 재사용
+  const rawItems=res.sugg.filter(s=>s.nb>0).map(s=>({st:s.st, co:s.co, sz:s.sz, boxes:s.nb, big:hiSizeBig(s.sz), loc:s.loc?String(s.loc).toUpperCase():''}));
+  const sortItems=arr=>arr.slice().sort(hiItemSort);
+  const addTo=(p,it,take)=>{ const ex=p.items.find(x=>x.st===it.st && x.co===it.co && x.sz===it.sz); if(ex) ex.boxes+=take; else p.items.push({st:it.st, co:it.co, sz:it.sz, boxes:take, big:it.big, loc:it.loc}); };
+  const out=[];
+  const finalize=(p, stream, cap)=>{
+    if(!p.items.length) return;
+    const locs=[...new Set(p.items.map(x=>x.loc).filter(Boolean))].sort((a,b)=>a.localeCompare(b,undefined,{numeric:true}));
+    p.bins=locs.map(L=>({loc:L, now:binNow[L]||0}));
+    p.items=sortItems(p.items);
+    const cols=[...new Set(p.items.map(x=>bxBaseColor(x.co)))];
+    p.colorLabel = cols.length===1 ? cols[0] : (cols.length+' colors');
+    p.total=p.items.reduce((a,x)=>a+x.boxes,0);
+    p.stream=stream; p.cat = stream==='big' ? 'XL–5XL' : 'XS–L'; p.cap=cap;
+    p.fillPct=Math.min(100, Math.round(p.total/cap*100));
+    p.full = (cap - p.total) <= 0;
+    p._ck = (cols[0]||'');
+    out.push(p);
+  };
+  // 색 아이템 목록에서 앞에서부터 count 박스만큼 잘라냄 (아이템이 걸치면 쪼갬)
+  const carve=(its, count)=>{ const taken=[], rest=[]; let need=count;
+    its.forEach(it=>{ if(need<=0){ rest.push(it); return; }
+      if(it.boxes<=need){ taken.push(it); need-=it.boxes; }
+      else { taken.push(Object.assign({},it,{boxes:need})); rest.push(Object.assign({},it,{boxes:it.boxes-need})); need=0; } });
+    return {taken, rest}; };
+  [['small',HI_SM_CAP,false],['big',HI_BIG_CAP,true]].forEach(([stream,cap,isBig])=>{
+    const streamItems=rawItems.filter(it=> it.big===isBig);
+    if(!streamItems.length) return;
+    const byColor={};
+    streamItems.forEach(it=>{ const c=bxBaseColor(it.co); (byColor[c]=byColor[c]||[]).push(it); });
+    const remChunks=[];   // 한 팔렛 못 채우는 자투리 {co, items, total}
+    Object.keys(byColor).sort((a,b)=>a.localeCompare(b)).forEach(c=>{
+      let its=sortItems(byColor[c]);
+      let total=its.reduce((a,x)=>a+x.boxes,0);
+      // 꽉 찬 순정(단일색) 팔렛부터 빼냄
+      while(total>=cap){ const {taken,rest}=carve(its, cap); const p={items:[]}; taken.forEach(t=>addTo(p,t,t.boxes)); finalize(p, stream, cap); its=rest; total-=cap; }
+      if(total>0) remChunks.push({co:c, items:its, total});
+    });
+    // 남은 자투리들을 같은 사이즈끼리 합치되, 여러 팔렛이면 균등 분배 (섞이는 칼라 2팔렛 비슷하게)
+    const poolTotal=remChunks.reduce((a,x)=>a+x.total,0);
+    if(poolTotal>0){
+      const k=Math.ceil(poolTotal/cap), base=Math.floor(poolTotal/k), extra=poolTotal%k, sizes=[];
+      for(let i=0;i<k;i++) sizes.push(base+(i<extra?1:0));
+      remChunks.sort((a,b)=> String(a.co).localeCompare(String(b.co)));
+      let pi=0, need=sizes[0], pal={items:[]}; const locals=[pal];
+      remChunks.forEach(ch=>{ ch.items.forEach(it=>{ let remain=it.boxes; while(remain>0){
+        if(need<=0){ pi++; pal={items:[]}; locals.push(pal); need=sizes[pi]; }
+        const take=Math.min(need, remain); addTo(pal,it,take); need-=take; remain-=take;
+      }});});
+      locals.forEach(p=>finalize(p, stream, cap));
     }
   });
-  flush();
-  return pallets;
+  // 보기: 작은박스 팔렛 먼저, 그다음 큰박스 — 각 스트림 안은 칼라순
+  out.sort((a,b)=>{ if(a.stream!==b.stream) return a.stream==='small'?-1:1; return String(a._ck).localeCompare(String(b._ck)); });
+  return out;
 }
 function hiPalletSheet(){
   const ctx=window._hiPlanCtx||{}; const lines=ctx.lines||[];
   if(!lines.length){ showToast('⚠ No incoming lines to plan'); return; }
-  const pallets=hiBuildPalletPlan(lines);
+  // 매니저가 드래그로 조정한 상태가 있으면 그걸 인쇄, 없으면 자동 배치
+  const pallets=(window._hiPlanPallets&&window._hiPlanPallets.length)?window._hiPlanPallets.filter(p=>p.items&&p.items.length):hiBuildPalletPlan(lines);
   if(!pallets.length){ showToast('⚠ Nothing to build'); return; }
   const totBoxes=lines.reduce((a,l)=>a+(Number(l.nb)||0),0);
   const totItems=lines.length;
@@ -18155,11 +18252,12 @@ function hiPalletSheet(){
   const cards=pallets.map((p,i)=>{
     const rows=p.items.map(it=>`<tr><td class="ck"></td><td class="st">#${esc(it.st)}</td><td>${esc(bxBaseColor(it.co))}</td><td class="sz">${esc(it.sz)}</td><td class="bx">${it.boxes}</td></tr>`).join('');
     const dest = p.bins&&p.bins.length ? ('Store at: '+p.bins.map(b=>esc(b.loc)+' ('+b.now+' now)').join(', ')) : 'New location — assign on receive';
+    const over=p.total>p.cap; const state=over?'· OVER':(p.full?'· FULL':'· partial');
     return `<div class="pallet">
-      <div class="phdr"><span class="pno">PALLET ${i+1}</span><span class="pmeta">${esc(p.colorLabel||'')}</span></div>
+      <div class="phdr"><span class="pno">PALLET ${i+1} · ${esc(p.colorLabel||'')}</span><span class="pmeta">${esc(p.cat||'')} ${state}</span></div>
       <div class="pdest">${dest}</div>
       <table class="ptbl"><thead><tr><th class="ck">✓</th><th>Style</th><th>Color</th><th>Size</th><th class="bx">Boxes</th></tr></thead><tbody>${rows}</tbody></table>
-      <div class="pfoot">TOTAL &nbsp; <b>${p.total}</b> boxes</div>
+      <div class="pfoot">TOTAL &nbsp; <b>${p.total}</b> / ${p.cap} boxes${over?' &nbsp;— OVER by '+(p.total-p.cap):(p.full?' &nbsp;— FULL':'')}</div>
     </div>`;
   }).join('');
   w.document.write(`<html><head><title>Pallet Build Sheet — ${esc(ctx.ref||'')}</title><style>
