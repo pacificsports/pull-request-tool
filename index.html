@@ -159,7 +159,7 @@ main{max-width:1100px;margin:0 auto;padding:16px;}
     <button class="btn btn-sm" onclick="doLogout()" style="padding:2px 8px;font-size:10px;" data-i18n="logout">Log out</button>
   </span>
   <select id="lang-sel" onchange="setLang(this.value)" style="font-size:11px;padding:3px 6px;border-radius:5px;border:none;background:#1d3f66;color:#fff;"><option value="ko">한국어</option><option value="en">English</option><option value="es">Español</option></select>
-  <span id="app-ver" style="font-size:10px;color:#9fb8d4;">v741</span>
+  <span id="app-ver" style="font-size:10px;color:#9fb8d4;">v742</span>
 </div>
 <script type="text/javascript" src="https://js.authorize.net/v1/Accept.js" charset="utf-8"></script>
 <div id="po-viewer" style="display:none;position:fixed;top:0;right:0;width:44%;height:100vh;background:#fff;border-left:2px solid var(--border);z-index:60;box-shadow:-6px 0 20px rgba(0,0,0,.15);">
@@ -18652,7 +18652,7 @@ function renderCustomers(){
       const addr1 = [bo.addr||prof.billAddr, bo.city||prof.billCity, String(bo.state||prof.billState||'').toUpperCase()].filter(Boolean).join(', ');
       const room = lim > 0 ? (lim - out - openOrd) : null;
       return `<tr ${over?'style="background:#fef2f2;"':''}>
-        <td class="tl" style="font-weight:700;cursor:pointer;user-select:none;position:sticky;left:0;z-index:2;background:${over?'#fef2f2':'#fff'};box-shadow:2px 0 5px rgba(15,42,74,.07);" onclick="cmToggleAR('${esc(m.name)}')" title="Click for A/R detail"><span style="color:var(--text2);font-size:10px;">${cmOpenAR===m.name?'▼':'▶'}</span> ${esc(m.name)}${over?' <span style="color:#b91c1c;font-size:10px;font-weight:900;">🔒 OVER</span>':''}${(()=>{ const br=Object.keys(m.brands||{}).filter(b=>b!==m.name); return br.length?`<div style="font-size:9.5px;font-weight:400;color:#64748b;">brands: ${br.map(esc).join(' · ')}</div>`:''; })()}</td>
+        <td class="tl" style="font-weight:700;cursor:pointer;user-select:none;position:sticky;left:0;z-index:2;background:${over?'#fef2f2':'#fff'};box-shadow:2px 0 5px rgba(15,42,74,.07);" onclick="cmToggleAR('${esc(m.name)}')" title="Click for A/R detail"><span style="color:var(--text2);font-size:10px;">${cmOpenAR===m.name?'▼':'▶'}</span> ${esc(m.name)} <button class="btn btn-sm" style="border:none;padding:0 3px;font-size:11px;color:#64748b;font-weight:400;" onclick="event.stopPropagation();cmRename('${esc(m.name)}')" title="Rename this customer (updates all their orders)">✎</button>${over?' <span style="color:#b91c1c;font-size:10px;font-weight:900;">🔒 OVER</span>':''}${(()=>{ const br=Object.keys(m.brands||{}).filter(b=>b!==m.name); return br.length?`<div style="font-size:9.5px;font-weight:400;color:#64748b;">brands: ${br.map(esc).join(' · ')}</div>`:''; })()}</td>
         <td class="tl" style="font-size:11px;color:var(--text2);max-width:190px;"><div style="display:flex;align-items:center;gap:4px;"><span style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap;" title="${esc(addr1)}">${esc(addr1)||'—'}</span><button class="btn btn-sm" style="border:none;padding:0 3px;flex-shrink:0;" onclick="openCustAddr('${esc(m.name)}')" title="Edit address">✎</button></div></td>
         <td class="tl" style="font-size:12px;min-width:230px;">${(()=>{
           const sts = cs.shipTos || [];
@@ -18732,6 +18732,31 @@ async function saveCustLink(name){
   document.getElementById('modal-custlink').remove();
   showToast('🔗 ' + name + ' linked to ' + parent);
   renderCustomers();
+}
+// ✏️ 거래처 이름 변경 — 그 거래처의 모든 주문 meta.cust 를 새 이름으로 (문서·가격표에도 반영), custStore 설정 이전 (v742)
+async function cmRename(name){
+  const cur = custGroupName(name);
+  const nw = prompt('✏️ Rename customer\n\nAll of this customer\'s orders & documents will show the new name.', cur);
+  if(nw===null) return;
+  const newName = String(nw).trim();
+  if(!newName || newName===cur) return;
+  const recs = (savedCache||[]).filter(r=> r.meta && custGroupName(r.meta.cust)===cur);
+  if(!confirm('Rename "'+cur+'" → "'+newName+'"?\n\n'+recs.length+' order(s) will be updated to the new name.')) return;
+  showToast('✏️ Renaming '+recs.length+' order(s)…');
+  let ok=0;
+  for(const r of recs){
+    r.meta = r.meta||{}; r.meta.cust = newName;
+    try{ await sbFetch('/rest/v1/pr_orders?base=eq.'+encodeURIComponent(r.base), {method:'PATCH', headers:{Prefer:'return=minimal'}, body:JSON.stringify({meta:r.meta, updated_at:new Date().toISOString()})}); ok++; }catch(e){}
+  }
+  // custStore 설정을 새 키로 이전 (IMS 링크 imsId, 이메일, 주소, 신용한도 등 유지)
+  const ok0 = custKey(cur), nk = custKey(newName);
+  const cs = custStore[ok0] || {};
+  await saveCustomer(nk, { ...(custStore[nk]||{}), ...cs, name:newName });
+  // 이 거래처를 부모로 가리키던 브랜드들의 parent 도 새 이름으로
+  for(const k of Object.keys(custStore||{})){ const c=custStore[k]; if(c && c.parent && custKey(c.parent)===ok0){ c.parent=newName; await saveCustomer(k,c); } }
+  showToast('✅ Renamed → '+newName+' ('+ok+'/'+recs.length+' orders)');
+  if(typeof renderCustomers==='function') renderCustomers();
+  if(typeof renderSaved==='function') renderSaved();
 }
 async function custUnlink(k){
   const cur = custStore[k] || {};
@@ -19483,9 +19508,11 @@ function psFabricGroup(fab){ const f=String(fab||'').trim();
   if(/^22\/1 100% Cotton$/i.test(f)) return '22/1 100% Cotton';
   if(/Heavyweight/i.test(f)) return 'Heavyweight';
   if(/Triblend/i.test(f)) return 'Triblend';
+  if(/Snow\s*Htr/i.test(f)) return 'Snow Htr';
+  if(/Raglan/i.test(f)) return 'Raglan';
   return 'Other / Specialty';
 }
-const PS_GROUP_ORDER = ['CVC','30/1 100% Cotton','22/1 100% Cotton','Heavyweight','PFD','Triblend','Other / Specialty'];
+const PS_GROUP_ORDER = ['CVC','30/1 100% Cotton','22/1 100% Cotton','Heavyweight','PFD','Triblend','Snow Htr','Raglan','Other / Specialty'];
 async function psDownloadPdf(){
   const all = psRows().filter(x=>x.p && x.p.included);
   if(!all.length){ showToast('⚠ No styles selected — use the checkboxes'); return; }
