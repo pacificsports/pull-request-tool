@@ -159,7 +159,7 @@ main{max-width:1100px;margin:0 auto;padding:16px;}
     <button class="btn btn-sm" onclick="doLogout()" style="padding:2px 8px;font-size:10px;" data-i18n="logout">Log out</button>
   </span>
   <select id="lang-sel" onchange="setLang(this.value)" style="font-size:11px;padding:3px 6px;border-radius:5px;border:none;background:#1d3f66;color:#fff;"><option value="ko">한국어</option><option value="en">English</option><option value="es">Español</option></select>
-  <span id="app-ver" style="font-size:10px;color:#9fb8d4;">v749</span>
+  <span id="app-ver" style="font-size:10px;color:#9fb8d4;">v750</span>
 </div>
 <script type="text/javascript" src="https://js.authorize.net/v1/Accept.js" charset="utf-8"></script>
 <div id="po-viewer" style="display:none;position:fixed;top:0;right:0;width:44%;height:100vh;background:#fff;border-left:2px solid var(--border);z-index:60;box-shadow:-6px 0 20px rgba(0,0,0,.15);">
@@ -2490,7 +2490,7 @@ function mergeFailedAsEmailAtts(){
     content: String(f.data).includes(',') ? String(f.data).split(',')[1] : String(f.data)
   }));
 }
-async function makePdfBlob(docHtml, attachFiles){
+async function makePdfBlob(docHtml, attachFiles, footerText){
   await loadPdfLib();
   const wrap = document.createElement('div');
   wrap.style.cssText = 'height:0;overflow:hidden;';
@@ -2505,13 +2505,21 @@ async function makePdfBlob(docHtml, attachFiles){
   await new Promise(r=>setTimeout(r, 120));
   let blob;
   try{
-    blob = await html2pdf().set({
+    let _worker = html2pdf().set({
       margin: [10,10,12,10],
       image: { type:'jpeg', quality: 0.98 },
       html2canvas: { scale: 2, useCORS: true, backgroundColor: '#ffffff' },
       jsPDF: { unit:'mm', format:'letter', orientation:'portrait' },
       pagebreak: { mode: ['css','legacy'] }
-    }).from(holder).outputPdf('blob');
+    }).from(holder).toPdf();
+    if(footerText){   // 📄 페이지 하단에 직접 찍는 footer — 흐름 콘텐츠가 아니라 새 페이지 안 만듦 (v750)
+      _worker = _worker.get('pdf').then(function(pdf){ try{
+        var ps=pdf.internal.pageSize, pw=(ps.getWidth?ps.getWidth():ps.width), ph=(ps.getHeight?ps.getHeight():ps.height), n=pdf.internal.getNumberOfPages();
+        pdf.setFontSize(8); pdf.setTextColor(150,150,150);
+        for(var i=1;i<=n;i++){ pdf.setPage(i); pdf.text(String(footerText), pw/2, ph-6, {align:'center'}); }
+      }catch(e){} });
+    }
+    blob = await _worker.outputPdf('blob');
   }finally{
     if(wrap.parentNode) document.body.removeChild(wrap);
     window.scrollTo(_sx, _sy);
@@ -2527,11 +2535,11 @@ async function makePdfBlob(docHtml, attachFiles){
   }
   return blob;
 }
-async function downloadPdfHtml(docHtml, filename, btn, attachFiles){
+async function downloadPdfHtml(docHtml, filename, btn, attachFiles, footerText){
   const orig = btn ? btn.textContent : '';
   if(btn){ btn.textContent = '⏳ Creating PDF...'; btn.disabled = true; }
   try{
-    const blob = await makePdfBlob(docHtml, attachFiles);
+    const blob = await makePdfBlob(docHtml, attachFiles, footerText);
     const a = document.createElement('a');
     a.href = URL.createObjectURL(blob);
     a.download = filename;
@@ -19558,10 +19566,9 @@ async function psDownloadPdf(){
     <div style="height:4px;"></div>
     ${adultHtml?secHead('👕 ADULTS')+adultHtml:''}
     ${kidHtml?secHead('👦 KIDS / YOUTH')+kidHtml:''}
-    <div style="margin-top:12px;border-top:1px solid #e5e7eb;padding-top:6px;text-align:center;font-size:10.5px;color:#9ca3af;font-style:italic;">Volume Pricing Available</div>
   </div>`;
   const btn = document.getElementById('ps-pdf-btn');
-  await downloadPdfHtml(docHtml, _psCust.replace(/[^a-zA-Z0-9]/g,'') + '-PRICESHEET.pdf', btn || null);
+  await downloadPdfHtml(docHtml, _psCust.replace(/[^a-zA-Z0-9]/g,'') + '-PRICESHEET.pdf', btn || null, null, 'Volume Pricing Available');
 }
 function salesLines(rec, wh){
   const iv = rec.inv && rec.inv[wh];
