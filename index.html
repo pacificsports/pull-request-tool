@@ -159,7 +159,7 @@ main{max-width:1100px;margin:0 auto;padding:16px;}
     <button class="btn btn-sm" onclick="doLogout()" style="padding:2px 8px;font-size:10px;" data-i18n="logout">Log out</button>
   </span>
   <select id="lang-sel" onchange="setLang(this.value)" style="font-size:11px;padding:3px 6px;border-radius:5px;border:none;background:#1d3f66;color:#fff;"><option value="ko">한국어</option><option value="en">English</option><option value="es">Español</option></select>
-  <span id="app-ver" style="font-size:10px;color:#9fb8d4;">v768</span>
+  <span id="app-ver" style="font-size:10px;color:#9fb8d4;">v769</span>
 </div>
 <script type="text/javascript" src="https://js.authorize.net/v1/Accept.js" charset="utf-8"></script>
 <div id="po-viewer" style="display:none;position:fixed;top:0;right:0;width:44%;height:100vh;background:#fff;border-left:2px solid var(--border);z-index:60;box-shadow:-6px 0 20px rgba(0,0,0,.15);">
@@ -8350,6 +8350,38 @@ function pchkPackSelBar(){
   </div>`;
 }
 // ═══════════ 🚛 LTL 일괄 처리 — 선택한 여러 PO를 한 화면에서 박스수 확인/수정 후 한 번에 저장 ═══════════
+// 📋 (v769) PO별 주문 라인 → "기대 내용" (full box 몇 개 + PC room 몇 장). pack_lines RPC (anon) 필요.
+async function pchkFetchLines(bases){
+  const out={};
+  if(!bases||!bases.length) return out;
+  try{
+    const r=await fetch(SB_URL+'/rest/v1/rpc/pack_lines',{method:'POST',headers:{apikey:SB_KEY,Authorization:'Bearer '+SB_KEY,'Content-Type':'application/json'},body:JSON.stringify({p_bases:bases})});
+    if(r.ok){ const j=await r.json(); if(Array.isArray(j)) j.forEach(l=>{ (out[String(l.base)]=out[String(l.base)]||[]).push(l); }); }
+  }catch(e){}
+  return out;
+}
+const _PCHK_SZI={XS:0,S:1,M:2,L:3,XL:4,'2XL':5,'3XL':6,'4XL':7,'5XL':8,'6XL':9};
+function pchkExpectedHtml(base, wh){
+  const lines=((window._ltlLines||{})[String(base)]||[]).filter(l=>String(l.wh||'')===wh && (Number(l.qty)||0)>0);
+  if(!(window._ltlLines&&window._ltlLines[String(base)])) return `<div style="font-size:10.5px;color:#94a3b8;margin-top:5px;">📋 (item detail loading…)</div>`;
+  if(!lines.length) return `<div style="font-size:10.5px;color:#94a3b8;margin-top:5px;">📋 no ${wh} items on this order</div>`;
+  lines.sort((a,b)=> String(a.style).localeCompare(String(b.style),undefined,{numeric:true}) || String(a.color).localeCompare(String(b.color)) || ((_PCHK_SZI[String(a.size).toUpperCase()]??99)-(_PCHK_SZI[String(b.size).toUpperCase()]??99)));
+  let tFull=0,tLoose=0;
+  const rowsHtml=lines.map(l=>{ const c=boxCalc({qty:Number(l.qty)||0, ppb:Number(l.ppb)||72}); tFull+=c.full; tLoose+=c.loose;
+    const parts=[];
+    if(c.full>0) parts.push(`<b style="color:#7c2d12;">full ×${c.full}</b>`);
+    if(c.loose>0) parts.push(`<span style="color:#0369a1;">PC ${c.loose}pc</span>`);
+    if(!parts.length) parts.push(`<span style="color:#94a3b8;">${l.qty}pc</span>`);
+    return `<div style="display:flex;gap:6px;font-size:11.5px;padding:2px 0;border-top:1px dashed #eef2f7;">
+      <span style="font-weight:800;color:#111;flex:none;width:44px;">${esc(l.style)}</span>
+      <span style="flex:1;min-width:0;color:#334155;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${esc(String(l.color||'').toUpperCase())} <b>${esc(String(l.size||'').toUpperCase())}</b></span>
+      <span style="flex:none;white-space:nowrap;">${parts.join(' · ')}</span>
+    </div>`;
+  }).join('');
+  return `<div style="background:#f8fafc;border:1px solid #e2e8f0;border-radius:9px;padding:6px 9px;margin-top:6px;">
+    <div style="font-size:10.5px;font-weight:800;color:#475569;margin-bottom:1px;">📋 Should contain (${wh}) — <b style="color:#7c2d12;">${tFull} full box</b>${tLoose?` · <span style="color:#0369a1;">${tLoose} PC-room pc</span>`:''}</div>
+    ${rowsHtml}</div>`;
+}
 async function pchkLtlBatch(){
   const wh=window._packWh||'SC';
   const bases=Object.keys(window._packSel||{});
@@ -8362,6 +8394,7 @@ async function pchkLtlBatch(){
   const inList='('+bases.join(',')+')';
   try{ const r=await fetch(SB_URL+'/rest/v1/pr_pack?wh=eq.'+encodeURIComponent(wh)+'&base=in.'+encodeURIComponent(inList)+'&select=base,total_boxes,via',{headers:{apikey:SB_KEY,Authorization:'Bearer '+SB_KEY}}); if(r.ok){ (await r.json()).forEach(p=>{ packMap[p.base]=p; }); } }catch(e){}
   try{ const r=await fetch(SB_URL+'/rest/v1/rpc/pack_est',{method:'POST',headers:{apikey:SB_KEY,Authorization:'Bearer '+SB_KEY,'Content-Type':'application/json'},body:JSON.stringify({p_bases:bases})}); if(r.ok){ const j=await r.json(); if(Array.isArray(j)) j.forEach(e=>{ estMap[e.base]=e; }); } }catch(e){}
+  window._ltlLines=await pchkFetchLines(bases);   // 📋 기대 내용 (v769)
   // 각 PO 박스수 프리필: 저장된 pr_pack > pcs 추정(창고별)
   window._ltlRows=bases.map(b=>{
     const info=(window._packRowInfo||{})[b]||{};
@@ -8415,10 +8448,12 @@ function pchkLtlRender(){
   const el=document.getElementById('ltl-wrap'); if(!el) return;
   const rows=window._ltlRows||[];
   el.innerHTML=`<div style="background:#fff;border-radius:12px;padding:6px 4px;margin-bottom:12px;">
-    ${rows.map((r,i)=>`<div style="display:flex;align-items:center;gap:10px;padding:11px 12px;border-bottom:1px solid #f1f5f9;">
+    ${rows.map((r,i)=>`<div style="padding:11px 12px;border-bottom:1px solid #f1f5f9;">
+      <div style="display:flex;align-items:center;gap:10px;">
       <div style="flex:1;min-width:0;"><div style="font-size:14px;font-weight:800;color:#0f2a4a;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">${esc(r.cust||'—')}</div><div style="font-size:11.5px;color:#64748b;">PO ${esc(r.po||'—')}${r.wasSaved?'':' · <span style="color:#b45309;">est</span>'}</div></div>
       <input type="number" inputmode="numeric" min="0" value="${r.boxes}" onchange="pchkLtlSet(${i},this.value)" style="width:78px;font-size:18px;padding:9px;border:2px solid #cbd5e1;border-radius:9px;text-align:center;font-weight:800;">
-      <span style="font-size:12px;color:#64748b;">box</span>
+      <span style="font-size:12px;color:#64748b;">box</span></div>
+      ${pchkExpectedHtml(r.base, window._packWh||'SC')}
     </div>`).join('')}
   </div>
   <div style="background:#374151;color:#fff;border-radius:12px;padding:14px 16px;display:flex;align-items:center;margin-bottom:12px;">
@@ -8569,6 +8604,7 @@ async function pchkPackEdit(base, cust, po, wh){
   _packBase=base; _packCust=cust; _packPo=po; _packBoxes=[]; _packTotal=''; _packBoxWh=(wh==='CA'?'CA':'SC'); _packVia='UPS';
   // 이 창고(base+wh)의 기존 저장분 로드
   try{ const r=await fetch(SB_URL+'/rest/v1/pr_pack?base=eq.'+encodeURIComponent(base)+'&wh=eq.'+encodeURIComponent(_packBoxWh)+'&select=total_boxes,boxes,via', {headers:{apikey:SB_KEY,Authorization:'Bearer '+SB_KEY}}); const j=await r.json(); if(Array.isArray(j)&&j[0]){ _packBoxes=Array.isArray(j[0].boxes)?j[0].boxes:[]; _packTotal=(j[0].total_boxes!=null?String(j[0].total_boxes):''); _packVia=(j[0].via==='LTL'?'LTL':'UPS'); } }catch(e){}
+  window._ltlLines=await pchkFetchLines([base]);   // 📋 기대 내용 (v769)
   pchkPackRender();
 }
 function pchkPackSetVia(v){ const t=document.getElementById('pack-total'); if(t) _packTotal=t.value; _packVia=(v==='LTL'?'LTL':'UPS'); pchkPackRender(); }
@@ -8581,6 +8617,7 @@ function pchkPackRender(){
     <div style="max-width:520px;margin:0 auto;">
       <div style="background:#fff;border-radius:12px;padding:14px 16px;margin-bottom:12px;">
         <div style="font-size:12px;color:#64748b;">PO <b style="color:#0f2a4a;">${esc(_packPo||'—')}</b> · ships from <b style="color:${whc};">${_packBoxWh}</b></div>
+        ${pchkExpectedHtml(_packBase, _packBoxWh)}
         <div style="font-size:12px;font-weight:800;color:#0f2a4a;margin:11px 0 6px;">How is this shipping?</div>
         <div style="display:flex;gap:8px;">
           <button onclick="pchkPackSetVia('UPS')" style="flex:1;padding:12px;border-radius:10px;border:2px solid ${!isLtl?'#7c2d12':'#cbd5e1'};background:${!isLtl?'#7c2d12':'#fff'};color:${!isLtl?'#fff':'#64748b'};font-size:15px;font-weight:800;">🏷 UPS</button>
