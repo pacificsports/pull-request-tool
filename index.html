@@ -159,7 +159,7 @@ main{max-width:1100px;margin:0 auto;padding:16px;}
     <button class="btn btn-sm" onclick="doLogout()" style="padding:2px 8px;font-size:10px;" data-i18n="logout">Log out</button>
   </span>
   <select id="lang-sel" onchange="setLang(this.value)" style="font-size:11px;padding:3px 6px;border-radius:5px;border:none;background:#1d3f66;color:#fff;"><option value="ko">한국어</option><option value="en">English</option><option value="es">Español</option></select>
-  <span id="app-ver" style="font-size:10px;color:#9fb8d4;">v770</span>
+  <span id="app-ver" style="font-size:10px;color:#9fb8d4;">v772</span>
 </div>
 <script type="text/javascript" src="https://js.authorize.net/v1/Accept.js" charset="utf-8"></script>
 <div id="po-viewer" style="display:none;position:fixed;top:0;right:0;width:44%;height:100vh;background:#fff;border-left:2px solid var(--border);z-index:60;box-shadow:-6px 0 20px rgba(0,0,0,.15);">
@@ -10482,12 +10482,21 @@ async function pcSaveRow(row){
 // ═══ ⇄ 같은 base 칼라의 다른 변형 (NATURAL ↔ NATURAL (US) 등) — shade 추적용 분리 재고 (v389) ═══
 function pcVariantSibs(style, color, wh, size){
   const base = bxBaseColor(color);
-  const cu = String(color).toUpperCase().replace(/\s+/g,' ').trim();
+  // 🐛 자기 자신을 "다른 변형"으로 세던 버그 수정 (v772)
+  //    PC Room 행의 키(pcKey)는 (US)를 base 로 합치므로 k='1364|MAKO' 한 행의 color 가 'MAKO (US)' 로 저장될 수 있다.
+  //    예전엔 color 문자열만 비교해서 그 행이 스스로의 형제로 잡혔고 → 오더 힌트에 'PC Tub 48 ⇄ SS 48' 처럼
+  //    side seam 전용 스타일(1364 등)에 있지도 않은 Tubular 변형이 나타났음. 이제 행 키로 자기 자신을 제외한다.
+  const kSelf = pcKey(style, color, wh);
+  // side seam 전용 스타일은 'X' 와 'X (SIDE SEAM)' 도 같은 칼라 — 변형으로 갈라 세지 않는다
+  const nrm = c => bxSSFix(style, String(c||'').toUpperCase().replace(/\s+/g,' ').trim());
+  const cu = nrm(color);
   const out = [];
   (pcStore||[]).forEach(r=>{
     if(String(r.style).trim().toUpperCase() !== String(style).trim().toUpperCase()) return;
     if(pcWhOf(r) !== wh) return;
-    const c = String(r.color).toUpperCase().replace(/\s+/g,' ').trim();
+    if(r.k === kSelf) return;                       // 같은 행 = 같은 변형
+    if(pcKey(style, r.color, wh) === kSelf) return; // 표기만 다른 같은 칼라((US) 등)
+    const c = nrm(r.color);
     if(c === cu) return;
     if(bxBaseColor(c) !== base) return;
     const q = Number((r.qty||{})[size])||0;
@@ -10569,6 +10578,10 @@ async function pcVarMove(style, toColor, wh, size, fromK, amt){
 // — 거래처가 변형 섞는 걸 원치 않으니, 재고 이동 대신 라인 자체의 변형을 바꾼다. 설명(desc)의 (Side Seam) 표기를 토글해서 인쇄·차감·매칭이 모두 따라오게 함.
 function pcVarSwitch(i){
   const l = (typeof poLines!=='undefined') ? poLines[i] : null; if(!l) return;
+  // side seam 전용 스타일은 Tubular 자체가 없다 — 전환 불가 (v772)
+  if(typeof bxDefaultVariant==='function' && bxDefaultVariant(l.style)==='Side Seam'){
+    showToast('⚠ '+l.style+' is side seam only — there is no tubular version'); return;
+  }
   const isSS = /side\s*seam/i.test(String(l.desc||'')+' '+String(l.rawDesc||''));
   const strip = s => String(s||'').replace(/\s*\(?\s*side\s*seam\s*\)?/ig,' ').replace(/\s{2,}/g,' ').trim();
   if(isSS){
@@ -11176,7 +11189,7 @@ function bxStyleFor(L){ return String((L&&L.style)||'').trim(); }
 function bxColorFor(L){
   let c = String((L&&L.color)||'').trim().toUpperCase();
   if(/side\s*seam/i.test(String((L&&L.desc)||'')+' '+String((L&&L.rawDesc)||'')) && c.indexOf('(SIDE SEAM)') < 0) c += ' (SIDE SEAM)';
-  return c;
+  return (typeof bxSSFix==='function') ? bxSSFix(bxStyleFor(L), c) : c;   // side seam 전용 스타일이면 접미사 제거 (v772)
 }
 function bxWh(b){ const w = String(b.wh||'').trim().toUpperCase(); return w || 'SC'; }
 // ═══ ⏳ TEMPORARY bin — 트럭 도착했는데 자리 미정일 때 임시 입고 → 나중에 진짜 위치로 재배정 (v607) ═══
@@ -11190,9 +11203,11 @@ function bxTmpCounts(){ let sc=0, ca=0; (typeof bxStore!=='undefined'?bxStore:[]
 // ⏳ staging 재고를 진짜 위치로 재배정 — 해당 창고의 staging bin 이름으로 By Location 뷰 열기
 function bxTmpAssign(wh){
   const W = String(wh||'').toUpperCase()==='CA' ? 'CA' : 'SC';
+  if(typeof showView==='function') showView('box');   // ⏳ Orders 배너에서 눌러도 먼저 Box Room 뷰로 전환 (bx-body 없으면 아무 반응 없던 버그 수정) (v771)
   const s=$('bx-search'); if(s) s.value = bxStageLocFor(W);
   if(typeof bxOpenLoc==='function') bxOpenLoc(W, 'all');
-  else renderBoxRoom();
+  else { window._bxLocMode=true; renderBoxRoom(); }
+  const bd=$('bx-body'); if(bd) bd.scrollIntoView({behavior:'smooth',block:'start'});
 }
 // ⏳ Box Room 상단 리마인더 배너 — staging 에 대기 중인 박스가 있으면 창고별로 따로 표시 (SC=FLOOR 파랑 · CA=TEMPORARY 주황)
 function bxTmpBar(){ if(typeof wqRenderAll==='function') wqRenderAll(); }
@@ -11297,8 +11312,8 @@ function dvcPfd(IT, D, ppb){
   if(st==='1392') return ['1392','30/1 PFD',size,ppb];
   if(st==='1394'){ const m2=IT.match(/^1394(2XL|3XL|XS|XL|S|M|L)$/); return ['1394','30/1 PFD', m2?m2[1]:size, ppb]; }
   if(st==='1248') return ['1248','PFD',size,ppb];
-  if(st==='1615') return ['1615','PFD',size,ppb];
-  if(st==='1690') return ['1690','PFD',size,ppb];
+  if(st==='1615') return ['1615','16/1 PFD',size,ppb];   // 16/1 원단 — 다른 PFD와 구분 (v772)
+  if(st==='1690') return ['1690','16/1 PFD',size,ppb];   // 16/1 원단 — 다른 PFD와 구분 (v772)
   if(st==='5390') return ['5390','PFD',size||'4T',ppb];
   if(st==='7390') return ['7390','30/1 PFD',size,ppb];
   if(st==='2390') return ['2390','PFD',size,ppb];
@@ -11323,7 +11338,7 @@ function dvcTryMap(style, color){
   if(sm){
     const base = sm[1];
     const cs = /\(SIDE SEAM\)/.test(color) ? color : color+' (SIDE SEAM)';
-    return [base, cs];
+    return [base, bxSSFix(base, cs)];   // 1364S → 1364 는 side seam 전용이라 접미사 없이 (v772)
   }
   return null;
 }
@@ -11395,6 +11410,7 @@ function dvcParse(rows){
     if(flags.has('ESW') && !color.includes('ESW')) color += ' ESW';
     const mp = dvcTryMap(style, color);
     if(mp){ style = mp[0]; color = mp[1]; }
+    color = bxSSFix(style, color);   // side seam 전용 스타일이면 (SIDE SEAM) 접미사 제거 (v772)
     out.push({loc:L, style, color, size, ppb, qty, qtyP});
     if(IT && window._dvcNew) window._dvcNew.push({code:IT.toUpperCase(), style, color, size, ppb});
   }
@@ -11636,6 +11652,15 @@ function bxBaseColor(c){ return String(c||'').toUpperCase().replace(/\s*\((SIDE 
 // IMS skus.variant 기준: Side Seam 전용 스타일 (표기 없는 재고 = Side Seam)
 const BX_SS_ONLY = new Set(['1180','1240','1248','1290','1292','1348','1350','1351','1352','1354','1362','1364','1390','1392','1394','1530','1532','1534','1580','1595','1600','1615','1650','1652','1690','2312','2316','2388','6535','8110','8150','8155','8180','8368','9307']);
 function bxDefaultVariant(style){ return BX_SS_ONLY.has(String(style||'').trim().toUpperCase()) ? 'Side Seam' : 'Tubular'; }
+// 🧵 Side seam 전용 스타일(BX_SS_ONLY)은 마스터 칼라에 (SIDE SEAM) 접미사를 쓰지 않는다 — 그게 기본 구성이라서.
+//    오더 설명 · DaVinci 임포트 · 라벨에서 접미사가 붙어 들어오면 여기서 떼어낸다.
+//    안 떼면 'MAKO' 와 'MAKO (SIDE SEAM)' 두 줄로 갈라져 PC Room/오더에 존재하지도 않는 Tubular 변형이 생김 (v772)
+function bxSSFix(style, color){
+  let c = String(color||'');
+  if(BX_SS_ONLY.has(String(style||'').trim().toUpperCase()))
+    c = c.replace(/\s*\(\s*(SIDE|SIE)\s*SEAM\s*\)/ig,' ').replace(/\s{2,}/g,' ').trim();
+  return c;
+}
 // 🇺🇸 US(미국실) 박스 판별 — 플래그(us) 또는 이름의 (US) (v415)
 function bxIsUS(b){ return !!(b && (b.us===true || /\(US\)/i.test(String(b.color||'')))); }
 function bxToggleUS(){
@@ -11907,7 +11932,8 @@ function pcStockHint(l, b, i){
   const sibPos = sibs.filter(x=>x.qty>0);
   const sibT = sibs.reduce((a,x)=>a+x.qty,0);
   // 이 라인이 지금 어느 변형인지 · 반대 변형 재고를 옆에 보여주고, 클릭하면 라인 전체를 그 변형으로 전환 (섞지 않음) (v441)
-  const curIsSS = /\(SIDE SEAM\)/.test(bxColorFor(l));
+  // side seam 전용 스타일은 접미사가 없어도 side seam — 없으면 Tubular로 잘못 표시됐음 (v772)
+  const curIsSS = /\(SIDE SEAM\)/.test(bxColorFor(l)) || bxDefaultVariant(bxStyleFor(l))==='Side Seam';
   const curShort = curIsSS ? 'SS' : 'Tub';
   const oppShort = curIsSS ? 'Tub' : 'SS';
   const oppFull = curIsSS ? 'Tubular' : 'Side Seam';
@@ -18796,7 +18822,7 @@ async function bxImport(file){
             if(!base && toks[0]) style = toks[0];
           }
         }
-        color = bxFixColor(color);
+        color = bxSSFix(style, bxFixColor(color));   // side seam 전용 스타일이면 (SIDE SEAM) 접미사 제거 (v772)
         if(!style || !color || !size || (!lotRaw && !SZ.includes(size))){ bad.push(i+1); continue; }
         const pcs = um ? parseInt(um[1]) : autoPpb({style,size});
         const loc = dv.loc!=null ? String(r[dv.loc]||'').trim().toUpperCase() : '';
