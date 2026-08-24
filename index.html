@@ -159,7 +159,7 @@ main{max-width:1100px;margin:0 auto;padding:16px;}
     <button class="btn btn-sm" onclick="doLogout()" style="padding:2px 8px;font-size:10px;" data-i18n="logout">Log out</button>
   </span>
   <select id="lang-sel" onchange="setLang(this.value)" style="font-size:11px;padding:3px 6px;border-radius:5px;border:none;background:#1d3f66;color:#fff;"><option value="ko">한국어</option><option value="en">English</option><option value="es">Español</option></select>
-  <span id="app-ver" style="font-size:10px;color:#9fb8d4;">v775</span>
+  <span id="app-ver" style="font-size:10px;color:#9fb8d4;">v776</span>
 </div>
 <script type="text/javascript" src="https://js.authorize.net/v1/Accept.js" charset="utf-8"></script>
 <div id="po-viewer" style="display:none;position:fixed;top:0;right:0;width:44%;height:100vh;background:#fff;border-left:2px solid var(--border);z-index:60;box-shadow:-6px 0 20px rgba(0,0,0,.15);">
@@ -8528,7 +8528,7 @@ async function pchkLtlBatch(mode){
   // 기존 pr_pack(있으면 우선) + pcs 기반 박스 추정(pack_est RPC · anon 접근 가능)
   let packMap={}, estMap={};
   const inList='('+bases.join(',')+')';
-  try{ const r=await fetch(SB_URL+'/rest/v1/pr_pack?wh=eq.'+encodeURIComponent(wh)+'&base=in.'+encodeURIComponent(inList)+'&select=base,total_boxes,via',{headers:{apikey:SB_KEY,Authorization:'Bearer '+SB_KEY}}); if(r.ok){ (await r.json()).forEach(p=>{ packMap[p.base]=p; }); } }catch(e){}
+  try{ const r=await fetch(SB_URL+'/rest/v1/pr_pack?wh=eq.'+encodeURIComponent(wh)+'&base=in.'+encodeURIComponent(inList)+'&select=base,total_boxes,via,boxes',{headers:{apikey:SB_KEY,Authorization:'Bearer '+SB_KEY}}); if(r.ok){ (await r.json()).forEach(p=>{ packMap[p.base]=p; }); } }catch(e){}
   try{ const r=await fetch(SB_URL+'/rest/v1/rpc/pack_est',{method:'POST',headers:{apikey:SB_KEY,Authorization:'Bearer '+SB_KEY,'Content-Type':'application/json'},body:JSON.stringify({p_bases:bases})}); if(r.ok){ const j=await r.json(); if(Array.isArray(j)) j.forEach(e=>{ estMap[e.base]=e; }); } }catch(e){}
   window._ltlLines=await pchkFetchLines(bases);   // 📋 기대 내용 (v769)
   // 각 PO 박스수 프리필: 저장된 pr_pack > pcs 추정(창고별)
@@ -8541,6 +8541,11 @@ async function pchkLtlBatch(mode){
   window._ltlPallets=0; window._ltlPalletDims=[];
   // 📦 UPS 는 합쳐서 박스를 줄이므로 PO별 합계가 아니라 "실제 나가는 총 박스"를 따로 받는다 — 추정 합계를 기본값으로 (v775)
   window._upsTotal=(window._ltlRows||[]).reduce((s,r)=>s+(Number(r.boxes)||0),0);
+  // 🏷 라벨용 박스 규격은 배치의 첫 PO 에 저장된다 — 이미 저장돼 있으면 불러와서 이어서 편집 (v776)
+  const lead=(window._ltlRows||[])[0];
+  const leadPack=lead?packMap[lead.base]:null;
+  window._upsBoxes=(leadPack && Array.isArray(leadPack.boxes)) ? leadPack.boxes.map(b=>({name:b.name||'', l:+b.l||0, w:+b.w||0, h:+b.h||0, wt:+b.wt||0})) : [];
+  if(M==='UPS' && window._upsBoxes.length) window._upsTotal=window._upsBoxes.length;
   pchkLtlRender();
 }
 function pchkLtlAssignText(){
@@ -8595,10 +8600,20 @@ function pchkLtlRender(){
     ? `<div style="background:#78350f;color:#fff;border-radius:12px;padding:14px 16px;margin-bottom:12px;">
         <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;">
           <span style="font-size:14px;font-weight:700;">📦 Boxes actually going out<br><span style="font-size:11px;font-weight:400;color:#fde68a;">after combining these ${rows.length} PO into shared boxes</span></span>
-          <input type="number" inputmode="numeric" min="0" value="${window._upsTotal!=null?window._upsTotal:est}" onchange="pchkUpsTotal(this.value)" style="margin-left:auto;width:96px;font-size:24px;padding:10px;border:2px solid #fbbf24;border-radius:10px;text-align:center;font-weight:900;background:#fffbeb;color:#78350f;">
+          <input id="ups-total-input" type="number" inputmode="numeric" min="0" value="${window._upsTotal!=null?window._upsTotal:est}" onchange="pchkUpsTotal(this.value)" style="margin-left:auto;width:96px;font-size:24px;padding:10px;border:2px solid #fbbf24;border-radius:10px;text-align:center;font-weight:900;background:#fffbeb;color:#78350f;">
           <span style="font-size:13px;">boxes</span>
         </div>
         <div id="ups-cmp" style="font-size:11.5px;font-weight:700;color:#fde68a;margin-top:8px;">${pchkUpsCmpText()}</div>
+      </div>
+      <div style="background:#fff;border-radius:12px;padding:12px 14px;margin-bottom:12px;">
+        <div style="display:flex;align-items:center;gap:8px;margin-bottom:8px;flex-wrap:wrap;">
+          <span style="font-size:13px;font-weight:800;color:#0f2a4a;">🏷 Box sizes &amp; weights</span>
+          <span style="font-size:11px;color:#64748b;">used for the UPS label</span>
+        </div>
+        <div id="ups-boxes"></div>
+        <button onclick="pchkPackAddBox('ups')" style="width:100%;background:#0f2a4a;color:#fff;border:none;border-radius:11px;padding:13px;font-size:15px;font-weight:800;">+ Add box</button>
+        <div id="ups-box-warn" style="font-size:11.5px;font-weight:700;margin-top:7px;"></div>
+        <div style="font-size:11px;color:#94a3b8;margin-top:5px;line-height:1.4;">🏷 These box sizes save on <b>PO ${esc((rows[0]&&rows[0].po)||'—')}</b> (first PO of this batch) — open that order to print the labels.</div>
       </div>`
     : `<div style="background:#374151;color:#fff;border-radius:12px;padding:14px 16px;display:flex;align-items:center;margin-bottom:12px;">
         <span style="font-size:14px;font-weight:700;">🚛 LTL Total (${rows.length} PO)</span>
@@ -8625,6 +8640,7 @@ function pchkLtlRender(){
   <div style="margin-bottom:8px;">${pchkNamePicker()}</div>
   <button onclick="pchkLtlBatchSave()" id="ltl-save" style="width:100%;background:${M==='UPS'?'#a16207':'#16a34a'};color:#fff;border:none;border-radius:12px;padding:16px;font-size:17px;font-weight:800;">💾 Save &amp; create bulk shipment</button>
   <div id="ltl-msg" style="font-size:12.5px;font-weight:700;height:16px;text-align:center;margin-top:6px;"></div>`;
+  if(M==='UPS') pchkUpsBoxesRender();
 }
 function pchkUpsCmpText(){
   const est=(window._ltlRows||[]).reduce((s,r)=>s+(Number(r.boxes)||0),0);
@@ -8634,7 +8650,7 @@ function pchkUpsCmpText(){
   if(d<0) return `⚠ ${t} is more than the ${est}-box estimate — double-check the count.`;
   return `Same as the ${est}-box estimate — nothing combined yet.`;
 }
-function pchkUpsTotal(val){ window._upsTotal=Math.max(0,parseInt(val,10)||0); const c=document.getElementById('ups-cmp'); if(c) c.textContent=pchkUpsCmpText(); }
+function pchkUpsTotal(val){ window._upsTotal=Math.max(0,parseInt(val,10)||0); const c=document.getElementById('ups-cmp'); if(c) c.textContent=pchkUpsCmpText(); const wn=document.getElementById('ups-box-warn'); if(wn) wn.innerHTML=pchkUpsBoxWarn(); }
 function pchkLtlSet(i,val){ if(window._ltlRows&&window._ltlRows[i]){ window._ltlRows[i].boxes=Math.max(0,parseInt(val,10)||0); } const t=document.getElementById('ltl-total'); if(t) t.textContent=(window._ltlRows||[]).reduce((s,r)=>s+(Number(r.boxes)||0),0).toLocaleString(); }
 async function pchkLtlBatchSave(){
   const wh=window._packWh||'SC'; const rows=window._ltlRows||[]; const msg=document.getElementById('ltl-msg'); const btn=document.getElementById('ltl-save');
@@ -8642,7 +8658,9 @@ async function pchkLtlBatchSave(){
   if(btn){ btn.disabled=true; btn.textContent='Saving…'; }
   const now=new Date().toISOString();
   // UPS 는 PO별 박스수가 정의되지 않으므로(박스를 공유) PO별로는 추정치를 남기고, 합친 실제 박스는 bulk shipment 에 기록한다
-  const payload=rows.map(r=>({ base:r.base, wh, via:M, cust:r.cust||null, po:r.po||null, total_boxes:Number(r.boxes)||0, boxes:[], updated_by:_pchkWho||null, updated_at:now }));
+  const upsBoxes=(M==='UPS')?(window._upsBoxes||[]):[];
+  const leadBase=(rows[0]||{}).base;   // 🏷 UPS 라벨용 박스 규격은 첫 PO 에만 저장 (핸들링비 중복 방지)
+  const payload=rows.map(r=>({ base:r.base, wh, via:M, cust:r.cust||null, po:r.po||null, total_boxes:Number(r.boxes)||0, boxes:(M==='UPS'&&r.base===leadBase)?upsBoxes:[], updated_by:_pchkWho||null, updated_at:now }));
   try{
     const r=await fetch(SB_URL+'/rest/v1/pr_pack?on_conflict=base,wh',{method:'POST',headers:{apikey:SB_KEY,Authorization:'Bearer '+SB_KEY,'Content-Type':'application/json',Prefer:'resolution=merge-duplicates,return=minimal'},body:JSON.stringify(payload)});
     if(!r.ok){ const t=await r.text(); throw new Error('HTTP '+r.status+' '+t.slice(0,120)); }
@@ -8653,8 +8671,10 @@ async function pchkLtlBatchSave(){
     const bulkRef=M+'-'+new Date().toISOString().slice(2,10).replace(/-/g,'')+'-'+Math.random().toString(36).slice(2,6).toUpperCase();
     const bulk={ ref:bulkRef, wh, status:'PENDING',
       pos:rows.map(r=>({base:r.base,cust:r.cust||'',po:r.po||'',boxes:Number(r.boxes)||0})),
-      total_boxes:tot, pallets:nPal, pallet_dims: M==='UPS' ? [] : (window._ltlPalletDims||[]).slice(0,nPal),
-      note: M==='UPS' ? ('UPS combined — '+tot+' box(es) actually shipped; '+estTot+' if sent separately') : null,
+      total_boxes:tot, pallets:nPal,
+      // UPS 는 팔레트가 없으므로 이 칸에 실제 박스 목록(규격·무게)을 담는다
+      pallet_dims: M==='UPS' ? upsBoxes : (window._ltlPalletDims||[]).slice(0,nPal),
+      note: M==='UPS' ? ('UPS combined — '+tot+' box(es) actually shipped; '+estTot+' if sent separately; labels on PO '+((rows[0]||{}).po||'')) : null,
       created_by:_pchkWho||null };
     try{ await fetch(SB_URL+'/rest/v1/pr_bulkship',{method:'POST',headers:{apikey:SB_KEY,Authorization:'Bearer '+SB_KEY,'Content-Type':'application/json',Prefer:'return=minimal'},body:JSON.stringify([bulk])}); }catch(e){}
     if(msg){ msg.style.color='#16a34a'; msg.innerHTML= M==='UPS'
@@ -8742,7 +8762,10 @@ async function bulkDetail(id){
   const posRows=(b.pos||[]).map(p=>`<tr style="border-top:1px solid #f1f5f9;"><td style="padding:5px 8px;font-weight:700;">${esc(p.cust||'—')}</td><td style="padding:5px 8px;font-family:Consolas,monospace;">${esc(p.po||'—')}</td><td style="padding:5px 8px;text-align:right;font-weight:800;">${p.boxes||0}</td></tr>`).join('');
   const dims=(b.pallet_dims||[]);
   const _isUps=/^UPS-/i.test(String(b.ref||''));   // 📦 UPS 합포장 — 팔레트 없음, PO별 박스는 참고용 추정치 (v775)
-  const dimRows=_isUps?'<div style="font-size:11.5px;color:#92400e;background:#fffbeb;border:1px solid #fde68a;border-radius:8px;padding:7px 10px;line-height:1.4;">📦 UPS combined shipment — no pallets. The per-PO box numbers below are estimates; <b>'+(b.total_boxes||0)+'</b> box(es) actually shipped.</div>':(dims.length?dims.map((x,i)=>`<div style="font-size:11.5px;color:#334155;">Pallet ${i+1}: <b style="color:#166534;">${x.bx!=null?x.bx+' box':'? box'}</b> · ${x.l||'?'}×${x.w||'?'}×${x.h||'?'} in${x.wt?' · '+x.wt+' lbs':''}</div>`).join(''):'<div style="font-size:11.5px;color:#94a3b8;">No pallet details entered.</div>');
+  const dimRows=_isUps?('<div style="font-size:11.5px;color:#92400e;background:#fffbeb;border:1px solid #fde68a;border-radius:8px;padding:7px 10px;line-height:1.4;margin-bottom:7px;">📦 UPS combined shipment — no pallets. The per-PO box numbers below are estimates; <b>'+(b.total_boxes||0)+'</b> box(es) actually shipped.</div>'
+    + (dims.length?dims.map((x,i)=>`<div style="font-size:11.5px;color:#334155;">Box ${i+1}: ${x.name?'<b>'+esc(x.name)+'</b> · ':''}${x.l||'?'}×${x.w||'?'}×${x.h||'?'} in${x.wt?' · <b>'+x.wt+' lb</b>':''}</div>`).join('')
+       +`<div style="font-size:11.5px;font-weight:800;color:#0f766e;margin-top:4px;">⚖ ${dims.reduce((a,x)=>a+(Number(x.wt)||0),0).toLocaleString()} lb total</div>`
+      :'<div style="font-size:11.5px;color:#94a3b8;">No box sizes entered.</div>')):(dims.length?dims.map((x,i)=>`<div style="font-size:11.5px;color:#334155;">Pallet ${i+1}: <b style="color:#166534;">${x.bx!=null?x.bx+' box':'? box'}</b> · ${x.l||'?'}×${x.w||'?'}×${x.h||'?'} in${x.wt?' · '+x.wt+' lbs':''}</div>`).join(''):'<div style="font-size:11.5px;color:#94a3b8;">No pallet details entered.</div>');
   const _palBx=dims.reduce((s,x)=>s+(Number(x&&x.bx)||0),0);
   const _palBxNote=(!_isUps&&dims.length)?`<div style="font-size:11px;font-weight:800;margin-top:4px;color:${_palBx===(b.total_boxes||0)?'#16a34a':'#dc2626'};">Σ boxes on pallets: ${_palBx} / ${b.total_boxes||0}${_palBx===(b.total_boxes||0)?' ✓':''}</div>`:'';
   d.innerHTML=`<div style="background:#fff;border-radius:12px;max-width:560px;width:96vw;max-height:92vh;display:flex;flex-direction:column;overflow:hidden;">
@@ -8824,7 +8847,8 @@ function pchkPackBoxesRender(){
   </div>`).join('');
 }
 function pchkPackDelBox(i){ _packBoxes.splice(i,1); pchkPackBoxesRender(); }
-function pchkPackAddBox(){
+function pchkPackAddBox(target){
+  window._pbTarget=(target==='ups')?'ups':'single';   // 📦 'ups' = UPS 합포장 배치 화면에서 열린 경우 (v776)
   const ex=document.getElementById('modal-packbox'); if(ex) ex.remove();
   const div=document.createElement('div'); div.id='modal-packbox';
   div.style.cssText='position:fixed;inset:0;background:rgba(15,23,42,.6);z-index:320;display:flex;align-items:flex-end;justify-content:center;';
@@ -8854,9 +8878,36 @@ function pchkPackConfirmBox(){
   const pv=g('pb-preset'); const name=pv!==''?(BOX_PRESETS[parseInt(pv,10)]||{}).n||'':'';
   if(!(l>0&&w>0&&h>0)){ alert('Enter L, W, H'); return; }
   if(!(wt>0)){ alert('Enter weight (lb)'); return; }
-  _packBoxes.push({name, l, w, h, wt});
+  const box={name, l, w, h, wt};
   const m=document.getElementById('modal-packbox'); if(m) m.remove();
+  if(window._pbTarget==='ups'){ window._upsBoxes=(window._upsBoxes||[]).concat([box]); pchkUpsBoxesRender(); return; }
+  _packBoxes.push(box);
   pchkPackBoxesRender();
+}
+// 📦 UPS 합포장 배치 — 실제 나가는 박스 하나하나의 규격·무게 (라벨 출력용) (v776)
+function pchkUpsBoxesRender(){
+  const el=document.getElementById('ups-boxes');
+  const boxes=window._upsBoxes||[];
+  if(el){
+    el.innerHTML = boxes.length ? boxes.map((b,i)=>`<div style="background:#fff;border:1px solid #e5e7eb;border-radius:10px;padding:9px 12px;margin-bottom:7px;display:flex;align-items:center;gap:10px;">
+      <span style="font-size:13px;font-weight:800;color:#b45309;">#${i+1}</span>
+      <div style="flex:1;font-size:13px;color:#0f2a4a;">${b.name?`<b>${esc(b.name)}</b> · `:''}${b.l}×${b.w}×${b.h} in · <b>${b.wt} lb</b></div>
+      <button onclick="pchkUpsDelBox(${i})" style="background:#fee2e2;color:#b91c1c;border:none;border-radius:7px;padding:5px 9px;font-size:12px;font-weight:800;">✕</button>
+    </div>`).join('') : '<div style="color:#94a3b8;font-size:12px;padding:6px 2px 10px;">No boxes yet — tap "+ Add box".</div>';
+  }
+  // 박스를 추가하면 "실제 나가는 총 박스"를 자동으로 맞춰준다 (직접 고쳐도 됨)
+  if(boxes.length){ window._upsTotal=boxes.length; const inp=document.getElementById('ups-total-input'); if(inp) inp.value=boxes.length; }
+  const c=document.getElementById('ups-cmp'); if(c) c.textContent=pchkUpsCmpText();
+  const wn=document.getElementById('ups-box-warn'); if(wn) wn.innerHTML=pchkUpsBoxWarn();
+}
+function pchkUpsDelBox(i){ window._upsBoxes=(window._upsBoxes||[]); window._upsBoxes.splice(i,1); pchkUpsBoxesRender(); }
+function pchkUpsBoxWarn(){
+  const boxes=(window._upsBoxes||[]).length;
+  const tot=Number(window._upsTotal)||0;
+  const wt=(window._upsBoxes||[]).reduce((a,b)=>a+(Number(b.wt)||0),0);
+  if(!boxes) return '<span style="color:#b45309;">Add each box so the manager can print UPS labels.</span>';
+  if(boxes!==tot) return `<span style="color:#dc2626;">⚠ ${boxes} box(es) listed but the total says ${tot} — make them match.</span>`;
+  return `<span style="color:#166534;">✓ ${boxes} box(es) · ${wt.toLocaleString()} lb total</span>`;
 }
 async function pchkPackSave(){
   const msg=document.getElementById('pack-msg');
