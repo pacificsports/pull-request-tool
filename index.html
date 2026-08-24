@@ -159,7 +159,7 @@ main{max-width:1100px;margin:0 auto;padding:16px;}
     <button class="btn btn-sm" onclick="doLogout()" style="padding:2px 8px;font-size:10px;" data-i18n="logout">Log out</button>
   </span>
   <select id="lang-sel" onchange="setLang(this.value)" style="font-size:11px;padding:3px 6px;border-radius:5px;border:none;background:#1d3f66;color:#fff;"><option value="ko">한국어</option><option value="en">English</option><option value="es">Español</option></select>
-  <span id="app-ver" style="font-size:10px;color:#9fb8d4;">v772</span>
+  <span id="app-ver" style="font-size:10px;color:#9fb8d4;">v773</span>
 </div>
 <script type="text/javascript" src="https://js.authorize.net/v1/Accept.js" charset="utf-8"></script>
 <div id="po-viewer" style="display:none;position:fixed;top:0;right:0;width:44%;height:100vh;background:#fff;border-left:2px solid var(--border);z-index:60;box-shadow:-6px 0 20px rgba(0,0,0,.15);">
@@ -3944,6 +3944,73 @@ function printCreditMemo(base, ra){
   const cm=(ret.received&&ret.received.cm)||ra.replace(/^RA-/,'CM-');
   printDocHtml(buildCreditMemoHtml(rec, ret), cm);
 }
+// ═══ 📚 발행된 Credit Memo 이력 (v773) ═══
+// 내용은 원래부터 오더 레코드(meta._returns[].received)에 저장돼 있었지만, 그 오더를 찾아가야만 볼 수 있었다.
+// → Credit Memo 모달 하단에 이력 목록을 붙여서, 지난 메모를 바로 눌러 열 수 있게 함.
+function cmAllMemos(){
+  const out=[];
+  ((typeof savedCache!=='undefined' && savedCache) || []).forEach(rec=>{
+    let rets=[]; try{ rets=recReturns(rec)||[]; }catch(e){ return; }
+    rets.forEach(r=>{
+      const rc = r && r.received; if(!rc || !rc.cm) return;
+      const cust=(rec.meta&&rec.meta.cust)||'';
+      out.push({
+        base: rec.base, ra: r.ra, cm: rc.cm, at: rc.at||'',
+        amt: Number(rc.creditAmount)||0,
+        pcs: (Number(rc.restockTotal)||0) + (Number(rc.failedTotal)||0),
+        po: (rec.meta&&rec.meta.po)||'', cust: cust,
+        custKey: (typeof custCanon==='function') ? custCanon(cust) : String(cust||'').trim().toUpperCase(),
+        emailed: !!rc.cmEmailedAt
+      });
+    });
+  });
+  out.sort((a,b)=>String(b.at).localeCompare(String(a.at)));   // 최신순
+  return out;
+}
+function cmHistHtml(base, ra, mode){
+  const rec=(savedCache||[]).find(s=>s.base===base);
+  const cust=(rec&&rec.meta&&rec.meta.cust)||'';
+  const key=(typeof custCanon==='function') ? custCanon(cust) : String(cust||'').trim().toUpperCase();
+  const all=cmAllMemos();
+  const mine=all.filter(m=>m.custKey===key);
+  const showAll = (mode==='all') || mine.length<=1;   // 이 거래처 것이 지금 보는 것 하나뿐이면 전체를 보여준다
+  const list = showAll ? all : mine;
+  const curRet=(recReturns(rec)||[]).find(r=>r.ra===ra) || {};
+  const curCm=(curRet.received&&curRet.received.cm)||'';
+  const tab=(m,label,n)=>`<button class="btn btn-sm" style="font-weight:800;${(showAll?(m==='all'):(m==='cust'))?'background:#0f2a4a;color:#fff;border-color:#0f2a4a;':''}" onclick="cmHistSet('${esc(base)}','${esc(ra)}','${m}')">${label} ${n}</button>`;
+  const rows = list.length ? list.map(m=>{
+    const cur = m.cm===curCm;
+    const d = m.at ? new Date(m.at).toLocaleDateString('en-US') : '';
+    return `<tr style="${cur?'background:#eff6ff;':'cursor:pointer;'}" ${cur?'':`onclick="openCreditMemo('${esc(m.base)}','${esc(m.ra)}')"`} title="${cur?'지금 보고 있는 Credit Memo':'클릭하면 이 Credit Memo 를 엽니다'}">
+      <td style="padding:5px 8px;border-bottom:1px solid #e5e7eb;font-weight:800;white-space:nowrap;color:${cur?'#1d4ed8':'#0f2a4a'};">${cur?'▸ ':''}${esc(m.cm)}</td>
+      <td style="padding:5px 8px;border-bottom:1px solid #e5e7eb;white-space:nowrap;">${esc(d)}</td>
+      <td style="padding:5px 8px;border-bottom:1px solid #e5e7eb;max-width:190px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${esc(m.cust)}</td>
+      <td style="padding:5px 8px;border-bottom:1px solid #e5e7eb;white-space:nowrap;">${esc(m.po)}</td>
+      <td style="padding:5px 8px;border-bottom:1px solid #e5e7eb;text-align:right;white-space:nowrap;">${m.pcs?m.pcs.toLocaleString()+' pcs':''}</td>
+      <td style="padding:5px 8px;border-bottom:1px solid #e5e7eb;text-align:right;font-weight:800;white-space:nowrap;">$${m.amt.toFixed(2)}</td>
+      <td style="padding:5px 8px;border-bottom:1px solid #e5e7eb;text-align:center;white-space:nowrap;">${m.emailed?'<span title="거래처에 이메일 발송됨" style="color:#0e7490;font-weight:800;">✉</span>':''}</td>
+    </tr>`;
+  }).join('') : `<tr><td colspan="7" style="padding:10px;text-align:center;color:#94a3b8;">발행된 Credit Memo 가 없습니다</td></tr>`;
+  return `<div style="background:#fff;border:1px solid #e5e7eb;border-radius:10px;margin-top:14px;overflow:hidden;">
+    <div style="display:flex;align-items:center;gap:8px;padding:9px 12px;border-bottom:1px solid #e5e7eb;background:#f8fafc;flex-wrap:wrap;">
+      <span style="font-weight:800;color:#0f2a4a;">📚 발행된 Credit Memo</span>
+      <span style="margin-left:auto;display:flex;gap:6px;">${tab('cust','이 거래처',mine.length)}${tab('all','전체',all.length)}</span>
+    </div>
+    <div style="max-height:230px;overflow-y:auto;">
+      <table style="width:100%;border-collapse:collapse;font-size:11.5px;">
+        <thead><tr style="background:#f1f5f9;color:#475569;">
+          <th style="padding:5px 8px;text-align:left;">CM #</th><th style="padding:5px 8px;text-align:left;">Date</th>
+          <th style="padding:5px 8px;text-align:left;">Customer</th><th style="padding:5px 8px;text-align:left;">PO #</th>
+          <th style="padding:5px 8px;text-align:right;">Qty</th><th style="padding:5px 8px;text-align:right;">Credit</th>
+          <th style="padding:5px 8px;text-align:center;">✉</th></tr></thead>
+        <tbody>${rows}</tbody>
+      </table>
+    </div></div>`;
+}
+function cmHistSet(base, ra, mode){
+  const box=document.getElementById('cm-hist'); if(!box) return;
+  box.innerHTML = cmHistHtml(base, ra, mode);
+}
 function openCreditMemo(base, ra){
   const rec=savedCache.find(s=>s.base===base); if(!rec) return;
   const ret=recReturns(rec).find(r=>r.ra===ra); if(!ret) return;
@@ -3955,7 +4022,7 @@ function openCreditMemo(base, ra){
   div.innerHTML=`<div style="background:#fff;border-radius:12px;max-width:840px;width:100%;max-height:92vh;display:flex;flex-direction:column;overflow:hidden;">
     <div style="background:#0f2a4a;color:#fff;padding:10px 16px;font-weight:800;display:flex;align-items:center;gap:10px;">📝 Credit Memo ${esc(cm)}
       <button class="btn btn-sm" style="margin-left:auto;background:transparent;color:#cbd5e1;border-color:#475569;" onclick="document.getElementById('modal-cm').remove()">✕</button></div>
-    <div style="overflow-y:auto;padding:16px;background:#eef2f7;">${buildCreditMemoHtml(rec, ret)}</div>
+    <div style="overflow-y:auto;padding:16px;background:#eef2f7;">${buildCreditMemoHtml(rec, ret)}<div id="cm-hist">${cmHistHtml(base, ra, 'cust')}</div></div>
     <div style="padding:10px 16px;border-top:1px solid var(--border);display:flex;gap:8px;justify-content:flex-end;flex-wrap:wrap;align-items:center;">
       <span id="cm-emailed" style="margin-right:auto;font-size:11.5px;font-weight:800;color:#166534;">${(ret.received&&ret.received.cmEmailedAt)?('✅ Emailed to customer · '+new Date(ret.received.cmEmailedAt).toLocaleString()):''}</span>
       <input class="fi" id="cm-email" type="email" value="${esc(ret.custEmail||custEmailFor(rec.meta&&rec.meta.cust)||'')}" placeholder="customer@example.com" style="flex:1;min-width:180px;">
@@ -6331,6 +6398,58 @@ async function submitPayment(){
   renderPL(); renderSaved();
 }
 // 인보이스 credit memo — 배송한 품목을 골라서 발행 (리턴 방식과 유사). 품목 선택 → 금액 자동 합산. (v679)
+// ═══ 📚 이 오더에 이미 발행된 Credit Memo 이력 (v773) ═══
+// 내용은 원래부터 저장돼 있었지만(inv[wh].memos · _returns[].received) 다시 열어볼 화면이 없었다.
+// → Credit Memo 모달 안에서 지난 메모의 품목·금액·사유·첨부를 그대로 펼쳐볼 수 있게 함.
+function memoHistRows(base){
+  const rec=((typeof savedCache!=='undefined'&&savedCache)||[]).find(s=>s.base===base);
+  if(!rec) return [];
+  const rows=[];
+  Object.keys(rec.inv||{}).forEach(w=>{
+    const iv=rec.inv[w]||{};
+    (iv.memos||[]).forEach((m,i)=>rows.push({
+      kind:'inv', wh:w, ref:iv.invNo||w, idx:i, at:m.at||'', by:m.by||'',
+      amt:Number(m.amt)||0, note:m.note||'', lines:Array.isArray(m.lines)?m.lines:[], file:!!m.file
+    }));
+  });
+  ((typeof recReturns==='function')?recReturns(rec):[]).forEach(r=>{
+    const rc=r&&r.received; if(!rc||!rc.cm) return;
+    rows.push({ kind:'ra', wh:'', ref:rc.cm, ra:r.ra, at:rc.at||'', by:rc.by||'',
+      amt:Number(rc.creditAmount)||0, note:'RA '+r.ra+' — 반품 접수', lines:Array.isArray(rc.lines)?rc.lines:[], file:false });
+  });
+  rows.sort((a,b)=>String(b.at).localeCompare(String(a.at)));   // 최신순
+  return rows;
+}
+function memoHistHtml(base){
+  const rows=memoHistRows(base);
+  const tot=rows.reduce((a,r)=>a+r.amt,0);
+  if(!rows.length) return `<div style="margin-top:12px;padding:9px 12px;border:1px dashed #e5e7eb;border-radius:8px;font-size:11.5px;color:#94a3b8;">📚 이 오더에 발행된 Credit Memo 없음 — 아래에서 기록하면 여기에 쌓입니다</div>`;
+  const item=r=>{
+    const q=r.lines.reduce((a,l)=>a+(Number(l.receivedQty!=null?l.receivedQty:l.qty)||0),0);
+    const d=r.at?new Date(r.at).toLocaleString():'';
+    const det=r.lines.length ? `<details style="margin-top:4px;"><summary style="cursor:pointer;color:#7c2d12;font-weight:700;font-size:11px;">${r.lines.length} item line(s) · ${q.toLocaleString()} pcs</summary>
+        <table style="width:100%;border-collapse:collapse;font-size:11px;margin-top:4px;">
+          <thead><tr style="background:#f8fafc;color:#64748b;"><th style="padding:3px 6px;text-align:left;">Style</th><th style="padding:3px 6px;text-align:left;">Color</th><th style="padding:3px 6px;">Size</th><th style="padding:3px 6px;text-align:right;">Qty</th><th style="padding:3px 6px;text-align:right;">Price</th><th style="padding:3px 6px;text-align:right;">Amount</th></tr></thead>
+          <tbody>${r.lines.map(l=>{ const n=Number(l.receivedQty!=null?l.receivedQty:l.qty)||0, p=Number(l.price)||0;
+            return `<tr><td style="padding:3px 6px;border-top:1px solid #eee;font-weight:700;">${esc(String(l.style||''))}</td><td style="padding:3px 6px;border-top:1px solid #eee;">${esc(String(l.color||'').toUpperCase())}</td><td style="padding:3px 6px;border-top:1px solid #eee;text-align:center;">${esc(String(l.size||'').toUpperCase())}</td><td style="padding:3px 6px;border-top:1px solid #eee;text-align:right;font-family:Consolas,monospace;">${n.toLocaleString()}</td><td style="padding:3px 6px;border-top:1px solid #eee;text-align:right;font-family:Consolas,monospace;">$${p.toFixed(2)}</td><td style="padding:3px 6px;border-top:1px solid #eee;text-align:right;font-weight:800;font-family:Consolas,monospace;">$${(n*p).toFixed(2)}</td></tr>`;
+          }).join('')}</tbody></table></details>` : '';
+    const dl = r.kind==='inv' && r.file ? ` <span onclick="dlMemoFile('${esc(base)}','${esc(r.wh)}',${r.idx})" title="첨부 파일 내려받기" style="cursor:pointer;color:#0e7490;font-weight:800;">📎</span>` : '';
+    return `<div style="padding:8px 12px;border-top:1px solid #e5e7eb;">
+      <div style="display:flex;gap:8px;align-items:baseline;flex-wrap:wrap;">
+        <span style="font-weight:800;color:#7c2d12;font-family:Consolas,monospace;">−$${r.amt.toFixed(2)}</span>
+        <span style="font-size:11px;font-weight:800;color:${r.kind==='ra'?'#7c3aed':'#0f2a4a'};background:${r.kind==='ra'?'#f5f3ff':'#eef2f7'};border-radius:10px;padding:1px 7px;">${r.kind==='ra'?'RA 반품':esc(String(r.wh))} ${esc(String(r.ref))}</span>
+        <span style="font-size:11px;color:#64748b;">${esc(d)}${r.by?' · '+esc(String(r.by).split('@')[0]):''}</span>${dl}
+      </div>
+      ${r.note?`<div style="font-size:11.5px;color:#334155;margin-top:3px;">📌 ${esc(r.note)}</div>`:''}
+      ${det}</div>`;
+  };
+  return `<div style="margin-top:12px;border:1px solid #e5e7eb;border-radius:10px;overflow:hidden;background:#fff;">
+    <div style="display:flex;align-items:center;gap:8px;padding:8px 12px;background:#fff7ed;border-bottom:1px solid #fed7aa;">
+      <span style="font-weight:800;color:#7c2d12;">📚 이미 발행된 Credit Memo</span>
+      <span style="margin-left:auto;font-weight:800;font-family:Consolas,monospace;color:#7c2d12;">${rows.length}건 · 합계 −$${tot.toFixed(2)}</span>
+    </div>
+    <div style="max-height:220px;overflow-y:auto;">${rows.map(item).join('')}</div></div>`;
+}
 function openMemoModal(){
   const rec = savedCache.find(s=>s.base===plBase); if(!rec) return;
   const iv = rec.inv && rec.inv[plWh]; if(!iv || !iv.savedAt){ showToast('⚠ Save the invoice first'); return; }
@@ -6382,6 +6501,7 @@ function openMemoModal(){
         <input type="file" id="memo-file" accept="application/pdf,image/*" onchange="memoFilePicked(this)" style="font-size:11px;">
       </div>
       <div id="memo-lines-info" style="font-size:11px;color:#166534;font-weight:700;margin-top:6px;"></div>
+      <div id="memo-hist">${memoHistHtml(plBase)}</div>
     </div>
     <div style="padding:12px 16px;border-top:1px solid var(--border);display:flex;gap:8px;justify-content:flex-end;align-items:center;">
       <span id="memo-grandtotal" style="margin-right:auto;font-size:13px;font-weight:800;color:#7c2d12;">Total: $0.00</span>
@@ -6445,7 +6565,16 @@ async function submitMemo(){
   iv.memos.push({ amt: amt, note: ($('memo-note')||{}).value || '', at: new Date().toISOString(), by: (SESS&&SESS.email)||'', file: window._memoFile || null, lines: window._memoLines || null });
   try{ await sbFetch('/rest/v1/pr_orders?base=eq.'+encodeURIComponent(plBase), {method:'PATCH', headers:{Prefer:'return=minimal'}, body:JSON.stringify({inv:rec.inv, updated_at:new Date().toISOString()})}); }catch(e){}
   logHist(plBase, 'Credit memo $' + amt.toFixed(2) + ' — ' + plWh + ' (' + (iv.invNo||'') + ')' + (window._memoLines ? ' [' + window._memoLines.length + ' items]' : ''));
-  const m = document.getElementById('modal-memo'); if(m) m.remove();
+  // 모달을 닫지 않고 이력만 갱신 — 방금 기록한 게 저장됐는지 바로 눈으로 확인 (v773)
+  const hist = document.getElementById('memo-hist'); if(hist) hist.innerHTML = memoHistHtml(plBase);
+  const am = $('memo-amt'); if(am) am.value = '';
+  const nt = $('memo-note'); if(nt) nt.value = '';
+  const fi = $('memo-file'); if(fi) fi.value = '';
+  const li = $('memo-lines-info'); if(li) li.textContent = '';
+  const gt = document.getElementById('memo-grandtotal'); if(gt) gt.textContent = 'Total: $0.00';
+  document.querySelectorAll('#modal-memo .memo-q').forEach(inp=>{ inp.value=''; });
+  document.querySelectorAll('#modal-memo [id^="memo-lt-"]').forEach(td=>{ td.textContent='$0.00'; });
+  window._memoFile = null; window._memoLines = null; window._memoAmtManual = false;
   showToast('📝 Credit Memo recorded — deducted from sales');
   renderPL(); renderSaved();
 }
