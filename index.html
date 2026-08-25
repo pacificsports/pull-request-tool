@@ -159,7 +159,7 @@ main{max-width:1100px;margin:0 auto;padding:16px;}
     <button class="btn btn-sm" onclick="doLogout()" style="padding:2px 8px;font-size:10px;" data-i18n="logout">Log out</button>
   </span>
   <select id="lang-sel" onchange="setLang(this.value)" style="font-size:11px;padding:3px 6px;border-radius:5px;border:none;background:#1d3f66;color:#fff;"><option value="ko">한국어</option><option value="en">English</option><option value="es">Español</option></select>
-  <span id="app-ver" style="font-size:10px;color:#9fb8d4;">v777</span>
+  <span id="app-ver" style="font-size:10px;color:#9fb8d4;">v778</span>
 </div>
 <script type="text/javascript" src="https://js.authorize.net/v1/Accept.js" charset="utf-8"></script>
 <div id="po-viewer" style="display:none;position:fixed;top:0;right:0;width:44%;height:100vh;background:#fff;border-left:2px solid var(--border);z-index:60;box-shadow:-6px 0 20px rgba(0,0,0,.15);">
@@ -8403,6 +8403,7 @@ function pchkEmpMenu(){
       <button onclick="pchkReqOpen()" style="background:#0f2a4a;color:#fff;border:none;border-radius:16px;padding:28px 22px;font-size:21px;font-weight:800;box-shadow:0 3px 10px rgba(0,0,0,.15);text-align:left;">📦 Request a Box<div style="font-size:12.5px;font-weight:500;opacity:.85;margin-top:6px;">Ask a manager to move a box to the PC room</div></button>
       <button onclick="pchkEmpCapture()" style="background:#0891b2;color:#fff;border:none;border-radius:16px;padding:28px 22px;font-size:21px;font-weight:800;box-shadow:0 3px 10px rgba(0,0,0,.15);text-align:left;">📸 Check Physical Inventory<div style="font-size:12.5px;font-weight:500;opacity:.85;margin-top:6px;">Count a pallet with photos</div></button>
       <button onclick="pchkPackOpen()" style="background:#b45309;color:#fff;border:none;border-radius:16px;padding:28px 22px;font-size:21px;font-weight:800;box-shadow:0 3px 10px rgba(0,0,0,.15);text-align:left;">📦 Pending Orders — Pack Boxes<div style="font-size:12.5px;font-weight:500;opacity:.85;margin-top:6px;">Pick a PO, add each box's size &amp; weight for the UPS label</div></button>
+      <button onclick="scanOpen()" style="background:#0e7490;color:#fff;border:none;border-radius:16px;padding:28px 22px;font-size:21px;font-weight:800;box-shadow:0 3px 10px rgba(0,0,0,.15);text-align:left;">📷 Receive / Transfer — Scan Boxes<div style="font-size:12.5px;font-weight:500;opacity:.85;margin-top:6px;">Scan the cartons and check them against the expected list</div></button>
     </div>
   </div>`;
 }
@@ -8684,6 +8685,330 @@ async function pchkLtlBatchSave(){
     setTimeout(pchkPackOpen, 1800);
   }catch(e){ if(msg){ msg.style.color='#dc2626'; msg.textContent='Could not save: '+(e.message||e); } if(btn){ btn.disabled=false; btn.textContent='💾 Save & create bulk shipment'; } }
 }
+// ═══════════ 📷 Box QR Scan — Receive / Transfer / Order 검수 (v778 · Phase 1 = 읽기 전용) ═══════════
+// 라벨 QR 은 박스 데이터를 URL 해시에 담고 있다:
+//   https://pacificsports.github.io/box/#s=8368&c=ROOT+BEER&z=XL&q=72+PCS&con=...&ctn=0-00035&sscc=1086001639910000...
+// 팔레트 전체를 한 장 찍으면 QR 이 ~85px 라 하나도 안 읽힌다(실측). 그래서 폰을 가까이 대고 훑는 라이브 스캔.
+// 중복 제거는 SSCC(카톤 전역 고유) 로 한다. ctn 은 컴퓨터별로만 고유해서 충돌 가능 — 사람에게 보여주기만.
+// 대조는 style|color|size 개수 단위 (아이티가 카톤을 개별 등록하지 않으므로).
+const SCAN_QR_LIB = 'https://cdn.jsdelivr.net/npm/jsqr@1.4.0/dist/jsQR.js';
+let _scan = null;   // {mode,ref,title,exp:[{style,color,size,qty}],seen:Map,manual:{},wh}
+
+function scanKeyOf(style, color, size){
+  const st = String(style||'').trim().toUpperCase();
+  let c = String(color||'').toUpperCase();
+  try{ if(typeof pcMergeColor==='function') c = pcMergeColor(c); }catch(e){}      // (US) 흡수
+  try{ if(typeof bxBaseColor==='function') c = bxBaseColor(c); }catch(e){}        // (SIDE SEAM)/(US) 흡수
+  c = c.replace(/\s+/g,' ').trim();
+  return st + '|' + c + '|' + String(size||'').trim().toUpperCase();
+}
+// QR 문자열 → 박스 정보. URL 이 아니어도 파라미터만 있으면 읽는다.
+function scanParseQr(text){
+  try{
+    const t = String(text||'').trim(); if(!t) return null;
+    const hash = t.includes('#') ? t.slice(t.indexOf('#')+1) : (t.includes('=') ? t : '');
+    if(!hash) return null;
+    const p = new URLSearchParams(hash);
+    const style = String(p.get('s')||'').trim();
+    if(!style) return null;
+    const ctn = String(p.get('ctn')||'').trim();
+    const sscc = String(p.get('sscc')||'').trim();
+    return { sscc: sscc || ('NOSSCC:'+style+'|'+ctn), hasSscc: !!sscc, ctn,
+      style, color: String(p.get('c')||'').trim(), size: String(p.get('z')||'').trim(),
+      qty: String(p.get('q')||'').trim(), con: String(p.get('con')||'').trim() };
+  }catch(e){ return null; }
+}
+// ── 기대 목록 만들기 ──
+function scanExpInbound(rec){
+  const m = {};
+  (rec.lines||[]).forEach(l=>{ const n = Number(l.boxes)||0; if(n<=0) return;
+    const k = scanKeyOf(l.style,l.color,l.size);
+    (m[k] = m[k] || {style:l.style, color:l.color, size:l.size, qty:0}).qty += n; });
+  return Object.values(m);
+}
+function scanExpTransfer(rec){
+  const m = {};
+  (rec.lines||[]).forEach(l=>{ const n = Array.isArray(l.ids) ? l.ids.length : (Number(l.boxes)||1);
+    const k = scanKeyOf(l.style,l.color,l.size);
+    (m[k] = m[k] || {style:l.style, color:l.color, size:l.size, qty:0}).qty += n; });
+  return Object.values(m);
+}
+function scanExpOrder(base, wh){
+  const m = {};
+  ((window._ltlLines||{})[String(base)]||[]).forEach(l=>{
+    if(String(l.wh||'') !== wh) return;
+    const c = (typeof boxCalc==='function') ? boxCalc({qty:Number(l.qty)||0, ppb:Number(l.ppb)||72}) : {full:0};
+    if(!c.full) return;                                   // 풀박스만 스캔 대상 (낱장은 PC Room)
+    const k = scanKeyOf(l.style,l.color,l.size);
+    (m[k] = m[k] || {style:l.style, color:l.color, size:l.size, qty:0}).qty += c.full; });
+  return Object.values(m);
+}
+// ── 대조 ──
+function scanTally(){
+  const t = {};
+  if(_scan){ _scan.seen.forEach(v=>{ t[v.key] = (t[v.key]||0) + 1; });
+    Object.keys(_scan.manual||{}).forEach(k=>{ t[k] = (t[k]||0) + (Number(_scan.manual[k])||0); }); }
+  return t;
+}
+function scanReconcile(){
+  const tally = scanTally(), rows = [], used = {};
+  (_scan.exp||[]).forEach(e=>{
+    const k = scanKeyOf(e.style,e.color,e.size); used[k] = 1;
+    const got = Number(tally[k])||0;
+    rows.push({ k, style:e.style, color:e.color, size:e.size, exp:e.qty, got, diff:got-e.qty,
+      st: got===e.qty ? 'match' : (got===0 ? 'missing' : (got<e.qty ? 'short' : 'over')) });
+  });
+  Object.keys(tally).forEach(k=>{ if(used[k]) return;
+    const p = k.split('|');
+    rows.push({ k, style:p[0], color:p[1], size:p[2], exp:0, got:tally[k], diff:tally[k], st:'extra' });
+  });
+  const ord = {short:0, missing:1, over:2, extra:3, match:4};
+  rows.sort((a,b)=> (ord[a.st]-ord[b.st]) || String(a.style).localeCompare(String(b.style),undefined,{numeric:true}) || String(a.color).localeCompare(String(b.color)));
+  return rows;
+}
+const SCAN_ST = {
+  match:  {t:'✓ match',      c:'#475569', bg:'#f1f5f9'},
+  short:  {t:'⚠ short',      c:'#b91c1c', bg:'#fef2f2'},
+  missing:{t:'⚠ none came',  c:'#b91c1c', bg:'#fef2f2'},
+  over:   {t:'⚠ over',       c:'#b45309', bg:'#fff7ed'},
+  extra:  {t:'⚠ not on list',c:'#7c3aed', bg:'#f5f3ff'}
+};
+// ═══ 화면 1: Receive / Transfer 고르기 ═══
+async function scanOpen(){
+  pchkWhoLoad();
+  const ov = pchkEmpEl();
+  ov.innerHTML = `<div style="background:#0e7490;color:#fff;padding:14px 16px;display:flex;align-items:center;gap:10px;position:sticky;top:0;z-index:5;"><button onclick="pchkEmpMenu()" style="background:rgba(255,255,255,.2);color:#fff;border:none;border-radius:8px;padding:6px 11px;font-size:13px;font-weight:700;">← Menu</button><span style="font-size:17px;font-weight:800;">📷 Receive / Transfer</span></div>
+  <div style="flex:1;background:#f1f5f9;padding:16px 14px;">
+    <div style="max-width:520px;margin:0 auto;">
+      <div style="display:flex;gap:8px;margin-bottom:12px;">
+        <button id="scan-tab-IN" onclick="scanPick('IN')" style="flex:1;padding:13px;border-radius:10px;border:2px solid #0e7490;background:#0e7490;color:#fff;font-size:15px;font-weight:800;">🇭🇹 Receive</button>
+        <button id="scan-tab-TR" onclick="scanPick('TR')" style="flex:1;padding:13px;border-radius:10px;border:2px solid #cbd5e1;background:#fff;color:#64748b;font-size:15px;font-weight:800;">🚚 Transfer</button>
+      </div>
+      <div id="scan-list"><div style="color:#94a3b8;font-size:12px;padding:6px;">Loading…</div></div>
+    </div>
+  </div>`;
+  scanPick('IN');
+}
+async function scanPick(mode){
+  const M = (mode==='TR') ? 'TR' : 'IN';
+  window._scanMode = M;
+  ['IN','TR'].forEach(k=>{ const b=document.getElementById('scan-tab-'+k); if(!b) return; const on=(k===M);
+    b.style.background = on?'#0e7490':'#fff'; b.style.color = on?'#fff':'#64748b'; b.style.borderColor = on?'#0e7490':'#cbd5e1'; });
+  const el = document.getElementById('scan-list'); if(!el) return;
+  el.innerHTML = '<div style="color:#94a3b8;font-size:12px;padding:6px;">Loading…</div>';
+  let rows = [];
+  try{
+    const url = (M==='IN')
+      ? '/rest/v1/pr_inbound?select=id,ref,status,lines,created_at&status=eq.PENDING&order=created_at.desc&limit=30'
+      : '/rest/v1/pr_transfers?select=id,ref,status,lines,meta,created_at&status=in.(LOADING,TRANSIT)&order=created_at.desc&limit=30';
+    const r = await sbFetch(url); if(r.ok) rows = await r.json();
+  }catch(e){}
+  if(!Array.isArray(rows) || !rows.length){
+    el.innerHTML = `<div style="background:#fff;border-radius:12px;padding:22px;text-align:center;color:#94a3b8;font-size:13px;">${M==='IN'?'No incoming shipment waiting.':'No transfer in transit.'}</div>`;
+    return;
+  }
+  el.innerHTML = rows.map(rec=>{
+    const exp = (M==='IN') ? scanExpInbound(rec) : scanExpTransfer(rec);
+    const boxes = exp.reduce((a,x)=>a+x.qty,0);
+    const route = (M==='TR' && rec.meta && rec.meta.route) ? String(rec.meta.route) : '';
+    return `<button onclick="scanStart('${M}','${esc(String(rec.id))}')" style="display:block;width:100%;text-align:left;background:#fff;border:1px solid #cbd5e1;border-radius:12px;padding:14px;margin-bottom:9px;">
+      <div style="font-size:16px;font-weight:800;color:#0f2a4a;">${esc(rec.ref||String(rec.id).slice(0,8))} <span style="font-size:10.5px;font-weight:800;color:#0e7490;background:#ecfeff;border-radius:20px;padding:2px 8px;">${esc(String(rec.status||''))}</span></div>
+      <div style="font-size:12px;color:#64748b;margin-top:3px;">${exp.length} line · <b>${boxes.toLocaleString()}</b> box expected${route?' · '+esc(route):''}</div>
+      <div style="font-size:13px;font-weight:800;color:#0e7490;margin-top:6px;">📷 Scan ›</div>
+    </button>`;
+  }).join('');
+}
+// ═══ 화면 2: 스캔 세션 ═══
+async function scanStart(mode, id){
+  let rec = null;
+  try{
+    const tbl = (mode==='TR') ? 'pr_transfers' : 'pr_inbound';
+    const r = await sbFetch('/rest/v1/'+tbl+'?id=eq.'+encodeURIComponent(id)+'&select=*');
+    if(r.ok) rec = (await r.json())[0];
+  }catch(e){}
+  if(!rec){ showToast('⚠ Not found'); return; }
+  _scan = { mode, id, ref: rec.ref||'', title: (mode==='TR'?'🚚 Transfer ':'🇭🇹 Receive ')+(rec.ref||''),
+    exp: (mode==='TR') ? scanExpTransfer(rec) : scanExpInbound(rec), seen: new Map(), manual: {} };
+  scanSession();
+}
+function scanStartOrder(base, wh, label){
+  _scan = { mode:'PO', id:base, ref:label||base, title:'📦 Order '+(label||base),
+    exp: scanExpOrder(base, wh), seen: new Map(), manual: {} };
+  scanSession();
+}
+function scanSession(){
+  const ov = pchkEmpEl();
+  const expTot = (_scan.exp||[]).reduce((a,x)=>a+x.qty,0);
+  ov.innerHTML = `<div style="background:#0e7490;color:#fff;padding:14px 16px;display:flex;align-items:center;gap:10px;position:sticky;top:0;z-index:5;"><button onclick="scanExit()" style="background:rgba(255,255,255,.2);color:#fff;border:none;border-radius:8px;padding:6px 11px;font-size:13px;font-weight:700;">← Back</button><span style="font-size:16px;font-weight:800;">${esc(_scan.title)}</span></div>
+  <div style="flex:1;background:#f1f5f9;padding:14px;">
+    <div style="max-width:560px;margin:0 auto;">
+      <div style="background:#0f2a4a;color:#fff;border-radius:12px;padding:14px 16px;display:flex;align-items:center;gap:10px;margin-bottom:12px;">
+        <div><div style="font-size:11px;color:#94a3b8;font-weight:700;">SCANNED</div>
+          <div style="font-size:30px;font-weight:900;line-height:1;"><span id="scan-n">0</span><span style="font-size:15px;color:#94a3b8;"> / ${expTot.toLocaleString()}</span></div></div>
+        <button onclick="scanCam()" style="margin-left:auto;background:#22c55e;color:#fff;border:none;border-radius:11px;padding:14px 20px;font-size:17px;font-weight:800;">📷 Scan ▸</button>
+      </div>
+      <div style="font-size:11px;color:#64748b;margin-bottom:8px;line-height:1.5;">Hold the phone close enough that <b>4–6 boxes</b> fill the screen, then sweep across the pallet. Each box beeps once — scanning the same box again does not double-count. If a label is torn or unreadable, use <b>＋</b> on that row.</div>
+      <div id="scan-report"></div>
+    </div>
+  </div>`;
+  scanRender();
+}
+function scanExit(){ scanStop(); if(_scan && _scan.mode==='PO'){ _scan=null; pchkPackOpen(); } else { _scan=null; scanOpen(); } }
+function scanRender(){
+  const el = document.getElementById('scan-report'); if(!el || !_scan) return;
+  const rows = scanReconcile();
+  const tally = scanTally();
+  const got = Object.keys(tally).reduce((a,k)=>a+tally[k],0);
+  const n = document.getElementById('scan-n'); if(n) n.textContent = got.toLocaleString();
+  const bad = rows.filter(r=>r.st!=='match').length;
+  el.innerHTML = `<div style="background:#fff;border-radius:12px;overflow:hidden;border:1px solid #e5e7eb;">
+    <div style="padding:9px 12px;background:${bad?'#fef2f2':'#f0fdf4'};border-bottom:1px solid #e5e7eb;font-size:12.5px;font-weight:800;color:${bad?'#b91c1c':'#166534'};">${bad? bad+' line(s) do not match' : '✓ Everything matches'}</div>
+    <div style="max-height:52vh;overflow-y:auto;">
+    <table style="width:100%;border-collapse:collapse;font-size:12px;">
+      <thead><tr style="background:#f1f5f9;color:#475569;">
+        <th style="padding:6px 7px;text-align:left;">Style</th><th style="padding:6px 7px;text-align:left;">Color</th>
+        <th style="padding:6px 7px;">Size</th><th style="padding:6px 7px;text-align:right;">Exp</th>
+        <th style="padding:6px 7px;text-align:right;">Scan</th><th style="padding:6px 7px;text-align:left;">Status</th>
+        <th style="padding:6px 5px;"></th></tr></thead>
+      <tbody>${rows.length ? rows.map(r=>{ const s=SCAN_ST[r.st];
+        const man = Number((_scan.manual||{})[r.k])||0;
+        return `<tr style="background:${s.bg};border-top:1px solid #e5e7eb;">
+          <td style="padding:6px 7px;font-weight:800;">${esc(String(r.style))}</td>
+          <td style="padding:6px 7px;max-width:130px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${esc(String(r.color))}</td>
+          <td style="padding:6px 7px;text-align:center;font-weight:700;">${esc(String(r.size))}</td>
+          <td style="padding:6px 7px;text-align:right;font-family:Consolas,monospace;">${r.exp||''}</td>
+          <td style="padding:6px 7px;text-align:right;font-family:Consolas,monospace;font-weight:800;">${r.got}${man?`<span style="font-size:9px;color:#0e7490;"> +${man}m</span>`:''}</td>
+          <td style="padding:6px 7px;font-weight:800;color:${s.c};white-space:nowrap;">${s.t}${r.st==='short'?' '+(-r.diff):''}${r.st==='over'?' '+r.diff:''}</td>
+          <td style="padding:4px 5px;white-space:nowrap;">
+            <button onclick="scanManual('${esc(r.k)}',1)" title="Label unreadable — count this box by hand" style="background:#0e7490;color:#fff;border:none;border-radius:6px;padding:4px 8px;font-size:12px;font-weight:800;">＋</button>
+            ${man?`<button onclick="scanManual('${esc(r.k)}',-1)" title="Undo one manual count" style="background:#e2e8f0;color:#334155;border:none;border-radius:6px;padding:4px 7px;font-size:12px;font-weight:800;margin-left:3px;">−</button>`:''}
+          </td></tr>`; }).join('')
+        : '<tr><td colspan="7" style="padding:16px;text-align:center;color:#94a3b8;">Nothing on the expected list.</td></tr>'}
+      </tbody></table></div></div>`;
+}
+function scanManual(key, d){
+  if(!_scan) return;
+  _scan.manual = _scan.manual || {};
+  const v = (Number(_scan.manual[key])||0) + d;
+  if(v>0) _scan.manual[key]=v; else delete _scan.manual[key];
+  scanRender();
+}
+// ═══ 카메라 + 디코더 ═══
+function scanBeep(ok){
+  try{
+    const C = window.AudioContext||window.webkitAudioContext; if(!C) return;
+    window._scanAC = window._scanAC || new C();
+    const ac = window._scanAC; if(ac.state==='suspended') ac.resume();
+    const o = ac.createOscillator(), g = ac.createGain();
+    o.type='square'; o.frequency.value = ok?1180:420; g.gain.value=0.06;
+    o.connect(g); g.connect(ac.destination); o.start();
+    o.stop(ac.currentTime + (ok?0.07:0.18));
+  }catch(e){}
+}
+function scanLoadJsQr(){
+  return new Promise((res,rej)=>{
+    if(window.jsQR) return res();
+    const s=document.createElement('script'); s.src=SCAN_QR_LIB;
+    s.onload=()=>res(); s.onerror=()=>rej(new Error('QR library could not load'));
+    document.head.appendChild(s);
+  });
+}
+async function scanCam(){
+  if(!_scan){ return; }
+  const ov = document.createElement('div'); ov.id='scan-cam';
+  ov.style.cssText='position:fixed;inset:0;background:#000;z-index:400;display:flex;flex-direction:column;';
+  ov.innerHTML=`<video id="scan-video" playsinline muted autoplay style="position:absolute;inset:0;width:100%;height:100%;object-fit:cover;"></video>
+    <div style="position:absolute;inset:0;pointer-events:none;box-shadow:inset 0 0 0 3px rgba(34,197,94,.35);"></div>
+    <div style="position:relative;padding:12px 14px;background:linear-gradient(#000c,#0000);color:#fff;display:flex;align-items:center;gap:10px;">
+      <div><div style="font-size:10.5px;color:#a5f3fc;font-weight:800;">SCANNED</div>
+        <div style="font-size:26px;font-weight:900;line-height:1;"><span id="scan-cam-n">0</span></div></div>
+      <div id="scan-cam-last" style="flex:1;font-size:12px;color:#e2e8f0;line-height:1.35;"></div>
+      <button onclick="scanStop()" style="background:#fff;color:#0f172a;border:none;border-radius:10px;padding:12px 18px;font-size:15px;font-weight:800;">Done</button>
+    </div>
+    <div id="scan-cam-msg" style="position:absolute;left:0;right:0;bottom:26px;text-align:center;color:#fff;font-size:12.5px;font-weight:700;text-shadow:0 1px 3px #000;"></div>`;
+  document.body.appendChild(ov);
+  const msg = t => { const m=document.getElementById('scan-cam-msg'); if(m) m.innerHTML=t; };
+  const video = document.getElementById('scan-video');
+  let stream = null;
+  try{
+    stream = await navigator.mediaDevices.getUserMedia({ video:{ facingMode:{ideal:'environment'}, width:{ideal:1920}, height:{ideal:1080} }, audio:false });
+  }catch(e){ msg('⚠ Camera blocked — allow camera access for psflowx.com in your browser settings.'); return; }
+  window._scanStream = stream; video.srcObject = stream;
+  try{ await video.play(); }catch(e){}
+  let detector = null, useNative = false;
+  try{
+    if('BarcodeDetector' in window){
+      const fmts = await BarcodeDetector.getSupportedFormats();
+      if(fmts.includes('qr_code')){ detector = new BarcodeDetector({formats:['qr_code']}); useNative = true; }
+    }
+  }catch(e){}
+  if(!useNative){
+    msg('Loading scanner…');
+    try{ await scanLoadJsQr(); }catch(e){ msg('⚠ '+e.message); return; }
+  }
+  msg(useNative ? 'Sweep across the boxes — 4–6 boxes in view.' : 'iPhone mode — move a little slower.');
+  const cv = document.createElement('canvas'); const cx = cv.getContext('2d', {willReadFrequently:true});
+  let tile = 0, busy = false;
+  window._scanRun = true;
+  const step = async () => {
+    if(!window._scanRun) return;
+    if(!busy && video.videoWidth){
+      busy = true;
+      try{
+        const MAXW = 1280;
+        const sc = Math.min(1, MAXW/video.videoWidth);
+        cv.width = Math.round(video.videoWidth*sc); cv.height = Math.round(video.videoHeight*sc);
+        cx.drawImage(video, 0, 0, cv.width, cv.height);
+        let hits = [];
+        if(useNative){
+          const found = await detector.detect(cv);
+          hits = (found||[]).map(f=>f.rawValue);
+        }else{
+          // jsQR 은 프레임당 1개 — 전체 + 4분면을 번갈아 훑어 여러 개를 빠르게 주워담는다
+          const regions = [[0,0,cv.width,cv.height],
+            [0,0,cv.width/2,cv.height/2],[cv.width/2,0,cv.width/2,cv.height/2],
+            [0,cv.height/2,cv.width/2,cv.height/2],[cv.width/2,cv.height/2,cv.width/2,cv.height/2]];
+          const r = regions[tile % regions.length]; tile++;
+          const d = cx.getImageData(Math.round(r[0]),Math.round(r[1]),Math.round(r[2]),Math.round(r[3]));
+          const q = window.jsQR(d.data, d.width, d.height, {inversionAttempts:'dontInvert'});
+          if(q && q.data) hits = [q.data];
+        }
+        if(hits.length) scanAccept(hits);
+      }catch(e){}
+      busy = false;
+    }
+    requestAnimationFrame(step);
+  };
+  requestAnimationFrame(step);
+}
+function scanAccept(texts){
+  if(!_scan) return;
+  let added = 0, dup = 0, bad = 0, last = null;
+  texts.forEach(t=>{
+    const b = scanParseQr(t);
+    if(!b){ bad++; return; }
+    if(_scan.seen.has(b.sscc)){ dup++; return; }
+    b.key = scanKeyOf(b.style, b.color, b.size);
+    _scan.seen.set(b.sscc, b);
+    added++; last = b;
+  });
+  if(added){
+    scanBeep(true);
+    const n = document.getElementById('scan-cam-n'); if(n) n.textContent = _scan.seen.size.toLocaleString();
+    const l = document.getElementById('scan-cam-last');
+    if(l && last) l.innerHTML = `<b>${esc(last.style)}</b> ${esc(last.color)} · ${esc(last.size)}${last.ctn?` <span style="color:#a5f3fc;">#${esc(last.ctn)}</span>`:''}${added>1?` <span style="color:#86efac;">+${added}</span>`:''}`;
+    scanRender();
+  }
+  if(bad && !added) scanBeep(false);
+}
+function scanStop(){
+  window._scanRun = false;
+  try{ (window._scanStream||{getTracks:()=>[]}).getTracks().forEach(t=>t.stop()); }catch(e){}
+  window._scanStream = null;
+  const ov = document.getElementById('scan-cam'); if(ov) ov.remove();
+  scanRender();
+}
+
 // ═══════ 📦 Bulk LTL Shipments (매니저) — 직원이 /pic에서 묶은 LTL 트럭 검토 ═══════
 // 🚛 직원이 /pic에서 묶어 저장한 LTL 배치 → 매니저 오더 화면 상단 배너. 한 번 눌러 그 PO들 자동 선택 + Inform Customer 자동 채움.
 async function bulkBadge(){
@@ -8834,6 +9159,7 @@ function pchkPackRender(){
         <label style="display:flex;align-items:center;gap:10px;margin-top:14px;font-size:13px;font-weight:800;color:#0f2a4a;">Number of boxes
           <input id="pack-total" type="number" inputmode="numeric" value="${esc(String(_packTotal))}" onchange="_packTotal=this.value" style="width:80px;font-size:17px;padding:8px;border:2px solid #cbd5e1;border-radius:9px;text-align:center;"></label>
         <div style="font-size:11px;color:#94a3b8;margin-top:4px;">${isLtl?'🚛 LTL — box count is enough. Per-box size is optional.':'🏷 UPS — add each box size &amp; weight below (used for the shipping label).'}</div>
+        <button onclick="scanStartOrder('${esc(_packBase)}','${esc(_packBoxWh)}','${esc(String(_packPo||''))}')" style="width:100%;margin-top:11px;background:#0e7490;color:#fff;border:none;border-radius:10px;padding:12px;font-size:14px;font-weight:800;">📷 Scan boxes &amp; check against this PO</button>
       </div>
       ${isLtl?'':`<div id="pack-boxes"></div>
       <button onclick="pchkPackAddBox()" style="width:100%;background:#0f2a4a;color:#fff;border:none;border-radius:11px;padding:14px;font-size:16px;font-weight:800;margin-top:4px;">+ Add box</button>`}
