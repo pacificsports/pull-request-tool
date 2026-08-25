@@ -159,7 +159,7 @@ main{max-width:1100px;margin:0 auto;padding:16px;}
     <button class="btn btn-sm" onclick="doLogout()" style="padding:2px 8px;font-size:10px;" data-i18n="logout">Log out</button>
   </span>
   <select id="lang-sel" onchange="setLang(this.value)" style="font-size:11px;padding:3px 6px;border-radius:5px;border:none;background:#1d3f66;color:#fff;"><option value="ko">한국어</option><option value="en">English</option><option value="es">Español</option></select>
-  <span id="app-ver" style="font-size:10px;color:#9fb8d4;">v778</span>
+  <span id="app-ver" style="font-size:10px;color:#9fb8d4;">v779</span>
 </div>
 <script type="text/javascript" src="https://js.authorize.net/v1/Accept.js" charset="utf-8"></script>
 <div id="po-viewer" style="display:none;position:fixed;top:0;right:0;width:44%;height:100vh;background:#fff;border-left:2px solid var(--border);z-index:60;box-shadow:-6px 0 20px rgba(0,0,0,.15);">
@@ -8925,16 +8925,37 @@ async function scanCam(){
       <div id="scan-cam-last" style="flex:1;font-size:12px;color:#e2e8f0;line-height:1.35;"></div>
       <button onclick="scanStop()" style="background:#fff;color:#0f172a;border:none;border-radius:10px;padding:12px 18px;font-size:15px;font-weight:800;">Done</button>
     </div>
-    <div id="scan-cam-msg" style="position:absolute;left:0;right:0;bottom:26px;text-align:center;color:#fff;font-size:12.5px;font-weight:700;text-shadow:0 1px 3px #000;"></div>`;
+    <div style="position:absolute;left:0;right:0;bottom:0;padding:10px 14px 18px;background:linear-gradient(#0000,#000c);display:flex;align-items:center;gap:10px;">
+      <button id="scan-torch" onclick="scanTorch()" style="display:none;background:rgba(255,255,255,.18);color:#fff;border:none;border-radius:10px;padding:11px 13px;font-size:16px;">🔦</button>
+      <div id="scan-zoom-wrap" style="flex:1;display:none;align-items:center;gap:8px;">
+        <span style="color:#fff;font-size:11px;font-weight:800;">ZOOM</span>
+        <input id="scan-zoom" type="range" oninput="scanZoom(this.value)" style="flex:1;accent-color:#22c55e;">
+        <span id="scan-zoom-v" style="color:#fff;font-size:11px;font-weight:800;min-width:30px;">1x</span>
+      </div>
+      <div id="scan-cam-msg" style="color:#fff;font-size:12px;font-weight:700;text-shadow:0 1px 3px #000;text-align:right;"></div>
+    </div>`;
   document.body.appendChild(ov);
   const msg = t => { const m=document.getElementById('scan-cam-msg'); if(m) m.innerHTML=t; };
   const video = document.getElementById('scan-video');
   let stream = null;
   try{
-    stream = await navigator.mediaDevices.getUserMedia({ video:{ facingMode:{ideal:'environment'}, width:{ideal:1920}, height:{ideal:1080} }, audio:false });
-  }catch(e){ msg('⚠ Camera blocked — allow camera access for psflowx.com in your browser settings.'); return; }
+    // 📷 최대 해상도로 — QR 이 화면에서 차지하는 픽셀이 곧 인식 거리다 (4K 되면 4K)
+    stream = await navigator.mediaDevices.getUserMedia({ video:{ facingMode:{ideal:'environment'},
+      width:{ideal:3840}, height:{ideal:2160}, frameRate:{ideal:30} }, audio:false });
+  }catch(e){
+    try{ stream = await navigator.mediaDevices.getUserMedia({ video:{ facingMode:{ideal:'environment'} }, audio:false }); }
+    catch(e2){ msg('⚠ Camera blocked — allow camera access for psflowx.com'); return; }
+  }
   window._scanStream = stream; video.srcObject = stream;
   try{ await video.play(); }catch(e){}
+  // 줌 / 토치 — 있으면 노출 (광학 줌이 있는 폰이면 뒤로 물러서서 당겨 찍을 수 있다)
+  try{
+    const tr = stream.getVideoTracks()[0]; window._scanTrack = tr;
+    const cap = tr.getCapabilities ? tr.getCapabilities() : {};
+    if(cap.zoom){ const z=document.getElementById('scan-zoom'); const w=document.getElementById('scan-zoom-wrap');
+      z.min=cap.zoom.min; z.max=cap.zoom.max; z.step=cap.zoom.step||0.1; z.value=cap.zoom.min; w.style.display='flex'; }
+    if(cap.torch){ const b=document.getElementById('scan-torch'); if(b) b.style.display='inline-block'; }
+  }catch(e){}
   let detector = null, useNative = false;
   try{
     if('BarcodeDetector' in window){
@@ -8946,40 +8967,72 @@ async function scanCam(){
     msg('Loading scanner…');
     try{ await scanLoadJsQr(); }catch(e){ msg('⚠ '+e.message); return; }
   }
-  msg(useNative ? 'Sweep across the boxes — 4–6 boxes in view.' : 'iPhone mode — move a little slower.');
+  const vw = video.videoWidth||0;
+  msg((useNative?'Multi':'iPhone')+' · '+vw+'px');
   const cv = document.createElement('canvas'); const cx = cv.getContext('2d', {willReadFrequently:true});
-  let tile = 0, busy = false;
+  let tile = 0, busy = false, small = 0;
   window._scanRun = true;
   const step = async () => {
     if(!window._scanRun) return;
     if(!busy && video.videoWidth){
       busy = true;
       try{
-        const MAXW = 1280;
-        const sc = Math.min(1, MAXW/video.videoWidth);
-        cv.width = Math.round(video.videoWidth*sc); cv.height = Math.round(video.videoHeight*sc);
+        // 다운스케일 없이 원본 해상도 그대로 — 픽셀을 버리면 인식 거리가 그만큼 줄어든다
+        cv.width = video.videoWidth; cv.height = video.videoHeight;
         cx.drawImage(video, 0, 0, cv.width, cv.height);
-        let hits = [];
+        let hits = [], sizes = [];
         if(useNative){
-          const found = await detector.detect(cv);
-          hits = (found||[]).map(f=>f.rawValue);
+          const found = await detector.detect(cv) || [];
+          found.forEach(f=>{ if(f.rawValue){ hits.push(f.rawValue);
+            const b=f.boundingBox; if(b) sizes.push(Math.max(b.width,b.height)); } });
+          if(!found.length){
+            // 못 찾으면 프레임을 4등분해서 한 조각씩 확대 검사 (멀리 있는 작은 QR 잡기)
+            const t = tile++ % 4, hw = Math.round(cv.width/2), hh = Math.round(cv.height/2);
+            const sx = (t%2)*hw, sy = (t<2?0:hh);
+            const c2 = document.createElement('canvas'); c2.width=hw*2; c2.height=hh*2;
+            c2.getContext('2d').drawImage(cv, sx, sy, hw, hh, 0, 0, hw*2, hh*2);
+            (await detector.detect(c2) || []).forEach(f=>{ if(f.rawValue) hits.push(f.rawValue); });
+          }
         }else{
-          // jsQR 은 프레임당 1개 — 전체 + 4분면을 번갈아 훑어 여러 개를 빠르게 주워담는다
-          const regions = [[0,0,cv.width,cv.height],
-            [0,0,cv.width/2,cv.height/2],[cv.width/2,0,cv.width/2,cv.height/2],
-            [0,cv.height/2,cv.width/2,cv.height/2],[cv.width/2,cv.height/2,cv.width/2,cv.height/2]];
-          const r = regions[tile % regions.length]; tile++;
-          const d = cx.getImageData(Math.round(r[0]),Math.round(r[1]),Math.round(r[2]),Math.round(r[3]));
-          const q = window.jsQR(d.data, d.width, d.height, {inversionAttempts:'dontInvert'});
-          if(q && q.data) hits = [q.data];
+          // jsQR 은 호출당 1개 → 찾은 자리를 지우고 반복해서 한 프레임에서 여러 개를 뽑는다
+          const T = 2;                                        // 2×2 타일, 프레임마다 한 칸씩
+          const tw = Math.round(cv.width/T), th = Math.round(cv.height/T);
+          const t = tile++ % (T*T), sx = (t%T)*tw, sy = Math.floor(t/T)*th;
+          const d = cx.getImageData(sx, sy, tw, th);
+          for(let k=0; k<6; k++){
+            const q = window.jsQR(d.data, d.width, d.height, {inversionAttempts:'dontInvert'});
+            if(!q || !q.data) break;
+            hits.push(q.data);
+            const L=q.location, xs=[L.topLeftCorner.x,L.topRightCorner.x,L.bottomLeftCorner.x,L.bottomRightCorner.x],
+                  ys=[L.topLeftCorner.y,L.topRightCorner.y,L.bottomLeftCorner.y,L.bottomRightCorner.y];
+            const x0=Math.max(0,Math.floor(Math.min(...xs))-2), x1=Math.min(d.width,Math.ceil(Math.max(...xs))+2);
+            const y0=Math.max(0,Math.floor(Math.min(...ys))-2), y1=Math.min(d.height,Math.ceil(Math.max(...ys))+2);
+            sizes.push(Math.max(x1-x0, y1-y0));
+            for(let y=y0;y<y1;y++){ let o=(y*d.width+x0)*4; for(let x=x0;x<x1;x++,o+=4){ d.data[o]=255; d.data[o+1]=255; d.data[o+2]=255; } }
+          }
         }
-        if(hits.length) scanAccept(hits);
+        if(hits.length){ small=0; scanAccept(hits); }
+        // 너무 멀어서 안 잡히는지 힌트
+        if(sizes.length){ const mn=Math.min(...sizes); if(mn>0 && mn<130) msg('⚠ Move closer / zoom in'); else msg('✓ '+Math.round(mn)+'px'); }
       }catch(e){}
       busy = false;
     }
     requestAnimationFrame(step);
   };
   requestAnimationFrame(step);
+}
+function scanZoom(v){
+  try{ const t=window._scanTrack; if(!t) return;
+    t.applyConstraints({advanced:[{zoom:Number(v)}]});
+    const e=document.getElementById('scan-zoom-v'); if(e) e.textContent=(Math.round(Number(v)*10)/10)+'x';
+  }catch(e){}
+}
+function scanTorch(){
+  try{ const t=window._scanTrack; if(!t) return;
+    window._scanTorchOn = !window._scanTorchOn;
+    t.applyConstraints({advanced:[{torch: !!window._scanTorchOn}]});
+    const b=document.getElementById('scan-torch'); if(b) b.style.background = window._scanTorchOn ? '#fbbf24' : 'rgba(255,255,255,.18)';
+  }catch(e){}
 }
 function scanAccept(texts){
   if(!_scan) return;
