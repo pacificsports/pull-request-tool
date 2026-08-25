@@ -159,7 +159,7 @@ main{max-width:1100px;margin:0 auto;padding:16px;}
     <button class="btn btn-sm" onclick="doLogout()" style="padding:2px 8px;font-size:10px;" data-i18n="logout">Log out</button>
   </span>
   <select id="lang-sel" onchange="setLang(this.value)" style="font-size:11px;padding:3px 6px;border-radius:5px;border:none;background:#1d3f66;color:#fff;"><option value="ko">한국어</option><option value="en">English</option><option value="es">Español</option></select>
-  <span id="app-ver" style="font-size:10px;color:#9fb8d4;">v782</span>
+  <span id="app-ver" style="font-size:10px;color:#9fb8d4;">v783</span>
 </div>
 <script type="text/javascript" src="https://js.authorize.net/v1/Accept.js" charset="utf-8"></script>
 <div id="po-viewer" style="display:none;position:fixed;top:0;right:0;width:44%;height:100vh;background:#fff;border-left:2px solid var(--border);z-index:60;box-shadow:-6px 0 20px rgba(0,0,0,.15);">
@@ -8479,7 +8479,6 @@ function pchkPackSelBar(){
     <span style="margin-left:auto;display:flex;gap:8px;flex-wrap:wrap;">
       <button onclick="pchkLtlBatch('LTL')" style="background:#22c55e;color:#fff;border:none;border-radius:10px;padding:12px 18px;font-size:16px;font-weight:800;">🚛 Pack as LTL ▸</button>
       <button onclick="pchkLtlBatch('UPS')" title="Combine these POs into shared boxes and send by UPS" style="background:#a16207;color:#fff;border:none;border-radius:10px;padding:12px 18px;font-size:16px;font-weight:800;">📦 Pack as UPS ▸</button>
-      <button onclick="scanStartSelected()" title="Scan the carton QR codes and check them against these POs" style="background:#0e7490;color:#fff;border:none;border-radius:10px;padding:12px 18px;font-size:16px;font-weight:800;">📷 Scan ▸</button>
     </span>
     <button onclick="pchkPackSelClear()" style="background:transparent;color:#e5e7eb;border:1px solid #6b7280;border-radius:10px;padding:12px 14px;font-size:14px;font-weight:700;">Clear</button>
   </div>`;
@@ -8639,6 +8638,7 @@ function pchkLtlRender(){
   </div>
   ${totalBlock}
   ${palletBlock}
+  <button onclick="scanStartSelected()" style="width:100%;margin-bottom:12px;background:#0e7490;color:#fff;border:none;border-radius:12px;padding:14px;font-size:15px;font-weight:800;">📷 Scan boxes &amp; check against these ${rows.length} PO</button>
   <div style="margin-bottom:8px;">${pchkNamePicker()}</div>
   <button onclick="pchkLtlBatchSave()" id="ltl-save" style="width:100%;background:${M==='UPS'?'#a16207':'#16a34a'};color:#fff;border:none;border-radius:12px;padding:16px;font-size:17px;font-weight:800;">💾 Save &amp; create bulk shipment</button>
   <div id="ltl-msg" style="font-size:12.5px;font-weight:700;height:16px;text-align:center;margin-top:6px;"></div>`;
@@ -8868,16 +8868,23 @@ function scanStartOrder(base, wh, label){
 // 📷 /pic 에서 체크한 여러 PO 를 한 번에 스캔 대조. 기대 목록은 PO 들의 풀박스를 합쳐서 만든다.
 async function scanStartSelected(){
   const wh = window._packWh || 'SC';
-  const bases = Object.keys(window._packSel || {});
+  // LTL/UPS 배치 화면 안에서 부른다 → 그 화면의 PO 들이 대상. (없으면 선택된 PO)
+  const bases = (window._ltlRows && window._ltlRows.length)
+    ? window._ltlRows.map(r=>String(r.base))
+    : Object.keys(window._packSel || {});
   if(!bases.length){ showToast('⚠ Select at least one order'); return; }
-  try{ showToast('Loading order lines…'); }catch(e){}
-  try{ window._ltlLines = await pchkFetchLines(bases); }catch(e){}
+  if(!(window._ltlLines && bases.every(b=>window._ltlLines[b]))){
+    try{ showToast('Loading order lines…'); }catch(e){}
+    try{ window._ltlLines = await pchkFetchLines(bases); }catch(e){}
+  }
   const m = {};
   bases.forEach(b=>{ scanExpOrder(b, wh).forEach(e=>{
     const k = scanKeyOf(e.style, e.color, e.size);
     (m[k] = m[k] || {style:e.style, color:e.color, size:e.size, qty:0}).qty += e.qty; }); });
-  _scan = { mode:'PO', id:bases.join(','), ref:bases.length+' PO', wh,
-    title:'📦 '+bases.length+' PO · '+wh, exp:Object.values(m), seen:new Map(), manual:{} };
+  const M = (window._packMode==='UPS') ? 'UPS' : 'LTL';
+  _scan = { mode:'PO', id:bases.join(','), ref:bases.length+' PO', wh, back:'BATCH',
+    title:(M==='UPS'?'📦 UPS':'🚛 LTL')+' · '+bases.length+' PO · '+wh,
+    exp:Object.values(m), seen:new Map(), manual:{} };
   scanSession();
 }
 function scanSession(){
@@ -8897,7 +8904,10 @@ function scanSession(){
   </div>`;
   scanRender();
 }
-function scanExit(){ scanStop(); if(_scan && _scan.mode==='PO'){ _scan=null; pchkPackOpen(); } else { _scan=null; scanOpen(); } }
+function scanExit(){ scanStop();
+  const back = _scan && _scan.back;
+  if(back==='BATCH'){ _scan=null; pchkLtlBatch(window._packMode||'LTL'); return; }   // LTL/UPS 배치 화면에서 들어왔으면 그리로 복귀
+  if(_scan && _scan.mode==='PO'){ _scan=null; pchkPackOpen(); } else { _scan=null; scanOpen(); } }
 function scanRender(){
   const el = document.getElementById('scan-report'); if(!el || !_scan) return;
   const rows = scanReconcile();
@@ -8963,7 +8973,7 @@ async function scanCam(){
   ov.style.cssText='position:fixed;inset:0;background:#000;z-index:400;';
   ov.innerHTML=`<video id="scan-video" playsinline muted autoplay style="position:absolute;inset:0;width:100%;height:100%;object-fit:cover;"></video>
     <canvas id="scan-marks" style="position:absolute;inset:0;width:100%;height:100%;pointer-events:none;"></canvas>
-    <div style="position:absolute;left:0;right:0;top:0;padding:10px 12px;background:linear-gradient(#000d,#0000);color:#fff;display:flex;align-items:center;gap:10px;">
+    <div style="position:absolute;left:0;right:0;top:0;padding:10px 12px;background:linear-gradient(rgba(0,0,0,.62),rgba(0,0,0,0));color:#fff;display:flex;align-items:center;gap:10px;">
       <div style="flex:none;">
         <div style="font-size:10px;color:#a5f3fc;font-weight:800;letter-spacing:.06em;">SCANNED</div>
         <div style="font-size:28px;font-weight:900;line-height:1;"><span id="scan-cam-n">0</span><span id="scan-cam-exp" style="font-size:14px;font-weight:800;color:#94a3b8;"></span></div>
@@ -8971,11 +8981,11 @@ async function scanCam(){
       <div id="scan-cam-msg" style="flex:1;color:#e2e8f0;font-size:11.5px;font-weight:700;text-shadow:0 1px 3px #000;"></div>
       <button onclick="scanStop()" style="flex:none;background:#fff;color:#0f172a;border:none;border-radius:10px;padding:11px 17px;font-size:15px;font-weight:800;">Done</button>
     </div>
-    <div id="scan-drawer" style="position:absolute;left:0;right:0;bottom:0;background:#0b1220f2;color:#fff;border-top-left-radius:14px;border-top-right-radius:14px;display:flex;flex-direction:column;max-height:46%;">
+    <div id="scan-drawer" style="position:absolute;left:0;right:0;bottom:0;color:#fff;background:linear-gradient(180deg,rgba(2,6,15,0) 0%,rgba(2,6,15,.42) 22%,rgba(2,6,15,.62) 100%);-webkit-backdrop-filter:blur(1.5px);backdrop-filter:blur(1.5px);display:flex;flex-direction:column;max-height:34%;">
       <div onclick="scanDrawerToggle()" style="flex:none;display:flex;align-items:center;gap:9px;padding:9px 13px 7px;cursor:pointer;">
         <span id="scan-drawer-ar" style="font-size:13px;color:#94a3b8;">▾</span>
-        <span style="font-size:12px;font-weight:800;letter-spacing:.05em;color:#a5f3fc;">SCANNED BOXES</span>
-        <span id="scan-drawer-n" style="font-size:12px;font-weight:800;color:#e2e8f0;"></span>
+        <span style="font-size:12px;font-weight:800;letter-spacing:.05em;color:#a5f3fc;text-shadow:0 1px 3px #000;">SCANNED BOXES</span>
+        <span id="scan-drawer-n" style="font-size:12px;font-weight:800;color:#e2e8f0;text-shadow:0 1px 3px #000;"></span>
         <span style="flex:1;"></span>
         <button id="scan-torch" onclick="event.stopPropagation();scanTorch()" style="display:none;background:rgba(255,255,255,.16);color:#fff;border:none;border-radius:9px;padding:7px 11px;font-size:15px;">&#128161;</button>
       </div>
@@ -9022,124 +9032,140 @@ async function scanCam(){
     try{ await scanLoadJsQr(); }catch(e){ msg('&#9888; '+e.message); return; }
   }
   msg((useNative?'Multi':'iPhone')+' &middot; '+(video.videoWidth||0)+'px');
-  const cv = document.createElement('canvas'); const cx = cv.getContext('2d', {willReadFrequently:true});
-  let tile = 0, busy = false;
+  // 캔버스 두 장: 하나는 픽셀을 읽는 용(jsQR), 하나는 그리기만 하는 용(네이티브 디텍터).
+  // willReadFrequently 를 켠 캔버스는 CPU 메모리에 올라가서 drawImage 가 느려진다 → 용도별로 분리.
+  const cvR = document.createElement('canvas'); const cxR = cvR.getContext('2d', {willReadFrequently:true});
+  const cvD = document.createElement('canvas'); const cxD = cvD.getContext('2d');
+  let busy = false;
   // ── 속도의 핵심: '얼마나 줄여서 훑을까' ──────────────────────────────────────
-  // jsQR 비용은 픽셀 수에 거의 비례한다. 예전 코드는 4K 프레임의 1/4(≈200만 픽셀)을
-  // 매번 훑었는데, QR 이 화면에서 375px 이나 차지하고 있었다 = 필요한 것의 10배를 보고 있었다.
-  // 디코드에 필요한 건 모듈당 3.5px, 33모듈이면 QR 이 약 120px 이면 충분하다.
-  // 그래서 '찾은 QR 이 120px 근처가 되도록' 프레임 폭을 매번 조절한다.
-  const QR_TARGET = 125;              // 줄인 그림에서 QR 한 변이 이 정도가 되게
-  let workW = 900;                    // 지금 훑는 폭 (픽셀). 아래에서 자동으로 오르내린다
+  // 디코더 비용은 픽셀 수에 거의 비례한다. 4K 를 통째로 넘기면 800만 화소를 매번 훑는다.
+  // 디코드에 필요한 건 모듈당 3.5px, 33모듈이면 QR 이 약 125px 이면 충분하다.
+  // 그래서 '찾은 QR 이 125px 근처가 되도록' 훑는 폭을 매 프레임 조절한다.
+  const QR_TARGET = 125;
+  let workW = useNative ? 1100 : 760;      // 지금 훑는 폭(px). 아래에서 자동으로 오르내린다
   let misses = 0;
   window._scanRun = true;
-  const step = async () => {
+  const tick = async () => {
     if(!window._scanRun) return;
-    if(!busy && video.videoWidth){
-      busy = true;
-      const t0 = (window.performance&&performance.now)?performance.now():Date.now();
-      try{
-        const vw0 = video.videoWidth, vh0 = video.videoHeight;
-        let hits = [];
-        if(useNative){
-          // 안드로이드: 네이티브 디텍터는 한 번에 여러 개를 반환하고 충분히 빠르다 → 원본 그대로
-          cv.width = vw0; cv.height = vh0;
-          cx.drawImage(video, 0, 0, cv.width, cv.height);
-          const found = await detector.detect(cv) || [];
-          found.forEach(f=>{ if(!f.rawValue) return; const b=f.boundingBox||{};
-            hits.push({text:f.rawValue, x:b.x||0, y:b.y||0, w:b.width||0, h:b.height||0}); });
-          if(!found.length){
-            // 못 찾으면 프레임을 4등분해서 한 조각씩 확대 검사 (멀리 있는 작은 QR 잡기)
-            const t = tile++ % 4, hw = Math.round(cv.width/2), hh = Math.round(cv.height/2);
-            const sx = (t%2)*hw, sy = (t<2?0:hh);
-            const c2 = document.createElement('canvas'); c2.width=hw*2; c2.height=hh*2;
-            c2.getContext('2d').drawImage(cv, sx, sy, hw, hh, 0, 0, hw*2, hh*2);
-            (await detector.detect(c2) || []).forEach(f=>{ if(!f.rawValue) return; const b=f.boundingBox||{};
-              hits.push({text:f.rawValue, x:sx+(b.x||0)/2, y:sy+(b.y||0)/2, w:(b.width||0)/2, h:(b.height||0)/2}); });
-          }
-        }else{
-          // 아이폰(jsQR): 프레임 '전체'를 줄여서 한 번에 훑는다.
-          //   - 타일로 쪼개면 프레임마다 1/4 만 보게 돼서 나머지는 다음 프레임까지 못 읽었다 → 전체로 바꿈
-          //   - 찾은 자리를 흰색으로 덮고 다시 돌려서 한 번의 프레임에서 여러 개를 뽑는다
-          const W = Math.max(420, Math.min(vw0, Math.round(workW)));
-          const H = Math.max(1, Math.round(vh0 * W / vw0));
-          const k = vw0 / W;                                  // 줄인 좌표 → 원본 좌표 배율
-          cv.width = W; cv.height = H;
-          cx.drawImage(video, 0, 0, W, H);                    // 축소는 GPU 가 해준다 (싸다)
-          const d = cx.getImageData(0, 0, W, H);
-          let smallest = 0;
-          for(let n=0; n<12; n++){
-            const q = window.jsQR(d.data, d.width, d.height, {inversionAttempts:'dontInvert'});
-            if(!q || !q.data) break;
-            const L=q.location, xs=[L.topLeftCorner.x,L.topRightCorner.x,L.bottomLeftCorner.x,L.bottomRightCorner.x],
-                  ys=[L.topLeftCorner.y,L.topRightCorner.y,L.bottomLeftCorner.y,L.bottomRightCorner.y];
-            const x0=Math.max(0,Math.floor(Math.min(...xs))-2), x1=Math.min(W,Math.ceil(Math.max(...xs))+2);
-            const y0=Math.max(0,Math.floor(Math.min(...ys))-2), y1=Math.min(H,Math.ceil(Math.max(...ys))+2);
-            const side = Math.max(x1-x0, y1-y0);
-            if(!smallest || side<smallest) smallest = side;
-            hits.push({text:q.data, x:x0*k, y:y0*k, w:(x1-x0)*k, h:(y1-y0)*k});
-            for(let y=y0;y<y1;y++){ let o=(y*W+x0)*4; for(let x=x0;x<x1;x++,o+=4){ d.data[o]=255; d.data[o+1]=255; d.data[o+2]=255; } }
-          }
-          // 다음 프레임에 얼마나 줄일지 자동 조절
-          if(smallest){
-            misses = 0;
-            const want = workW * (QR_TARGET / smallest);       // QR 이 목표 크기가 되도록
-            workW = Math.max(420, Math.min(vw0, workW*0.6 + want*0.4));   // 급변하지 않게 섞는다
-          }else{
-            misses++;
-            if(misses >= 2){ workW = Math.min(vw0, workW * 1.4); misses = 0; }  // 안 보이면 더 크게(=더 자세히)
-          }
+    if(busy || !video.videoWidth) return;
+    busy = true;
+    const t0 = (window.performance&&performance.now)?performance.now():Date.now();
+    try{
+      const vw0 = video.videoWidth, vh0 = video.videoHeight;
+      const W = Math.max(400, Math.min(vw0, Math.round(workW)));
+      const H = Math.max(1, Math.round(vh0 * W / vw0));
+      const k = vw0 / W;                                   // 줄인 좌표 → 원본 좌표 배율
+      let hits = [], smallest = 0;
+      if(useNative){
+        // 안드로이드: BarcodeDetector 는 한 번에 여러 개를 돌려준다.
+        // 원본 4K 를 그대로 넘기면 느리므로 필요한 만큼만 줄여서 넘긴다.
+        let src = video, kk = 1;
+        if(vw0 > W * 1.15){
+          if(cvD.width !== W){ cvD.width = W; cvD.height = H; }
+          cxD.drawImage(video, 0, 0, W, H);                // 축소는 GPU 가 해준다
+          src = cvD; kk = k;
         }
-        if(hits.length){
-          const res = scanAccept(hits);
-          if(res) scanMark(hits, res.state);
+        const found = await detector.detect(src) || [];
+        found.forEach(f=>{ if(!f.rawValue) return; const b=f.boundingBox||{};
+          const side = Math.max(b.width||0, b.height||0);
+          if(side && (!smallest || side<smallest)) smallest = side;
+          hits.push({text:f.rawValue, x:(b.x||0)*kk, y:(b.y||0)*kk, w:(b.width||0)*kk, h:(b.height||0)*kk}); });
+      }else{
+        // 아이폰(jsQR): 호출당 1개만 돌려주므로, 찾은 자리를 흰색으로 덮고 다시 돌려서 여러 개를 뽑는다.
+        if(cvR.width !== W){ cvR.width = W; cvR.height = H; }
+        cxR.drawImage(video, 0, 0, W, H);
+        const d = cxR.getImageData(0, 0, W, H);
+        for(let n=0; n<12; n++){
+          const q = window.jsQR(d.data, d.width, d.height, {inversionAttempts:'dontInvert'});
+          if(!q || !q.data) break;
+          const L=q.location, xs=[L.topLeftCorner.x,L.topRightCorner.x,L.bottomLeftCorner.x,L.bottomRightCorner.x],
+                ys=[L.topLeftCorner.y,L.topRightCorner.y,L.bottomLeftCorner.y,L.bottomRightCorner.y];
+          const x0=Math.max(0,Math.floor(Math.min(...xs))-2), x1=Math.min(W,Math.ceil(Math.max(...xs))+2);
+          const y0=Math.max(0,Math.floor(Math.min(...ys))-2), y1=Math.min(H,Math.ceil(Math.max(...ys))+2);
+          const side = Math.max(x1-x0, y1-y0);
+          if(!smallest || side<smallest) smallest = side;
+          hits.push({text:q.data, x:x0*k, y:y0*k, w:(x1-x0)*k, h:(y1-y0)*k});
+          for(let y=y0;y<y1;y++){ let o=(y*W+x0)*4; for(let x=x0;x<x1;x++,o+=4){ d.data[o]=255; d.data[o+1]=255; d.data[o+2]=255; } }
         }
-        const dt = ((window.performance&&performance.now)?performance.now():Date.now()) - t0;
-        if(!useNative && dt > 260) workW = Math.max(420, workW * 0.8);   // 너무 느리면 더 줄인다
-        const sz = hits.map(h=>Math.max(h.w,h.h)).filter(v=>v>0);
-        const fps = dt>0 ? Math.round(1000/dt) : 0;
-        msg(hits.length
-          ? ('&#10003; '+Math.round(Math.min(...sz))+'px &middot; '+fps+'/s')
-          : (Math.round(workW)+'px &middot; '+fps+'/s'));
-        scanDrawMarks(video);
-      }catch(e){}
-      busy = false;
-    }
-    requestAnimationFrame(step);
+      }
+      // 다음 프레임에 얼마나 줄일지 자동 조절
+      if(smallest){
+        misses = 0;
+        const want = workW * (QR_TARGET / smallest);
+        workW = Math.max(400, Math.min(vw0, workW*0.65 + want*0.35));   // 급변하지 않게 섞는다
+      }else{
+        misses++;
+        if(misses >= 2){ workW = Math.min(vw0, workW * 1.35); misses = 0; }  // 안 보이면 더 자세히
+      }
+      if(hits.length){ const res = scanAccept(hits); if(res) scanMark(hits, res.state); }
+      const dt = ((window.performance&&performance.now)?performance.now():Date.now()) - t0;
+      if(dt > 200) workW = Math.max(400, workW * 0.82);                 // 너무 느리면 더 줄인다
+      const fps = dt>0 ? Math.round(1000/dt) : 0;
+      msg(hits.length
+        ? ('&#10003; '+Math.round(smallest*k)+'px &middot; '+fps+'/s')
+        : (Math.round(W)+'px &middot; '+fps+'/s'));
+      scanDrawMarks(video);
+    }catch(e){}
+    busy = false;
   };
-  requestAnimationFrame(step);
+  // 카메라가 실제로 새 프레임을 줄 때만 돈다 (같은 프레임을 두 번 훑지 않게)
+  if(video.requestVideoFrameCallback){
+    const loop = () => { if(!window._scanRun) return; tick(); video.requestVideoFrameCallback(loop); };
+    video.requestVideoFrameCallback(loop);
+  }else{
+    const loop = () => { if(!window._scanRun) return; tick(); requestAnimationFrame(loop); };
+    requestAnimationFrame(loop);
+  }
 }
 function scanDrawerToggle(){
   const d=document.getElementById('scan-drawer'), a=document.getElementById('scan-drawer-ar');
   if(!d) return;
   const open = d.getAttribute('data-open') !== '0';
   d.setAttribute('data-open', open ? '0' : '1');
-  d.style.maxHeight = open ? '44px' : '46%';
+  d.style.maxHeight = open ? '44px' : '34%';
   if(a) a.innerHTML = open ? '&#9652;' : '&#9662;';
 }
 // 카메라 화면 아래 '지금까지 스캔된 박스' 목록. 최근 것이 맨 위.
 // (예전엔 마지막 한 줄만 덮어써서, 무엇을 찍었고 무엇이 빠졌는지 눈으로 확인할 수 없었다)
 function scanCamList(){
   const el = document.getElementById('scan-cam-list'); if(!el || !_scan) return;
-  const rows = Array.from(_scan.seen.values()).reverse();
-  const n = document.getElementById('scan-cam-n'); if(n) n.textContent = rows.length.toLocaleString();
-  const dn = document.getElementById('scan-drawer-n'); if(dn) dn.textContent = rows.length ? (rows.length+' box') : '';
+  const all = Array.from(_scan.seen.values());
+  const n = document.getElementById('scan-cam-n'); if(n) n.textContent = all.length.toLocaleString();
   const expTot = (_scan.exp||[]).reduce((a,x)=>a+(Number(x.qty)||0),0);
   const ex = document.getElementById('scan-cam-exp');
   if(ex) ex.textContent = expTot ? (' / '+expTot.toLocaleString()) : '';
+  // 같은 스타일·컬러·사이즈는 한 줄로 묶고 개수를 센다 (박스마다 한 줄이면 목록이 금방 길어진다)
+  const g = {}, order = [];
+  all.forEach(b=>{
+    const k = b.key || scanKeyOf(b.style,b.color,b.size);
+    if(!g[k]){ g[k] = {k, style:b.style, color:b.color, size:b.size, n:0}; order.push(k); }
+    g[k].n++; g[k].last = order.length;                     // 최근에 늘어난 줄이 위로
+  });
+  const expMap = {};
+  (_scan.exp||[]).forEach(e=>{ expMap[scanKeyOf(e.style,e.color,e.size)] = Number(e.qty)||0; });
+  const rows = order.map(k=>g[k]).sort((a,b)=> (b.last-a.last));
+  const dn = document.getElementById('scan-drawer-n');
+  if(dn) dn.textContent = all.length ? (all.length+' box · '+rows.length+' line') : '';
   if(!rows.length){
-    el.innerHTML = '<div style="color:#64748b;font-size:12px;padding:10px 4px 14px;">Point the camera at the pallet face. Every box you read shows up here.</div>';
+    el.innerHTML = '<div style="color:#cbd5e1;font-size:12px;padding:8px 4px 12px;text-shadow:0 1px 3px #000;">Point the camera at the pallet face. Every box you read shows up here.</div>';
     return;
   }
-  el.innerHTML = rows.map((b,i)=>`<div style="display:flex;align-items:center;gap:9px;padding:7px 4px;border-bottom:1px solid #1e293b;">
-      <span style="flex:none;color:#22c55e;font-size:15px;font-weight:900;">&#10003;</span>
-      <span style="flex:none;font-size:11px;font-weight:800;color:#64748b;min-width:26px;">${rows.length-i}</span>
-      <span style="flex:1;min-width:0;font-size:13px;line-height:1.3;">
-        <b style="font-weight:900;">${esc(b.style)}</b> ${esc(b.color||'')}
-        <span style="color:#94a3b8;">&middot; ${esc(b.size||'')}</span>
+  el.innerHTML = rows.map(r=>{
+    const want = expMap[r.k];
+    let col = '#22c55e', tag = '';
+    if(want != null){
+      tag = r.n+' / '+want;
+      col = (r.n===want) ? '#22c55e' : (r.n<want ? '#fbbf24' : '#f87171');
+    }else{ tag = '× '+r.n; col = '#f87171'; }        // 기대 목록에 없는 것 = 잘못 실린 박스일 수 있다
+    return `<div style="display:flex;align-items:center;gap:9px;padding:6px 4px;border-bottom:1px solid rgba(255,255,255,.10);text-shadow:0 1px 3px #000;">
+      <span style="flex:none;color:${col};font-size:15px;font-weight:900;">${r.n===want?'&#10003;':'&#9679;'}</span>
+      <span style="flex:1;min-width:0;font-size:13px;line-height:1.3;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">
+        <b style="font-weight:900;">${esc(r.style)}</b> ${esc(r.color||'')}
+        <span style="color:#cbd5e1;">&middot; ${esc(r.size||'')}</span>
       </span>
-      ${b.ctn?`<span style="flex:none;font-size:11px;font-weight:800;color:#a5f3fc;">#${esc(b.ctn)}</span>`:''}
-    </div>`).join('');
+      <span style="flex:none;font-size:14px;font-weight:900;color:${col};">${tag}</span>
+    </div>`;
+  }).join('');
   el.scrollTop = 0;
 }
 // ── 화면 위 초록 체크 표시 (증강현실식) ──
