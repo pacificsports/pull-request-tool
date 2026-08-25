@@ -159,7 +159,7 @@ main{max-width:1100px;margin:0 auto;padding:16px;}
     <button class="btn btn-sm" onclick="doLogout()" style="padding:2px 8px;font-size:10px;" data-i18n="logout">Log out</button>
   </span>
   <select id="lang-sel" onchange="setLang(this.value)" style="font-size:11px;padding:3px 6px;border-radius:5px;border:none;background:#1d3f66;color:#fff;"><option value="ko">한국어</option><option value="en">English</option><option value="es">Español</option></select>
-  <span id="app-ver" style="font-size:10px;color:#9fb8d4;">v785</span>
+  <span id="app-ver" style="font-size:10px;color:#9fb8d4;">v786</span>
 </div>
 <script type="text/javascript" src="https://js.authorize.net/v1/Accept.js" charset="utf-8"></script>
 <div id="po-viewer" style="display:none;position:fixed;top:0;right:0;width:44%;height:100vh;background:#fff;border-left:2px solid var(--border);z-index:60;box-shadow:-6px 0 20px rgba(0,0,0,.15);">
@@ -1734,6 +1734,32 @@ function syncWhAll(){
 //   partial box 번호는 '창고별로' 매겨진다. SC Box 1 과 CA Box 1 은 서로 다른 실제 박스다.
 //   그래서 박스 수를 셀 때는 반드시 (창고 + 박스번호) 로 세야 한다. 번호만으로 세면 겹쳐서 사라진다.
 //   (예: QB-617395 = SC partial 1~5 + CA partial 1~5 = 10박스인데, 번호만 세면 5박스로 나왔다)
+// 이미 저장된 PL/BOL 은 라인에 wh 가 없다 (v785 이전에는 저장하지 않았다).
+// 그대로 인쇄하면 SC/CA partial box 를 구분 못 해 박스 수가 다시 줄어든다.
+// 그래서 인쇄 직전에 원본 오더 라인(rec.lines)과 맞춰 보고 어느 창고 몫인지 되찾아 준다.
+//   1순위 style|color|size|qty|pbox 완전 일치 → 2순위 qty 까지 → 3순위 한 창고에만 있으면 그 창고
+// 되찾지 못하면 예전과 똑같이 동작한다 (숫자를 지어내지 않는다).
+function plHealWh(rec, lines){
+  if(!Array.isArray(lines) || !lines.length) return lines;
+  if(lines.every(l=>l && l.wh)) return lines;                 // 이미 다 들어 있으면 그대로
+  const K = l => [String(l.style||'').trim().toUpperCase(), String(l.color||'').trim().toUpperCase(),
+                  String(l.size||'').trim().toUpperCase()].join('|');
+  const src = {};
+  ((rec&&rec.lines)||[]).forEach(l=>{ if(!l || !(l.qty||0)) return;
+    (src[K(l)] = src[K(l)] || []).push({wh:l.wh||'', qty:Number(l.qty)||0, pbox:String(l.pbox||'').trim()}); });
+  let healed = 0;
+  const out = lines.map(l=>{
+    if(!l || l.wh) return l;
+    const c = src[K(l)] || []; if(!c.length) return l;
+    const q = Number(l.qty)||0, pb = String(l.pbox||'').trim();
+    let hit = c.find(x=>x.qty===q && x.pbox===pb) || c.find(x=>x.qty===q);
+    if(!hit){ const whs = [...new Set(c.map(x=>x.wh))]; if(whs.length===1) hit = c[0]; }
+    if(!hit) return l;
+    healed++; return Object.assign({}, l, {wh:hit.wh});
+  });
+  if(healed) try{ console.log('[plHealWh] recovered wh on '+healed+'/'+lines.length+' saved PL line(s)'); }catch(e){}
+  return out;
+}
 function pboxKey(l){ return String((l&&l.wh)||'') + '|' + String((l&&l.pbox)||'').trim(); }
 // 문서에 두 창고가 섞여 있으면 박스 번호 앞에 창고를 붙여 준다 (SC Box 1 / CA Box 1)
 function pboxMixed(lines){ const s=new Set(); (lines||[]).forEach(l=>s.add(String(l.wh||''))); return s.size>1; }
@@ -5262,7 +5288,7 @@ function openPLInner(base){
     // 통합 발송이면 CA 드래프트는 SC+CA 라인 전부, SC 드래프트는 (고객문서 안 만드므로) 자기 몫만
     const _lineWhs = (_consol && w==='CA') ? ['SC','CA'] : [w];
     const baseLines = (Array.isArray(i.lines) && i.lines.length)
-      ? JSON.parse(JSON.stringify(i.lines))
+      ? plHealWh(rec, JSON.parse(JSON.stringify(i.lines)))     // 저장된 PL 에 wh 가 없으면 여기서 되찾는다
       : (rec.lines||[]).filter(l=>_lineWhs.includes(l.wh) && (l.qty||0)>0).map(l=>({style:l.style||'', desc:l.desc||'', color:l.color||'', size:l.size||'', qty:l.qty||0, price:l.price||0, ppb:l.ppb||72, pbox:l.pbox||'', wh:l.wh||''}));  // wh 필수 — 통합 문서에서 SC/CA partial box 를 구분하려면 있어야 한다
     // 저장된 PL tracking (있으면 우선). 없고 이 창고에서 UPS 라벨을 만들었으면 그 tracking#/Via/Method 자동 채움
     let _tr = (i.trackings&&i.trackings.length?i.trackings:(i.tracking?[i.tracking]:[])).filter(Boolean);
@@ -5947,7 +5973,7 @@ async function markInvPrinted(){
 function buildBOLDoc(rec, wh, d){
   const meta = rec.meta || {};
   const num = plNum(rec.base, wh);
-  const lines = (d.lines||[]).filter(l=>(l.qty||0)>0);
+  const lines = plHealWh(rec, (d.lines||[]).filter(l=>(l.qty||0)>0));
   const tot = lines.reduce((a,l)=>a+(Number(l.qty)||0),0);
   let full = 0; const pset = new Set(); let looseNoBox = 0;
   lines.forEach(l=>{ const b = boxCalc(l); full += b.full||0; if((b.loose||0)>0){ if(l.pbox) pset.add(pboxKey(l)); else looseNoBox++; } });
@@ -6660,7 +6686,7 @@ function buildStageDoc(rec, wh, kind, d){
   // 🚚 CA 통합 발송: CA 문서엔 SC+CA 라인 전부 (fallback 시). 명시적 d.lines가 있으면 그걸 우선(이미 병합돼 저장됨).
   const _consol = recShipFromCA(rec) && wh==='CA' && (rec.whs||[]).includes('CA');
   const _fallback = _consol ? (rec.lines||[]).filter(l=>l.wh==='SC'||l.wh==='CA') : (rec.lines||[]).filter(l=>l.wh===wh);
-  const lines = (Array.isArray(d.lines) ? d.lines : _fallback).filter(l=>(l.qty||0)>0);
+  const lines = plHealWh(rec, (Array.isArray(d.lines) ? d.lines : _fallback).filter(l=>(l.qty||0)>0));
   lines.forEach(l=>{ const m = STYLE_MASTER[String(l.style||'').trim()]; if(m && m[0] && !l.descManual) l.desc = m[0]; }); // 마스터 공식 명칭으로 (수동 수정분은 유지)
   const num = plNum(rec.base, wh);
   const dateStr = (d.date ? new Date(d.date+'T00:00:00') : new Date()).toLocaleDateString('en-US');
@@ -6787,7 +6813,8 @@ function calcPartialBoxesFromLines(lines, whTag){
   return Object.values(byBox).sort((a,b)=>(a.wh+'').localeCompare(b.wh+'') || Number(a.boxNum)-Number(b.boxNum));
 }
 function calcPartialBoxList(){
-  return calcPartialBoxesFromLines((plDrafts[plWh]||{}).lines, plWh);
+  const rec = (typeof savedCache!=='undefined' && savedCache) ? savedCache.find(s=>s.base===plBase) : null;
+  return calcPartialBoxesFromLines(plHealWh(rec, (plDrafts[plWh]||{}).lines||[]), plWh);
 }
 function openBoxLabelModalPL(mode){
   window._blMode = (mode==='full') ? 'full' : 'box';
