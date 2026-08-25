@@ -159,7 +159,7 @@ main{max-width:1100px;margin:0 auto;padding:16px;}
     <button class="btn btn-sm" onclick="doLogout()" style="padding:2px 8px;font-size:10px;" data-i18n="logout">Log out</button>
   </span>
   <select id="lang-sel" onchange="setLang(this.value)" style="font-size:11px;padding:3px 6px;border-radius:5px;border:none;background:#1d3f66;color:#fff;"><option value="ko">한국어</option><option value="en">English</option><option value="es">Español</option></select>
-  <span id="app-ver" style="font-size:10px;color:#9fb8d4;">v783</span>
+  <span id="app-ver" style="font-size:10px;color:#9fb8d4;">v785</span>
 </div>
 <script type="text/javascript" src="https://js.authorize.net/v1/Accept.js" charset="utf-8"></script>
 <div id="po-viewer" style="display:none;position:fixed;top:0;right:0;width:44%;height:100vh;background:#fff;border-left:2px solid var(--border);z-index:60;box-shadow:-6px 0 20px rgba(0,0,0,.15);">
@@ -1730,6 +1730,15 @@ function syncWhAll(){
   if(bo) bo.checked = poLines.length>0 && poLines.every(l=>l.wh==='BO');
   if(na) na.checked = poLines.length>0 && poLines.every(l=>l.wh==='NA');
 }
+// 🚚 SC+CA 통합 발송(Ship from CA) 문서에서 박스 수가 절반으로 나오던 버그 때문에 생긴 규칙:
+//   partial box 번호는 '창고별로' 매겨진다. SC Box 1 과 CA Box 1 은 서로 다른 실제 박스다.
+//   그래서 박스 수를 셀 때는 반드시 (창고 + 박스번호) 로 세야 한다. 번호만으로 세면 겹쳐서 사라진다.
+//   (예: QB-617395 = SC partial 1~5 + CA partial 1~5 = 10박스인데, 번호만 세면 5박스로 나왔다)
+function pboxKey(l){ return String((l&&l.wh)||'') + '|' + String((l&&l.pbox)||'').trim(); }
+// 문서에 두 창고가 섞여 있으면 박스 번호 앞에 창고를 붙여 준다 (SC Box 1 / CA Box 1)
+function pboxMixed(lines){ const s=new Set(); (lines||[]).forEach(l=>s.add(String(l.wh||''))); return s.size>1; }
+function pboxLabel(l, mixed){ const b=String((l&&l.pbox)||'').trim(); if(!b) return '';
+  return (mixed && l && l.wh) ? (String(l.wh)+' Box '+b) : ('Box '+b); }
 function pboxTotals(lines){
   const tot = {}, cap = {};
   (lines||[]).forEach(l=>{
@@ -5254,7 +5263,7 @@ function openPLInner(base){
     const _lineWhs = (_consol && w==='CA') ? ['SC','CA'] : [w];
     const baseLines = (Array.isArray(i.lines) && i.lines.length)
       ? JSON.parse(JSON.stringify(i.lines))
-      : (rec.lines||[]).filter(l=>_lineWhs.includes(l.wh) && (l.qty||0)>0).map(l=>({style:l.style||'', desc:l.desc||'', color:l.color||'', size:l.size||'', qty:l.qty||0, price:l.price||0, ppb:l.ppb||72, pbox:l.pbox||''}));
+      : (rec.lines||[]).filter(l=>_lineWhs.includes(l.wh) && (l.qty||0)>0).map(l=>({style:l.style||'', desc:l.desc||'', color:l.color||'', size:l.size||'', qty:l.qty||0, price:l.price||0, ppb:l.ppb||72, pbox:l.pbox||'', wh:l.wh||''}));  // wh 필수 — 통합 문서에서 SC/CA partial box 를 구분하려면 있어야 한다
     // 저장된 PL tracking (있으면 우선). 없고 이 창고에서 UPS 라벨을 만들었으면 그 tracking#/Via/Method 자동 채움
     let _tr = (i.trackings&&i.trackings.length?i.trackings:(i.tracking?[i.tracking]:[])).filter(Boolean);
     let _via = normVia(i.via||((rec.meta&&rec.meta.via)||''));
@@ -5941,7 +5950,7 @@ function buildBOLDoc(rec, wh, d){
   const lines = (d.lines||[]).filter(l=>(l.qty||0)>0);
   const tot = lines.reduce((a,l)=>a+(Number(l.qty)||0),0);
   let full = 0; const pset = new Set(); let looseNoBox = 0;
-  lines.forEach(l=>{ const b = boxCalc(l); full += b.full||0; if((b.loose||0)>0){ if(l.pbox) pset.add(String(l.pbox).trim()); else looseNoBox++; } });
+  lines.forEach(l=>{ const b = boxCalc(l); full += b.full||0; if((b.loose||0)>0){ if(l.pbox) pset.add(pboxKey(l)); else looseNoBox++; } });
   const boxes = full + pset.size + looseNoBox;
   const a1 = [meta.shipName, meta.shipAddr, [meta.shipCity, [String(meta.shipState||'').toUpperCase(), meta.shipZip].filter(Boolean).join(' ')].filter(Boolean).join(', ')].filter(Boolean).join('\n') || String(meta.shipto||'') || String(meta.cust||'');
   const dateStr = (d.date ? new Date(d.date+'T00:00:00') : new Date()).toLocaleDateString('en-US');
@@ -6673,6 +6682,7 @@ function buildStageDoc(rec, wh, kind, d){
       + (freight > 0 ? `<tr><td colspan="6" class="tl" style="color:#555;">Shipping / Freight</td><td>${money(freight)}</td></tr>` : '')
       + `<tr><td colspan="6" class="tl" style="background:#0f2a4a;color:#fff;border-color:#0f2a4a;">INVOICE TOTAL</td><td style="background:#0f2a4a;color:#fff;font-size:15px;border-color:#0f2a4a;">${money(totAmt + freight)}</td></tr>`;
   } else {
+    const _mixWh = pboxMixed(lines);          // SC+CA 통합 문서면 박스 번호에 창고를 붙인다
     const tot = lines.reduce((a,l)=>{const b=boxCalc(l);a.q+=l.qty||0;a.f+=b.full;a.l+=b.loose;return a;},{q:0,f:0,l:0});
     theadHtml = '<tr><th>Style#</th><th class="tl">Item</th><th class="tl">Color</th><th>Size</th><th style="background:#1d4ed8;">📦 Full Boxes</th><th>Total Pcs</th><th style="background:#c2410c;">Partial Pcs</th><th style="background:#c2410c;">Partial Box#</th></tr>';
     rowsHtml = lines.map(l=>{
@@ -6681,10 +6691,10 @@ function buildStageDoc(rec, wh, kind, d){
       <td class="c-full">${b.full||''}</td>
       <td class="c-tot">${(l.qty||0).toLocaleString()}</td>
       <td class="c-part">${b.loose||''}</td>
-      <td class="c-pbox">${b.loose&&l.pbox ? 'Box '+esc(l.pbox) : ''}</td></tr>`;
+      <td class="c-pbox">${b.loose&&l.pbox ? esc(pboxLabel(l,_mixWh)) : ''}</td></tr>`;
     }).join('');
     const _pbs = new Set();
-    lines.forEach(l=>{ const b=boxCalc(l); if(b.loose>0 && l.pbox) _pbs.add(String(l.pbox).trim()); });
+    lines.forEach(l=>{ const b=boxCalc(l); if(b.loose>0 && l.pbox) _pbs.add(pboxKey(l)); });
     const _gb = tot.f + _pbs.size;
     tfootHtml = `<tr><td colspan="4" class="tl">TOTAL — ${lines.length} lines</td>
       <td class="c-full">${tot.f}</td>
@@ -6768,8 +6778,9 @@ function calcPartialBoxesFromLines(lines, whTag){
     const loose = (l.qty||0) % (l.ppb||72);
     if(loose > 0 && l.pbox){
       const bn = String(l.pbox);
-      const key = (whTag||'') + '|' + bn;
-      if(!byBox[key]) byBox[key] = { boxNum: bn, wh: whTag||'', items: [] };
+      const w = l.wh || whTag || '';        // 라인이 자기 창고를 알고 있으면 그걸 우선 — SC Box 1 과 CA Box 1 은 다른 박스
+      const key = w + '|' + bn;
+      if(!byBox[key]) byBox[key] = { boxNum: bn, wh: w, items: [] };
       byBox[key].items.push({ styleNum: l.style||'', color: l.color||'', size: l.size||'', qty: loose, ss: /side\s*seam/i.test(String(l.desc||'')+' '+String(l.rawDesc||'')) });
     }
   });
@@ -6887,7 +6898,7 @@ function calcFullBoxesFromLines(lines, whTag){
     const n = Math.floor((Number(l.qty)||0) / ppb);
     const ss = /side\s*seam/i.test(String(l.desc||'') + ' ' + String(l.rawDesc||''));
     for(let i=0;i<n;i++){
-      out.push({ boxNum: 0, wh: whTag||'', items: [{ styleNum: l.style||'', color: l.color||'', size: l.size||'', qty: ppb, ss: ss }] });
+      out.push({ boxNum: 0, wh: l.wh || whTag || '', items: [{ styleNum: l.style||'', color: l.color||'', size: l.size||'', qty: ppb, ss: ss }] });
     }
   });
   out.forEach((b,i)=>{ b.boxNum = i+1; });
@@ -7899,7 +7910,7 @@ function plLineUpd(idx, f, v){
   refreshPLPreview();
 }
 function plLineDel(idx){ if(plDrafts[plWh]&&plDrafts[plWh].lines){ plDrafts[plWh].lines.splice(idx,1); renderPL(); } }
-function plLineAdd(){ if(plDrafts[plWh]){ (plDrafts[plWh].lines=plDrafts[plWh].lines||[]).push({style:'',desc:'',color:'',size:'',qty:0,price:0,ppb:72,pbox:''}); plEditOpen=true; renderPL(); } }
+function plLineAdd(){ if(plDrafts[plWh]){ (plDrafts[plWh].lines=plDrafts[plWh].lines||[]).push({style:'',desc:'',color:'',size:'',qty:0,price:0,ppb:72,pbox:'',wh:plWh}); plEditOpen=true; renderPL(); } }
 function refreshPLPreview(){
   const rec = savedCache.find(s=>s.base===plBase); if(!rec) return;
   const d = plDrafts[plWh]||{};
@@ -9004,8 +9015,10 @@ async function scanCam(){
   let stream = null;
   try{
     // 📷 최대 해상도로 — QR 이 화면에서 차지하는 픽셀이 곧 인식 거리다 (4K 되면 4K)
+    // 4K 로 받아도 어차피 QR 이 125px 되게 줄여서 훑는다. 4K 영상 디코딩·합성 자체가 폰 CPU 를
+    // 계속 먹어서 스캔이 버벅였다 → 1080p 로 받고, 부족하면 아래에서 필요할 때만 올린다.
     stream = await navigator.mediaDevices.getUserMedia({ video:{ facingMode:{ideal:'environment'},
-      width:{ideal:3840}, height:{ideal:2160}, frameRate:{ideal:30} }, audio:false });
+      width:{ideal:1920}, height:{ideal:1080}, frameRate:{ideal:30} }, audio:false });
   }catch(e){
     try{ stream = await navigator.mediaDevices.getUserMedia({ video:{ facingMode:{ideal:'environment'} }, audio:false }); }
     catch(e2){ msg('&#9888; Camera blocked — allow camera access for psflowx.com'); return; }
@@ -9075,7 +9088,7 @@ async function scanCam(){
         if(cvR.width !== W){ cvR.width = W; cvR.height = H; }
         cxR.drawImage(video, 0, 0, W, H);
         const d = cxR.getImageData(0, 0, W, H);
-        for(let n=0; n<12; n++){
+        for(let n=0; n<6; n++){          // 한 프레임에서 최대 6개 (더 있으면 다음 프레임에)
           const q = window.jsQR(d.data, d.width, d.height, {inversionAttempts:'dontInvert'});
           if(!q || !q.data) break;
           const L=q.location, xs=[L.topLeftCorner.x,L.topRightCorner.x,L.bottomLeftCorner.x,L.bottomRightCorner.x],
@@ -9095,15 +9108,23 @@ async function scanCam(){
         workW = Math.max(400, Math.min(vw0, workW*0.65 + want*0.35));   // 급변하지 않게 섞는다
       }else{
         misses++;
-        if(misses >= 2){ workW = Math.min(vw0, workW * 1.35); misses = 0; }  // 안 보이면 더 자세히
+        if(misses >= 2){
+          if(workW >= vw0 - 2 && !window._scanHiRes && vw0 < 2600){
+            // 이미 원본 해상도로 훑는데도 못 찾는다 = 진짜 픽셀이 모자란 것 → 그때만 4K 로 올린다
+            window._scanHiRes = 1;
+            try{ (window._scanTrack||{applyConstraints(){}}).applyConstraints({width:{ideal:3840},height:{ideal:2160}}); }catch(e){}
+          }
+          workW = Math.min(vw0, workW * 1.35); misses = 0;
+        }
       }
       if(hits.length){ const res = scanAccept(hits); if(res) scanMark(hits, res.state); }
       const dt = ((window.performance&&performance.now)?performance.now():Date.now()) - t0;
       if(dt > 200) workW = Math.max(400, workW * 0.82);                 // 너무 느리면 더 줄인다
       const fps = dt>0 ? Math.round(1000/dt) : 0;
-      msg(hits.length
-        ? ('&#10003; '+Math.round(smallest*k)+'px &middot; '+fps+'/s')
-        : (Math.round(W)+'px &middot; '+fps+'/s'));
+      const spd = fps>=10 ? '#86efac' : (fps>=5 ? '#fde68a' : '#fca5a5');
+      msg('<span style="font-size:15px;font-weight:900;color:'+spd+';">'+fps+'/s</span>'
+        + ' <span style="opacity:.8;">'+(hits.length?('&#10003; '+Math.round(smallest*k)+'px'):(Math.round(W)+'px'))
+        + ' &middot; '+vw0+' &middot; '+Math.round(dt)+'ms</span>');
       scanDrawMarks(video);
     }catch(e){}
     busy = false;
@@ -9127,6 +9148,12 @@ function scanDrawerToggle(){
 }
 // 카메라 화면 아래 '지금까지 스캔된 박스' 목록. 최근 것이 맨 위.
 // (예전엔 마지막 한 줄만 덮어써서, 무엇을 찍었고 무엇이 빠졌는지 눈으로 확인할 수 없었다)
+// 한 프레임에 여러 개가 잡히면 목록을 여러 번 다시 그리게 되므로 한 번으로 묶는다
+function scanCamListSoon(){
+  if(window._scanListPend) return;
+  window._scanListPend = true;
+  requestAnimationFrame(()=>{ window._scanListPend = false; try{ scanCamList(); }catch(e){} });
+}
 function scanCamList(){
   const el = document.getElementById('scan-cam-list'); if(!el || !_scan) return;
   const all = Array.from(_scan.seen.values());
@@ -9238,7 +9265,11 @@ function scanAccept(hits){
     _scan.seen.set(b.sscc, b);
     added++; state[t]='new';
   });
-  if(added){ scanBeep(true); scanCamList(); scanRender(); }
+  if(added){ scanBeep(true); scanCamListSoon();
+    // 카메라가 켜져 있는 동안엔 뒤쪽 대조 리포트를 다시 그리지 않는다.
+    // 박스가 쌓일수록 그 DOM 재생성이 프레임을 잡아먹어 스캔이 버벅였다. 닫을 때 한 번만 그린다.
+    if(!document.getElementById('scan-cam')) scanRender();
+  }
   if(bad && !added && !dup) scanBeep(false);
   return {added, dup, bad, state};
 }
