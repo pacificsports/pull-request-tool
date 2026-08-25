@@ -159,7 +159,7 @@ main{max-width:1100px;margin:0 auto;padding:16px;}
     <button class="btn btn-sm" onclick="doLogout()" style="padding:2px 8px;font-size:10px;" data-i18n="logout">Log out</button>
   </span>
   <select id="lang-sel" onchange="setLang(this.value)" style="font-size:11px;padding:3px 6px;border-radius:5px;border:none;background:#1d3f66;color:#fff;"><option value="ko">한국어</option><option value="en">English</option><option value="es">Español</option></select>
-  <span id="app-ver" style="font-size:10px;color:#9fb8d4;">v779</span>
+  <span id="app-ver" style="font-size:10px;color:#9fb8d4;">v780</span>
 </div>
 <script type="text/javascript" src="https://js.authorize.net/v1/Accept.js" charset="utf-8"></script>
 <div id="po-viewer" style="display:none;position:fixed;top:0;right:0;width:44%;height:100vh;background:#fff;border-left:2px solid var(--border);z-index:60;box-shadow:-6px 0 20px rgba(0,0,0,.15);">
@@ -8702,20 +8702,33 @@ function scanKeyOf(style, color, size){
   c = c.replace(/\s+/g,' ').trim();
   return st + '|' + c + '|' + String(size||'').trim().toUpperCase();
 }
-// QR 문자열 → 박스 정보. URL 이 아니어도 파라미터만 있으면 읽는다.
+// QR 문자열 → 박스 정보. 라벨 두 세대를 모두 읽는다.
+//  v1 (2026-08 이전 라벨): .../box/#s=8368&c=ROOT+BEER&z=XL&...&ctn=0-00035&sscc=1086...
+//  v2 (새 라벨):          .../box/#2|8368|ROOT BEER|XL|72|SS|US|1|0-00035|05
+//     값만 나열해 모듈 수를 53 → 37 로 줄인 형식. sscc 는 빠졌지만 고유성은 ctn(기기번호-일련번호)에 그대로 있다.
 function scanParseQr(text){
   try{
     const t = String(text||'').trim(); if(!t) return null;
-    const hash = t.includes('#') ? t.slice(t.indexOf('#')+1) : (t.includes('=') ? t : '');
+    const hash = t.includes('#') ? t.slice(t.indexOf('#')+1) : t;
     if(!hash) return null;
+    if(/^2\|/.test(hash)){                                   // ── v2: 파이프 구분 값 나열
+      const f = hash.split('|');
+      const style = String(f[1]||'').trim(); if(!style) return null;
+      const ctn = String(f[8]||'').trim();
+      // ctn 이 비면(있을 수 없지만) 페이로드 전체를 키로 — 서로 다른 박스가 한 개로 합쳐지는 것 방지
+      return { sscc: ctn ? ('CTN:'+ctn) : ('RAW:'+hash), hasSscc:false, ctn, style,
+        color: String(f[2]||'').trim(), size: String(f[3]||'').trim(),
+        qty: String(f[4]||'').trim(), con: String(f[5]||'').trim(), v:2 };
+    }
+    if(hash.indexOf('=')<0) return null;                     // ── v1: 이름=값 파라미터
     const p = new URLSearchParams(hash);
     const style = String(p.get('s')||'').trim();
     if(!style) return null;
     const ctn = String(p.get('ctn')||'').trim();
     const sscc = String(p.get('sscc')||'').trim();
-    return { sscc: sscc || ('NOSSCC:'+style+'|'+ctn), hasSscc: !!sscc, ctn,
+    return { sscc: sscc || (ctn ? ('CTN:'+ctn) : ('RAW:'+hash)), hasSscc: !!sscc, ctn,
       style, color: String(p.get('c')||'').trim(), size: String(p.get('z')||'').trim(),
-      qty: String(p.get('q')||'').trim(), con: String(p.get('con')||'').trim() };
+      qty: String(p.get('q')||'').trim(), con: String(p.get('con')||'').trim(), v:1 };
   }catch(e){ return null; }
 }
 // ── 기대 목록 만들기 ──
