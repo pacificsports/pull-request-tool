@@ -159,7 +159,7 @@ main{max-width:1100px;margin:0 auto;padding:16px;}
     <button class="btn btn-sm" onclick="doLogout()" style="padding:2px 8px;font-size:10px;" data-i18n="logout">Log out</button>
   </span>
   <select id="lang-sel" onchange="setLang(this.value)" style="font-size:11px;padding:3px 6px;border-radius:5px;border:none;background:#1d3f66;color:#fff;"><option value="ko">한국어</option><option value="en">English</option><option value="es">Español</option></select>
-  <span id="app-ver" style="font-size:10px;color:#9fb8d4;">v776</span>
+  <span id="app-ver" style="font-size:10px;color:#9fb8d4;">v777</span>
 </div>
 <script type="text/javascript" src="https://js.authorize.net/v1/Accept.js" charset="utf-8"></script>
 <div id="po-viewer" style="display:none;position:fixed;top:0;right:0;width:44%;height:100vh;background:#fff;border-left:2px solid var(--border);z-index:60;box-shadow:-6px 0 20px rgba(0,0,0,.15);">
@@ -8781,14 +8781,21 @@ async function bulkDetail(id){
         <thead><tr style="background:#f1f5f9;"><th style="padding:6px 8px;text-align:left;">Customer</th><th style="padding:6px 8px;text-align:left;">PO #</th><th style="padding:6px 8px;text-align:right;">Boxes</th></tr></thead>
         <tbody>${posRows}</tbody></table>
       <div style="background:#f8fafc;border:1px solid #e5e7eb;border-radius:8px;padding:10px 12px;margin-bottom:12px;">
-        <div style="font-size:11px;font-weight:800;color:#374151;margin-bottom:4px;">🎚 Pallets (${b.pallets||0})</div>${dimRows}${_palBxNote}</div>
+        <div style="font-size:11px;font-weight:800;color:#374151;margin-bottom:4px;">${_isUps?'🏷 Boxes ('+((b.pallet_dims||[]).length)+')':'🎚 Pallets ('+(b.pallets||0)+')'}</div>${dimRows}${_palBxNote}</div>
       <div style="font-size:11px;color:#94a3b8;">Created by ${esc(b.created_by||'—')}${b.created_at?' · '+new Date(b.created_at).toLocaleString():''}${b.shipped_at?' · shipped '+new Date(b.shipped_at).toLocaleString():''}</div>
     </div>
     <div style="padding:10px 16px;border-top:1px solid #e5e7eb;display:flex;gap:8px;justify-content:flex-end;">
       <button class="btn btn-sm" style="color:#b91c1c;border-color:#fca5a5;" onclick="bulkDelete('${b.id}')">🗑 Delete</button>
+      ${(_isUps && (b.pos||[])[0] && (b.pos||[])[0].base)?`<button class="btn btn-sm" style="background:#a16207;color:#fff;border-color:#a16207;font-weight:800;" title="Box sizes for this combined shipment are saved on PO ${esc(String((b.pos||[])[0].po||''))}" onclick="bulkUpsLabel('${esc(String((b.pos||[])[0].base))}','${esc(String(b.wh||'SC'))}')">🏷 UPS label — PO ${esc(String((b.pos||[])[0].po||''))}</button>`:''}
       ${shipped?'':`<button class="btn btn-sm" style="background:#166534;color:#fff;border-color:#166534;font-weight:800;" onclick="bulkMarkShipped('${b.id}')">✅ Mark shipped</button>`}
     </div></div>`;
   document.body.appendChild(d);
+}
+// 🏷 UPS 합포장 배치의 라벨 — 박스 규격이 저장된 첫 PO 의 라벨 화면을 연다 (v777)
+function bulkUpsLabel(base, wh){
+  const m=document.getElementById('modal-bulkd'); if(m) m.remove();
+  if(typeof openLabelModal==='function') openLabelModal(base, wh);
+  else if(typeof openPL==='function') openPL(base);
 }
 async function bulkMarkShipped(id){
   try{ await sbFetch('/rest/v1/pr_bulkship?id=eq.'+id,{method:'PATCH',headers:{Prefer:'return=minimal'},body:JSON.stringify({status:'SHIPPED',shipped_at:new Date().toISOString(),shipped_by:(SESS&&SESS.email)||''})}); }catch(e){}
@@ -21329,7 +21336,7 @@ function laneReadyLegs(){
       const uw = s.meta && s.meta._ups && s.meta._ups[w];
       const hasLabel = uw && (uw.tracking||[]).length>0;
       if(!isLtl && hasLabel) return;                             // UPS: 라벨/트래킹 발급 시 처리됨 → 제외
-      if(isLtl && window._bulkBases && window._bulkBases.has(String(s.base))) return; // LTL: bulk shipment 편입 시 처리됨 → 제외
+      if(window._bulkBases && window._bulkBases.has(String(s.base))) return;   // LTL·UPS 배치에 편입된 PO 는 배치 단위로 뜸 → 개별 제외 (v777)
       const eff = (w==='SC' && s.meta && s.meta._shipFromCA) ? 'CA' : w;
       out.push({ base:s.base, wh:w, eff, isLtl,
         cust:(s.meta&&s.meta.cust)||'', po:(s.meta&&s.meta.po)||'',
@@ -21342,22 +21349,24 @@ function laneReadyLegs(){
 function laneListOpen(eff, isLtl){
   const legs = laneReadyLegs().filter(l=> l.eff===eff && l.isLtl===!!isLtl);
   // 🚛 이 레인(창고)의 대기 LTL 배치 — 클릭 시 그 배치의 PO 목록(bulkDetail) 표시 (v728)
-  const batches = isLtl ? (window._bulkPending||[]).filter(b=>String(b.wh||'SC')===eff) : [];
+  const batches = (window._bulkPending||[]).filter(b=>String(b.wh||'SC')===eff && (/^UPS-/i.test(String(b.ref||'')) ? !isLtl : !!isLtl));
   const ex=document.getElementById('modal-laneready'); if(ex) ex.remove();
   const div=document.createElement('div'); div.id='modal-laneready';
   div.style.cssText='position:fixed;inset:0;background:rgba(0,0,0,.5);z-index:135;display:flex;overflow-y:auto;padding:20px;';
   div.onclick=e=>{ if(e.target===div) div.remove(); };
   const laneLbl=(isLtl?'🚛 LTL':'📦 UPS')+' · '+eff;
   const batchRows = batches.map(b=>{
+    const ups=/^UPS-/i.test(String(b.ref||''));   // 📦 UPS 합포장 배치는 호박색 + 팔레트 대신 "combined into N box" (v777)
+    const c=ups?{bg:'#fffbeb',hov:'#fef3c7',tx:'#92400e',sub:'#b45309',pill:'#a16207'}:{bg:'#ecfdf5',hov:'#d1fae5',tx:'#166534',sub:'#059669',pill:'#16a34a'};
     const custs=[...new Set((b.pos||[]).map(p=>String(p.cust||'').trim()).filter(Boolean))];
-    const label = custs.length===1 ? custs[0] : (custs.length>1 ? custs[0]+' +'+(custs.length-1)+' more' : (b.ref||'LTL batch'));
+    const label = custs.length===1 ? custs[0] : (custs.length>1 ? custs[0]+' +'+(custs.length-1)+' more' : (b.ref||(ups?'UPS batch':'LTL batch')));
     const n=(b.pos||[]).length;
-    return `<div style="display:flex;align-items:center;gap:10px;padding:12px 13px;border-bottom:1px solid #e2e8f0;background:#ecfdf5;cursor:pointer;" onclick="laneOpenBatch('${b.id}')" onmouseover="this.style.background='#d1fae5'" onmouseout="this.style.background='#ecfdf5'">
+    return `<div style="display:flex;align-items:center;gap:10px;padding:12px 13px;border-bottom:1px solid #e2e8f0;background:${c.bg};cursor:pointer;" onclick="laneOpenBatch('${b.id}')" onmouseover="this.style.background='${c.hov}'" onmouseout="this.style.background='${c.bg}'">
       <div style="flex:1;min-width:0;">
-        <div style="font-size:13.5px;font-weight:800;color:#166534;">🚛 ${esc(label)} <span style="background:#16a34a;color:#fff;font-size:9.5px;font-weight:800;border-radius:20px;padding:1px 8px;margin-left:4px;">LTL READY</span></div>
-        <div style="font-size:11px;color:#059669;margin-top:2px;">${esc(b.ref||'')} · <b>${n}</b> PO · <b>${b.total_boxes||0}</b> boxes · <b>${b.pallets||0}</b> pallet(s)</div>
+        <div style="font-size:13.5px;font-weight:800;color:${c.tx};">${ups?'📦':'🚛'} ${esc(label)} <span style="background:${c.pill};color:#fff;font-size:9.5px;font-weight:800;border-radius:20px;padding:1px 8px;margin-left:4px;">${ups?'UPS READY':'LTL READY'}</span></div>
+        <div style="font-size:11px;color:${c.sub};margin-top:2px;">${esc(b.ref||'')} · <b>${n}</b> PO · ${ups?`combined into <b>${b.total_boxes||0}</b> box(es)`:`<b>${b.total_boxes||0}</b> boxes · <b>${b.pallets||0}</b> pallet(s)`}</div>
       </div>
-      <span style="font-size:12px;font-weight:800;color:#166534;white-space:nowrap;">📦 ${n} PO ›</span>
+      <span style="font-size:12px;font-weight:800;color:${c.tx};white-space:nowrap;">📦 ${n} PO ›</span>
     </div>`; }).join('');
   const legRows = legs.map(l=>`<div style="display:flex;align-items:center;gap:10px;padding:11px 13px;border-bottom:1px solid #f1f5f9;cursor:pointer;" onclick="laneProcess('${esc(l.base)}','${esc(l.wh)}',${isLtl?'true':'false'})" onmouseover="this.style.background='#f8fafc'" onmouseout="this.style.background=''">
       <div style="flex:1;min-width:0;">
@@ -21401,8 +21410,10 @@ function renderKpi(){
   (typeof laneReadyLegs==='function'?laneReadyLegs():[]).forEach(l=>{
     if(l.eff==='CA'){ l.isLtl?caLtl++:caUps++; } else { l.isLtl?scLtl++:scUps++; }
   });
-  // 🚛 직원이 /pic에서 묶은 대기(PENDING) LTL 배치 = LTL ready 로 1건씩 카운트 (배치 안 PO 는 위 loose leg 에서 이미 제외됨) (v728)
-  (window._bulkPending||[]).forEach(b=>{ if(String(b.wh||'SC')==='CA') caLtl++; else scLtl++; });
+  // 🚛/📦 직원이 /pic에서 묶은 대기(PENDING) 배치 = 그 방식의 ready 레인에 1건씩 (배치 안 PO 는 위 loose leg 에서 제외됨)
+  //    ref 접두어로 LTL/UPS 구분 — UPS 합포장 배치가 LTL 레인에 잘못 잡히던 것 수정 (v777)
+  (window._bulkPending||[]).forEach(b=>{ const ca=String(b.wh||'SC')==='CA', ups=/^UPS-/i.test(String(b.ref||''));
+    if(ups){ ca?caUps++:scUps++; } else { ca?caLtl++:scLtl++; } });
   // 재고 합계 (Full Box By Location 과 동일)
   const S = (typeof bxStore!=='undefined' && Array.isArray(bxStore)) ? bxStore : [];
   const sum = arr=>({b:arr.length, p:arr.reduce((s,x)=>s+(Number(x.pcs)||0),0)});
