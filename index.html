@@ -162,7 +162,7 @@ body.narrow main{max-width:1100px;}
   </span>
   <select id="lang-sel" onchange="setLang(this.value)" style="font-size:11px;padding:3px 6px;border-radius:5px;border:none;background:#1d3f66;color:#fff;"><option value="ko">한국어</option><option value="en">English</option><option value="es">Español</option></select>
   <button id="wide-btn" class="btn btn-sm" onclick="toggleWide()" title="화면 넓게 / 좁게 — 기본은 넓게 (이 브라우저에만 저장돼)" style="padding:2px 8px;font-size:10px;background:#1d3f66;color:#cfe0f2;border-color:#2b5384;">↔ Wide</button>
-  <span id="app-ver" style="font-size:10px;color:#9fb8d4;">v833</span>
+  <span id="app-ver" style="font-size:10px;color:#9fb8d4;">v834</span>
 </div>
 <script>
 // ↔ 넓게 보기 — 브라우저마다 따로 저장 (v793)
@@ -18390,6 +18390,7 @@ async function trBuilderOpen(existingId, route){
   ['modal-tr','modal-trb'].forEach(x=>{ const e=document.getElementById(x); if(e) e.remove(); });
   if(!bxLoaded) await bxFetchStore();
   if(!skuLoaded) await skuFetch();
+  _skuStyleSet = null;
   _shipId = null; _shipNo = null; _shipMeta = {}; _shipPallets = [];
   _hbGaveUp = false;                                 // 새로 열면 다시 시도 (v829)
   _shipRoute = TR_ROUTES[route] ? route : 'SC2CA';
@@ -18460,7 +18461,7 @@ async function trBuilderOpen(existingId, route){
       <button class="btn" style="background:#166534;color:#fff;border-color:#166534;" onclick="trPR()">🖨 Pull Request (per pallet)</button>
       <button class="btn" style="background:#334155;color:#fff;border-color:#334155;" onclick="trBOL()">🖨 BOL</button>
       ${trDstKind(_shipRoute)==='3P'
-        ? `<button class="btn btn-primary" style="background:#b45309;border-color:#b45309;" onclick="trSave3P()" title="Save this shipment and put it in Pending. When the truck actually picks it up, press 🚚 Shipped there — that is when the boxes move into their H bins.">💾 Save — ready for pickup</button>`
+        ? `<button class="btn btn-primary" style="background:#b45309;border-color:#b45309;" onclick="trSave3P()" title="Save this shipment and put it in Pending. When the truck actually picks it up, press 🚚 Shipped there — that is when the boxes move into their H bins.">💾 Save</button>`
         : `<button class="btn btn-primary" style="background:#7b1fa2;border-color:#7b1fa2;" onclick="trPost()">✅ Post — Start Shipment</button>`}
     </div></div>`;
   document.body.appendChild(div);
@@ -18994,24 +18995,112 @@ async function trCancelDraft(){
   if($('bx-body')) renderBoxRoom();
   trOpen();
 }
-function trManualLine(pid){
+async function trManualLine(pid){
   const p = pid ? _shipPallets.find(x=>x.id===pid) : _shipPallets[_shipPallets.length-1];
   if(!p) return;
+  if(!(await _trEnsureRow())) return;                 // 서버에 행부터 — 안 그러면 저장이 안 된다 (v834)
   p.lines.push({ is_manual:true, style:'', color:'', size:'', bin:'', boxes:0, ppb:72, ids:[] });
   trRenderPallets();
+  await trSaveDraftLines();
 }
 function trManualEdit(pid, li, field, val){
   const p = _shipPallets.find(x=>x.id===pid); if(!p || !p.lines[li]) return;
   p.lines[li][field] = (field==='boxes'||field==='ppb') ? (parseInt(val)||0) : String(val).trim().toUpperCase();
   trSaveDraftLines();
   trSummary();
+  if(field==='style' || field==='color' || field==='size') trRenderPallets();   // 확인 표시 갱신 (v834)
+}
+/* 이 스타일에 이 칼라가 실제로 있나? — 치는 즉시 판정 (v834)
+     ok        마스터에 있다
+     typo      비슷한 칼라가 있다 → 그걸 눌러서 고친다
+     newcolor  스타일은 맞는데 처음 보는 칼라 → 사람이 확인하고 마스터에 넣는다
+     badstyle  스타일 자체가 마스터에 없다 → 새 스타일은 이름·pcs/box·사이즈까지 정해야 해서
+               여기서 만들지 않고 SKU Manager 로 보낸다 */
+let _skuStyleSet = null;
+function skuStyleSet(){
+  if(!_skuStyleSet || _skuStyleSet._n !== skuStore.length){
+    _skuStyleSet = new Set(skuStore.map(k=>String(k.style).trim().toUpperCase()));
+    _skuStyleSet._n = skuStore.length;
+  }
+  return _skuStyleSet;
+}
+function trManColor(l){
+  const st = String((l&&l.style)||'').trim();
+  const co = String((l&&l.color)||'').trim().toUpperCase();
+  return (typeof bxSSFix==='function' && st) ? String(bxSSFix(st, co)).toUpperCase() : co;
+}
+function trManVal(l){
+  if(!skuLoaded || !skuStore.length) return null;          // 마스터를 못 읽었으면 아무 말 안 한다
+  const st = String((l&&l.style)||'').trim();
+  const co = trManColor(l);
+  if(!st) return null;
+  if(!skuStyleSet().has(st.toUpperCase())) return { kind:'badstyle' };
+  if(!co) return { kind:'nocolor' };
+  if(skuHas(st, co)) return { kind:'ok' };
+  const sug = skuSuggest(st, co);
+  if(sug) return { kind:'typo', sug:String(sug).toUpperCase() };
+  return { kind:'newcolor' };
+}
+function trManSizeVal(l){
+  const st = String((l&&l.style)||'').trim();
+  const sz = String((l&&l.size)||'').trim().toUpperCase();
+  if(!st || !sz) return null;
+  if(typeof bxStyleSizes!=='function') return null;
+  const list = bxStyleSizes(st);
+  if(!list || !list.length) return null;              // 범위를 모르는 스타일은 아무 말 안 한다
+  return list.indexOf(sz) >= 0 ? { kind:'ok' } : { kind:'bad', list };
+}
+function trManSizeHtml(l){
+  const v = trManSizeVal(l);
+  if(!v) return '';
+  if(v.kind==='ok') return '<span title="This size exists for style '+esc(String(l.style))+'" style="font-size:10px;font-weight:800;color:#15803d;">✓</span>';
+  return '<span title="Style '+esc(String(l.style))+' runs '+esc(v.list[0]+'–'+v.list[v.list.length-1])+' — '+esc(String(l.size))+' is not one of them" style="font-size:10px;font-weight:800;color:#b91c1c;background:#fee2e2;border-radius:5px;padding:1px 5px;white-space:nowrap;">✕ '+esc(v.list[0]+'–'+v.list[v.list.length-1])+'</span>';
+}
+function trManValHtml(pid, li, l){
+  const v = trManVal(l);
+  if(!v) return '';
+  const S = (bg,fg,txt,tip)=>'<span title="'+esc(tip)+'" style="font-size:10px;font-weight:800;color:'+fg+';background:'+bg+';border-radius:5px;padding:1px 6px;white-space:nowrap;">'+txt+'</span>';
+  if(v.kind==='ok')      return S('#dcfce7','#15803d','✓', 'This style/color is in the SKU master');
+  if(v.kind==='nocolor') return '';
+  if(v.kind==='badstyle')
+    return S('#fee2e2','#b91c1c','✕ style?', 'Style ' + String(l.style) + ' is not in the SKU master')
+      + ' <button class="btn btn-sm" style="font-size:9.5px;padding:0 5px;border-color:#fca5a5;color:#b91c1c;font-weight:800;" onclick="skuManager()" title="A brand new style needs an item name, pcs/box and size range — set it up in the SKU Manager first">Open SKU Manager</button>';
+  if(v.kind==='typo')
+    return S('#fee2e2','#b91c1c','✕', 'Not in the master for style ' + String(l.style))
+      + ' <button class="btn btn-sm" style="font-size:9.5px;padding:0 6px;border-color:#fbbf24;background:#fffbeb;color:#b45309;font-weight:800;" onclick="trManFix(\''+pid+'\','+li+')" title="Use this color instead">→ ' + esc(v.sug) + '</button>';
+  return S('#fff7ed','#b45309','⚠ new', 'Style ' + String(l.style) + ' has no color like this yet')
+    + ' <button class="btn btn-sm" style="font-size:9.5px;padding:0 6px;border-color:#fbbf24;background:#fffbeb;color:#b45309;font-weight:800;" onclick="trManAddSku(\''+pid+'\','+li+')" title="Add this color to the SKU master so everyone spells it the same way from now on">＋ Add to master</button>';
+}
+/* 제안한 칼라로 고친다 */
+function trManFix(pid, li){
+  const p = _shipPallets.find(x=>x.id===pid); const l = p && p.lines[li]; if(!l) return;
+  const v = trManVal(l); if(!v || v.kind!=='typo') return;
+  l.color = v.sug;
+  trSaveDraftLines(); trRenderPallets();
+  showToast('🎨 Corrected to ' + v.sug);
+}
+/* 처음 보는 칼라를 마스터에 넣는다 — 이 다음부터는 모두가 같은 철자를 쓴다 */
+async function trManAddSku(pid, li){
+  const p = _shipPallets.find(x=>x.id===pid); const l = p && p.lines[li]; if(!l) return;
+  const st = String(l.style||'').trim(), co = trManColor(l);
+  if(!st || !co) return;
+  if(!confirm('Add "' + st + ' / ' + co + '" to the SKU master?\n\n'
+    + 'Only do this for a colour that really is new. If it is a spelling of one you already have,\n'
+    + 'fix the spelling instead — two spellings split the same stock into two.')) return;
+  try{ await skuRegister([{style:st, color:co}]); }
+  catch(e){ showToast('⚠ Could not add it — check your connection'); return; }
+  _skuStyleSet = null;
+  l.color = co;
+  trSaveDraftLines(); trRenderPallets();
+  showToast('🎨 ' + st + ' / ' + co + ' added to the SKU master');
 }
 function trRenderPallets(){
   const el = document.getElementById('ship-pallets'); if(!el) return;
   const _hint = document.getElementById('ship-hint'); if(_hint) _hint.style.display = _shipPallets.length ? 'none' : '';
   // 사이즈 정렬 (in-place): 재고 라인은 스타일→칼라→사이즈, 수동(manual) 라인은 맨 뒤 원래 순서 유지
   _shipPallets.forEach(p=>{ if(Array.isArray(p.lines)) p.lines.sort((a,b)=>{ const am=a.is_manual?1:0, bm=b.is_manual?1:0; if(am!==bm) return am-bm; if(am) return 0; return String(a.style||'').localeCompare(String(b.style||'')) || bxBaseColor(String(a.color||'').toUpperCase()).localeCompare(bxBaseColor(String(b.color||'').toUpperCase())) || bxSizeCmp(a.size,b.size); }); });
-  el.innerHTML = trPbBarHtml() + _shipPallets.map(p=>{
+  el.innerHTML = (skuLoaded ? '<datalist id="trm-styles">' + skuStyles().map(x=>'<option value="'+esc(x)+'">').join('') + '</datalist>' : '')
+    + trPbBarHtml() + _shipPallets.map(p=>{
     const _pOrders = ((_shipMeta&&_shipMeta.orderShip)||[]).filter(o=>o.pallet===p.label);
     const pOB = _pOrders.reduce((s,o)=>s+(o.boxes||0),0);
     const pOP = _pOrders.reduce((s,o)=>s+(o.pcs||0),0);
@@ -19026,9 +19115,13 @@ function trRenderPallets(){
         const vTag = (!l.is_manual && vl) ? ` <span style="font-size:9px;font-weight:800;color:#7c3aed;">${esc(vl)}</span>` : '';
         if(l.is_manual){
           return `<tr style="background:#fef3c7;">
-          <td style="padding:4px 6px;"><input class="fi" value="${esc(l.style||'')}" placeholder="Style" onchange="trManualEdit('${p.id}',${li},'style',this.value)" style="width:64px;font-size:11px;padding:3px 5px;"></td>
-          <td style="padding:4px 6px;"><input class="fi" value="${esc(l.color||'')}" placeholder="Color" onchange="trManualEdit('${p.id}',${li},'color',this.value)" style="width:130px;font-size:11px;padding:3px 5px;text-transform:uppercase;"></td>
-          <td style="padding:4px 6px;"><input class="fi" value="${esc(l.size||'')}" placeholder="Size" onchange="trManualEdit('${p.id}',${li},'size',this.value)" style="width:48px;font-size:11px;padding:3px 5px;text-transform:uppercase;text-align:center;"></td>
+          <td style="padding:4px 6px;"><input class="fi" list="trm-styles" value="${esc(l.style||'')}" placeholder="Style" onchange="trManualEdit('${p.id}',${li},'style',this.value)" style="width:64px;font-size:11px;padding:3px 5px;"></td>
+          <td style="padding:4px 6px;white-space:nowrap;"><input class="fi" list="trm-c-${p.id}-${li}" value="${esc(l.color||'')}" placeholder="Color" onchange="trManualEdit('${p.id}',${li},'color',this.value)" style="width:130px;font-size:11px;padding:3px 5px;text-transform:uppercase;">
+            <datalist id="trm-c-${p.id}-${li}">${(skuLoaded&&l.style?skuColors(String(l.style).trim()):[]).map(c=>'<option value="'+esc(String(c).toUpperCase())+'">').join('')}</datalist>
+            <div style="margin-top:2px;">${trManValHtml(p.id, li, l)}</div></td>
+          <td style="padding:4px 6px;white-space:nowrap;"><input class="fi" list="trm-s-${p.id}-${li}" value="${esc(l.size||'')}" placeholder="Size" onchange="trManualEdit('${p.id}',${li},'size',this.value)" style="width:48px;font-size:11px;padding:3px 5px;text-transform:uppercase;text-align:center;">
+            <datalist id="trm-s-${p.id}-${li}">${(l.style&&typeof bxStyleSizes==='function'?bxStyleSizes(String(l.style).trim()):[]).map(z=>'<option value="'+esc(z)+'">').join('')}</datalist>
+            <div style="margin-top:2px;text-align:center;">${trManSizeHtml(l)}</div></td>
           <td style="text-align:center;color:#92400e;font-size:10px;font-weight:800;">Manual</td>
           <td style="padding:4px 6px;text-align:center;"><input class="fi" type="number" min="0" value="${Number(l.boxes)||0}" onchange="trManualEdit('${p.id}',${li},'boxes',this.value)" style="width:56px;font-size:11px;padding:3px 5px;text-align:center;font-weight:800;"></td>
           <td style="text-align:right;font-family:Consolas,monospace;font-weight:700;">${trLinePcs(l).toLocaleString()}</td>
@@ -19055,7 +19148,7 @@ function trRenderPallets(){
         ${trDstKind(_shipRoute)!=='3P' ? '' : (p.hbin
           ? `<span title="This pallet's 3rd party bin. Write this number on the pallet." style="font-family:Consolas,monospace;font-size:15px;font-weight:900;letter-spacing:.5px;color:#fff;background:#b45309;border-radius:7px;padding:3px 11px;">🏭 ${esc(p.hbin)}</span>
         <button class="btn btn-sm" style="background:#fff7ed;color:#b45309;border-color:#fbbf24;font-weight:800;" onclick="trBinLabelPrint('${p.id}')" title="Print the ${esc(p.hbin)} bin label on plain A4 paper (2 per sheet) — you choose how many">🖨 Bin label</button>
-        <button class="btn btn-sm" style="border:none;background:transparent;color:#b91c1c;font-weight:800;padding:0 5px;" onclick="trReleaseBin('${p.id}')" title="Void ${esc(p.hbin)} — retires the number for good, the next pallet gets a fresh one">🚫</button>`
+        <button class="btn btn-sm" style="background:#fef2f2;color:#b91c1c;border-color:#fecaca;font-weight:800;font-size:10.5px;" onclick="trReleaseBin('${p.id}')" title="Void ${esc(p.hbin)} — retires the number for good, the next pallet gets a fresh one">🚫 Void</button>`
           : `<button class="btn btn-sm" style="background:#b45309;color:#fff;border-color:#b45309;font-weight:800;" onclick="trAssignBin('${p.id}')" title="Take the next 3rd party bin number for this pallet. Nothing is used up until you press this — and once taken, that number is never given to another pallet.">🏭 Assign bin number${window._hbNext?` (next ${esc(window._hbNext)})`:''}</button>`)}
         <span style="color:var(--text2);font-size:11px;">${p.lines.length} line(s) · <b>${pB}</b> box(es) · <b>${pP.toLocaleString()}</b> pcs</span>
         ${_spSrc?'':`<button class="btn btn-sm" style="margin-left:auto;background:#1565c0;color:#fff;border-color:#1565c0;" onclick="trScOpen('${p.id}')">+ ${esc(_srcLbl)} Inventory</button>`}
@@ -19105,6 +19198,7 @@ async function trAssignBin(pid){
   if(!p){ showToast('⚠ Pallet not found'); return; }
   if(trDstKind(_shipRoute) !== '3P'){ showToast('⚠ Bin numbers are for 3rd party shipments only'); return; }
   if(p.hbin){ showToast('🏭 ' + p.label + ' already has ' + p.hbin); return; }
+  if(!(await _trEnsureRow())) return;                 // 번호는 저장되는 초안에만 준다 (v834)
   if(_hbBusy) return;
   _hbBusy = true;
   let nb = null;
@@ -19909,8 +20003,8 @@ async function trPost(){
 async function trSave3P(){
   trCaptureInfo();
   const nL = _shipPallets.reduce((s,p)=>s+p.lines.length,0);
-  if(!nL){ alert('No lines.'); return; }
-  if(!_shipId){ alert('Add lines first (the Draft saves when lines are added).'); return; }
+  if(!nL){ alert('Nothing to save yet — add lines from SC Inventory or with + Add manual line.'); return; }
+  if(!_shipId && !(await _trEnsureRow())) return;      // 행이 없으면 만든다 (v834)
   const noBin = _shipPallets.filter(p=>p.lines.length && !p.hbin).map(p=>p.label);
   if(noBin.length && !confirm('These pallets have no H bin number yet:\n\n  ' + noBin.join(', ')
       + '\n\nSave anyway? You will need a bin number before you can mark it Shipped.')) return;
