@@ -162,7 +162,7 @@ body.narrow main{max-width:1100px;}
   </span>
   <select id="lang-sel" onchange="setLang(this.value)" style="font-size:11px;padding:3px 6px;border-radius:5px;border:none;background:#1d3f66;color:#fff;"><option value="ko">한국어</option><option value="en">English</option><option value="es">Español</option></select>
   <button id="wide-btn" class="btn btn-sm" onclick="toggleWide()" title="화면 넓게 / 좁게 — 기본은 넓게 (이 브라우저에만 저장돼)" style="padding:2px 8px;font-size:10px;background:#1d3f66;color:#cfe0f2;border-color:#2b5384;">↔ Wide</button>
-  <span id="app-ver" style="font-size:10px;color:#9fb8d4;">v819</span>
+  <span id="app-ver" style="font-size:10px;color:#9fb8d4;">v820</span>
 </div>
 <script>
 // ↔ 넓게 보기 — 브라우저마다 따로 저장 (v793)
@@ -6984,12 +6984,26 @@ function calcFullBoxesFromLines(lines, whTag){
    QR '영숫자 모드'(0-9 A-Z 공백 $%*+-./:)에 있는 글자만 남긴다 — 괄호나 쉼표가 하나라도
    섞이면 QR 전체가 바이트 모드로 떨어져서 코드가 두 배로 커진다.
    '/' 와 '*' 는 구분자로 쓰므로 내용에서는 지운다. */
-const PB_QR_HOST = 'HTTPS://PSFLOWX.COM/B/';
+const PB_QR_HOST = 'HTTPS://PACIFICSPORTS.GITHUB.IO/PB/';   // 공장 풀박스 QR 과 같은 주소 — 폰으로 찍어도 작업 화면이 열리지 않는다
 function pbSafe(v){
   return String(v==null?'':v).toUpperCase()
     .replace(/\([^)]*\)/g, ' ')                 // (US) · (SIDE SEAM) 같은 꼬리표는 뺀다
     .replace(/[^A-Z0-9 $%+\-.:]/g, ' ')          // 영숫자 모드에 없는 글자는 공백으로
     .replace(/\s+/g, ' ').trim();
+}
+
+/* QR 은 내용이 길수록 커진다(모듈 수가 늘어난다). 배율을 고정해두면 품목이 많은 박스에서
+   라벨 밖으로 넘친다. 길이로 모듈 수를 어림잡고, 정해진 칸에 들어갈 배율을 고른다.
+   (영숫자 모드 · 오류정정 M 기준 용량표에서 넉넉하게 잡은 값) */
+const PB_QR_X = 555, PB_QR_BOX = 245;      // 라벨 오른쪽 위 QR 자리 (dot)
+function pbQrModules(len){
+  const t = [[47,33],[81,37],[123,41],[158,45],[199,49],[243,53],[283,57],[329,61],[369,65],[420,69],[476,73],[534,77],[599,81]];
+  for(let i=0;i<t.length;i++){ if(len <= t[i][0]) return t[i][1]; }
+  return 97;
+}
+function pbQrMag(txt){
+  const m = pbQrModules(String(txt||'').length);
+  return Math.max(2, Math.min(8, Math.floor(PB_QR_BOX / m)));
 }
 function pbQrText(box, order){
   try{
@@ -7011,10 +7025,19 @@ function pbQrText(box, order){
 function buildBoxLabelZpl(box, totalBoxes, order) {
   // ZP450 4x6 inch = 812w x 1218h dots (203 dpi) — IMS 원본 그대로
   const poNum = (order.customer_po || '').substring(0, 26);
-  // PO# 폰트 자동 축소: 라벨 폭(812dot)을 넘지 않게 글자수 기준으로 조절
-  const poFont = Math.max(45, Math.min(130, Math.floor(1050 / Math.max(1, poNum.length))));
-  const custName = (order.customer_name || '').substring(0, 30);
-  const custFontSize = custName.length > 20 ? 45 : custName.length > 15 ? 52 : 60;
+  /* QR 이 있으면 머리말은 왼쪽 505dot 안에서 논다 (오른쪽 245dot 은 QR 자리).
+     없으면 예전처럼 라벨 폭 전체를 쓴다 — 풀박스 라벨은 QR 이 없다. */
+  const _qrTmp = pbQrText(box, order);
+  const HDRW = _qrTmp ? 505 : 812;
+  const poFont = Math.max(45, Math.min(130, Math.floor((HDRW * 1.293) / Math.max(1, poNum.length))));
+  const custName = (order.customer_name || '').substring(0, 34);
+  /* 거래처는 두 줄까지 흘려서 크게 — 한 줄로 억지로 맞추면 긴 이름이 잘게 쪼그라든다 */
+  const _cl = Math.max(1, custName.length);
+  const custFontSize = Math.max(26, Math.min(56, Math.floor((HDRW * 2) / (_cl * 0.58))));
+  const custLines = Math.min(2, Math.max(1, Math.ceil((_cl * 0.58 * custFontSize) / HDRW)));
+  const custTopH = custLines * custFontSize;
+  const poLabY = 30 + custTopH + 6;
+  const poNumY = poLabY + 46;
   const groups = {};
   box.items.forEach(item => {
     const sNum = item.styleNum || box.styleNum || '';
@@ -7028,17 +7051,18 @@ function buildBoxLabelZpl(box, totalBoxes, order) {
   Object.values(groups).forEach(g => { totalLineCount += 1 + g.sizes.length; });
   totalLineCount += 1;
   const ITEM_START_Y = 475;
-  const _qr = pbQrText(box, order);                 // 우리 박스 QR (v817)
-  const ITEM_END_Y = _qr ? 900 : 1140;              // QR 자리(오른쪽 아래)를 비운다
+  const _qr = pbQrText(box, order);                 // 우리 박스 QR (v817) — 자리는 머리말 오른쪽 (v820)
+  const ITEM_END_Y = 1140;
   const availH = ITEM_END_Y - ITEM_START_Y;
-  const lineH = Math.min(80, Math.max(22, Math.floor(availH / totalLineCount)));
-  const itemFontH = Math.min(65, Math.max(20, lineH - 14));
+  const _floor = totalLineCount > 20 ? 24 : 40;
+  const lineH = Math.min(80, Math.max(_floor, Math.floor(availH / totalLineCount)));
+  const itemFontH = Math.min(65, Math.max(Math.min(32, _floor - 6), lineH - 14));
   const styleFontH = itemFontH;                 // 칼라 이름도 사이즈와 같은 크기 (v816)
   let itemLines = '';
   let yPos = ITEM_START_Y;
   Object.values(groups).forEach(g => {
     itemLines += '^FO30,' + yPos + '^A0N,' + styleFontH + ',' + styleFontH + '^FD' + g.styleNum + '  ' + g.color + '^FS\n';
-    yPos += lineH;                              // 글자가 커진 만큼 줄 간격도 한 줄 그대로 (v816)
+    yPos += Math.round(lineH * 0.82);           // 스타일 줄 → 사이즈 줄 간격 (예전 값 그대로)
     g.sizes.forEach(s => {
       itemLines += '^FO30,' + yPos + '^A0N,' + itemFontH + ',' + itemFontH + '^FD' + s.size + '^FS\n';
       itemLines += '^FO300,' + yPos + '^A0N,' + itemFontH + ',' + itemFontH + '^FD' + s.qty + ' pcs^FS\n';
@@ -7051,16 +7075,16 @@ function buildBoxLabelZpl(box, totalBoxes, order) {
   return '^XA\n'
     + '^POI\n'                                  // 180° invert — box label prints upside down (UPS labels unaffected; printer zpl.label_orientation must be 0)
     + '^MMT\n^PW812\n^LL1218\n^LS0\n'
-    + '^FO30,35^A0N,' + custFontSize + ',' + custFontSize + '^FD' + custName + '^FS\n'
-    + '^FO30,120^A0N,40,40^FDPO#^FS\n'
-    + '^FO30,' + (165 + Math.round((130 - poFont) / 2)) + '^A0N,' + poFont + ',' + poFont + '^FD' + poNum + '^FS\n'
+    + '^FO30,30^FB' + HDRW + ',2,0,L,0^A0N,' + custFontSize + ',' + custFontSize + '^FD' + custName + '^FS\n'
+    + '^FO30,' + poLabY + '^A0N,40,40^FDPO#^FS\n'
+    + '^FO30,' + (poNumY + Math.round((130 - poFont) / 2)) + '^A0N,' + poFont + ',' + poFont + '^FD' + poNum + '^FS\n'
+    + (_qr ? ('^FO' + PB_QR_X + ',25^BQN,2,' + pbQrMag(_qr) + '^FDMA,' + _qr + '^FS\n') : '')
     + '^FO30,340^A0N,95,95^FDBOX ' + box.boxNum + ' of ' + totalBoxes + (box.wh ? ' (' + box.wh + ')' : '') + '^FS\n'
     + '^FO20,460^GB772,5,5^FS\n'
     + itemLines
     + '^FO20,' + totalDivY + '^GB772,3,3^FS\n'
     + '^FO30,' + totalTextY + '^A0N,' + itemFontH + ',' + itemFontH + '^FDTotal:^FS\n'
     + '^FO300,' + totalTextY + '^A0N,' + itemFontH + ',' + itemFontH + '^FD' + totalQty + ' pcs^FS\n'
-    + (_qr ? ('^FO560,' + Math.max(totalDivY + 30, 930) + '^BQN,2,' + (_qr.length > 90 ? 4 : 5) + '^FDMA,' + _qr + '^FS\n') : '')
     + '^FO0,1175^FB812,1,0,C,0^A0N,28,28^FDPacific Sports^FS\n'
     + '^XZ';
 }
@@ -9222,7 +9246,7 @@ function scanParseQr(text){
         size: dec(seg[1]), qty: dec(seg[2]), color: dec(seg[3]), con:'', v:3 };
     }
     // ── v4: 우리가 찍는 PC Room 박스 라벨 (v817)
-    const v4 = t.toUpperCase().match(/PSFLOWX\.COM\/B\/([^\/]*)\/([^\/]*)\/([^\/]*)\/([^\/]*)\/(.*)$/);
+    const v4 = t.toUpperCase().match(/(?:PACIFICSPORTS\.GITHUB\.IO\/PB|PSFLOWX\.COM\/B)\/([^\/]*)\/([^\/]*)\/([^\/]*)\/([^\/]*)\/(.*)$/);
     if(v4){
       const items = String(v4[5]||'').split('/').map(seg=>{
         const p = seg.split('*');
