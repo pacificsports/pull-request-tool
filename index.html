@@ -162,7 +162,7 @@ body.narrow main{max-width:1100px;}
   </span>
   <select id="lang-sel" onchange="setLang(this.value)" style="font-size:11px;padding:3px 6px;border-radius:5px;border:none;background:#1d3f66;color:#fff;"><option value="ko">한국어</option><option value="en">English</option><option value="es">Español</option></select>
   <button id="wide-btn" class="btn btn-sm" onclick="toggleWide()" title="화면 넓게 / 좁게 — 기본은 넓게 (이 브라우저에만 저장돼)" style="padding:2px 8px;font-size:10px;background:#1d3f66;color:#cfe0f2;border-color:#2b5384;">↔ Wide</button>
-  <span id="app-ver" style="font-size:10px;color:#9fb8d4;">v825</span>
+  <span id="app-ver" style="font-size:10px;color:#9fb8d4;">v826</span>
 </div>
 <script>
 // ↔ 넓게 보기 — 브라우저마다 따로 저장 (v793)
@@ -1389,7 +1389,7 @@ async function pcUndoAllPending(){
       }
       await pcSaveRow(row);
     }
-    l.pcMove=[]; l.pcMoveData=[];
+    l.pcMove=[]; l.pcMoveData=[]; delete l.pcMoveWh;
   }
   try{ if(typeof bxRefetch==='function') await bxRefetch(); }catch(e){}
   if($('bx-body') && typeof renderBoxRoom==='function') renderBoxRoom();
@@ -1700,7 +1700,11 @@ function fbCellInner(l, b, i){
 function looseCellInner(l, b, i){
   return (b.loose||'')
     + (b.loose && (l.wh==='SC' || l.wh==='CA') ? `<button class="btn btn-sm" style="border:none;padding:0 3px;font-size:11px;" onclick="bxToPcFromEditor(${i})" title="If PC Room stock is short: move 1 full box (pick a location) into PC Room (deducts full box + receives to PC, immediate)">\u{1F4CD}</button>` : '')
-    + ((l.pcMove&&l.pcMove.length) ? `<div style="font-size:9px;line-height:1.3;color:#7c3aed;font-weight:800;white-space:nowrap;">\u{1F9FA} ${l.pcMove.map(g=>esc(g.loc)+(g.n>1?' \u00D7'+g.n:'')).join(' \u00B7 ')}${(l.pcMoveData&&l.pcMoveData.length)?`<button class="btn btn-sm" style="border:none;padding:0 3px;font-size:10px;color:#b91c1c;" onclick="pcMoveUndo(${i})" title="Undo this box move — boxes back to full-box stock, PC Room minus">\u21A9</button>`:''}</div>` : '')
+    + ((l.pcMove&&l.pcMove.length) ? (()=>{
+        const mvWh = String(l.pcMoveWh||'').toUpperCase();
+        const stale = mvWh && mvWh !== String(l.wh||'').toUpperCase();   // 다른 창고에서 뜯은 박스다
+        return `<div title="${stale?('These boxes were opened into the '+esc(mvWh)+' PC Room. This line ships from '+esc(String(l.wh||''))+' now — the pieces stay in '+esc(mvWh)+' as loose stock for another order.'):'Boxes opened into the PC Room for this line'}" style="font-size:9px;line-height:1.3;color:${stale?'#b45309':'#7c3aed'};font-weight:800;white-space:nowrap;${stale?'background:#fff7ed;border:1px solid #fed7aa;border-radius:5px;padding:0 4px;':''}">\u{1F9FA} ${stale?('['+esc(mvWh)+'] '):''}${l.pcMove.map(g=>esc(g.loc)+(g.n>1?' \u00D7'+g.n:'')).join(' \u00B7 ')}${(l.pcMoveData&&l.pcMoveData.length)?`<button class="btn btn-sm" style="border:none;padding:0 3px;font-size:10px;color:#b91c1c;" onclick="pcMoveUndo(${i})" title="Undo this box move — boxes back to full-box stock, PC Room minus">\u21A9</button>`:''}</div>`;
+      })() : '')
     + pcStockHint(l, b, i);
 }
 function refreshRow(i){
@@ -1731,8 +1735,31 @@ function refreshRow(i){
   if(msc) msc.innerHTML = whStockMini(l,'SC');
   if(mca) mca.innerHTML = whStockMini(l,'CA');
 }
+/* 창고를 바꿀 때 그 라인에 붙어 있던 「그 창고에서만 뜻이 있는」 것들을 정리한다.
+   지운 게 있으면 몇 건인지 돌려준다 — 조용히 지우면 직원이 왜 없어졌는지 모른다. */
+function whCleanLine(l, newWh){
+  if(!l) return 0;
+  const old = String(l.wh||'').trim().toUpperCase();
+  const nw  = String(newWh||'').trim().toUpperCase();
+  if(!old || old === nw) return 0;
+  let dropped = 0;
+  if(l.pickLocs && l.pickLocs.length){                     // 계획일 뿐 — 창고가 바뀌면 무의미
+    dropped = l.pickLocs.reduce((a,g)=>a+(Number(g.n)||0), 0) || l.pickLocs.length;
+    delete l.pickLocs;
+  }
+  delete l._fbForce;                                     // 그 창고 기준으로 풀어준 잠금
+  delete l._useReserve;                                  // 그 창고 예약분을 쓰겠다는 표시
+  if(l.pcMove && l.pcMove.length && !l.pcMoveWh) l.pcMoveWh = old;   // 🧺 는 사실 — 어느 창고였는지만 남긴다
+  return dropped;
+}
+function whApply(lines, wh){
+  let dropped = 0, rows = 0;
+  (lines||[]).forEach(l=>{ const d = whCleanLine(l, wh); if(d){ dropped += d; rows++; } l.wh = wh; });
+  if(dropped) showToast('📍 Cleared ' + dropped + ' assigned box(es) on ' + rows + ' line(s) — those locations were in the old warehouse');
+  if(typeof _lineAvailCache!=='undefined') _lineAvailCache = {};
+}
 function bulkWh(wh){
-  poLines.forEach(l=>l.wh=wh);
+  whApply(poLines, wh);
   renderTable(); renderDocs(); saveDraft();
 }
 function whAllToggle(wh, checked){
@@ -1740,7 +1767,7 @@ function whAllToggle(wh, checked){
   else syncWhAll();
 }
 function whLineToggle(i, wh, checked){
-  if(checked) poLines[i].wh = wh;
+  if(checked) whApply([poLines[i]], wh);
   // 해제 시엔 상태 유지 (항상 셋 중 하나는 선택) — refreshRow가 다시 체크함
   refreshRow(i);
   renderFoot();
@@ -2233,7 +2260,8 @@ function altApplyToLine(checkAvail){
   }
   if(!l._altFrom) l._altFrom={style:l.style,color:l.color,size:l.size,qty:l.qty,wh:l.wh||'BO'};   // 최초 1회만 원본 보존
   const dsc=styleItem(st)||l.desc||'';
-  l.style=st; l.color=co||l.color; l.size=sz; l.desc=dsc; l.descManual=false; l.qty=qty; l.wh=wh;
+  l.style=st; l.color=co||l.color; l.size=sz; l.desc=dsc; l.descManual=false; l.qty=qty;
+  whCleanLine(l, wh); l.wh=wh;
   return l;
 }
 // 입력한 style/color/size/qty/wh 로 BO 라인 교체 (Replace 버튼)
@@ -2303,7 +2331,8 @@ function altApply(){
   const orig = { style:l.style, color:l.color, size:l.size, qty:l.qty, wh:'BO' };
   l._altFrom = orig;
   const dsc = styleItem(p.style) || l.desc || '';
-  l.style = p.style; l.color = p.color; l.size = p.size; l.desc = dsc; l.descManual = false; l.qty = qty; l.wh = wh;
+  l.style = p.style; l.color = p.color; l.size = p.size; l.desc = dsc; l.descManual = false; l.qty = qty;
+  whCleanLine(l, wh); l.wh = wh;
   try{ if(window._forceBase) logHist(window._forceBase, `⇄ Alternative — ${orig.style}/${orig.color}/${orig.size} (BO ${(Number(orig.qty)||0).toLocaleString()}) → ${p.style}/${p.color}/${p.size} (${wh} ${qty.toLocaleString()})`); }catch(e){}
   const m=document.getElementById('modal-alt'); if(m) m.remove();
   renderTable();
@@ -3360,6 +3389,7 @@ async function rpToPcFromEditor(i){
     if(res && res.locs && res.locs.length){
       L.pcMove = (L.pcMove||[]).concat(res.locs);
       L.pcMoveData = (L.pcMoveData||[]).concat(res.moved||[]);
+      L.pcMoveWh = lwh0;                                 // 어느 창고에서 뜯었는지 (v826)
       _lineAvailCache={}; rpRerenderRow(i);
     }
   }, 'topc', 1);
@@ -3382,7 +3412,7 @@ async function rpMoveUndo(i){
     }
     await pcSaveRow(row);
   }
-  l.pcMove=[]; l.pcMoveData=[];
+  l.pcMove=[]; l.pcMoveData=[]; delete l.pcMoveWh;
   await bxRefetch();
   _lineAvailCache={};
   rpRerenderRow(i);
@@ -15340,6 +15370,7 @@ async function bxToPcFromEditor(i){
     if(res && res.locs && res.locs.length){
       poLines[i].pcMove = (poLines[i].pcMove||[]).concat(res.locs);
       poLines[i].pcMoveData = (poLines[i].pcMoveData||[]).concat(res.moved||[]);
+      poLines[i].pcMoveWh = lwh0;                        // 어느 창고에서 뜯었는지 (v826)
       renderTable();
       if(typeof saveDraft==='function') saveDraft();   // 이동 추적을 draft에 즉시 저장 — 새로고침해도 유지 (v450)
     }
