@@ -162,7 +162,7 @@ body.narrow main{max-width:1100px;}
   </span>
   <select id="lang-sel" onchange="setLang(this.value)" style="font-size:11px;padding:3px 6px;border-radius:5px;border:none;background:#1d3f66;color:#fff;"><option value="ko">한국어</option><option value="en">English</option><option value="es">Español</option></select>
   <button id="wide-btn" class="btn btn-sm" onclick="toggleWide()" title="화면 넓게 / 좁게 — 기본은 넓게 (이 브라우저에만 저장돼)" style="padding:2px 8px;font-size:10px;background:#1d3f66;color:#cfe0f2;border-color:#2b5384;">↔ Wide</button>
-  <span id="app-ver" style="font-size:10px;color:#9fb8d4;">v835</span>
+  <span id="app-ver" style="font-size:10px;color:#9fb8d4;">v836</span>
 </div>
 <script>
 // ↔ 넓게 보기 — 브라우저마다 따로 저장 (v793)
@@ -5489,6 +5489,29 @@ async function plAttachView(i){
   if(!f.data){ showToast('⚠ File data not found — please re-attach'); return; }
   attOpenData(f.name, f.type, f.data);
 }
+/* 이 인보이스에 돈이 오간 기록이 있나 (v836) */
+function invHasPay(iv){
+  return !!(iv && (iv.paid || (Array.isArray(iv.dupPays) && iv.dupPays.length)));
+}
+/* 저장할 때 절대 잃으면 안 되는 것들 — 돈과 발행 흔적.
+   next 에 이미 값이 있으면 그걸 쓰고, 없으면 예전 것(cur)에서 그대로 가져온다. */
+function invKeepPay(cur, next){
+  cur = cur || {}; next = next || {};
+  ['paid','dupPays','refunds','refunded','printed','ccNote'].forEach(k=>{
+    if(next[k] === undefined && cur[k] !== undefined) next[k] = cur[k];
+  });
+  if(invHasPay(next)) next.auto = false;      // 돈이 오갔으면 「자동 초안」이 아니다
+  return next;
+}
+/* 서버의 최신 inv[wh] 를 가져온다 — 편집기를 열어둔 사이 다른 사람이 결제했을 수 있다 */
+async function invFreshWh(base, wh){
+  try{
+    const r = await sbFetch('/rest/v1/pr_orders?select=inv&base=eq.'+encodeURIComponent(base));
+    if(!r.ok) return null;
+    const rows = await r.json();
+    return (rows[0] && rows[0].inv && rows[0].inv[wh]) || null;
+  }catch(e){ return null; }
+}
 async function saveInvStage(){
   if(window._svBusy){ showToast('⏳ Save in progress...'); return; }
   const rec = savedCache.find(s=>s.base===plBase); if(!rec) return;
@@ -5501,12 +5524,41 @@ async function _saveInvStageInner(rec){
   rec.inv = rec.inv || {};
   const iv = invDrafts[plWh] || {};
   if(!iv.invNo) iv.invNo = nextInvNo();
-  rec.inv[plWh] = { savedAt: new Date().toISOString(), invNo: iv.invNo, termType: iv.termType||'', termDays: iv.termDays||0, freight: Number(iv.freight)||0, lines: iv.lines||[] };
+  /* 결제 기록을 지키면서 저장한다 (v836).
+     서버 것을 먼저 읽는 이유: 이 화면을 열어둔 사이 다른 직원이 카드를 긁었으면
+     내 화면의 rec 에는 그 기록이 없다. 그걸 그대로 덮으면 결제가 없던 일이 되고,
+     다음 사람이 같은 인보이스를 또 긁는다. */
+  const fresh = await invFreshWh(plBase, plWh);
+  const cur = invHasPay(fresh) ? fresh : (rec.inv[plWh] || {});
+  if(invHasPay(fresh) && !invHasPay(rec.inv[plWh])){
+    showToast('💳 This invoice was paid on another computer — the payment is kept');
+    logHist(plBase, '💳 Payment found on the server while saving the invoice — kept (' + plWh + ')');
+  }
+  rec.inv[plWh] = invKeepPay(cur, {
+    savedAt: new Date().toISOString(),
+    invNo: iv.invNo,
+    termType: iv.termType||'', termDays: iv.termDays||0,
+    freight: Number(iv.freight)||0, lines: iv.lines||[],
+    ...(cur.invNo && cur.invNo !== iv.invNo ? {} : {})
+  });
   const r = await sbFetch('/rest/v1/pr_orders?base=eq.'+encodeURIComponent(plBase), {method:'PATCH', headers:{Prefer:'return=minimal'}, body:JSON.stringify({inv:rec.inv, updated_at:new Date().toISOString()})});
   if(!r.ok){ alert(t('save_fail')); return; }
   renderSaved(); renderPL();
   logHist(plBase, 'Invoice saved — ' + plWh + (iv.invNo ? ' (' + iv.invNo + ')' : ''));
   showToast(t('a_invsaved',{x:plNum(plBase, plWh)}));
+  /* 이미 카드를 긁은 인보이스인데 금액이 바뀌었으면 그냥 넘어가면 안 된다 (v836) */
+  const d = invPayDiff(rec.inv[plWh]);
+  if(invHasPay(rec.inv[plWh]) && Math.abs(d.diff) >= 0.01){
+    logHist(plBase, '⚠ Invoice total changed after payment — invoice $' + d.total.toFixed(2)
+      + ', charged $' + d.got.toFixed(2) + ', difference $' + d.diff.toFixed(2) + ' (' + plWh + ')');
+    alert((d.diff > 0 ? '💳 This invoice is UNDER-charged\n\n' : '↩ This invoice is OVER-charged\n\n')
+      + 'Invoice now:  $' + d.total.toFixed(2) + '\n'
+      + 'Charged:      $' + d.got.toFixed(2) + '\n'
+      + '─────────────────────\n'
+      + (d.diff > 0 ? 'Still owed:   $' : 'To refund:    $') + Math.abs(d.diff).toFixed(2) + '\n\n'
+      + 'The orange bar on the invoice has a button to '
+      + (d.diff > 0 ? 'charge the difference.' : 'refund the difference.'));
+  }
 }
 async function savePL(){
   const rec = savedCache.find(s=>s.base===plBase); if(!rec) return;
@@ -5535,7 +5587,7 @@ async function _savePLInner(rec){
   // Invoice 자동 생성 (직원이 Invoice를 직접 저장한 적 없으면 PL 기준으로 초안 생성)
   rec.inv = rec.inv || {};
   const exInv = rec.inv[plWh];
-  if(!exInv || exInv.auto){
+  if((!exInv || exInv.auto) && !invHasPay(exInv)){       // 결제된 인보이스는 다시 만들지 않는다 (v836)
     const ivd = invDrafts[plWh] || {};
     const invLines = (ivd._touched && Array.isArray(ivd.lines) && ivd.lines.length)
       ? ivd.lines
@@ -6199,7 +6251,7 @@ async function startCharge(){
     if(fr.ok){
       const rows = await fr.json();
       const fiv = rows[0] && rows[0].inv && rows[0].inv[plWh];
-      if(fiv && fiv.paid){
+      if(fiv && fiv.paid && !window._ccTopUp){        // 차액 추가결제는 의도한 것이라 경고 안 함 (v836)
         const pd0 = fiv.paid;
         const rec0 = savedCache.find(s=>s.base===plBase);
         if(rec0){ rec0.inv = rec0.inv || {}; rec0.inv[plWh] = fiv; } // 최신 반영
@@ -6256,10 +6308,15 @@ async function anetResponseHandler(response){
     rec.inv = rec.inv || {}; const cur = rec.inv[p.wh] || {};
     const payRec = { amt: primaryAmt, transId: j.transId||'', authCode: j.authCode||'', acct: j.acct||'', at: new Date().toISOString(), by: (SESS&&SESS.email)||'' };
     if(cur.paid && cur.paid.transId !== payRec.transId){
-      // 🚨 이중 결제 발생 — 덮어쓰지 않고 둘 다 기록해서 눈에 보이게
-      rec.inv[p.wh] = { ...cur, dupPays: [...(cur.dupPays||[]), payRec] };
-      logHist(p.base, '🚨 DUPLICATE charge $' + p.amt.toFixed(2) + ' — ' + p.wh + ' (Trans ' + (j.transId||'') + ') DOUBLE CHARGE! Both recorded');
-      showToast('🚨 Double charge detected! Both recorded — refund one of them');
+      const intended = !!window._ccTopUp;            // 차액을 일부러 더 긁은 것인가 (v836)
+      rec.inv[p.wh] = { ...cur, dupPays: [...(cur.dupPays||[]), (intended ? { ...payRec, kind:'extra' } : payRec)] };
+      if(intended){
+        logHist(p.base, 'Additional card charge $' + p.amt.toFixed(2) + ' — ' + p.wh + ' (Trans ' + (j.transId||'') + ') difference after the invoice changed');
+        showToast('✅ Difference charged — $' + p.amt.toFixed(2));
+      }else{
+        logHist(p.base, '🚨 DUPLICATE charge $' + p.amt.toFixed(2) + ' — ' + p.wh + ' (Trans ' + (j.transId||'') + ') DOUBLE CHARGE! Both recorded');
+        showToast('🚨 Double charge detected! Both recorded — refund one of them');
+      }
     }else{
       // 카드 승인 = 인보이스 자동 발행 처리 (번호 부여 + 초록)
       rec.inv[p.wh] = { ...cur, termType:'cc', printed: true, invNo: cur.invNo || nextInvNo(), savedAt: cur.savedAt || new Date().toISOString(), paid: payRec };
@@ -6275,6 +6332,7 @@ async function anetResponseHandler(response){
       logHist(x.base, 'Credit card charged $' + x.amt.toFixed(2) + ' — ' + x.wh + ' (combined payment with ' + p.base + ' · Trans ' + (j.transId||'') + ')');
     }
     window._ccExtra = [];
+    if(window._ccTopUp && typeof ccTopUpClose==='function') ccTopUpClose();   // 추가결제 창 닫기 (v836)
     ccBusy(false);
     if(st){ st.style.color = '#166534'; st.innerHTML = '✅ Charged · Auth <b>'+esc(j.authCode||'')+'</b> · '+esc(j.acct||'')+(j.authCode?` <span onclick="copyAuth('${esc(j.authCode||'')}')" style="cursor:pointer;text-decoration:underline;color:#3730a3;">📋 copy for CardPointe</span>`:''); }
     showToast('✅ Payment approved — $' + p.amt.toFixed(2) + ' (' + (j.acct||'') + ')' + (j.authCode?(' · Auth '+j.authCode):''));
@@ -6288,19 +6346,88 @@ async function anetResponseHandler(response){
   }
 }
 window.anetResponseHandler = anetResponseHandler;
+/* 이 인보이스로 실제로 받은 돈 (환불 뺀 순액) — 첫 결제 + 추가/중복 결제 전부 (v836) */
+function invChargedNet(iv){
+  if(!iv) return 0;
+  const all = [iv.paid, ...((iv.dupPays)||[])].filter(Boolean);
+  return Math.round(all.reduce((a,p)=>a + refundTotals(p).remain, 0) * 100) / 100;
+}
+/* 지금 인보이스 금액 (라인 + freight) */
+function invTotalOf(iv){
+  if(!iv) return 0;
+  const t = (iv.lines||[]).reduce((a,l)=>a + (Number(l.qty)||0) * (Number(l.price)||0), 0) + (Number(iv.freight)||0);
+  return Math.round(t * 100) / 100;
+}
+/* 인보이스 금액과 받은 돈의 차이. + 면 덜 받았고, − 면 더 받았다. */
+function invPayDiff(iv){
+  const total = invTotalOf(iv), got = invChargedNet(iv);
+  return { total, got, diff: Math.round((total - got) * 100) / 100 };
+}
 function refundTotals(pd){
   const refTot = (pd.refunds||[]).reduce((a,r)=>a+(Number(r.amt)||0),0) + (pd.refunded ? (Number(pd.amt)||0) : 0);
   return { refTot, remain: Math.max(0, (Number(pd.amt)||0) - refTot) };
+}
+/* 인보이스 금액 ≠ 받은 돈 이면 눈에 띄는 띠를 띄운다 (v836) */
+function invDiffBar(rec, wh){
+  const iv = (rec.inv && rec.inv[wh]) || {};
+  if(!invHasPay(iv)) return '';
+  const { total, got, diff } = invPayDiff(iv);
+  if(Math.abs(diff) < 0.01) return '';
+  const short = diff > 0;
+  return '<div style="margin-top:8px;padding:9px 13px;background:#fff7ed;border:2px solid #f59e0b;border-radius:8px;'
+    + 'display:flex;align-items:center;gap:10px;flex-wrap:wrap;font-size:12px;font-weight:800;color:#92400e;">'
+    + '<span style="font-size:14px;">⚠</span>'
+    + '<span>Invoice <b>$' + total.toFixed(2) + '</b> · charged <b>$' + got.toFixed(2) + '</b> · '
+    + (short ? 'still owed ' : 'over-charged ')
+    + '<b style="color:' + (short ? '#b91c1c' : '#7c2d12') + ';font-size:13px;">$' + Math.abs(diff).toFixed(2) + '</b></span>'
+    + (short
+      ? '<button class="btn btn-sm" style="background:#065f46;color:#fff;border-color:#065f46;font-weight:800;" onclick="ccTopUpOpen(\''+esc(rec.base)+'\',\''+wh+'\','+Math.abs(diff).toFixed(2)+')" title="Charge only the difference on a card">💳 Charge $' + Math.abs(diff).toFixed(2) + '</button>'
+      : '<button class="btn btn-sm" style="background:#b91c1c;color:#fff;border-color:#b91c1c;font-weight:800;" onclick="refundCharge(\''+esc(rec.base)+'\',\''+wh+'\',null,'+Math.abs(diff).toFixed(2)+')" title="Refund only the difference">↩ Refund $' + Math.abs(diff).toFixed(2) + '</button>')
+    + '</div>';
+}
+/* 💳 차액만 추가로 긁는다 — 실수로 두 번 긁는 것과 구분해서 기록한다 (v836) */
+function ccTopUpOpen(base, wh, amt){
+  const rec = savedCache.find(s=>s.base===base); if(!rec) return;
+  const ex = document.getElementById('modal-topup'); if(ex) ex.remove();
+  window._ccTopUp = true;
+  const div = document.createElement('div');
+  div.id = 'modal-topup';
+  div.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,.55);z-index:130;display:flex;align-items:center;justify-content:center;';
+  div.innerHTML = '<div style="background:#fff;border-radius:12px;width:430px;max-width:93vw;overflow:hidden;box-shadow:0 20px 60px rgba(0,0,0,.35);">'
+    + '<div style="background:#065f46;color:#fff;padding:11px 16px;font-weight:800;">💳 Charge the difference</div>'
+    + '<div style="padding:14px 16px;">'
+    +   '<div style="font-size:12px;color:var(--text2);line-height:1.7;">This is an <b>additional</b> charge on an invoice that was already paid — '
+    +   'it is recorded separately, not as a duplicate.</div>'
+    +   '<div style="display:flex;flex-wrap:wrap;align-items:center;gap:7px;margin-top:12px;">'
+    +     '<input class="fi" id="cc-num" placeholder="Card Number" maxlength="19" oninput="this.value=this.value.replace(/[^0-9]/g,\'\').replace(/(.{4})/g,\'$1 \').trim()" style="width:180px;font-family:Consolas,monospace;font-weight:700;letter-spacing:1px;">'
+    +     '<input class="fi" id="cc-exp" placeholder="MM/YY" maxlength="5" oninput="this.value=this.value.replace(/[^0-9]/g,\'\').replace(/^([0-9]{2})([0-9])/,\'$1/$2\')" style="width:64px;text-align:center;font-family:Consolas,monospace;font-weight:700;">'
+    +     '<input class="fi" id="cc-cvv" placeholder="CVV" maxlength="4" oninput="this.value=this.value.replace(/[^0-9]/g,\'\')" style="width:54px;text-align:center;font-family:Consolas,monospace;font-weight:700;">'
+    +     '<span style="font-size:13px;font-weight:800;color:#065f46;">$</span>'
+    +     '<input class="fi num" id="cc-amt" value="' + Number(amt).toFixed(2) + '" style="width:100px;text-align:center;font-family:Consolas,monospace;font-weight:800;">'
+    +   '</div>'
+    +   '<div id="cc-status" style="font-size:11.5px;font-weight:700;color:#92400e;margin-top:9px;min-height:16px;"></div>'
+    + '</div>'
+    + '<div style="padding:0 16px 14px;display:flex;gap:8px;justify-content:flex-end;">'
+    +   '<button class="btn btn-sm" onclick="ccTopUpClose()">Cancel</button>'
+    +   '<button class="btn btn-sm" id="cc-go" style="background:#065f46;color:#fff;border-color:#065f46;font-weight:800;" onclick="startCharge()">Charge</button>'
+    + '</div></div>';
+  document.body.appendChild(div);
+  if(typeof initModalDrag==='function') initModalDrag(div);
+}
+function ccTopUpClose(){
+  window._ccTopUp = false;
+  const m = document.getElementById('modal-topup'); if(m) m.remove();
 }
 function payOf(rec, wh, dupIdx){
   const iv = rec.inv && rec.inv[wh]; if(!iv) return null;
   return (dupIdx==null || dupIdx==='') ? iv.paid : (iv.dupPays||[])[dupIdx];
 }
-function refundCharge(base, wh, dupIdx){
+function refundCharge(base, wh, dupIdx, preAmt){
   const rec = savedCache.find(s=>s.base===base); if(!rec) return;
   const pd = payOf(rec, wh, dupIdx); if(!pd) return;
   const { refTot, remain } = refundTotals(pd);
   if(remain <= 0.005) return;
+  const pre = (Number(preAmt) > 0) ? Math.min(Number(preAmt), remain) : remain;   // 차액만 미리 채운다 (v836)
   const ex = document.getElementById('modal-refund'); if(ex) ex.remove();
   const div = document.createElement('div');
   div.id = 'modal-refund';
@@ -6314,7 +6441,7 @@ function refundCharge(base, wh, dupIdx){
       </div>
       <div style="display:flex;align-items:center;gap:8px;margin-top:12px;">
         <span style="font-size:13px;font-weight:800;">Refund $</span>
-        <input class="fi num" id="rf-amt" value="${remain.toFixed(2)}" style="width:120px;text-align:center;font-family:Consolas,monospace;font-weight:800;font-size:14px;">
+        <input class="fi num" id="rf-amt" value="${pre.toFixed(2)}" style="width:120px;text-align:center;font-family:Consolas,monospace;font-weight:800;font-size:14px;">
         <span id="rf-status" style="font-size:11.5px;font-weight:700;color:#92400e;"></span>
       </div>
       <div style="font-size:10.5px;color:#9ca3af;margin-top:8px;line-height:1.6;">A full refund before settlement voids the charge, with no fee.<br>Partial refunds are possible only after card settlement (usually the next business day).</div>
@@ -8353,12 +8480,16 @@ function renderPL(){
               : `<div style="margin-top:8px;padding:8px 12px;background:#f0fdf4;border:1.5px solid #86efac;border-radius:8px;font-size:12px;font-weight:700;color:#166534;">✅ PAID $${Number(ivRec.paid.amt).toFixed(2)} — ${ivRec.paid.method==='website' ? '🌐 Paid via Website' : `Card ${esc(ivRec.paid.acct||'')} · Auth ${ivRec.paid.authCode?`<span onclick="copyAuth('${esc(ivRec.paid.authCode)}')" title="Click to copy for CardPointe search" style="cursor:pointer;text-decoration:underline;">${esc(ivRec.paid.authCode)} 📋</span>`:esc(ivRec.paid.authCode||'')} · Trans ${esc(ivRec.paid.transId||'')}`} · ${new Date(ivRec.paid.at).toLocaleString()} · ${esc(ivRec.paid.by||'')}${rt.refTot>0?` <span style=\"color:#b91c1c;\">· ↩ refunded $${rt.refTot.toFixed(2)}</span>`:''}</div>`;
             const dupBoxes = dups.map((d,i)=>{
               const drt = refundTotals(d);
+              if(d.kind === 'extra' && drt.remain > 0.005){    // 일부러 더 긁은 차액 (v836)
+                return `<div style="margin-top:6px;padding:8px 12px;background:#f0fdf4;border:1.5px solid #86efac;border-radius:8px;font-size:12px;font-weight:700;color:#166534;display:flex;align-items:center;gap:8px;flex-wrap:wrap;">➕ Additional charge $${Number(d.amt).toFixed(2)} — Card ${esc(d.acct||'')} · Auth ${esc(d.authCode||'')} · ${new Date(d.at).toLocaleString()} · ${esc(d.by||'')}
+                  <button class="btn btn-sm" style="background:#fff;color:#b91c1c;border-color:#fca5a5;font-weight:800;" onclick="refundCharge('${esc(plBase)}','${plWh}',${i})">↩ Refund</button></div>`;
+              }
               return drt.remain <= 0.005
                 ? `<div style="margin-top:6px;padding:8px 12px;background:#f5f5f4;border:1.5px solid #d6d3d1;border-radius:8px;font-size:12px;font-weight:700;color:#57534e;">↩ Duplicate charge refunded $${drt.refTot.toFixed(2)} — Trans ${esc(d.transId||'')}</div>`
                 : `<div style="margin-top:6px;padding:8px 12px;background:#fef2f2;border:2px solid #dc2626;border-radius:8px;font-size:12px;font-weight:800;color:#b91c1c;display:flex;align-items:center;gap:8px;flex-wrap:wrap;">🚨 Duplicate charge #${i+2} — $${Number(d.amt).toFixed(2)} · Card ${esc(d.acct||'')} · Trans ${esc(d.transId||'')} · ${new Date(d.at).toLocaleString()} · ${esc(d.by||'')}
                    <button class="btn btn-sm" style="background:#b91c1c;color:#fff;border-color:#b91c1c;font-weight:800;" onclick="refundCharge('${esc(plBase)}','${plWh}',${i})">↩ Refund this one</button></div>`;
             }).join('');
-            return payBox + dupBoxes;
+            return payBox + dupBoxes + invDiffBar(rec, plWh);
           }
           const dd = invDocData();
           const totNow = (dd.lines||[]).reduce((a,l)=>a+(Number(l.qty)||0)*(Number(l.price)||0),0) + (Number(dd.freight)||0);
@@ -24176,7 +24307,7 @@ async function submitBatchShip(){
     rec.pl[bs.wh] = { custEmail: em, serial: nextSerial(bs.wh), via: via, method: method, freightCo: freightCo, trackings: [(trk||trkAll||'')], date: date, note: '', files: JSON.parse(JSON.stringify(bolFiles)), lines: lines, savedAt: new Date().toISOString(), _completed: new Date().toISOString() };
     rec.inv = rec.inv || {};
     const exInv = rec.inv[bs.wh];
-    if(!exInv || exInv.auto){
+    if((!exInv || exInv.auto) && !invHasPay(exInv)){      // 결제된 인보이스는 다시 만들지 않는다 (v836)
       rec.inv[bs.wh] = { savedAt: new Date().toISOString(), auto: true, freight: 0, lines: JSON.parse(JSON.stringify(lines)) };
     }
     try{
