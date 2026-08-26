@@ -162,7 +162,7 @@ body.narrow main{max-width:1100px;}
   </span>
   <select id="lang-sel" onchange="setLang(this.value)" style="font-size:11px;padding:3px 6px;border-radius:5px;border:none;background:#1d3f66;color:#fff;"><option value="ko">한국어</option><option value="en">English</option><option value="es">Español</option></select>
   <button id="wide-btn" class="btn btn-sm" onclick="toggleWide()" title="화면 넓게 / 좁게 — 기본은 넓게 (이 브라우저에만 저장돼)" style="padding:2px 8px;font-size:10px;background:#1d3f66;color:#cfe0f2;border-color:#2b5384;">↔ Wide</button>
-  <span id="app-ver" style="font-size:10px;color:#9fb8d4;">v831</span>
+  <span id="app-ver" style="font-size:10px;color:#9fb8d4;">v833</span>
 </div>
 <script>
 // ↔ 넓게 보기 — 브라우저마다 따로 저장 (v793)
@@ -18417,7 +18417,7 @@ async function trBuilderOpen(existingId, route){
   div.style.cssText = 'position:fixed;inset:0;background:rgba(15,23,42,.55);z-index:99;display:flex;align-items:center;justify-content:center;padding:10px;';
   div.innerHTML = `<div style="background:#fff;border-radius:12px;max-width:1200px;width:98vw;max-height:96vh;display:flex;flex-direction:column;overflow:hidden;">
     <div style="background:${TR_ROUTES[_shipRoute].color};color:#fff;padding:10px 16px;font-weight:800;display:flex;align-items:center;">🚛 ${TR_ROUTES[_shipRoute].label} Shipment Builder
-      <button class="btn btn-sm" style="margin-left:auto;background:transparent;color:#e9d5ff;border-color:#a78bfa;" onclick="trBuilderClose()">✕</button></div>
+      <button class="btn btn-sm" style="margin-left:auto;background:transparent;color:#e9d5ff;border-color:#a78bfa;" onclick="trBuilderClose()" title="Close — the draft is kept, nothing is lost">✕</button></div>
     <div style="padding:12px 16px;overflow-y:auto;flex:1;">
       <div style="background:#fef3f9;border:1px solid #d8b4fe;border-radius:8px;padding:12px;margin-bottom:12px;">
         <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:10px;font-size:12px;">
@@ -18450,11 +18450,12 @@ async function trBuilderOpen(existingId, route){
       ${trSrcAutoPallet(_shipRoute)?`<div id="ship-hint" style="margin-top:10px;padding:14px;border:1.5px dashed #fbbf24;border-radius:8px;background:#fffbeb;font-size:12px;color:#92400e;">🏭 This route moves <b>whole pallets</b> — press <b>Pick from ${esc(trKindShort(trSrcKind(_shipRoute)))}</b> and each bin you choose becomes its own pallet automatically. No need to create Pallet 1 / Pallet 2 yourself.</div>`:''}
     </div>
     <div style="padding:12px 16px;border-top:1px solid var(--border);display:flex;gap:8px;justify-content:flex-end;background:#fff;flex-wrap:wrap;">
-      <button class="btn" style="background:#f5f5f5;" onclick="trBuilderClose()">📝 Close (keep Draft)</button>
+      ${trDstKind(_shipRoute)==='3P' ? '' : `<button class="btn" style="background:#f5f5f5;" onclick="trBuilderClose()">📝 Close (keep Draft)</button>`}
       <button class="btn" style="background:#0f766e;color:#fff;border-color:#0f766e;font-weight:700;" onclick="trReserveDraft()" title="Move the pulled boxes into the TRANSFER bin — leaves the original bin (matches physical), still counted as SC stock">📦 Move to TRANSFER bin</button>
       <button class="btn" style="background:#fee2e2;color:#c62828;border-color:#fecaca;" onclick="trCancelDraft()">🗑 Delete Draft (restore stock)</button>
       <button class="btn" style="background:#fff7ed;color:#c2410c;border-color:#fdba74;font-weight:700;" onclick="trPutBackHistOpen()" title="See past Put Back Requests and reprint any of them">↩ Put-back history</button>
       ${trSrcIsSpec(_shipRoute)?'<button class="btn" style="background:#b45309;color:#fff;border-color:#b45309;" onclick="trPickupReq()">🖨 Pickup Request</button>':''}
+      ${trDstKind(_shipRoute)==='3P'?'<button class="btn" style="background:#fff7ed;color:#b45309;border-color:#fbbf24;font-weight:700;" onclick="hbHistOpen()" title="Every H bin number handed out — who took it, for which shipment, and which ones were voided">🏭 Bin history</button>':''}
       <button class="btn" style="background:#0f4c8a;color:#fff;border-color:#0f4c8a;" onclick="trPL()">🖨 Packing List Preview/Print</button>
       <button class="btn" style="background:#166534;color:#fff;border-color:#166534;" onclick="trPR()">🖨 Pull Request (per pallet)</button>
       <button class="btn" style="background:#334155;color:#fff;border-color:#334155;" onclick="trBOL()">🖨 BOL</button>
@@ -18463,7 +18464,9 @@ async function trBuilderOpen(existingId, route){
         : `<button class="btn btn-primary" style="background:#7b1fa2;border-color:#7b1fa2;" onclick="trPost()">✅ Post — Start Shipment</button>`}
     </div></div>`;
   document.body.appendChild(div);
+  window._hbNext = '';
   trRenderPallets();
+  trHbNextRefresh();                                 // 버튼에 다음 번호 표시 (v832)
 }
 function trCaptureInfo(){
   const v = id=>String((document.getElementById(id)||{}).value||'').trim();
@@ -18481,7 +18484,6 @@ async function _trEnsureRow(){
 }
 async function trBuilderClose(){
   trCaptureInfo();
-  await trReleaseEmptyBins();                        // 안 쓴 번호 반납 (v831)
   if(_shipId){
     await trPatchRec(_shipId, {ref:_shipNo, meta:_shipMeta, lines:trLinesFlat()});
     showToast('💾 '+_shipNo+' Draft saved — you can continue later');
@@ -18548,15 +18550,24 @@ async function hbTake(){
   return null;
 }
 /* 아직 안 쓴 번호를 되돌려준다 — 다음 팔레트가 이걸 먼저 쓴다 */
-async function hbGive(bin){
+/* 번호가 나갈 때마다 누가·언제·어디에 썼는지 남긴다 (v833) */
+async function hbLog(bin, status, ref, pallet){
   const nnum = parseInt(String(bin || '').replace(/^H/i, ''), 10);
   if(!nnum) return false;
-  const freeRaw = await _hbGet('@hbin:free', '[]');
-  if(freeRaw === null) return false;
-  const free = _hbFreeParse(freeRaw);
-  if(free.indexOf(nnum) < 0) free.push(nnum);
-  return await _hbPut('@hbin:free', JSON.stringify(free.sort((a,b)=>a-b)));
+  const who = (typeof SESS!=='undefined' && SESS && SESS.email) ? SESS.email : '';
+  const prev = await _hbGet('@hbinlog:' + nnum, '');
+  const born = (prev && String(prev).split('|')[4]) || new Date().toISOString();
+  return await _hbPut('@hbinlog:' + nnum,
+    [status, ref || '', pallet || '', who, born, (status === 'VOID' ? new Date().toISOString() : '')].join('|'));
 }
+/* 폐기 — 이 번호는 다시 나오지 않는다. 이미 팔레트나 라벨에 적혔을 수 있어서
+   재사용하면 같은 번호가 둘이 된다. 번호가 비는 건 괜찮다. (v833) */
+async function hbVoid(bin, ref, pallet){
+  const nnum = parseInt(String(bin || '').replace(/^H/i, ''), 10);
+  if(!nnum) return false;
+  return await hbLog(nnum, 'VOID', ref, pallet);
+}
+async function hbGive(bin, ref, pallet){ return await hbVoid(bin, ref, pallet); }   // 옛 이름 (재사용 안 함)
 /* ═══ 🖨 H bin 라벨 (4×6) ═══
    팔레트에 붙이는 라벨이라 멀리서 읽혀야 한다 — bin 번호만 크게, 나머지는 작게.
    몇 장 뽑을지는 그때그때 다르다 (팔레트 옆면마다 붙이기도 하고) → 매번 물어본다. */
@@ -18596,6 +18607,50 @@ async function trBinLabelPrint(pid){
   w.document.close();
   showToast('🏭 ' + n + ' × ' + p.hbin + ' bin label — A4, 2 per sheet');
 }
+/* 🏭 번호 이력 — 나간 번호 전부. 폐기된 번호는 왜 비어 있는지 여기서 설명된다. (v833) */
+async function hbHistOpen(){
+  const ex = document.getElementById('modal-hbhist'); if(ex) ex.remove();
+  let rows = [];
+  try{
+    const r = await fetch(SB_URL + '/rest/v1/pr_config?select=k,v&k=like.@hbinlog:*&order=k.desc&limit=500',
+      { headers:{ apikey:SB_KEY, Authorization:'Bearer ' + SB_KEY } });
+    if(r.ok) rows = await r.json();
+  }catch(e){}
+  const parsed = rows.map(x=>{
+    const num = parseInt(String(x.k).split(':')[1], 10) || 0;
+    const [st, ref, pallet, who, born, voided] = String(x.v || '').split('|');
+    return { num, st: st || '', ref: ref || '', pallet: pallet || '', who: who || '', born: born || '', voided: voided || '' };
+  }).filter(x=>x.num).sort((a,b)=>b.num - a.num);
+  const nVoid = parsed.filter(x=>x.st === 'VOID').length;
+  const nx = await hbPeek();
+  const d = document.createElement('div');
+  d.id = 'modal-hbhist';
+  d.style.cssText = 'position:fixed;inset:0;background:rgba(15,23,42,.55);z-index:400;display:flex;align-items:center;justify-content:center;padding:16px;';
+  d.onclick = e=>{ if(e.target===d) d.remove(); };
+  const body = parsed.length ? parsed.map(x=>{
+    const v = x.st === 'VOID';
+    return '<tr style="' + (v?'background:#fef2f2;':'') + '">'
+      + '<td style="font-family:Consolas,monospace;font-weight:800;color:' + (v?'#b91c1c':'#b45309') + ';padding:5px 10px;' + (v?'text-decoration:line-through;':'') + '">H' + x.num + '</td>'
+      + '<td style="padding:5px 10px;">' + (v
+          ? '<span style="font-size:10.5px;font-weight:800;color:#b91c1c;background:#fee2e2;border-radius:20px;padding:1px 9px;">VOIDED</span>'
+          : '<span style="font-size:10.5px;font-weight:800;color:#15803d;background:#dcfce7;border-radius:20px;padding:1px 9px;">IN USE</span>') + '</td>'
+      + '<td style="font-family:Consolas,monospace;font-size:11px;padding:5px 10px;">' + esc(x.ref || '—') + '</td>'
+      + '<td style="font-size:11.5px;padding:5px 10px;">' + esc(x.pallet || '—') + '</td>'
+      + '<td style="font-size:11px;color:#64748b;padding:5px 10px;">' + esc(String(x.who).split('@')[0] || '—') + '</td>'
+      + '<td style="font-size:11px;color:#64748b;padding:5px 10px;white-space:nowrap;">' + esc(String(x.born).slice(0,10)) + '</td>'
+      + '<td style="font-size:11px;color:#b91c1c;padding:5px 10px;white-space:nowrap;">' + esc(String(x.voided).slice(0,10) || '') + '</td></tr>';
+  }).join('') : '<tr><td colspan="7" style="padding:24px;text-align:center;color:#94a3b8;font-size:12.5px;">No bin numbers handed out yet.</td></tr>';
+  d.innerHTML = '<div style="background:#fff;border-radius:12px;width:860px;max-width:100%;max-height:86vh;display:flex;flex-direction:column;overflow:hidden;">'
+    + '<div style="background:#b45309;color:#fff;padding:10px 15px;font-weight:800;">🏭 3rd Party Bin Numbers'
+    +   '<button class="btn btn-sm" style="float:right;background:transparent;color:#fed7aa;border-color:#fdba74;" onclick="document.getElementById(\'modal-hbhist\').remove()">✕</button>'
+    +   '<div style="font-weight:400;font-size:10.5px;opacity:.92;">Every number handed out. Voided numbers are retired for good — that is why the sequence has gaps.</div></div>'
+    + '<div style="padding:7px 15px;background:#fff7ed;border-bottom:1px solid #fed7aa;font-size:12px;font-family:Consolas,monospace;color:#78350f;">'
+    +   'next out: <b>' + esc(nx || '?') + '</b> · ' + parsed.length + ' handed out · <span style="color:#b91c1c;font-weight:800;">' + nVoid + ' voided</span></div>'
+    + '<div style="overflow-y:auto;flex:1;"><table class="etbl" style="font-size:12px;width:100%;">'
+    +   '<thead><tr style="background:#fef3c7;"><th class="tl">Bin</th><th class="tl">Status</th><th class="tl">Shipment</th><th class="tl">Pallet</th><th class="tl">By</th><th class="tl">Taken</th><th class="tl">Voided</th></tr></thead>'
+    +   '<tbody>' + body + '</tbody></table></div></div>';
+  document.body.appendChild(d);
+}
 /* 다음에 나갈 번호가 뭔지 — 보여주기만 한다 (가져가지 않는다) */
 async function hbPeek(){
   const free = _hbFreeParse(await _hbGet('@hbin:free', '[]')).sort((a,b)=>a-b);
@@ -18603,35 +18658,18 @@ async function hbPeek(){
   const nx = await _hbGet('@hbin:next', String(HBIN_SEED));
   return nx === null ? '' : ('H' + (parseInt(nx, 10) || HBIN_SEED));
 }
-/* 아무것도 안 실린 팔레트가 쥐고 있는 H 번호를 반납한다 (v831) */
-async function trReleaseEmptyBins(){
-  if(typeof trDstKind!=='function' || trDstKind(_shipRoute) !== '3P') return 0;
-  const map = trHbinMap();
-  let back = 0;
-  for(const p of (_shipPallets||[])){
-    if(!p || !p.hbin || trPalletHasStuff(p)) continue;
-    try{ await hbGive(p.hbin); back++; }catch(e){}
-    delete map[p.label];
-    delete p.hbin;
-  }
-  return back;
-}
 async function trAddPallet(){
   const p = { id:'p_'+Math.random().toString(36).slice(2,9), label:'Pallet '+(_shipPallets.length+1), lines:[] };
   _shipPallets.push(p);
   trRenderPallets();                                 // 안에서 trEnsureBins 가 번호를 채운다 (v829)
-  if(trDstKind(_shipRoute) === '3P'){
-    await trEnsureBins();
-    if(p.hbin) showToast('🏭 ' + p.label + ' → ' + p.hbin);
-    else showToast('📦 ' + p.label + ' added — its H bin number appears once you put something on it');
-  }
+  if(trDstKind(_shipRoute) === '3P') showToast('📦 ' + p.label + ' added — press 🏭 Assign bin number when you want its bin');
 }
 async function trDelPallet(pid){
   const p = _shipPallets.find(x=>x.id===pid); if(!p) return;
   if(p.lines.length && !confirm('Delete all '+p.lines.length+' line(s) on '+p.label+' and restore '+trKindShort(trSrcKind(_shipRoute))+' stock?')) return;
   for(let li=p.lines.length-1;li>=0;li--) await _trRemoveLine(pid, li, true);
   _shipPallets = _shipPallets.filter(x=>x.id!==pid);
-  if(p.hbin){ await hbGive(p.hbin); try{ delete trHbinMap()[p.label]; }catch(e){} }   // 아직 안 쓴 번호는 되돌려준다 (v827·v831)
+  if(p.hbin){ await hbVoid(p.hbin, _shipNo || '', p.label); try{ delete trHbinMap()[p.label]; }catch(e){} }   // 번호는 폐기 — 재사용 안 함 (v833)
   if(!trSrcAutoPallet(_shipRoute)) _shipPallets.forEach((x,i)=>x.label='Pallet '+(i+1));
   await trSaveDraftLines();
   trRenderPallets();
@@ -18947,9 +18985,10 @@ async function trCancelDraft(){
     const p = _shipPallets[pi];
     for(let li=p.lines.length-1;li>=0;li--) await _trRemoveLine(p.id, li, true);
   }
+  const gaveBack = await trReleaseAllBins();          // 초안을 버리면 번호도 돌려준다 (v832)
   if(_shipId){ try{ await sbFetch('/rest/v1/pr_transfers?id=eq.'+_shipId, {method:'DELETE', headers:{Prefer:'return=minimal'}}); }catch(e){} }
   _shipId = null; _shipNo = null; _shipMeta = {}; _shipPallets = [];
-  showToast('🗑 Draft canceled');
+  showToast('🗑 Draft canceled' + (gaveBack.length ? ' — ' + gaveBack.join(', ') + ' voided (not reused)' : ''));
   const m = document.getElementById('modal-trb'); if(m) m.remove();
   await bxRefetch();
   if($('bx-body')) renderBoxRoom();
@@ -19013,8 +19052,11 @@ function trRenderPallets(){
     return `<div style="border:2px solid ${_spSrc?'#fbbf24':'#d8b4fe'};border-radius:8px;background:#fff;">
       <div style="background:${_spSrc?'#fffbeb':'#f3e8ff'};padding:8px 14px;display:flex;align-items:center;gap:10px;border-radius:6px 6px 0 0;flex-wrap:wrap;">
         <span style="font-weight:700;color:${_spSrc?'#b45309':'#7b1fa2'};">${_spSrc?'🏭 Bin':'📦'} ${esc(p.label)}</span>
-        ${p.hbin?`<span title="New 3rd party bin for this pallet. Assigned automatically; the number is released if you delete the pallet." style="font-family:Consolas,monospace;font-size:15px;font-weight:900;letter-spacing:.5px;color:#fff;background:#b45309;border-radius:7px;padding:3px 11px;">🏭 ${esc(p.hbin)}</span>
-        <button class="btn btn-sm" style="background:#fff7ed;color:#b45309;border-color:#fbbf24;font-weight:800;" onclick="trBinLabelPrint('${p.id}')" title="Print the ${esc(p.hbin)} bin label on plain A4 paper (2 per sheet) — you choose how many">🖨 Bin label</button>`:''}
+        ${trDstKind(_shipRoute)!=='3P' ? '' : (p.hbin
+          ? `<span title="This pallet's 3rd party bin. Write this number on the pallet." style="font-family:Consolas,monospace;font-size:15px;font-weight:900;letter-spacing:.5px;color:#fff;background:#b45309;border-radius:7px;padding:3px 11px;">🏭 ${esc(p.hbin)}</span>
+        <button class="btn btn-sm" style="background:#fff7ed;color:#b45309;border-color:#fbbf24;font-weight:800;" onclick="trBinLabelPrint('${p.id}')" title="Print the ${esc(p.hbin)} bin label on plain A4 paper (2 per sheet) — you choose how many">🖨 Bin label</button>
+        <button class="btn btn-sm" style="border:none;background:transparent;color:#b91c1c;font-weight:800;padding:0 5px;" onclick="trReleaseBin('${p.id}')" title="Void ${esc(p.hbin)} — retires the number for good, the next pallet gets a fresh one">🚫</button>`
+          : `<button class="btn btn-sm" style="background:#b45309;color:#fff;border-color:#b45309;font-weight:800;" onclick="trAssignBin('${p.id}')" title="Take the next 3rd party bin number for this pallet. Nothing is used up until you press this — and once taken, that number is never given to another pallet.">🏭 Assign bin number${window._hbNext?` (next ${esc(window._hbNext)})`:''}</button>`)}
         <span style="color:var(--text2);font-size:11px;">${p.lines.length} line(s) · <b>${pB}</b> box(es) · <b>${pP.toLocaleString()}</b> pcs</span>
         ${_spSrc?'':`<button class="btn btn-sm" style="margin-left:auto;background:#1565c0;color:#fff;border-color:#1565c0;" onclick="trScOpen('${p.id}')">+ ${esc(_srcLbl)} Inventory</button>`}
         <button class="btn btn-sm" style="${_spSrc?'margin-left:auto;':''}background:#166534;color:#fff;border-color:#166534;" onclick="trPRPallet('${p.id}')" title="Print the Pull Request for this pallet only">🖨 Pull Request</button>
@@ -19029,7 +19071,7 @@ function trRenderPallets(){
   }).join('');
   trRenderOrderShip();
   trSummary();
-  trEnsureBins();                                    // 번호 없는 3P 팔레트 채우기 (v829)
+  trRecoverBins();                                   // 이미 매긴 번호만 되찾는다 — 새로 받지 않는다 (v832)
 }
 /* 3rd party 로 가는 팔레트는 전부 H 번호를 갖게 한다 — 어느 경로로 만들어졌든.
    ① 저장된 라인에 이미 번호가 실려 있으면 그걸 되찾는다 (초안 다시 열기)
@@ -19042,34 +19084,75 @@ function trPalletHasStuff(p){
   try{ return (((_shipMeta||{}).orderShip)||[]).some(o=>o && o.pallet === p.label); }catch(e){ return false; }
 }
 function trHbinMap(){ _shipMeta = _shipMeta || {}; _shipMeta._hbins = _shipMeta._hbins || {}; return _shipMeta._hbins; }
-async function trEnsureBins(){
-  if(_hbBusy || _hbGaveUp) return 0;
+/* 이미 이 초안에 매겨진 번호를 팔레트에 다시 붙인다 — 서버에서 새로 받지 않는다.
+   초안을 다시 열 때마다 번호를 태우던 문제가 여기서 끝난다. (v832) */
+function trRecoverBins(){
   if(typeof trDstKind!=='function' || trDstKind(_shipRoute) !== '3P') return 0;
-  // 빈 팔레트엔 번호를 안 매긴다 — 열었다 닫기만 해도 번호가 사라지던 문제 (v831)
-  const need = (_shipPallets||[]).filter(p=>p && !p.hbin && trPalletHasStuff(p));
-  if(!need.length) return 0;
-  _hbBusy = true;
-  let got = 0, failed = false;
   const map = trHbinMap();
-  try{
-    for(const p of need){
-      // 이미 이 초안에 매겨진 번호가 있으면 되찾는다 — 다시 받으면 번호를 태운다
-      const saved = String(map[p.label]||'').trim().toUpperCase()
-        || (p.lines||[]).map(l=>String((l&&l.ca_bin)||'').trim().toUpperCase()).find(b=>/^H\d+$/.test(b))
-        || '';
-      if(/^H\d+$/.test(saved)){ p.hbin = saved; map[p.label] = saved; got++; continue; }
-      const nb = await hbTake();
-      if(!nb){ failed = true; break; }
-      p.hbin = 'H' + nb; map[p.label] = p.hbin; got++;
-    }
-  }catch(e){ failed = true; }
-  _hbBusy = false;
-  if(failed){
-    _hbGaveUp = true;
-    showToast('⚠ Could not get the next H bin number — enter it by hand when receiving');
-  }
-  if(got) trRenderPallets();
+  let got = 0;
+  (_shipPallets||[]).forEach(p=>{
+    if(!p || p.hbin) return;
+    const saved = String(map[p.label]||'').trim().toUpperCase()
+      || (p.lines||[]).map(l=>String((l&&l.ca_bin)||'').trim().toUpperCase()).find(b=>/^H\d+$/.test(b))
+      || '';
+    if(/^H\d+$/.test(saved)){ p.hbin = saved; map[p.label] = saved; got++; }
+  });
   return got;
+}
+/* 🏭 사람이 눌러서 번호를 받는다 — 이때가 유일하게 번호가 나가는 순간이다 */
+async function trAssignBin(pid){
+  const p = (_shipPallets||[]).find(x=>x.id===pid);
+  if(!p){ showToast('⚠ Pallet not found'); return; }
+  if(trDstKind(_shipRoute) !== '3P'){ showToast('⚠ Bin numbers are for 3rd party shipments only'); return; }
+  if(p.hbin){ showToast('🏭 ' + p.label + ' already has ' + p.hbin); return; }
+  if(_hbBusy) return;
+  _hbBusy = true;
+  let nb = null;
+  try{ nb = await hbTake(); }catch(e){}
+  _hbBusy = false;
+  if(!nb){ showToast('⚠ Could not reach the server for the next bin number — try again'); return; }
+  p.hbin = 'H' + nb;
+  trHbinMap()[p.label] = p.hbin;
+  try{ await hbLog(nb, 'ASSIGNED', _shipNo || '', p.label); }catch(e){}   // 누가 언제 받았는지 (v833)
+  await trSaveDraftLines();
+  trRenderPallets();
+  await trHbNextRefresh();
+  showToast('🏭 ' + p.label + ' → ' + p.hbin);
+}
+/* ↩ 잘못 매겼으면 돌려준다 — 다음 팔레트가 이 번호를 먼저 쓴다 */
+async function trReleaseBin(pid){
+  const p = (_shipPallets||[]).find(x=>x.id===pid);
+  if(!p || !p.hbin) return;
+  if(!confirm('Void ' + p.hbin + '?\n\nThis number is retired for good — it will NOT be given to another pallet.\n'
+    + 'The next pallet gets a fresh number. A gap in the numbers is fine; two pallets with the same number is not.')) return;
+  const had = p.hbin;
+  try{ await hbVoid(had, _shipNo || '', p.label); }catch(e){}
+  delete p.hbin;
+  try{ delete trHbinMap()[p.label]; }catch(e){}
+  await trSaveDraftLines();
+  trRenderPallets();
+  await trHbNextRefresh();
+  showToast('🚫 ' + had + ' voided — it will not be reused');
+}
+/* 이 초안이 쥔 번호를 전부 반납 (초안을 통째로 버릴 때) */
+async function trReleaseAllBins(){
+  if(typeof trDstKind!=='function' || trDstKind(_shipRoute) !== '3P') return [];
+  const out = [];
+  for(const p of (_shipPallets||[])){
+    if(!p || !p.hbin) continue;
+    try{ await hbVoid(p.hbin, _shipNo || '', p.label); out.push(p.hbin); }catch(e){}
+    delete p.hbin;
+  }
+  try{ if(_shipMeta) delete _shipMeta._hbins; }catch(e){}
+  return out;
+}
+/* 버튼에 「다음에 나갈 번호」를 보여주려고 미리 읽어둔다 — 가져가지는 않는다 */
+async function trHbNextRefresh(){
+  if(typeof trDstKind!=='function' || trDstKind(_shipRoute) !== '3P') return;
+  try{
+    const nx = await hbPeek();
+    if(nx && nx !== window._hbNext){ window._hbNext = nx; trRenderPallets(); }
+  }catch(e){}
 }
 function trSummary(){
   const set = (id,v)=>{ const e=document.getElementById(id); if(e) e.textContent = v; };
