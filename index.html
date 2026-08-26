@@ -162,7 +162,7 @@ body.narrow main{max-width:1100px;}
   </span>
   <select id="lang-sel" onchange="setLang(this.value)" style="font-size:11px;padding:3px 6px;border-radius:5px;border:none;background:#1d3f66;color:#fff;"><option value="ko">한국어</option><option value="en">English</option><option value="es">Español</option></select>
   <button id="wide-btn" class="btn btn-sm" onclick="toggleWide()" title="화면 넓게 / 좁게 — 기본은 넓게 (이 브라우저에만 저장돼)" style="padding:2px 8px;font-size:10px;background:#1d3f66;color:#cfe0f2;border-color:#2b5384;">↔ Wide</button>
-  <span id="app-ver" style="font-size:10px;color:#9fb8d4;">v811</span>
+  <span id="app-ver" style="font-size:10px;color:#9fb8d4;">v812</span>
 </div>
 <script>
 // ↔ 넓게 보기 — 브라우저마다 따로 저장 (v793)
@@ -10401,6 +10401,7 @@ async function bulkBadge(){
     return `<div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;background:${c.bg};border:1.5px solid ${c.bd};border-left:5px solid ${c.bar};border-radius:10px;padding:10px 14px;margin-bottom:10px;">
       <span style="font-size:13px;font-weight:800;color:${c.tx};">${line} <span style="color:${c.sub};font-weight:600;">[${esc(String(b.wh||''))}]</span></span>
       <button onclick="bulkLoadBatch('${b.id}')" style="margin-left:auto;background:${c.btn};color:#fff;border:none;border-radius:9px;padding:9px 16px;font-size:13px;font-weight:800;cursor:pointer;">✅ Select these &amp; Inform Customer ▸</button>
+      <button onclick="bulkUndo('${b.id}')" title="Wrong batch? Put every PO in it back to “add boxes” and remove the grouping" style="background:#fff;color:#b91c1c;border:1px solid #fca5a5;border-radius:9px;padding:8px 11px;font-size:12px;font-weight:800;cursor:pointer;">↩ Undo batch</button>
       <button onclick="bulkDismiss('${b.id}')" title="Hide this batch (won't affect orders)" style="background:transparent;color:${c.sub};border:1px solid ${c.bd};border-radius:9px;padding:8px 11px;font-size:12px;font-weight:700;cursor:pointer;">Dismiss</button>
     </div>`; }).join('');
 }
@@ -10487,7 +10488,8 @@ async function bulkDetail(id){
       <div style="font-size:11px;color:#94a3b8;">Created by ${esc(b.created_by||'—')}${b.created_at?' · '+new Date(b.created_at).toLocaleString():''}${b.shipped_at?' · shipped '+new Date(b.shipped_at).toLocaleString():''}</div>
     </div>
     <div style="padding:10px 16px;border-top:1px solid #e5e7eb;display:flex;gap:8px;justify-content:flex-end;">
-      <button class="btn btn-sm" style="color:#b91c1c;border-color:#fca5a5;" onclick="bulkDelete('${b.id}')">🗑 Delete</button>
+      <button class="btn btn-sm" style="color:#b91c1c;border-color:#fca5a5;font-weight:800;" onclick="bulkUndo('${b.id}')" title="Also clears the packing on every PO in this batch">↩ Undo batch</button>
+      <button class="btn btn-sm" style="color:#b91c1c;border-color:#fca5a5;" onclick="bulkDelete('${b.id}')" title="Removes only the truck grouping — the POs stay packed">🗑 Delete</button>
       ${(_isUps && (b.pos||[])[0] && (b.pos||[])[0].base)?`<button class="btn btn-sm" style="background:#a16207;color:#fff;border-color:#a16207;font-weight:800;" title="Box sizes for this combined shipment are saved on PO ${esc(String((b.pos||[])[0].po||''))}" onclick="bulkUpsLabel('${esc(String((b.pos||[])[0].base))}','${esc(String(b.wh||'SC'))}')">🏷 UPS label — PO ${esc(String((b.pos||[])[0].po||''))}</button>`:''}
       ${shipped?'':`<button class="btn btn-sm" style="background:#166534;color:#fff;border-color:#166534;font-weight:800;" onclick="bulkMarkShipped('${b.id}')">✅ Mark shipped</button>`}
     </div></div>`;
@@ -10503,6 +10505,43 @@ async function bulkMarkShipped(id){
   try{ await sbFetch('/rest/v1/pr_bulkship?id=eq.'+id,{method:'PATCH',headers:{Prefer:'return=minimal'},body:JSON.stringify({status:'SHIPPED',shipped_at:new Date().toISOString(),shipped_by:(SESS&&SESS.email)||''})}); }catch(e){}
   const m=document.getElementById('modal-bulkd'); if(m) m.remove();
   showToast('✅ Marked shipped'); if(typeof bulkBasesDirty==='function') bulkBasesDirty(); bulkBadge(); bulkOpen();
+}
+
+/* ↩ 배치 통째로 되돌리기 (v812)
+   packed 판정이 pr_pack 의 「박스가 있거나 via='LTL'」 이므로, 행을 지우지 않고
+   내용만 비워서 포장 전으로 돌린다 — 누가 언제 만졌는지는 남는 게 낫다.
+   그 다음 트럭 묶음(pr_bulkship)을 지운다. 이 둘을 따로 하면 반쪽만 되돌아간다. */
+async function bulkUndo(id){
+  let b = null;
+  try{ const r = await sbFetch('/rest/v1/pr_bulkship?id=eq.' + id + '&select=*'); b = (r.ok ? await r.json() : [])[0]; }catch(e){}
+  if(!b){ showToast('⚠ Batch not found'); return; }
+  const wh = String(b.wh || '').toUpperCase();
+  const bases = [...new Set((b.pos || []).map(p=>String(p.base || '')).filter(Boolean))];
+  if(!confirm('Undo this batch?\n\n' + bases.length + ' order(s) in ' + wh + ' go back to “add boxes”, and the truck grouping is removed.\n\nNothing else about the orders changes — pull requests, packing lists and invoices are untouched.')) return;
+
+  let packOk = true;
+  if(bases.length){
+    try{
+      const r = await sbFetch('/rest/v1/pr_pack?on_conflict=base,wh', { method:'POST',
+        headers:{ Prefer:'resolution=merge-duplicates,return=minimal' },
+        body: JSON.stringify(bases.map(base=>({ base, wh, via:'', boxes:[], total_boxes:0,
+          updated_by:(typeof SESS!=='undefined' && SESS && SESS.email) || null,
+          updated_at:new Date().toISOString() }))) });
+      if(!r.ok) throw new Error('HTTP ' + r.status);
+    }catch(e){ packOk = false; showToast('⚠ Could not clear the packing: ' + (e.message||e)); }
+  }
+  if(!packOk) return;                                   // 포장이 안 풀렸으면 배치는 남겨둔다 (반쪽 상태 방지)
+
+  try{ await sbFetch('/rest/v1/pr_bulkship?id=eq.' + id, { method:'DELETE', headers:{ Prefer:'return=minimal' } }); }
+  catch(e){ showToast('⚠ Packing cleared, but the grouping could not be removed'); }
+
+  showToast('↩ Batch undone — ' + bases.length + ' order(s) back to unpacked');
+  try{ if(typeof bulkBasesDirty==='function') bulkBasesDirty(); }catch(e){}
+  try{ bulkBadge(); }catch(e){}
+  try{ if(typeof renderKpi==='function') renderKpi(); }catch(e){}
+  try{ if(typeof renderSaved==='function') renderSaved(); }catch(e){}
+  const m = document.getElementById('modal-bulkd'); if(m) m.remove();
+  if(document.getElementById('modal-bulk')) { try{ bulkOpen(); }catch(e){} }
 }
 async function bulkDelete(id){
   if(!confirm('Delete this bulk shipment grouping?\n\n(The PO packing stays saved — this only removes the truck grouping.)')) return;
