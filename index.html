@@ -162,7 +162,7 @@ body.narrow main{max-width:1100px;}
   </span>
   <select id="lang-sel" onchange="setLang(this.value)" style="font-size:11px;padding:3px 6px;border-radius:5px;border:none;background:#1d3f66;color:#fff;"><option value="ko">한국어</option><option value="en">English</option><option value="es">Español</option></select>
   <button id="wide-btn" class="btn btn-sm" onclick="toggleWide()" title="화면 넓게 / 좁게 — 기본은 넓게 (이 브라우저에만 저장돼)" style="padding:2px 8px;font-size:10px;background:#1d3f66;color:#cfe0f2;border-color:#2b5384;">↔ Wide</button>
-  <span id="app-ver" style="font-size:10px;color:#9fb8d4;">v796</span>
+  <span id="app-ver" style="font-size:10px;color:#9fb8d4;">v797</span>
 </div>
 <script>
 // ↔ 넓게 보기 — 브라우저마다 따로 저장 (v793)
@@ -9055,7 +9055,10 @@ function scanRender(){
      타일 경계에 걸친 박스는 '?'로 돌아오는데 이건 이미 센 박스의 조각이라 버린다.
      반대로 통사진에서 나온 '?'는 진짜 안 읽힌 박스라 화면에 보고한다. */
 let _spImgs = [], _spBusy = false, _spInfo = null;
-const SP_TILE = 2;   // 원본을 SP_TILE x SP_TILE 로 잘라 사이즈 판독용으로 함께 보냄
+// 타일은 이제 안 보낸다 (v797). worker v2 가 통사진만으로 사이즈까지 맞히고,
+// 타일 4장을 한 번에 보내면 Cloudflare Worker 100초 제한에 걸려 524 로 죽는다 (측정: 127초).
+// 다시 켜고 싶으면 2 로 올리면 되지만, 그때는 요청을 나눠 보내야 한다.
+const SP_TILE = 1;
 
 function spSquash(v){ return String(v||'').toUpperCase().replace(/[^A-Z0-9]/g,''); }
 // 판독된 색/사이즈를 기대목록의 정식 키로 맞춘다. 공백·괄호 차이만 흡수하고 진짜 다른 색은 그대로 둔다.
@@ -9081,6 +9084,15 @@ function spBannerHtml(){
   if((i.badPhotos||[]).length) rows.push('<div style="color:#b91c1c;font-weight:800;">⚠ '+i.badPhotos.length+' photo(s) unusable — '+esc(String(i.badPhotos[0]))+'.<br>A shot from too far away comes back with the <b>wrong colour</b>, not just a blank. Retake with the pallet filling the frame.</div>');
   if(i.unread) rows.push('<div style="color:#b45309;font-weight:800;">⚠ '+i.unread+' box(es) unreadable — glare or shrink wrap over the label. Shoot that side again from another angle, or count them with ＋.</div>');
   if((i.sizeCheck||[]).length) rows.push('<div style="color:#b45309;font-weight:800;">⚠ size split not confirmed on: '+i.sizeCheck.map(esc).join(', ')+' — total is right but check the sizes by eye.</div>');
+  if((i.unsure||[]).length) rows.push('<div style="color:#b45309;font-weight:800;">⚠ not fully sure about: '+i.unsure.map(esc).join(', ')+' — worth a second look.</div>');
+  if((i.ctnDup||[]).length) rows.push('<div style="color:#b45309;font-weight:800;">⚠ carton no. '+i.ctnDup.map(esc).join(', ')+' appeared twice — counted once.</div>');
+  if(i.noCtn) rows.push('<div style="color:#b45309;font-weight:800;">⚠ '+i.noCtn+' box(es) had no readable carton number — those cannot be matched to a specific box.</div>');
+  if((i.ctnList||[]).length){
+    const cl = i.ctnList.slice().sort();
+    const shown = cl.length > 12 ? (cl.slice(0,6).join(', ') + ' … ' + cl.slice(-3).join(', ')) : cl.join(', ');
+    rows.push('<div style="color:#166534;font-weight:800;">🏷 carton no. read on '+cl.length+' of '+((i.total||0)+(i.unread||0))+' box'
+      + '<div style="font-weight:600;color:#475569;font-family:Consolas,monospace;font-size:10.5px;margin-top:2px;">'+esc(shown)+'</div></div>');
+  }
   if(i.qrTotal && i.total) rows.push('<div style="color:'+(i.qrTotal===i.total?'#166534':'#b91c1c')+';font-weight:800;">'+(i.qrTotal===i.total?'✓':'⚠')+' QR '+i.qrTotal+' box vs Photo '+i.total+' box'+(i.qrTotal===i.total?' — they agree.':' — they do NOT agree.')+'</div>');
   const seenTot = (i.total||0) + (i.unread||0);
   const expTot = ((_scan&&_scan.exp)||[]).reduce((a,e)=>a+(Number(e.qty)||0),0);
@@ -9117,7 +9129,8 @@ function spRender(){
     + '<div style="font-size:13px;font-weight:800;color:#0f2a4a;margin-bottom:6px;">Photograph every side that has labels</div>'
     + '<div style="font-size:11.5px;color:#475569;line-height:1.6;margin-bottom:10px;">'
     +   'Stand close enough that the <b>pallet fills the frame</b> — a shot from across the aisle reads the wrong colour, and that is the one thing that really breaks this. '
-    +   'Two angles of the same side is better than one: shrink-wrap glare hides a label from one angle and not the other.</div>'
+    +   'Two angles of the same side is better than one: shrink-wrap glare hides a label from one angle and not the other. '
+    +   'Add every side first, then read once — sending them together is what lets the carton numbers cancel out duplicates.</div>'
     + '<input type="file" id="sp-cam" accept="image/*" capture="environment" multiple style="display:none;" onchange="spAddPhotos(this.files)">'
     + '<button onclick="document.getElementById(\'sp-cam\').click()" style="width:100%;background:#0f2a4a;color:#fff;border:none;border-radius:10px;padding:14px;font-size:16px;font-weight:800;">📷 Add photo(s)</button>'
     + '<div id="sp-thumbs" style="display:flex;flex-wrap:wrap;gap:8px;margin-top:10px;"></div></div>'
@@ -9174,6 +9187,7 @@ function spRenderThumbs(){
     b.textContent='🔍 Read the labels'; }
   const nt = document.getElementById('sp-note');
   if(nt && _spImgs.length===1) nt.innerHTML='<b style="color:#b45309;">One photo only sees one side.</b> Add the other sides that carry labels — boxes hidden behind will not be counted.';
+  else if(nt && _spImgs.length>1) nt.innerHTML='All '+_spImgs.length+' photos are read in one go (about 20 seconds), so a box showing on two sides is only counted once.';
 }
 async function spPost(images){
   const r = await fetch(PCHK_WORKER, {method:'POST', headers:{'Content-Type':'application/json'},
@@ -9187,57 +9201,64 @@ async function spAnalyze(){
   _spBusy = true;
   const b = document.getElementById('sp-go');
   const setB = t => { if(b){ b.disabled=true; b.style.opacity='.7'; b.textContent=t; } };
-  let A, B = null;
+  let A;
   try{
-    setB('🔍 Counting the boxes… (1/2)');
+    setB('🔍 Reading the labels… (about 20 seconds)');
+    // 모든 면을 한 요청에 같이 보낸다 — 그래야 worker 가 CTN# 으로 같은 박스를 접어준다.
     A = await spPost(_spImgs.map(f=>f.whole));
-    const tiles = _spImgs.reduce((a,f)=>a.concat(f.tiles), []);
-    if(tiles.length){
-      setB('🔎 Checking the sizes… (2/2)');
-      try{ B = await spPost(tiles); }catch(e){ B = null; }   // 타일이 실패해도 A 만으로 진행
-    }
   }catch(e){
     _spBusy=false; if(b){ b.disabled=false; b.style.opacity='1'; b.textContent='🔍 Read the labels'; }
     showToast('⚠ Could not read the photos: '+(e.message||e)); return;
   }
   _spBusy = false;
-  spCombine(A, B);
+  spCombine(A);
 }
-// A = 통사진(총 개수 담당) · B = 타일(사이즈 배분 담당)
-function spCombine(A, B){
+// worker v2 는 박스 하나하나를 boxes[] 로 준다 (CTN# 포함). 그게 있으면 그걸 쓰고,
+// 없으면(=worker 를 되돌린 경우) 예전처럼 detected[] 로 돌아간다.
+//
+// 실측 (2026-08-26 · 8368 ROOT BEER 18박스 · 통사진 1장):
+//   4회 연속 — 박스 18/18 · XL14 2XL4 정확 · 카톤번호 595~612 18개 전부 정확 · 15~18초
+//   같은 팔레트를 4장 보내도 18박스로 접힘 (CTN# 로 중복 제거) · 18초
+//   LOT 은 0/18 — 라벨의 LOT 이 13.5pt 라 통사진에서는 안 읽힌다.
+function spCombine(A){
   const mp = spExpMap();
-  const aKey = {}, aSc = {};
-  let unread = 0;
-  (A.detected||[]).forEach(d=>{
-    const c = Number(d.count)||0; if(c<=0) return;
-    if(spIsUnread(d)){ unread += c; return; }
-    const k = spMapKey(d, mp);
-    aKey[k] = (aKey[k]||0) + c;
-    aSc[spScOf(k)] = (aSc[spScOf(k)]||0) + c;
-  });
-  const bKey = {};
-  ((B&&B.detected)||[]).forEach(d=>{
-    const c = Number(d.count)||0; if(c<=0) return;
-    if(spIsUnread(d)) return;                  // 타일 경계에 걸린 조각 — 이미 센 박스라 버린다
-    const k = spMapKey(d, mp);
-    bKey[k] = (bKey[k]||0) + c;
-  });
-  const final = {}, sizeCheck = [];
-  Object.keys(aSc).forEach(sc=>{
-    const tot = aSc[sc];
-    const bk = Object.keys(bKey).filter(k=>spScOf(k)===sc);
-    const bsum = bk.reduce((a,k)=>a+bKey[k],0);
-    if(bk.length && bsum === tot){ bk.forEach(k=>{ final[k] = (final[k]||0) + bKey[k]; }); return; }   // 타일이 총합과 일치 → 채택
-    Object.keys(aKey).forEach(k=>{ if(spScOf(k)===sc) final[k] = (final[k]||0) + aKey[k]; });          // 아니면 통사진 값 사용
-    if(bk.length) sizeCheck.push(sc.split('|')[1] || sc);
-  });
+  const final = {};
+  let unread = 0, ctnList = [], ctnDup = [], noCtn = 0, unsure = [];
+  const boxes = Array.isArray(A.boxes) ? A.boxes : null;
+
+  if(boxes && boxes.length){
+    const seenCtn = {};
+    boxes.forEach(bx=>{
+      const cnt = (Number(bx && bx.count) > 0) ? Number(bx.count) : 1;
+      if(!bx || spIsUnread(bx)){ unread += cnt; return; }
+      const ctn = String(bx.ctn||'').trim().toUpperCase();
+      if(ctn){
+        if(seenCtn[ctn]){ ctnDup.push(ctn); return; }   // 같은 카톤번호 = 같은 박스. 안전망.
+        seenCtn[ctn] = 1; ctnList.push(ctn);
+      } else noCtn += cnt;
+      const k = spMapKey(bx, mp);
+      final[k] = (final[k]||0) + cnt;
+      if(bx.sure === false) unsure.push(String(bx.color||'')+' '+String(bx.size||''));
+    });
+  } else {
+    (A.detected||[]).forEach(d=>{
+      const c = Number(d.count)||0; if(c<=0) return;
+      if(spIsUnread(d)){ unread += c; return; }
+      final[spMapKey(d, mp)] = (final[spMapKey(d, mp)]||0) + c;
+    });
+  }
+
   _scan.photo = final;
+  _scan.photoBoxes = boxes || null;
   const total = Object.values(final).reduce((a,v)=>a+v,0);
   const badPhotos = (A.photo_quality||[]).filter(q=>q && q.ok===false).map(q=>q.reason||'unclear');
-  _spInfo = { total, unread, badPhotos, sizeCheck, photos:_spImgs.length,
+  _spInfo = { total, unread, badPhotos, sizeCheck:[], photos:_spImgs.length,
+              ctnList, ctnDup, noCtn, unsure: [...new Set(unsure)],
               qrTotal: (_scan && _scan.seen) ? _scan.seen.size : 0 };
   spClose();
-  showToast(total + ' box read from ' + _spImgs.length + ' photo(s)' + (unread ? ' · ' + unread + ' unreadable' : ''));
+  showToast(total + ' box read from ' + _spImgs.length + ' photo(s)'
+            + (ctnList.length ? ' · ' + ctnList.length + ' carton no.' : '')
+            + (unread ? ' · ' + unread + ' unreadable' : ''));
 }
 function scanManual(key, d){
   if(!_scan) return;
