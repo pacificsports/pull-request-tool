@@ -162,7 +162,7 @@ body.narrow main{max-width:1100px;}
   </span>
   <select id="lang-sel" onchange="setLang(this.value)" style="font-size:11px;padding:3px 6px;border-radius:5px;border:none;background:#1d3f66;color:#fff;"><option value="ko">한국어</option><option value="en">English</option><option value="es">Español</option></select>
   <button id="wide-btn" class="btn btn-sm" onclick="toggleWide()" title="화면 넓게 / 좁게 — 기본은 넓게 (이 브라우저에만 저장돼)" style="padding:2px 8px;font-size:10px;background:#1d3f66;color:#cfe0f2;border-color:#2b5384;">↔ Wide</button>
-  <span id="app-ver" style="font-size:10px;color:#9fb8d4;">v826</span>
+  <span id="app-ver" style="font-size:10px;color:#9fb8d4;">v828</span>
 </div>
 <script>
 // ↔ 넓게 보기 — 브라우저마다 따로 저장 (v793)
@@ -3150,8 +3150,11 @@ async function loadSaved(base){
   togglePoViewer(false);                                  // 뷰어 닫기 + 본문 밀림 원복 (v391)
   window._forceBase = rec.base; // 편집 중 이름/PO/날짜를 고쳐도 같은 오더로 저장 (새 오더 생성 방지)
   setMeta(rec.meta); poLines = normalizeLines(rec.lines);
-  poLines.forEach(l=>{ if(l) l.pcMoveData = []; });   // 저장된 오더의 이동은 이미 커밋됨 — pending 취급 안 함 (v450)
+  poLines.forEach(l=>{ if(l) l.pcMoveData = []; });
   renderTable(); updateNumPreview(); renderDocs();
+  /* 🧺 되돌리기 살리기 (v828) — 예전엔 여기서 비우고 끝이라 오더를 다시 열면 ↩ 버튼이 사라졌다.
+     되돌릴 박스는 DB 에 'PC ROOM (PO xxxx)' 로 표시돼 있으니 다시 찾아 붙인다. */
+  pcMoveRelink(poLines, (rec.meta&&rec.meta.po)).then(k=>{ if(k) renderTable(); });
   window.scrollTo({top:0,behavior:'smooth'});
 }
 // ═══ 오더 라인 분리: 일부 아이템/수량을 별도 오더(-S1)로 빼서 따로 진행 ═══
@@ -15336,6 +15339,43 @@ async function bxPickFromEditor(i){
     if(res && res.locs){ poLines[i].pickLocs = res.locs; renderTable(); showToast('📍 Assigned — deducted from these locations when the PR is printed'); }
   }, 'reserve');
 }
+/* 저장된 오더를 다시 열었을 때, 이 오더로 PC Room 에 옮긴 박스를 DB 에서 찾아 라인에 다시 붙인다.
+   붙어야 ↩ 버튼이 살아난다. 같은 박스가 두 라인에 붙으면 두 번 되돌리게 되니 한 번 쓴 건 빼둔다. (v828) */
+async function pcMoveRelink(lines, poNum){
+  const poN = String(poNum||'').trim();
+  if(!poN || !(lines||[]).some(l=>l && l.pcMove && l.pcMove.length)) return 0;
+  let rows;
+  try{
+    const r = await sbFetch('/rest/v1/pr_boxes?select=id,style,color,size,pcs,wh&status=eq.OUT&out_po=eq.'
+      + encodeURIComponent('PC ROOM (PO ' + poN + ')'));
+    if(!r.ok) return 0;
+    rows = await r.json();
+  }catch(e){ return 0; }
+  if(!rows || !rows.length) return 0;
+  const taken = {};
+  let linked = 0;
+  (lines||[]).forEach(l=>{
+    if(!l || !(l.pcMove && l.pcMove.length)) return;
+    const st = bxStyleFor(l).toUpperCase();
+    const bc = bxBaseColor(bxColorFor(l));
+    const sz = String(l.size||'').trim().toUpperCase();
+    const lw = (String(l.pcMoveWh || l.wh || 'SC').trim().toUpperCase() === 'CA') ? 'CA' : 'SC';
+    const want = (l.pcMove||[]).reduce((a,g)=>a+(Number(g.n)||1), 0) || l.pcMove.length;
+    const mine = rows.filter(b=> !taken[b.id]
+      && String(b.style||'').trim().toUpperCase() === st
+      && bxBaseColor(b.color) === bc
+      && String(b.size||'').trim().toUpperCase() === sz
+      && ((String(b.wh||'SC').trim().toUpperCase() === 'CA') ? 'CA' : 'SC') === lw
+    ).slice(0, want);
+    if(!mine.length) return;
+    mine.forEach(b=>{ taken[b.id] = 1; });
+    l.pcMoveData = mine.map(b=>({ id:b.id, style:b.style, color:b.color,
+      size:String(b.size||'').trim().toUpperCase(), pcs:Number(b.pcs)||0,
+      wh:(String(b.wh||'SC').trim().toUpperCase()==='CA')?'CA':'SC' }));
+    linked += mine.length;
+  });
+  return linked;
+}
 async function pcMoveUndo(i){
   const l = poLines[i]; const mv = (l&&l.pcMoveData)||[];
   if(!mv.length){ showToast('⚠ Nothing to undo on this line (moves made before this session cannot be undone here)'); return; }
@@ -18245,7 +18285,8 @@ function trNewOpen(){
 }
 async function trGet(id){ try{ const r = await sbFetch('/rest/v1/pr_transfers?id=eq.'+id+'&select=*'); if(r.ok) return (await r.json())[0]; }catch(e){} return null; }
 async function trPatchRec(id, body){ try{ await sbFetch('/rest/v1/pr_transfers?id=eq.'+id, {method:'PATCH', headers:{Prefer:'return=minimal'}, body:JSON.stringify(body)}); }catch(e){} }
-function trLinesFlat(){ return _shipPallets.reduce((a,p)=>a.concat(p.lines.map(l=>({...l, pallet:p.label}))),[]); }
+function trLinesFlat(){ return _shipPallets.reduce((a,p)=>a.concat(p.lines.map(l=>({...l, pallet:p.label,
+  ...(p.hbin ? { ca_bin:p.hbin } : {}) }))),[]); }   // 팔레트에 매긴 H bin 을 라인에도 (받을 때 자동 입력) (v827)
 async function trSaveDraftLines(){ if(_shipId) await trPatchRec(_shipId, {lines: trLinesFlat()}); }
 function trLineBoxes(l){ return l.is_manual ? (Number(l.boxes)||0) : (l.ids||[]).length; }
 function trLinePcs(l){ return trLineBoxes(l) * (Number(l.ppb)||Number(l.pcs)||0); }
@@ -18440,15 +18481,136 @@ async function trBuilderClose(){
   // do NOT reopen the transfer list here — closing the builder should just close it.
   // (Use the 🚚 Transfer button to open the transfer list when needed.)
 }
-function trAddPallet(){
-  _shipPallets.push({ id:'p_'+Math.random().toString(36).slice(2,9), label:'Pallet '+(_shipPallets.length+1), lines:[] });
+
+/* ═══════════ 🏭 3rd party H bin 번호 (v827) ═══════════
+   서버에 번호 두 개를 둔다:
+     @hbin:next  다음에 새로 쓸 번호
+     @hbin:free  지웠다가 반납된 번호들 (작은 것부터 다시 쓴다 — 번호가 비지 않게)
+   여러 사람이 동시에 만들어도 겹치지 않게 서버에서만 센다. 쓰고 나서 다시 읽어 확인하고,
+   누가 먼저 채갔으면 한 번 더 시도한다. 그래도 안 되면 번호를 안 준다 —
+   겹친 H bin 은 서로 다른 팔레트를 같은 칸으로 만들어버려서 되돌리기가 제일 어렵다. */
+const HBIN_SEED = 2970;                      // 아직 안 쓴 첫 번호
+async function _hbGet(k, dflt){
+  try{
+    const r = await fetch(SB_URL + '/rest/v1/pr_config?select=v&k=eq.' + encodeURIComponent(k),
+      { headers:{ apikey:SB_KEY, Authorization:'Bearer ' + SB_KEY } });
+    if(!r.ok) return null;
+    const j = await r.json();
+    return j.length ? String(j[0].v == null ? '' : j[0].v) : dflt;
+  }catch(e){ return null; }
+}
+async function _hbPut(k, v){
+  try{
+    const r = await fetch(SB_URL + '/rest/v1/pr_config?on_conflict=k', { method:'POST',
+      headers:{ apikey:SB_KEY, Authorization:'Bearer ' + SB_KEY, 'Content-Type':'application/json',
+                Prefer:'resolution=merge-duplicates,return=minimal' },
+      body: JSON.stringify([{ k, v:String(v), updated_at:new Date().toISOString() }]) });
+    return r.ok;
+  }catch(e){ return false; }
+}
+function _hbFreeParse(v){
+  try{ const a = JSON.parse(v || '[]'); return Array.isArray(a) ? a.map(Number).filter(x=>x>0) : []; }
+  catch(e){ return []; }
+}
+/* 다음 번호 하나를 가져온다. 반납된 번호가 있으면 그걸 먼저 쓴다. */
+async function hbTake(){
+  for(let attempt = 0; attempt < 2; attempt++){
+    const freeRaw = await _hbGet('@hbin:free', '[]');
+    if(freeRaw === null) return null;                    // 서버를 못 읽으면 지어내지 않는다
+    const free = _hbFreeParse(freeRaw).sort((a,b)=>a-b);
+    if(free.length){
+      const take = free[0];
+      const rest = free.slice(1);
+      if(!(await _hbPut('@hbin:free', JSON.stringify(rest)))) return null;
+      const back = _hbFreeParse(await _hbGet('@hbin:free', '[]'));
+      if(back.indexOf(take) < 0) return take;            // 내가 가져간 게 맞다
+      continue;                                          // 누가 먼저 손댔다 — 다시
+    }
+    const nextRaw = await _hbGet('@hbin:next', String(HBIN_SEED));
+    if(nextRaw === null) return null;
+    const cur = parseInt(nextRaw, 10) || HBIN_SEED;
+    if(!(await _hbPut('@hbin:next', cur + 1))) return null;
+    const after = parseInt(await _hbGet('@hbin:next', String(HBIN_SEED)), 10) || 0;
+    if(after >= cur + 1) return cur;
+  }
+  return null;
+}
+/* 아직 안 쓴 번호를 되돌려준다 — 다음 팔레트가 이걸 먼저 쓴다 */
+async function hbGive(bin){
+  const nnum = parseInt(String(bin || '').replace(/^H/i, ''), 10);
+  if(!nnum) return false;
+  const freeRaw = await _hbGet('@hbin:free', '[]');
+  if(freeRaw === null) return false;
+  const free = _hbFreeParse(freeRaw);
+  if(free.indexOf(nnum) < 0) free.push(nnum);
+  return await _hbPut('@hbin:free', JSON.stringify(free.sort((a,b)=>a-b)));
+}
+/* ═══ 🖨 H bin 라벨 (4×6) ═══
+   팔레트에 붙이는 라벨이라 멀리서 읽혀야 한다 — bin 번호만 크게, 나머지는 작게.
+   몇 장 뽑을지는 그때그때 다르다 (팔레트 옆면마다 붙이기도 하고) → 매번 물어본다. */
+/* 3rd party 창고에는 라벨 롤이 없다 — 일반 A4 용지에 반 장씩(한 장에 2개) 뽑아서
+   잘라 붙인다. 멀리서 읽는 번호라 H 번호만 크게, 나머지는 작게. (v828) */
+function binLabelCell(bin, sub){
+  const b = String(bin || '').toUpperCase();
+  if(!b) return '';
+  const fs = b.length > 7 ? 118 : (b.length > 5 ? 150 : 190);   // 번호가 길어져도 안 넘치게
+  return '<div style="box-sizing:border-box;height:5.05in;border:4px solid #111;border-radius:14px;'
+       + 'padding:0.28in 0.3in;display:flex;flex-direction:column;break-inside:avoid;page-break-inside:avoid;overflow:hidden;">'
+       + '<div style="text-align:center;font-size:26px;font-weight:800;letter-spacing:3px;color:#111;">PACIFIC SPORTS</div>'
+       + '<div style="text-align:center;font-size:19px;font-weight:700;letter-spacing:2px;color:#555;margin-top:3px;">3RD PARTY BIN</div>'
+       + '<div style="border-top:3px solid #111;margin:12px 0 0;"></div>'
+       + '<div style="flex:1;display:flex;align-items:center;justify-content:center;">'
+       +   '<div style="font-size:' + fs + 'px;font-weight:900;line-height:1;letter-spacing:2px;color:#111;">' + esc(b) + '</div>'
+       + '</div>'
+       + (sub ? ('<div style="text-align:center;font-size:24px;font-weight:800;color:#b45309;word-break:break-word;">' + esc(String(sub).substring(0,60)) + '</div>') : '')
+       + '<div style="border-top:2px solid #d1d5db;margin:10px 0 6px;"></div>'
+       + '<div style="text-align:center;font-size:15px;font-weight:700;color:#666;letter-spacing:1px;">epacificsports.com</div>'
+       + '</div>';
+}
+async function trBinLabelPrint(pid){
+  const p = (typeof _shipPallets!=='undefined' ? _shipPallets : []).find(x=>x.id===pid);
+  if(!p || !p.hbin){ showToast('⚠ This pallet has no bin number yet'); return; }
+  const ask = prompt('How many ' + p.hbin + ' labels?\n\n(Plain A4 paper — 2 labels per sheet)', '2');
+  if(ask === null) return;
+  let n = parseInt(ask, 10) || 0;
+  if(n < 1) n = 1; if(n > 50) n = 50;
+  const ref = String(((typeof _shipMeta!=='undefined' && _shipMeta) && (_shipMeta.ship_no || _shipMeta.ref)) || '').trim();
+  const cells = Array.from({length:n}, ()=>binLabelCell(p.hbin, ref)).join('');
+  const w = window.open('', '_blank');
+  if(!w){ showToast('⚠ Popup blocked — allow popups to print'); return; }
+  w.document.write('<html><head><title>Bin label — ' + esc(p.hbin) + '</title>'
+    + '<style>@page{size:A4;margin:0.35in;}*{-webkit-print-color-adjust:exact !important;print-color-adjust:exact !important;}'
+    + 'body{margin:0;font-family:Arial,Helvetica,sans-serif;color:#000;}'
+    + '.sheet{display:grid;grid-template-columns:1fr;gap:0.25in;}</style></head>'
+    + '<body onload="window.print()"><div class="sheet">' + cells + '</div></body></html>');
+  w.document.close();
+  showToast('🏭 ' + n + ' × ' + p.hbin + ' bin label — A4, 2 per sheet');
+}
+/* 다음에 나갈 번호가 뭔지 — 보여주기만 한다 (가져가지 않는다) */
+async function hbPeek(){
+  const free = _hbFreeParse(await _hbGet('@hbin:free', '[]')).sort((a,b)=>a-b);
+  if(free.length) return 'H' + free[0];
+  const nx = await _hbGet('@hbin:next', String(HBIN_SEED));
+  return nx === null ? '' : ('H' + (parseInt(nx, 10) || HBIN_SEED));
+}
+async function trAddPallet(){
+  const p = { id:'p_'+Math.random().toString(36).slice(2,9), label:'Pallet '+(_shipPallets.length+1), lines:[] };
+  // 3rd party 로 보내는 길이면 팔레트마다 새 H bin 을 지금 매긴다 (v827)
+  if(trDstKind(_shipRoute) === '3P'){
+    const nb = await hbTake();
+    if(nb) p.hbin = 'H' + nb;
+    else showToast('⚠ Could not get the next H bin number — enter it by hand when receiving');
+  }
+  _shipPallets.push(p);
   trRenderPallets();
+  if(p.hbin) showToast('🏭 ' + p.label + ' → ' + p.hbin);
 }
 async function trDelPallet(pid){
   const p = _shipPallets.find(x=>x.id===pid); if(!p) return;
   if(p.lines.length && !confirm('Delete all '+p.lines.length+' line(s) on '+p.label+' and restore '+trKindShort(trSrcKind(_shipRoute))+' stock?')) return;
   for(let li=p.lines.length-1;li>=0;li--) await _trRemoveLine(pid, li, true);
   _shipPallets = _shipPallets.filter(x=>x.id!==pid);
+  if(p.hbin) await hbGive(p.hbin);                      // 아직 안 쓴 번호는 되돌려준다 (v827)
   if(!trSrcAutoPallet(_shipRoute)) _shipPallets.forEach((x,i)=>x.label='Pallet '+(i+1));
   await trSaveDraftLines();
   trRenderPallets();
@@ -18830,6 +18992,8 @@ function trRenderPallets(){
     return `<div style="border:2px solid ${_spSrc?'#fbbf24':'#d8b4fe'};border-radius:8px;background:#fff;">
       <div style="background:${_spSrc?'#fffbeb':'#f3e8ff'};padding:8px 14px;display:flex;align-items:center;gap:10px;border-radius:6px 6px 0 0;flex-wrap:wrap;">
         <span style="font-weight:700;color:${_spSrc?'#b45309':'#7b1fa2'};">${_spSrc?'🏭 Bin':'📦'} ${esc(p.label)}</span>
+        ${p.hbin?`<span title="New 3rd party bin for this pallet. Assigned automatically; the number is released if you delete the pallet." style="font-family:Consolas,monospace;font-size:15px;font-weight:900;letter-spacing:.5px;color:#fff;background:#b45309;border-radius:7px;padding:3px 11px;">🏭 ${esc(p.hbin)}</span>
+        <button class="btn btn-sm" style="background:#fff7ed;color:#b45309;border-color:#fbbf24;font-weight:800;" onclick="trBinLabelPrint('${p.id}')" title="Print the ${esc(p.hbin)} bin label on plain A4 paper (2 per sheet) — you choose how many">🖨 Bin label</button>`:''}
         <span style="color:var(--text2);font-size:11px;">${p.lines.length} line(s) · <b>${pB}</b> box(es) · <b>${pP.toLocaleString()}</b> pcs</span>
         ${_spSrc?'':`<button class="btn btn-sm" style="margin-left:auto;background:#1565c0;color:#fff;border-color:#1565c0;" onclick="trScOpen('${p.id}')">+ ${esc(_srcLbl)} Inventory</button>`}
         <button class="btn btn-sm" style="${_spSrc?'margin-left:auto;':''}background:#166534;color:#fff;border-color:#166534;" onclick="trPRPallet('${p.id}')" title="Print the Pull Request for this pallet only">🖨 Pull Request</button>
