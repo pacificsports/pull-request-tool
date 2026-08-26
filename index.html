@@ -162,7 +162,7 @@ body.narrow main{max-width:1100px;}
   </span>
   <select id="lang-sel" onchange="setLang(this.value)" style="font-size:11px;padding:3px 6px;border-radius:5px;border:none;background:#1d3f66;color:#fff;"><option value="ko">한국어</option><option value="en">English</option><option value="es">Español</option></select>
   <button id="wide-btn" class="btn btn-sm" onclick="toggleWide()" title="화면 넓게 / 좁게 — 기본은 넓게 (이 브라우저에만 저장돼)" style="padding:2px 8px;font-size:10px;background:#1d3f66;color:#cfe0f2;border-color:#2b5384;">↔ Wide</button>
-  <span id="app-ver" style="font-size:10px;color:#9fb8d4;">v803</span>
+  <span id="app-ver" style="font-size:10px;color:#9fb8d4;">v804</span>
 </div>
 <script>
 // ↔ 넓게 보기 — 브라우저마다 따로 저장 (v793)
@@ -23123,7 +23123,7 @@ function renderKpi(){
   const actTile=(icon,label,color,bg,click,title)=>`<div onclick="${click}" title="${title||''}" style="${CELL}background:${bg};border:1px solid ${color}44;border-left:5px solid ${color};cursor:pointer;" onmouseover="this.style.filter='brightness(.97)'" onmouseout="this.style.filter=''">
     <div style="font-size:23px;font-weight:900;color:${color};line-height:1;">${icon}</div>
     <div style="font-size:10px;font-weight:800;color:${color};letter-spacing:.3px;margin-top:4px;text-transform:uppercase;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">${label}</div></div>`;
-  const _kpiHtml = `<div style="display:grid;grid-template-columns:repeat(6,minmax(0,1fr));gap:8px;margin-bottom:12px;align-items:stretch;">
+  const _kpiHtml = newsBarHtml() + `<div style="display:grid;grid-template-columns:repeat(6,minmax(0,1fr));gap:8px;margin-bottom:12px;align-items:stretch;">
     ${numTile('Open Orders', open.toLocaleString(), '#1d4ed8', '#eff6ff', "kpiOpenOrders()")}
     ${numTile('🔥 Rush', rush.toLocaleString(), '#dc2626', '#fef2f2', "kpiOpenOrders(true)")}
     ${numTile('🧾 Invoice Not Printed', uninv.toLocaleString(), '#c2410c', '#fff7ed', "invNpOpen()")}
@@ -23150,6 +23150,168 @@ function renderKpi(){
     ${lblTile('🔒 Reserved Boxes', `${rt.boxes.toLocaleString()}<span style="font-size:10px;font-weight:700;color:var(--text2);"> boxes</span>`, `${(rt.items||0).toLocaleString()} item(s)${rt.refill>0?` · <span style="color:#dc2626;font-weight:800;">⚠ refill ${rt.refill}</span>`:''}`, '#7c3aed', '#faf5ff', '#c4b5fd', 'openReserveList()')}
   </div>`;
   slots.forEach(el=>{ el.innerHTML = _kpiHtml; });   // Orders · Full Box · PC Room 모두 같은 그리드
+  try{ newsPaint(); newsBoot(); }catch(e){}
+}
+
+/* ═══════════ 📰 뉴스바 (v804) ═══════════
+   Refund Pending 자리를 뺏지 않고 탭 줄과 KPI 그리드 사이에 가로로 한 줄 넣는다.
+   · 맨 왼쪽: 면화(ICE Cotton No.2) 시세 — 값 + 전일 대비 + 6개월 스파크라인. 항상 고정.
+   · 그 옆: 업계 뉴스 헤드라인이 8초마다 넘어간다. 누르면 원문.
+   · 시세를 누르면 6개월 그래프를 크게.
+
+   워커가 30분 캐시를 물고 있어서 여기서는 세션당 한 번만 받아오면 된다.
+   대시보드는 다시 그릴 때마다 renderKpi 가 돌기 때문에, 받아온 값은 밖에 두고
+   그리기(newsPaint)와 받아오기(newsBoot)를 나눠 두었다. */
+const NEWS_URL  = 'https://parse-po.hjbae.workers.dev/news';
+const NEWS_EVERY = 8000;                      // 헤드라인 넘어가는 간격
+let _news = null, _newsI = 0, _newsT = null, _newsLoading = false;
+
+function newsBarHtml(){
+  return '<div id="newsbar" style="display:flex;align-items:stretch;gap:0;background:var(--card,#fff);border:1px solid var(--line,#e2e8f0);border-radius:12px;margin-bottom:10px;overflow:hidden;min-height:52px;">'
+    + '<div id="news-cotton" onclick="newsCottonOpen()" title="ICE Cotton No.2 (CT=F) — click for the 6-month chart" style="flex:none;display:flex;align-items:center;gap:10px;padding:8px 14px;background:#f0fdf4;border-right:1px solid #d1fae5;cursor:pointer;min-width:0;">'
+    +   '<div style="min-width:0;"><div style="font-size:9px;font-weight:800;letter-spacing:.07em;color:#15803d;">🌱 COTTON</div>'
+    +   '<div id="news-ct" style="font-size:13px;font-weight:800;color:#94a3b8;font-family:Consolas,monospace;white-space:nowrap;">…</div></div>'
+    +   '<canvas id="news-spark" width="150" height="34" style="width:75px;height:17px;flex:none;"></canvas>'
+    + '</div>'
+    + '<div id="news-head" onclick="newsGo()" style="flex:1;min-width:0;display:flex;align-items:center;gap:9px;padding:8px 14px;cursor:pointer;overflow:hidden;">'
+    +   '<span style="font-size:12px;flex:none;">📰</span>'
+    +   '<span id="news-txt" style="flex:1;min-width:0;font-size:12.5px;font-weight:700;color:var(--text,#0f2a4a);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;transition:opacity .25s;">Loading industry news…</span>'
+    +   '<span id="news-src" style="flex:none;font-size:10.5px;color:#94a3b8;white-space:nowrap;"></span>'
+    +   '<span onclick="event.stopPropagation();newsStep(1)" title="Next headline" style="flex:none;font-size:13px;color:#cbd5e1;padding:0 4px;">›</span>'
+    + '</div></div>';
+}
+
+async function newsBoot(){
+  if(_news || _newsLoading) { newsPaint(); newsTimer(); return; }
+  _newsLoading = true;
+  try{
+    const r = await fetch(NEWS_URL);
+    const j = await r.json();
+    _news = { cotton: j.cotton || null, items: Array.isArray(j.items) ? j.items : [] };
+  }catch(e){ _news = { cotton:null, items:[] }; }
+  _newsLoading = false;
+  _newsI = 0;
+  newsPaint(); newsTimer();
+}
+function newsTimer(){
+  clearInterval(_newsT);
+  if(_news && _news.items.length > 1) _newsT = setInterval(()=>newsStep(1), NEWS_EVERY);
+}
+function newsStep(d){
+  if(!_news || !_news.items.length) return;
+  _newsI = (_newsI + d + _news.items.length) % _news.items.length;
+  const t = document.getElementById('news-txt');
+  if(t){ t.style.opacity = '0'; setTimeout(()=>{ newsPaintHead(); t.style.opacity = '1'; }, 200); }
+  else newsPaintHead();
+  newsTimer();                                  // 손으로 넘기면 타이머도 다시 센다
+}
+function newsPaintHead(){
+  const t = document.getElementById('news-txt'), sc = document.getElementById('news-src');
+  if(!t) return;
+  if(!_news){ t.textContent = 'Loading industry news…'; return; }
+  const it = _news.items[_newsI];
+  if(!it){ t.textContent = 'No industry news right now.'; if(sc) sc.textContent=''; return; }
+  t.textContent = String(it.title||'');
+  if(sc) sc.textContent = String(it.source||'');
+}
+function newsPaint(){
+  newsPaintHead();
+  const el = document.getElementById('news-ct'); if(!el) return;
+  const c = _news && _news.cotton;
+  if(!c || !c.ok){ el.textContent = 'n/a'; el.style.color = '#94a3b8'; return; }
+  const up = Number(c.change) >= 0;
+  el.style.color = '#0f2a4a';
+  el.innerHTML = Number(c.price).toFixed(2) + '<span style="font-size:9.5px;color:#64748b;font-weight:700;">¢/lb</span>'
+    + (c.change==null ? '' : ' <span style="font-size:11px;color:'+(up?'#15803d':'#b91c1c')+';">'
+        + (up?'▲':'▼') + Math.abs(Number(c.change)).toFixed(2)
+        + (c.pct!=null ? ' ('+(up?'+':'−')+Math.abs(Number(c.pct)).toFixed(1)+'%)' : '') + '</span>');
+  newsSpark('news-spark', (c.series||[]), up);
+}
+
+/* 스파크라인 — 라이브러리 없이 캔버스에 직접. 값이 두 개 미만이면 그냥 비운다. */
+function newsSpark(id, series, up){
+  const cv = document.getElementById(id); if(!cv) return;
+  const cx = cv.getContext('2d'); const W = cv.width, H = cv.height;
+  cx.clearRect(0,0,W,H);
+  const v = (series||[]).map(p=>Array.isArray(p)?Number(p[1]):Number(p)).filter(x=>isFinite(x));
+  if(v.length < 2) return;
+  const lo = Math.min(...v), hi = Math.max(...v), rng = (hi-lo) || 1;
+  const x = i => (i/(v.length-1))*(W-2)+1, y = q => H-2 - ((q-lo)/rng)*(H-4);
+  const col = up ? '#16a34a' : '#dc2626';
+  cx.beginPath(); cx.moveTo(x(0), H);
+  v.forEach((q,i)=>cx.lineTo(x(i), y(q)));
+  cx.lineTo(x(v.length-1), H); cx.closePath();
+  cx.fillStyle = up ? 'rgba(22,163,74,.13)' : 'rgba(220,38,38,.13)'; cx.fill();
+  cx.beginPath(); v.forEach((q,i)=> i?cx.lineTo(x(i),y(q)):cx.moveTo(x(i),y(q)));
+  cx.strokeStyle = col; cx.lineWidth = 2; cx.lineJoin='round'; cx.stroke();
+  cx.beginPath(); cx.arc(x(v.length-1), y(v[v.length-1]), 2.6, 0, 7); cx.fillStyle = col; cx.fill();
+}
+
+function newsGo(){
+  const it = _news && _news.items[_newsI];
+  if(it && it.url) window.open(it.url, '_blank', 'noopener');
+}
+
+/* 🌱 시세를 누르면 6개월 그래프 — 값 옆의 스파크라인은 추세만 보여주고,
+   실제로 "언제 얼마였나"를 보려면 축이 있어야 한다. */
+function newsCottonOpen(){
+  const c = _news && _news.cotton;
+  if(!c || !c.ok){ showToast('⚠ Cotton price not loaded yet'); return; }
+  const ser = (c.series||[]);
+  const v = ser.map(p=>Number(p[1])).filter(x=>isFinite(x));
+  if(v.length < 2){ showToast('⚠ No price history'); return; }
+  const lo = Math.min(...v), hi = Math.max(...v);
+  const first = v[0], last = v[v.length-1];
+  const chg = last - first, pct = first ? (chg/first*100) : 0;
+  const dstr = t => { try{ return new Date(Number(t)*1000).toISOString().slice(0,10); }catch(e){ return ''; } };
+  const body = '<div style="padding:16px;">'
+    + '<div style="display:flex;align-items:baseline;gap:12px;flex-wrap:wrap;margin-bottom:10px;">'
+    +   '<span style="font-size:26px;font-weight:800;font-family:Consolas,monospace;color:#0f2a4a;">'+Number(c.price).toFixed(2)+'</span>'
+    +   '<span style="font-size:12px;color:#64748b;font-weight:700;">USd / lb · ICE Cotton No.2 (CT=F)</span>'
+    +   '<span style="margin-left:auto;font-size:12.5px;font-weight:800;color:'+(chg>=0?'#15803d':'#b91c1c')+';">'
+    +     (chg>=0?'▲':'▼')+' '+Math.abs(chg).toFixed(2)+' ('+(chg>=0?'+':'−')+Math.abs(pct).toFixed(1)+'%) over 6 months</span>'
+    + '</div>'
+    + '<canvas id="ct-big" width="1040" height="360" style="width:100%;height:180px;"></canvas>'
+    + '<div style="display:flex;justify-content:space-between;font-size:10.5px;color:#94a3b8;font-family:Consolas,monospace;margin-top:3px;">'
+    +   '<span>'+esc(dstr(ser[0][0]))+'</span><span>'+esc(dstr(ser[ser.length-1][0]))+'</span></div>'
+    + '<div style="display:flex;gap:16px;font-size:11.5px;color:#475569;margin-top:9px;font-weight:700;">'
+    +   '<span>6-mo high <b style="font-family:Consolas,monospace;color:#0f2a4a;">'+hi.toFixed(2)+'</b></span>'
+    +   '<span>6-mo low <b style="font-family:Consolas,monospace;color:#0f2a4a;">'+lo.toFixed(2)+'</b></span>'
+    +   (c.asOf?'<span style="margin-left:auto;color:#94a3b8;">as of '+esc(String(c.asOf).slice(0,10))+'</span>':'')
+    + '</div></div>';
+  kpiShell('modal-cotton', '🌱 Cotton — 6 months', '#15803d', body,
+           'ICE Cotton No.2 futures, the contract our fabric pricing follows. Daily closes, refreshed every 30 minutes.');
+  setTimeout(()=>newsBigChart(ser), 30);
+}
+function newsBigChart(ser){
+  const cv = document.getElementById('ct-big'); if(!cv) return;
+  const cx = cv.getContext('2d'); const W = cv.width, H = cv.height, PAD = 34;
+  cx.clearRect(0,0,W,H);
+  const v = ser.map(p=>Number(p[1])).filter(x=>isFinite(x));
+  if(v.length < 2) return;
+  const lo = Math.min(...v), hi = Math.max(...v), rng = (hi-lo)||1;
+  const x = i => PAD + (i/(v.length-1))*(W-PAD-8);
+  const y = q => H-24 - ((q-lo)/rng)*(H-24-14);
+  // 가로 눈금 4줄 — 값을 읽을 수 있어야 그래프다
+  cx.font = '11px Consolas, monospace'; cx.textBaseline='middle';
+  for(let g=0; g<=3; g++){
+    const q = lo + rng*g/3, yy = y(q);
+    cx.beginPath(); cx.moveTo(PAD, yy); cx.lineTo(W-8, yy);
+    cx.strokeStyle = 'rgba(148,163,184,.25)'; cx.lineWidth = 1; cx.stroke();
+    cx.fillStyle = '#94a3b8'; cx.textAlign='right'; cx.fillText(q.toFixed(1), PAD-5, yy);
+  }
+  const up = v[v.length-1] >= v[0];
+  const col = up ? '#16a34a' : '#dc2626';
+  cx.beginPath(); cx.moveTo(x(0), H-24);
+  v.forEach((q,i)=>cx.lineTo(x(i), y(q)));
+  cx.lineTo(x(v.length-1), H-24); cx.closePath();
+  const gr = cx.createLinearGradient(0,0,0,H);
+  gr.addColorStop(0, up?'rgba(22,163,74,.30)':'rgba(220,38,38,.30)');
+  gr.addColorStop(1, 'rgba(255,255,255,0)');
+  cx.fillStyle = gr; cx.fill();
+  cx.beginPath(); v.forEach((q,i)=> i?cx.lineTo(x(i),y(q)):cx.moveTo(x(i),y(q)));
+  cx.strokeStyle = col; cx.lineWidth = 2.4; cx.lineJoin='round'; cx.stroke();
+  cx.beginPath(); cx.arc(x(v.length-1), y(v[v.length-1]), 4, 0, 7); cx.fillStyle = col; cx.fill();
 }
 function renderSaved(){
   renderKpi();
