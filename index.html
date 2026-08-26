@@ -162,7 +162,7 @@ body.narrow main{max-width:1100px;}
   </span>
   <select id="lang-sel" onchange="setLang(this.value)" style="font-size:11px;padding:3px 6px;border-radius:5px;border:none;background:#1d3f66;color:#fff;"><option value="ko">한국어</option><option value="en">English</option><option value="es">Español</option></select>
   <button id="wide-btn" class="btn btn-sm" onclick="toggleWide()" title="화면 넓게 / 좁게 — 기본은 넓게 (이 브라우저에만 저장돼)" style="padding:2px 8px;font-size:10px;background:#1d3f66;color:#cfe0f2;border-color:#2b5384;">↔ Wide</button>
-  <span id="app-ver" style="font-size:10px;color:#9fb8d4;">v805</span>
+  <span id="app-ver" style="font-size:10px;color:#9fb8d4;">v806</span>
 </div>
 <script>
 // ↔ 넓게 보기 — 브라우저마다 따로 저장 (v793)
@@ -8508,6 +8508,7 @@ function pchkPackOpen(){
   <div style="flex:1;background:#f1f5f9;padding:16px 14px;">
     <div style="max-width:520px;margin:0 auto;">
       <div id="pack-wh-tabs" style="display:flex;gap:8px;margin-bottom:10px;"></div>
+      <div id="pack-today"></div>
       <div style="background:#faf5ff;border:1.5px solid #ddd6fe;border-radius:12px;padding:10px 12px;margin-bottom:10px;">
         <div style="font-size:11.5px;color:#5b21b6;font-weight:700;line-height:1.5;margin-bottom:8px;">Pallet in front of you and you don't know which order it is? Read it first — the matching PO gets found for you.</div>
         <div style="display:flex;gap:8px;">
@@ -8540,6 +8541,7 @@ async function pchkPackList(){
   try{ const r=await fetch(SB_URL+'/rest/v1/rpc/pack_orders',{method:'POST',headers:{apikey:SB_KEY,Authorization:'Bearer '+SB_KEY,'Content-Type':'application/json'},body:JSON.stringify({q})}); rows=await r.json(); }
   catch(e){ el.innerHTML='<div style="color:#b91c1c;font-size:12px;">Could not load orders.</div>'; return; }
   const _wh=window._packWh||'SC';
+  try{ await tdLoad(); }catch(e){}
   // 이 창고 몫이면서 + 아직 발송(패킹리스트 저장) 안 된 것만 (이미 나간 오더 제외)
   if(Array.isArray(rows)) rows=rows.filter(r=>Array.isArray(r.whs)&&r.whs.includes(_wh)&&!(Array.isArray(r.shipped_whs)&&r.shipped_whs.includes(_wh)));
   if(!Array.isArray(rows)||!rows.length){ el.innerHTML='<div style="color:#94a3b8;font-size:12px;padding:6px;">No '+_wh+' orders'+(q?' for "'+esc(q)+'"':'')+'.</div>'; return; }
@@ -8553,10 +8555,12 @@ async function pchkPackList(){
     <input type="checkbox" ${sel?'checked':''} onclick="event.stopPropagation();pchkPackSelTgl('${esc(r.base)}',this.checked)" title="Select for LTL batch" style="width:22px;height:22px;flex-shrink:0;accent-color:#374151;cursor:pointer;">
     <button onclick="pchkPackEdit('${esc(r.base)}','${esc(String(r.cust||'').replace(/'/g,''))}','${esc(String(r.po||'').replace(/'/g,''))}','${_wh}')" style="flex:1;display:flex;align-items:center;gap:9px;text-align:left;background:none;border:none;cursor:pointer;padding:0;min-width:0;">
     <span style="font-size:10px;font-weight:800;color:#fff;background:${c};border-radius:8px;padding:2px 8px;white-space:nowrap;">${_wh}</span>
+    ${tdIsOn(r.base,_wh)?'<span style="font-size:10px;font-weight:800;color:#fff;background:#e11d48;border-radius:8px;padding:2px 8px;white-space:nowrap;">📅 TODAY</span>':''}
     <div style="flex:1;min-width:0;"><div style="font-size:15px;font-weight:800;color:#0f2a4a;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">${esc(String(r.cust||'—'))}</div><div style="font-size:12px;color:#64748b;">PO ${esc(String(r.po||'—'))} · ${esc(String(r.dt||''))}</div>${r.ship_from_ca?'<div style="font-size:10.5px;font-weight:800;color:#b45309;background:#fff7ed;border:1px solid #fed7aa;border-radius:6px;padding:2px 7px;margin-top:3px;display:inline-block;">🚚 SC→CA · ships from CA</div>':''}</div>
     ${packed?'<span style="font-size:11px;font-weight:800;color:#16a34a;background:#dcfce7;border-radius:20px;padding:3px 10px;white-space:nowrap;">📦 packed</span>':'<span style="font-size:11px;color:#b45309;font-weight:700;white-space:nowrap;">add boxes ▸</span>'}
   </button></div>`; }).join('');
   pchkPackSelBar();
+  tdBannerPaint(rows.map(r=>String(r.base)), _wh);
 }
 function pchkPackSelTgl(base, on){ window._packSel=window._packSel||{}; if(on) window._packSel[base]=1; else delete window._packSel[base]; pchkPackSelBar(); }
 function pchkPackSelClear(){ window._packSel={}; pchkPackList(); }
@@ -8579,6 +8583,101 @@ function pchkPackSelBar(){
 }
 // ═══════════ 🚛 LTL 일괄 처리 — 선택한 여러 PO를 한 화면에서 박스수 확인/수정 후 한 번에 저장 ═══════════
 // 📋 (v769) PO별 주문 라인 → "기대 내용" (full box 몇 개 + PC room 몇 장). pack_lines RPC (anon) 필요.
+
+/* ═══════════ 📅 Today — 오늘 나갈 오더 (v806) ═══════════
+   저장은 pr_style_map 의 '@today:<WH>|<BASE>' 키. 값은 나갈 날짜(YYYY-MM-DD).
+   새 테이블을 안 만든 이유: pr_style_map 만 정책이 ALL:public 이라 /pic 이 로그인 없이
+   읽고 쓸 수 있다. 예약(@rsv:)·박스입수(@ppb:)·원단(@fabric:) 이 이미 같은 방식이다.
+
+   날짜를 값으로 두는 게 핵심이다. 어제 찍어둔 표시가 오늘 아침까지 살아 있으면
+   그건 도움이 아니라 사고다 — 그래서 오늘 날짜인 것만 켜진 것으로 친다. */
+function tdKey(base, wh){ return '@today:' + String(wh||'').toUpperCase() + '|' + String(base||''); }
+function tdDay(){ return (typeof todayStr==='function') ? todayStr() : new Date().toISOString().slice(0,10); }
+window._tdMap = window._tdMap || {};                       // 'WH|BASE' -> 'YYYY-MM-DD'
+let _tdAt = 0;
+
+function tdIsOn(base, wh){
+  const v = window._tdMap[String(wh||'').toUpperCase() + '|' + String(base||'')];
+  return !!v && v === tdDay();
+}
+async function tdLoad(force){
+  const now = Date.now();
+  if(!force && _tdAt && (now - _tdAt) < 20000) return window._tdMap;   // 목록을 다시 그릴 때마다 때리지 않게
+  try{
+    const r = await fetch(SB_URL + '/rest/v1/pr_style_map?select=k,style&k=like.' + encodeURIComponent('@today:%'),
+      { headers:{ apikey:SB_KEY, Authorization:'Bearer ' + SB_KEY } });
+    if(!r.ok) throw new Error('HTTP ' + r.status);
+    const m = {};
+    (await r.json()).forEach(row=>{
+      const k = String(row.k||''); if(k.indexOf('@today:') !== 0) return;
+      m[k.slice(7)] = String(row.style||'').trim();
+    });
+    window._tdMap = m; _tdAt = now;
+  }catch(e){}
+  return window._tdMap;
+}
+async function tdSet(base, wh, on){
+  const W = String(wh||'').toUpperCase(), B = String(base||'');
+  const day = on ? tdDay() : '';
+  window._tdMap[W + '|' + B] = day;                        // 화면은 먼저 반응하게
+  try{
+    const r = await fetch(SB_URL + '/rest/v1/pr_style_map?on_conflict=k', {
+      method:'POST',
+      headers:{ apikey:SB_KEY, Authorization:'Bearer ' + SB_KEY, 'Content-Type':'application/json',
+                Prefer:'resolution=merge-duplicates,return=minimal' },
+      body: JSON.stringify([{ k: tdKey(B,W), style: day, updated_at: new Date().toISOString() }])
+    });
+    if(!r.ok) throw new Error('HTTP ' + r.status);
+  }catch(e){ showToast('⚠ Could not save: ' + (e.message||e)); }
+}
+
+/* 매니저 쪽 토글 — 저장된 오더 목록과 Open Orders 모달 양쪽에서 같은 버튼을 쓴다 */
+let _tdBooted = 0;
+function tdBtn(base, wh){
+  // 매니저 화면은 목록을 그릴 때 오늘 표시를 안 읽어온다 — 첫 버튼을 그릴 때 한 번만
+  // 불러오고, 도착하면 그 화면만 다시 그린다.
+  if(!_tdBooted){ _tdBooted = 1; tdLoad().then(()=>{
+    try{ if(document.getElementById('modal-kpiopen')) kpiOpenOrders(); }catch(e){}
+    try{ if(typeof renderSaved==='function') renderSaved(); }catch(e){}
+  }); }
+  const on = tdIsOn(base, wh);
+  return '<button class="btn btn-sm" id="tdb-' + esc(String(wh)) + '-' + esc(String(base)) + '"'
+    + ' style="background:' + (on?'#e11d48':'#fff') + ';color:' + (on?'#fff':'#9f1239')
+    + ';border-color:' + (on?'#e11d48':'#fecdd3') + ';font-size:10px;padding:2px 8px;font-weight:800;"'
+    + ' title="' + (on ? 'Marked to ship today — staff see it in /pic Pending Orders. Click to unmark.'
+                       : 'Mark this ' + wh + ' order to ship TODAY — staff can then select it in one tap in /pic') + '"'
+    + ' onclick="event.stopPropagation();tdToggle(\'' + esc(String(base)) + '\',\'' + esc(String(wh)) + '\')">📅 Today</button>';
+}
+async function tdToggle(base, wh){
+  const on = !tdIsOn(base, wh);
+  await tdSet(base, wh, on);
+  // 열려 있는 화면만 다시 그린다 (저장 목록 / Open Orders 모달)
+  try{ if(document.getElementById('modal-kpiopen')) kpiOpenOrders(); }catch(e){}
+  try{ if(typeof renderSaved==='function') renderSaved(); }catch(e){}
+  showToast(on ? '📅 marked to ship today (' + wh + ')' : 'unmarked');
+}
+
+/* 직원 쪽 배너 — 목록에 실제로 떠 있는 PO 중에서 오늘 표시된 것만 센다.
+   표시는 됐는데 이미 나갔거나 다른 창고인 PO 까지 세면 숫자가 거짓말이 된다. */
+function tdBannerPaint(bases, wh){
+  const el = document.getElementById('pack-today'); if(!el) return;
+  const hit = (bases||[]).filter(b=>tdIsOn(b, wh));
+  window._tdHit = hit;
+  if(!hit.length){ el.innerHTML = ''; return; }
+  el.innerHTML = '<div style="background:#fff1f2;border:1.5px solid #fda4af;border-radius:12px;padding:10px 12px;margin-bottom:10px;">'
+    + '<div style="font-size:12px;color:#9f1239;font-weight:700;line-height:1.5;margin-bottom:8px;">'
+    +   '📅 <b>' + hit.length + ' order' + (hit.length>1?'s':'') + '</b> marked to ship today in ' + esc(wh) + '.</div>'
+    + '<button onclick="tdSelectAll()" style="width:100%;background:#e11d48;color:#fff;border:none;border-radius:10px;padding:12px;font-size:14px;font-weight:800;cursor:pointer;">'
+    +   'Select all ' + hit.length + ' ▸</button></div>';
+}
+function tdSelectAll(){
+  const hit = window._tdHit || [];
+  if(!hit.length) return;
+  window._packSel = {};
+  hit.forEach(b=>{ window._packSel[b] = 1; });
+  pchkPackList();
+  showToast('📅 ' + hit.length + ' selected — now Pack as LTL / UPS');
+}
 async function pchkFetchLines(bases){
   const out={};
   if(!bases||!bases.length) return out;
@@ -22950,6 +23049,7 @@ function kpiDocBtns(s){
     const lbC = mp.label ? '#16a34a' : '#7c3aed';
     return '<span style="display:inline-flex;gap:4px;align-items:center;">'
       + (whs.length>1 ? '<span style="font-family:Consolas,monospace;font-size:9px;font-weight:800;color:#64748b;">'+w+'</span>' : '')
+      + tdBtn(s.base, w)
       + kpiDocBtn(s.base, w, 'pr',    prC, '🖨 PR',   w+' Pull Request')
       + kpiDocBtn(s.base, w, 'label', lbC, '🏷 Box',  w+' Box Label')
       + kpiDocBtn(s.base, w, 'full',  '#0f766e', '🏷 Full', w+' Full Box label (2x1 stock)')
@@ -23416,6 +23516,7 @@ function renderSaved(){
         return `<div style="display:flex;align-items:center;gap:6px;flex-wrap:wrap;margin-top:6px;padding-top:6px;border-top:1px dashed var(--border);">
         ${w!=='BO' && w!=='NA' && !consolSC ? `<input type="checkbox" class="bship-cb" data-base="${esc(s.base)}" data-wh="${w}" onchange="updateBatchBar()" title="Include in batch (pre-ship = Batch Ship / post-ship = Invoice Print)" style="width:15px;height:15px;accent-color:#1d4ed8;cursor:pointer;">` : ''}
         <span class="chip chip-${w}" style="min-width:34px;text-align:center;">${w}</span>
+        ${(w!=='BO' && w!=='NA' && !consolSC) ? tdBtn(s.base, w) : ''}
         <button class="btn btn-sm" style="background:${c};color:#fff;border-color:${c};" onclick="docBtnClick('${esc(s.base)}','${w}','pr')" oncontextmenu="return docBtnMenu(event,'${esc(s.base)}','${w}','pr')" title="Right-click: ${mp.pr?'clear':'mark'} done (green)">🖨 Pull Request${pby(mp.pr)}</button>
         ${w==='BO' ? (()=>{ const days = Math.floor((Date.now() - new Date(s.savedAt||s.meta.date||Date.now()).getTime())/86400000); const c2 = days>=14?'#dc2626':(days>=7?'#ea580c':'#6b7280'); return `<span style="padding:2px 8px;border-radius:20px;font-size:10px;font-weight:800;background:#fff;color:${c2};border:1.5px solid ${c2};white-space:nowrap;${days>=14?'animation:overdue-pulse 1s ease-in-out infinite;':''}">⏳ Day ${days}</span>`; })() : ''}
         ${(w==='BO'||w==='NA') ? `<button class="btn btn-sm" style="background:#f5f3ff;color:#6d28d9;border-color:#c4b5fd;font-weight:700;" onclick="processFromWh('${esc(s.base)}','${w}','SC')" title="Stock arrived — split into a separate order (-${w==='BO'?'B':'N'}) and ship from SC">⚙ Process from SC</button><button class="btn btn-sm" style="background:#fff7ed;color:#c2410c;border-color:#fed7aa;font-weight:700;" onclick="processFromWh('${esc(s.base)}','${w}','CA')" title="Stock arrived — split into a separate order (-${w==='BO'?'B':'N'}) and ship from CA">⚙ Process from CA</button><button class="btn btn-sm" style="background:#fee2e2;color:#b91c1c;border-color:#fca5a5;font-weight:700;" onclick="boAltFromList('${esc(s.base)}')" title="Replace a back-ordered item with an in-stock alternative (style / color / size / qty), then finish the order">⇄ Alternate</button>` : ''}
