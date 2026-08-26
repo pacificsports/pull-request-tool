@@ -162,7 +162,7 @@ body.narrow main{max-width:1100px;}
   </span>
   <select id="lang-sel" onchange="setLang(this.value)" style="font-size:11px;padding:3px 6px;border-radius:5px;border:none;background:#1d3f66;color:#fff;"><option value="ko">한국어</option><option value="en">English</option><option value="es">Español</option></select>
   <button id="wide-btn" class="btn btn-sm" onclick="toggleWide()" title="화면 넓게 / 좁게 — 기본은 넓게 (이 브라우저에만 저장돼)" style="padding:2px 8px;font-size:10px;background:#1d3f66;color:#cfe0f2;border-color:#2b5384;">↔ Wide</button>
-  <span id="app-ver" style="font-size:10px;color:#9fb8d4;">v823</span>
+  <span id="app-ver" style="font-size:10px;color:#9fb8d4;">v824</span>
 </div>
 <script>
 // ↔ 넓게 보기 — 브라우저마다 따로 저장 (v793)
@@ -6946,9 +6946,9 @@ function buildFullBoxLabelZpl(box, totalBoxes, order) {
    QR 없던 시절 라벨이 붙은 박스에 덧붙이는 스티커. 왼쪽에 QR, 오른쪽에 사람이 읽을 내용.
    찍히는 코드는 공장 QR 과 같은 뜻이라 스캔 대조에서 「그 품목 한 박스」로 세어진다. */
 const FB_QR_BOX = 152;                       // 2×1 라벨(406×203dot) 왼쪽 QR 칸
-function buildFbQrLabelZpl(box){
+function buildFbQrLabelZpl(box, sscc){
   const it = (box && box.items || [])[0]; if(!it) return '';
-  const sscc = ssccMint(); if(!sscc) return '';
+  if(!sscc) return '';
   const qr = fbQrText(it, sscc);
   const fit = (txt, maxFont, avail)=>{
     const n = Math.max(1, String(txt).length);
@@ -7044,9 +7044,13 @@ function pbQrMag(txt, boxDots){
      8 · 9  SC 컴퓨터들
    그래서 이 앱에서 찍는 컴퓨터도 자기 자리를 하나 갖는다. 남은 자리: 2 3 4 6 7.
    일련번호는 그 컴퓨터 안에서만 센다 — 자리가 겹치지 않으면 번호도 겹치지 않는다. */
-const SSCC_CO = '08600163991';                      // 우리 GS1 회사코드 (11자리)
-const SSCC_FREE = ['2','3','4','6','7'];            // 아이티(0·1) · CA(5~) · SC(8·9) 를 뺀 자리
-function ssccExt(){ try{ return String(localStorage.getItem('sscc_ext')||'').trim(); }catch(e){ return ''; } }
+const SSCC_CO  = '08600163991';                     // 우리 GS1 회사코드 (11자리)
+/* 확장자리는 「서로 대화를 못 하는 시스템」끼리만 나누면 된다.
+     0~5  아이티 (지정)        8·9  SC 라벨 컴퓨터
+   psflowx 는 어느 컴퓨터에서 열든 같은 DB 를 보므로 자리 하나면 충분하다.
+   6-00001 ~ 6-99999 = 10만 장. 다 쓰면 이 숫자만 7 로 바꾸면 된다. */
+const SSCC_EXT = '6';
+function ssccExt(){ return SSCC_EXT; }
 function ssccCheckDigit(body17){
   let sum = 0;
   for(let i=0;i<body17.length;i++){
@@ -7056,18 +7060,47 @@ function ssccCheckDigit(body17){
   }
   return (10 - (sum % 10)) % 10;
 }
-/* 번호는 이 컴퓨터에서만 센다. 마지막으로 쓴 번호를 저장해두고 하나씩 올린다.
-   99999 를 넘으면 새 자리를 받아야 한다 — 조용히 0 으로 돌아가면 번호가 겹친다. */
-function ssccMint(){
-  const ext = ssccExt(); if(!ext) return '';
-  let seq = 0;
-  try{ seq = parseInt(localStorage.getItem('sscc_seq_' + ext) || '0', 10) || 0; }catch(e){}
-  seq += 1;
-  if(seq > 99999){ showToast('⚠ Carton numbers for digit ' + ext + ' are used up — pick a new digit in ⚙ Carton number'); return ''; }
-  try{ localStorage.setItem('sscc_seq_' + ext, String(seq)); }catch(e){}
-  const body = ext + SSCC_CO + String(seq).padStart(5,'0');
+function ssccFrom(ext, seq){
+  const body = String(ext) + SSCC_CO + String(seq).padStart(5,'0');
   const c = ssccCheckDigit(body);
   return (c < 0) ? '' : (body + c);
+}
+/* 뽑을 장수만큼 번호를 서버에서 한 번에 받아온다.
+   psflowx 는 어느 컴퓨터에서 열든 같은 DB 를 보므로, 번호를 여기 한 곳에서만 세면
+   누가 언제 몇 장을 뽑든 절대 안 겹친다. 브라우저 데이터를 지워도 마찬가지다. */
+async function ssccReserve(count){
+  const ext = ssccExt();
+  const n = Math.max(1, Number(count)||1);
+  const key = '@ssccseq:' + ext;
+  let last = 0, got = false;
+  try{
+    const r = await fetch(SB_URL + '/rest/v1/pr_config?select=v&k=eq.' + encodeURIComponent(key),
+      { headers:{ apikey:SB_KEY, Authorization:'Bearer ' + SB_KEY } });
+    if(r.ok){ const j = await r.json(); last = parseInt((j[0]||{}).v, 10) || 0; got = true; }
+  }catch(e){}
+  /* 서버를 못 읽었으면 찍지 않는다. 아무 번호나 만들면 남이 쓴 번호와 겹치고,
+     겹친 카톤 번호는 나중에 어느 박스가 어느 박스인지 못 가리게 만든다. */
+  if(!got){ showToast('⚠ Could not reach the carton counter — not printing (a guessed number could repeat one already used)'); return null; }
+  const start = last + 1, end = start + n - 1;
+  if(end > 99999){ showToast('⚠ Carton numbers ' + ext + '-xxxxx are used up — tell Hyun'); return null; }
+  try{
+    const w = await fetch(SB_URL + '/rest/v1/pr_config?on_conflict=k', { method:'POST',
+      headers:{ apikey:SB_KEY, Authorization:'Bearer ' + SB_KEY, 'Content-Type':'application/json',
+                Prefer:'resolution=merge-duplicates,return=minimal' },
+      body: JSON.stringify([{ k:key, v:String(end), updated_at:new Date().toISOString() }]) });
+    if(!w.ok) throw new Error('HTTP ' + w.status);
+  }catch(e){ showToast('⚠ Could not move the carton counter — not printing so the numbers cannot repeat'); return null; }
+  /* 누가 어느 번호를 뽑았는지 — 확장자리를 나누는 대신 이걸로 남긴다 */
+  try{
+    const who = (typeof SESS !== 'undefined' && SESS && SESS.email) ? SESS.email : '';
+    await fetch(SB_URL + '/rest/v1/pr_config?on_conflict=k', { method:'POST',
+      headers:{ apikey:SB_KEY, Authorization:'Bearer ' + SB_KEY, 'Content-Type':'application/json',
+                Prefer:'resolution=merge-duplicates,return=minimal' },
+      body: JSON.stringify([{ k:'@ssccblk:' + ext + '-' + String(start).padStart(5,'0'),
+                              v: ext + '|' + start + '|' + end + '|' + who + '|' + new Date().toISOString(),
+                              updated_at:new Date().toISOString() }]) });
+  }catch(e){}
+  return { ext, start, end };
 }
 /* 공장 QR 과 같은 모양 — 스캐너도 안내 페이지도 손댈 게 없다 */
 function fbQrText(it, sscc){
@@ -7080,22 +7113,15 @@ function fbQrText(it, sscc){
       + (pbSafe(it.color).substring(0,22)    || '-');
   }catch(e){ return ''; }
 }
-/* 이 컴퓨터의 자리를 정한다. 한 번만 하면 된다. */
-function ssccAskExt(){
-  const cur = ssccExt();
-  const msg = 'Carton numbers — this computer needs its own digit.\n\n'
-    + 'Every machine that creates carton numbers uses a different first digit so two boxes never get the same number:\n'
-    + '  0, 1 = Haiti      5+ = CA      8, 9 = SC computers\n\n'
-    + 'Free digits for this app: ' + SSCC_FREE.join(', ') + '\n\n'
-    + 'Enter the digit for THIS computer (ask before reusing one):';
-  const v = String(prompt(msg, cur || SSCC_FREE[0]) || '').trim();
-  if(!v) return;
-  if(!/^[0-9]$/.test(v)){ alert('One digit, 0-9.'); return; }
-  if(SSCC_FREE.indexOf(v) < 0 &&
-     !confirm('Digit ' + v + ' is already used by another site (Haiti 0·1, CA 5+, SC 8·9).\n\n'
-            + 'Using it here can give two different boxes the same carton number.\n\nUse it anyway?')) return;
-  try{ localStorage.setItem('sscc_ext', v); }catch(e){}
-  showToast('🔢 This computer makes carton numbers ' + v + '-00001 and up');
+/* 다음에 나갈 번호가 몇 번인지 — 라벨을 뽑기 전에 보여주기 위한 것뿐이다 */
+async function ssccPeek(){
+  try{
+    const r = await fetch(SB_URL + '/rest/v1/pr_config?select=v&k=eq.' + encodeURIComponent('@ssccseq:' + SSCC_EXT),
+      { headers:{ apikey:SB_KEY, Authorization:'Bearer ' + SB_KEY } });
+    if(!r.ok) return null;
+    const j = await r.json();
+    return (parseInt((j[0]||{}).v, 10) || 0) + 1;
+  }catch(e){ return null; }
 }
 
 function pbQrText(box, order, host){
@@ -7232,10 +7258,7 @@ function openBoxLabelModal(boxes, order){
     + '<button onclick="document.getElementById(\'modal-box-select\').remove()" style="background:none;border:none;color:#fff;font-size:18px;cursor:pointer;">✕</button>'
     + '</div>'
     + (window._blMode==='full' ? '<div style="background:#ecfeff;border-bottom:1px solid #a5f3fc;padding:7px 14px;font-size:11.5px;color:#0e7490;font-weight:700;display:flex;align-items:center;gap:8px;flex-wrap:wrap;">\uD83C\uDFF7 <span id="bl-count">' + boxes.length + ' full box(es) \u2192 ' + boxes.length + ' label(s)</span> &nbsp;\u00B7&nbsp; \u26A0 Load <b>2\" x 1\"</b> label stock first.</div>'
-      + '<label style="display:flex;align-items:center;gap:8px;background:#f5f3ff;border-bottom:1px solid #ddd6fe;padding:8px 14px;cursor:pointer;">'
-      + '<input type="checkbox" id="bl-fbqr-cb" onchange="blCountPaint()" style="width:16px;height:16px;accent-color:#6d28d9;cursor:pointer;">'
-      + '<span style="font-size:11.5px;font-weight:800;color:#5b21b6;">\u2B1B Also print a QR sticker for each box</span>'
-      + '<span style="font-size:10.5px;color:#7c3aed;line-height:1.35;">for older cartons that have no QR \u2014 stick it on so the box can be scanned</span></label>' : '')
+      : '')
     + '<div style="padding:6px 14px;border-bottom:1px solid #eee;font-size:11.5px;display:flex;gap:6px;align-items:center;background:#f8fafc;">🖨 <b>Printer</b> '
     + '<select id="bl-printer" class="fi" style="font-size:11.5px;flex:1;padding:3px 6px;" onchange="try{localStorage.setItem(blPrinterKey(), this.value)}catch(e){}"><option value="">Loading printers...</option></select>'
     + '<button class="btn btn-sm" style="white-space:nowrap;font-size:11px;" onclick="blCalibrate()" title="Run ONCE after swapping label stock (4x6 ↔ 2x1) — the printer feeds a few labels to measure the new size. Fixes labels not coming out or printing in the wrong spot.">\uD83D\uDD27 Calibrate</button></div>'
@@ -7247,6 +7270,12 @@ function openBoxLabelModal(boxes, order){
     + '<span style="font-size:10.5px;color:#9a3412;">× </span>'
     + '<input id="bl-idqty" type="number" min="1" max="200" placeholder="qty" title="How many Customer + PO# labels to print when checked (blank = 1)" style="width:52px;font-size:12px;padding:4px 6px;text-align:center;font-weight:800;border:1.5px solid #fdba74;border-radius:6px;box-sizing:border-box;">'
     + '</div>'
+    + (window._blMode==='full' ? '<div style="padding:9px 14px;border-top:1px solid #eee;background:#f5f3ff;display:flex;align-items:center;gap:8px;flex-wrap:wrap;">'
+      + '<label style="display:flex;align-items:center;gap:8px;cursor:pointer;flex:1;min-width:0;"><input type="checkbox" id="bl-fbqr-cb" onchange="blCountPaint()" style="width:16px;height:16px;accent-color:#6d28d9;cursor:pointer;">'
+      + '<span style="font-size:11.5px;font-weight:800;color:#5b21b6;white-space:nowrap;">\u2B1B Full Box QR sticker</span>'
+      + '<span style="font-size:10.5px;color:#7c3aed;line-height:1.35;">one per box \u2014 for older cartons with no QR</span></label>'
+      + '<span id="bl-fbqr-ext" style="font-size:10.5px;font-weight:800;color:#6d28d9;white-space:nowrap;">carton ' + SSCC_EXT + '-xxxxx</span>'
+      + '</div>' : '')
     + '<div style="padding:12px 16px;border-top:1px solid #e5e7eb;display:flex;justify-content:flex-end;gap:8px;">'
     + '<button onclick="document.getElementById(\'modal-box-select\').remove()" style="padding:7px 16px;background:#f3f4f6;border:1px solid #d1d5db;border-radius:6px;cursor:pointer;">' + t('bl_cancel') + '</button>'
     + '<button onclick="confirmBoxLabelPrint()" style="padding:7px 16px;background:' + (window._blMode==='full' ? '#0f766e' : '#7c3aed') + ';color:#fff;border:none;border-radius:6px;font-weight:700;cursor:pointer;">' + t('bl_print') + '</button>'
@@ -7299,22 +7328,26 @@ async function confirmBoxLabelPrint(){
   const sel = boxes.filter((_,i)=>checked.includes(i));
   // 🏷 Customer + PO# 라벨 — 체크했을 때만 함께 프린트 (매수 = Qty)
   const idWanted = !!((document.getElementById('bl-idlbl-cb')||{}).checked);
+  const _fbQrWanted = !!((document.getElementById('bl-fbqr-cb')||{}).checked);   // 모달을 지우기 전에 읽어둔다
   let idN = parseInt((document.getElementById('bl-idqty')||{}).value,10)||0; if(idN<1) idN=1; if(idN>200) idN=200;
   document.getElementById('modal-box-select')?.remove();
   if(!sel.length && !idWanted){ return; }
   const order = window._blOrder || {};
   const isFull = window._blMode === 'full';
-  const fbQr = isFull && !!((document.getElementById('bl-fbqr-cb')||{}).checked);
-  if(fbQr && !ssccExt()){ ssccAskExt(); return; }                  // 번호 겹치는 것보다 안 찍는 게 낫다
+  const fbQr = isFull && _fbQrWanted && sel.length > 0;
+  let blk = null;
+  if(fbQr){ blk = await ssccReserve(sel.length); if(!blk) return; }  // 번호를 못 받으면 아예 안 찍는다
   const parts = [];
-  sel.forEach(box => {
+  sel.forEach((box, i) => {
     const whTotal = boxes.filter(b=>b.wh===box.wh).length;
     parts.push(isFull ? buildFullBoxLabelZpl(box, whTotal, order) : buildBoxLabelZpl(box, whTotal, order));
-    if(fbQr) parts.push(buildFbQrLabelZpl(box));                    // 정보 라벨 바로 뒤에 QR 스티커 (v822)
+    if(fbQr) parts.push(buildFbQrLabelZpl(box, ssccFrom(blk.ext, blk.start + i)));
   });
   if(idWanted){ for(let i=0;i<idN;i++) parts.push(buildIdLabelZpl(order)); }
   const total = sel.length * (fbQr?2:1) + (idWanted?idN:0);
-  const ok = await sendToZebraBrowserPrint(parts.join('\n'), total);
+  const ok = await sendToZebraBrowserPrint(parts.filter(Boolean).join('\n'), total);
+  if(ok && blk) showToast('⬛ QR ' + blk.ext + '-' + String(blk.start).padStart(5,'0')
+    + (blk.end>blk.start ? (' … ' + blk.ext + '-' + String(blk.end).padStart(5,'0')) : ''));
   if(ok && !isFull && sel.length && window._blCtx) markDocPrinted(window._blCtx.base, window._blCtx.wh, 'label');
   window._blCtx = null;
 }
@@ -14493,6 +14526,84 @@ async function bxInsert(rows){
     if(!r.ok){ let t=''; try{ t = await r.text(); }catch(e){} throw new Error('HTTP '+r.status+' '+t.slice(0,300)); }
   }
 }
+
+/* ═══════════ ⬛ 재고에서 QR 스티커 뽑기 (v824) ═══════════
+   오더가 있어야만 뽑을 수 있으면 불편하다 — QR 없는 옛날 박스는 재고에 그냥 쌓여 있고,
+   시간 날 때 한 번에 붙이는 게 맞다. 사이즈와 장수를 골라 바로 뽑는다. */
+let _bxQrStyle = '';
+async function bxQrOpen(style, color){
+  _bxQrStyle = style;
+  const sizes = (typeof pcSizesFor==='function' ? (pcSizesFor(style)||[]) : []);
+  const list = sizes.length ? sizes : ['S','M','L','XL','2XL','3XL'];
+  const ex = document.getElementById('modal-bxqr'); if(ex) ex.remove();
+  const m = document.createElement('div');
+  m.id = 'modal-bxqr';
+  m.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,.5);z-index:999999;display:flex;align-items:center;justify-content:center;';
+  m.innerHTML = '<div style="background:#fff;border-radius:12px;width:400px;max-width:94vw;overflow:hidden;box-shadow:0 20px 60px rgba(0,0,0,.3);">'
+    + '<div style="background:#4c1d95;padding:13px 18px;display:flex;align-items:center;gap:10px;">'
+    +   '<span style="color:#fff;font-weight:800;font-size:14px;">\u2B1B Full Box QR stickers</span>'
+    +   '<button onclick="document.getElementById(\'modal-bxqr\').remove()" style="margin-left:auto;background:none;border:none;color:#fff;font-size:18px;cursor:pointer;">\u2715</button></div>'
+    + '<div style="padding:14px 18px;">'
+    +   '<div style="font-size:13px;font-weight:800;color:#0f2a4a;margin-bottom:2px;">' + esc(style) + ' \u00B7 ' + esc(String(color).toUpperCase()) + '</div>'
+    +   '<div style="font-size:11px;color:#64748b;line-height:1.5;margin-bottom:12px;">For older cartons with no QR. The sticker carries the same code as a factory carton \u2014 no customer, no PO#.</div>'
+    +   '<div style="display:flex;gap:10px;align-items:flex-end;flex-wrap:wrap;">'
+    +     '<label style="flex:1;min-width:110px;"><div style="font-size:10.5px;font-weight:800;color:#475569;margin-bottom:3px;">SIZE</div>'
+    +       '<select id="bxqr-size" class="fi" style="width:100%;font-size:13px;padding:6px;" onchange="bxQrPpbPaint()">'
+    +       list.map(z=>'<option value="' + esc(z) + '">' + esc(z) + '</option>').join('') + '</select></label>'
+    +     '<label style="width:88px;"><div style="font-size:10.5px;font-weight:800;color:#475569;margin-bottom:3px;">STICKERS</div>'
+    +       '<input id="bxqr-n" type="number" min="1" max="200" value="1" class="fi" style="width:100%;font-size:13px;padding:6px;text-align:center;font-weight:800;"></label>'
+    +     '<label style="width:96px;"><div style="font-size:10.5px;font-weight:800;color:#475569;margin-bottom:3px;">PCS / BOX</div>'
+    +       '<input id="bxqr-ppb" type="number" min="1" max="999" class="fi" style="width:100%;font-size:13px;padding:6px;text-align:center;font-weight:800;"></label>'
+    +   '</div>'
+    +   '<div style="margin-top:12px;font-size:11px;display:flex;align-items:center;gap:6px;flex-wrap:wrap;">\uD83D\uDDA8 <b>Printer</b>'
+    +     '<select id="bl-printer" class="fi" style="font-size:11.5px;flex:1;padding:3px 6px;" onchange="try{localStorage.setItem(blPrinterKey(), this.value)}catch(e){}"><option value="">Loading printers\u2026</option></select></div>'
+    +   '<div style="margin-top:8px;font-size:10.5px;color:#6d28d9;font-weight:800;display:flex;align-items:center;gap:8px;flex-wrap:wrap;">'
+    +     '<span id="bxqr-next">next carton \u2026</span>'
+    +     '<span style="color:#94a3b8;font-weight:600;">\u26A0 Load 2\" x 1\" label stock</span></div>'
+    + '</div>'
+    + '<div style="padding:12px 16px;border-top:1px solid #e5e7eb;display:flex;justify-content:flex-end;gap:8px;">'
+    +   '<button class="btn btn-sm" onclick="document.getElementById(\'modal-bxqr\').remove()">Cancel</button>'
+    +   '<button id="bxqr-go" onclick="bxQrPrint(\'' + esc(style) + '\',\'' + esc(String(color)) + '\')" style="padding:7px 16px;background:#6d28d9;color:#fff;border:none;border-radius:6px;font-weight:800;cursor:pointer;">\u2B1B Print</button>'
+    + '</div></div>';
+  document.body.appendChild(m);
+  window._blMode = 'full';                       // 프린터 기억은 Full Box 라벨과 같이 쓴다 (둘 다 2×1)
+  try{ blFillPrinterSel(); }catch(e){}
+  bxQrPpbPaint();
+  const nx = await ssccPeek();
+  const el = document.getElementById('bxqr-next');
+  if(el) el.textContent = nx ? ('next carton ' + SSCC_EXT + '-' + String(nx).padStart(5,'0'))
+                             : 'could not read the carton counter';
+}
+function bxQrPpbPaint(){
+  const sz = (document.getElementById('bxqr-size')||{}).value || '';
+  const el = document.getElementById('bxqr-ppb'); if(!el) return;
+  let n = 0;
+  try{ n = autoPpb({ style:_bxQrStyle, size:sz }) || 0; }catch(e){}
+  el.value = n || 72;
+}
+async function bxQrPrint(style, color){
+  const sz = String((document.getElementById('bxqr-size')||{}).value || '').trim();
+  let n  = parseInt((document.getElementById('bxqr-n')||{}).value, 10) || 0;
+  const ppb = parseInt((document.getElementById('bxqr-ppb')||{}).value, 10) || 0;
+  if(n < 1) n = 1; if(n > 200) n = 200;
+  if(!sz){ showToast('⚠ Pick a size'); return; }
+  if(ppb < 1){ showToast('⚠ Enter pcs per box'); return; }
+  const go = document.getElementById('bxqr-go');
+  if(go){ go.disabled = true; go.textContent = 'Getting numbers…'; }
+  const blk = await ssccReserve(n);
+  if(!blk){ if(go){ go.disabled = false; go.textContent = '⬛ Print'; } return; }
+  const parts = [];
+  for(let i=0;i<n;i++){
+    parts.push(buildFbQrLabelZpl({ items:[{ styleNum:style, color:color, size:sz, qty:ppb }] },
+                                 ssccFrom(blk.ext, blk.start + i)));
+  }
+  const ok = await sendToZebraBrowserPrint(parts.filter(Boolean).join('\n'), n);
+  if(ok){
+    showToast('⬛ ' + n + ' QR sticker(s) — carton ' + blk.ext + '-' + String(blk.start).padStart(5,'0')
+              + (n>1 ? (' … ' + blk.ext + '-' + String(blk.end).padStart(5,'0')) : ''));
+    const m = document.getElementById('modal-bxqr'); if(m) m.remove();
+  } else if(go){ go.disabled = false; go.textContent = '⬛ Print'; }
+}
 function bxAddBoxes(pre){
   window._bxAddLoc = (pre&&pre.loc) ? String(pre.loc) : '';   // ⏳ sticky location for new rows
   window._bxAddTmp = false;   // ⏳ staging(FLOOR/TEMPORARY) 모드 초기화
@@ -15724,7 +15835,7 @@ function bxGridInner(sty, colGroups){
     const rSpan = 3 + expSC + expCA + (incRow?1:0) + (rsvRow?1:0) + (availRow?1:0);
     return `<tbody style="border-top:2px solid #dbe4f0;">
       <tr>
-        <td class="tl" rowspan="${rSpan}" style="font-weight:700;white-space:nowrap;vertical-align:top;padding-top:7px;"><input type="checkbox" data-bxr="${encodeURIComponent(bxRptKey(sty,c,'TOTAL'))}" ${window._bxRptSel[bxRptKey(sty,c,'TOTAL')]?'checked':''} onchange="bxRptTgl('${esc(sty)}','${esc(c)}','TOTAL',this.checked)" style="width:13px;height:13px;accent-color:#0d9488;vertical-align:-2px;margin-right:5px;cursor:pointer;" title="Add to customer stock report">${esc(c)}${vChips}${monthNote}</td>
+        <td class="tl" rowspan="${rSpan}" style="font-weight:700;white-space:nowrap;vertical-align:top;padding-top:7px;"><input type="checkbox" data-bxr="${encodeURIComponent(bxRptKey(sty,c,'TOTAL'))}" ${window._bxRptSel[bxRptKey(sty,c,'TOTAL')]?'checked':''} onchange="bxRptTgl('${esc(sty)}','${esc(c)}','TOTAL',this.checked)" style="width:13px;height:13px;accent-color:#0d9488;vertical-align:-2px;margin-right:5px;cursor:pointer;" title="Add to customer stock report">${esc(c)}${vChips}${monthNote}<div style="margin-top:3px;"><button class="btn btn-sm" style="border:1px solid #ddd6fe;color:#6d28d9;font-size:9.5px;font-weight:800;padding:1px 6px;" onclick="event.stopPropagation();bxQrOpen('${esc(sty)}','${esc(c)}')" title="Print QR stickers for boxes of this color — for older cartons that have no QR">\u2B1B QR</button></div></td>
         ${whCells('SC')}
         <td class="tl" style="white-space:nowrap;">${stBadge('BX', sty, c, 'SC')}</td>
         <td rowspan="${rSpan}" style="white-space:nowrap;vertical-align:top;padding-top:5px;"><button class="btn btn-sm" style="border:none;padding:0 4px;" onclick="bxAddBoxes({style:'${esc(sty)}',color:'${esc(c)}'})" title="Add boxes">＋</button><button class="btn btn-sm" style="border:none;padding:0 4px;color:#7c3aed;" onclick="openReserveEditor('${esc(sty)}','${esc(c)}')" title="🔒 Reserve boxes for a customer (per size, SC/CA)">🔒</button><button class="btn btn-sm" style="border:none;padding:0 4px;" onclick="bxMoveHist('${esc(sty)}','${esc(c)}')" title="Movement history (SC·CA) · restore inside">📜</button><button class="btn btn-sm" style="border:none;padding:0 4px;color:#b91c1c;" onclick="bxColorPurge('${esc(sty)}','${esc(c)}')" title="Delete this color everywhere — Full Box (removed from stock, restorable) + PC Room + SKU master">🗑</button></td>
