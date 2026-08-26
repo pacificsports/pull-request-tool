@@ -162,7 +162,7 @@ body.narrow main{max-width:1100px;}
   </span>
   <select id="lang-sel" onchange="setLang(this.value)" style="font-size:11px;padding:3px 6px;border-radius:5px;border:none;background:#1d3f66;color:#fff;"><option value="ko">한국어</option><option value="en">English</option><option value="es">Español</option></select>
   <button id="wide-btn" class="btn btn-sm" onclick="toggleWide()" title="화면 넓게 / 좁게 — 기본은 넓게 (이 브라우저에만 저장돼)" style="padding:2px 8px;font-size:10px;background:#1d3f66;color:#cfe0f2;border-color:#2b5384;">↔ Wide</button>
-  <span id="app-ver" style="font-size:10px;color:#9fb8d4;">v800</span>
+  <span id="app-ver" style="font-size:10px;color:#9fb8d4;">v801</span>
 </div>
 <script>
 // ↔ 넓게 보기 — 브라우저마다 따로 저장 (v793)
@@ -11005,6 +11005,35 @@ async function pchkApplyFix(line, wh, bin, target){
   await bxRefetch();
 }
 function pchkConfirmAll(id){ const m=(window._pchkRevMeta||{})[id]; if(m && typeof stMark==='function'){ try{ stMark('BXBIN', m.wh, m.bin); }catch(e){} } pchkReviewSet(id,'resolved'); }
+
+/* ✓ 깨끗한 팔렛 일괄 confirm (v801)
+   한 건씩 PATCH 를 48번 던지면 느리고 중간에 끊기면 상태가 반쪽이 된다.
+   PostgREST 의 id=in.(...) 으로 묶어서 보내고, 80개씩 잘라 URL 길이만 지킨다.
+   bin 도장(stMark)은 로컬 작업이라 그냥 돌면 된다. */
+async function pchkBulkConfirm(){
+  const ids = (window._pchkCleanIds||[]).slice();
+  if(!ids.length){ showToast('No clean pallets to confirm'); return; }
+  if(!confirm('Confirm ' + ids.length + ' pallet(s) where staff found no difference?\n\nPallets with a flag or an extra box are left alone.')) return;
+  const btn = document.getElementById('pchk-bulk-btn');
+  if(btn){ btn.disabled = true; btn.style.opacity = '.7'; btn.textContent = 'Confirming 0/' + ids.length + '…'; }
+  const patch = { status:'resolved', reviewed_by:(typeof SESS!=='undefined'&&SESS&&SESS.email)||null, reviewed_at:new Date().toISOString() };
+  let done = 0, fail = 0;
+  for(let i=0; i<ids.length; i+=80){
+    const part = ids.slice(i, i+80);
+    try{
+      const r = await sbFetch('/rest/v1/pr_physcheck?id=in.(' + part.join(',') + ')',
+        { method:'PATCH', headers:{Prefer:'return=minimal'}, body:JSON.stringify(patch) });
+      if(!r.ok) throw new Error('HTTP ' + r.status);
+      part.forEach(id=>{ const m=(window._pchkRevMeta||{})[id];
+        if(m && typeof stMark==='function'){ try{ stMark('BXBIN', m.wh, m.bin); }catch(e){} } });
+      done += part.length;
+    }catch(e){ fail += part.length; }
+    if(btn) btn.textContent = 'Confirming ' + (done+fail) + '/' + ids.length + '…';
+  }
+  showToast(fail ? ('✓ ' + done + ' confirmed · ⚠ ' + fail + ' failed') : ('✓ ' + done + ' pallets confirmed'));
+  try{ pchkReviewBadge(); }catch(e){}
+  pchkReviewOpen(window._pchkRevFilter||'');
+}
 // 그 bin의 체크 이력 요약 — By Location 표시용 (bin -> 체크 횟수 + 최신 confirmed id)
 async function pchkLoadConfBins(){
   try{ const r=await sbFetch('/rest/v1/pr_physcheck?select=id,wh,bin,status,reviewed_at&order=created_at.desc&limit=3000');
@@ -11092,6 +11121,23 @@ async function pchkReviewDelete(id){
 function pchkReviewRender(rows){
   const b=document.getElementById('pchkrev-body'); if(!b) return;
   const pend=rows.filter(r=>r.status==='pending'), done=rows.filter(r=>r.status!=='pending');
+
+  /* 「손 안 대도 되는 팔렛」의 정의 — 카드 테두리가 노랗게 뜨는 조건과 똑같이 잡는다.
+       · 직원이 ✗(다름) 표시한 줄이 하나도 없고
+       · 시스템에 없는 여분 박스도 없고
+       · AI를 돌렸다면 AI도 차이를 못 잡았고
+       · 직원이 실제로 뭔가 표시는 했고 (빈 제출은 믿을 근거가 없다)
+     하나라도 걸리면 목록에 남겨서 사람이 본다. */
+  window._pchkCleanIds = pend.filter(r=>{
+    try{
+      const hasAI = Array.isArray(r.detected) && r.detected.length>0;
+      const c = pchkCompare(r.bin, r.wh, r.detected||[], r.staff_check||[]);
+      if(c.staffOff) return false;
+      if(Number(r.extra_box)>0) return false;
+      if(hasAI && c.diffN) return false;
+      return c.rows.some(x=>x.hasStaff);
+    }catch(e){ return false; }
+  }).map(r=>r.id);
   const card=r=>{
     const hasAI=Array.isArray(r.detected)&&r.detected.length>0;
     const cmp=pchkCompare(r.bin, r.wh, r.detected||[], r.staff_check||[]);
@@ -11189,7 +11235,16 @@ function pchkReviewRender(rows){
       </div>
     </div>`;
   };
-  b.innerHTML = (pend.length?`<div style="font-size:12px;font-weight:800;color:#92400e;margin-bottom:8px;">🟡 Pending (${pend.length})</div>`+pend.map(card).join(''):`<div style="text-align:center;color:#64748b;padding:24px;">No pending checks. 🎉</div>`)
+  const _cleanN = (window._pchkCleanIds||[]).length;
+  const _flagN  = pend.length - _cleanN;
+  const bulkBar = _cleanN ? `<div style="background:#f0fdf4;border:1.5px solid #86efac;border-radius:12px;padding:12px 14px;margin-bottom:12px;">
+      <div style="font-size:12.5px;color:#166534;line-height:1.55;margin-bottom:9px;">
+        <b>${_cleanN}</b> pallet${_cleanN>1?'s':''} — staff counted them and flagged nothing, and they match the system.
+        ${_flagN?`<br><span style="color:#a16207;font-weight:700;">${_flagN} pallet${_flagN>1?'s':''} with a flag or an extra box stay${_flagN>1?'':'s'} below for you to look at.</span>`:''}
+      </div>
+      <button id="pchk-bulk-btn" onclick="pchkBulkConfirm()" style="width:100%;background:#16a34a;color:#fff;border:none;border-radius:10px;padding:13px;font-size:14px;font-weight:800;cursor:pointer;">✓ Confirm all ${_cleanN} clean pallet${_cleanN>1?'s':''} at once</button>
+    </div>` : '';
+  b.innerHTML = bulkBar + (pend.length?`<div style="font-size:12px;font-weight:800;color:#92400e;margin-bottom:8px;">🟡 Pending (${pend.length})</div>`+pend.map(card).join(''):`<div style="text-align:center;color:#64748b;padding:24px;">No pending checks. 🎉</div>`)
     + (done.length?`<div style="font-size:12px;font-weight:800;color:#64748b;margin:14px 0 8px;">Recently handled</div>`+done.slice(0,40).map(doneRow).join(''):'');
 }
 // 🔍 매니저가 인터넷 좋은 곳에서 AI 분석 실행 → detected 채우고 비교 갱신
