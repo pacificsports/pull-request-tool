@@ -162,7 +162,7 @@ body.narrow main{max-width:1100px;}
   </span>
   <select id="lang-sel" onchange="setLang(this.value)" style="font-size:11px;padding:3px 6px;border-radius:5px;border:none;background:#1d3f66;color:#fff;"><option value="ko">한국어</option><option value="en">English</option><option value="es">Español</option></select>
   <button id="wide-btn" class="btn btn-sm" onclick="toggleWide()" title="화면 넓게 / 좁게 — 기본은 넓게 (이 브라우저에만 저장돼)" style="padding:2px 8px;font-size:10px;background:#1d3f66;color:#cfe0f2;border-color:#2b5384;">↔ Wide</button>
-  <span id="app-ver" style="font-size:10px;color:#9fb8d4;">v816</span>
+  <span id="app-ver" style="font-size:10px;color:#9fb8d4;">v818</span>
 </div>
 <script>
 // ↔ 넓게 보기 — 브라우저마다 따로 저장 (v793)
@@ -5529,6 +5529,7 @@ async function completePL(){
   if(wantSend && (!custEm || !custEm.includes('@'))){ alert('📧 Please enter the customer email (Customer Email field)'); return; }
   if(!confirm('✅ Mark ' + plWh + ' Packing List Complete?' + (wantSend ? '\n📧 Email to customer: ' + custEm : '\n(No email — checkbox unchecked)'))) return;
   d._completed = new Date().toISOString();
+  tdClearDone(plBase, plWh);                        // 나간 창고 몫의 Today / PC Room 표시를 끈다 (v818)
   try{ await sbFetch('/rest/v1/pr_orders?base=eq.'+encodeURIComponent(plBase), {method:'PATCH', headers:{Prefer:'return=minimal'}, body:JSON.stringify({pl:rec.pl, updated_at:new Date().toISOString()})}); }catch(e){}
   logHist(plBase, 'Packing List COMPLETED — ' + plWh + (wantSend ? ' (emailed ' + custEm + ')' : ''));
   if(wantSend){
@@ -6976,6 +6977,37 @@ function calcFullBoxesFromLines(lines, whTag){
   out.forEach((b,i)=>{ b.boxNum = i+1; });
   return out;
 }
+
+/* ═══════════ 🧾 PC Room 박스 QR (v817) ═══════════
+   HTTPS://PSFLOWX.COM/B/{거래처}/{PO#}/{창고}/{박스번호}/{스타일*칼라*사이즈*장수}/...
+   폰 카메라로 찍어도 우리 주소가 뜨고, 우리 앱으로 읽으면 내용이 그대로 나온다.
+   QR '영숫자 모드'(0-9 A-Z 공백 $%*+-./:)에 있는 글자만 남긴다 — 괄호나 쉼표가 하나라도
+   섞이면 QR 전체가 바이트 모드로 떨어져서 코드가 두 배로 커진다.
+   '/' 와 '*' 는 구분자로 쓰므로 내용에서는 지운다. */
+const PB_QR_HOST = 'HTTPS://PSFLOWX.COM/B/';
+function pbSafe(v){
+  return String(v==null?'':v).toUpperCase()
+    .replace(/\([^)]*\)/g, ' ')                 // (US) · (SIDE SEAM) 같은 꼬리표는 뺀다
+    .replace(/[^A-Z0-9 $%+\-.:]/g, ' ')          // 영숫자 모드에 없는 글자는 공백으로
+    .replace(/\s+/g, ' ').trim();
+}
+function pbQrText(box, order){
+  try{
+    const items = (box && box.items) || [];
+    if(!items.length) return '';
+    const cust = pbSafe(order && order.customer_name).substring(0,20) || '-';
+    const po   = pbSafe(order && order.customer_po).substring(0,20)   || '-';
+    const wh   = pbSafe(box && box.wh)     || '-';
+    const bn   = pbSafe(box && box.boxNum) || '-';
+    const body = items.map(i=>[
+      pbSafe(i.styleNum).substring(0,12),
+      pbSafe(i.color).substring(0,18),
+      pbSafe(i.size).substring(0,6),
+      (Number(i.qty)||0)
+    ].join('*')).join('/');
+    return PB_QR_HOST + cust + '/' + po + '/' + wh + '/' + bn + '/' + body;
+  }catch(e){ return ''; }
+}
 function buildBoxLabelZpl(box, totalBoxes, order) {
   // ZP450 4x6 inch = 812w x 1218h dots (203 dpi) — IMS 원본 그대로
   const poNum = (order.customer_po || '').substring(0, 26);
@@ -6996,7 +7028,8 @@ function buildBoxLabelZpl(box, totalBoxes, order) {
   Object.values(groups).forEach(g => { totalLineCount += 1 + g.sizes.length; });
   totalLineCount += 1;
   const ITEM_START_Y = 475;
-  const ITEM_END_Y = 1140;
+  const _qr = pbQrText(box, order);                 // 우리 박스 QR (v817)
+  const ITEM_END_Y = _qr ? 900 : 1140;              // QR 자리(오른쪽 아래)를 비운다
   const availH = ITEM_END_Y - ITEM_START_Y;
   const lineH = Math.min(80, Math.max(22, Math.floor(availH / totalLineCount)));
   const itemFontH = Math.min(65, Math.max(20, lineH - 14));
@@ -7027,6 +7060,7 @@ function buildBoxLabelZpl(box, totalBoxes, order) {
     + '^FO20,' + totalDivY + '^GB772,3,3^FS\n'
     + '^FO30,' + totalTextY + '^A0N,' + itemFontH + ',' + itemFontH + '^FDTotal:^FS\n'
     + '^FO300,' + totalTextY + '^A0N,' + itemFontH + ',' + itemFontH + '^FD' + totalQty + ' pcs^FS\n'
+    + (_qr ? ('^FO560,' + Math.max(totalDivY + 30, 930) + '^BQN,2,' + (_qr.length > 90 ? 4 : 5) + '^FDMA,' + _qr + '^FS\n') : '')
     + '^FO0,1175^FB812,1,0,C,0^A0N,28,28^FDPacific Sports^FS\n'
     + '^XZ';
 }
@@ -8650,6 +8684,10 @@ async function tdSet(base, wh, on){
 
 /* 매니저 쪽 토글 — 저장된 오더 목록과 Open Orders 모달 양쪽에서 같은 버튼을 쓴다 */
 let _tdBooted = 0;
+function tdMD(d){                                   // '2026-08-26' → '8/26'
+  const p = String(d||'').split('-');
+  return (p.length===3) ? (Number(p[1]) + '/' + Number(p[2])) : '';
+}
 function tdBtn(base, wh){
   // 매니저 화면은 목록을 그릴 때 오늘 표시를 안 읽어온다 — 첫 버튼을 그릴 때 한 번만
   // 불러오고, 도착하면 그 화면만 다시 그린다.
@@ -8661,9 +8699,10 @@ function tdBtn(base, wh){
   return '<button class="btn btn-sm" id="tdb-' + esc(String(wh)) + '-' + esc(String(base)) + '"'
     + ' style="background:' + (on?'#e11d48':'#fff') + ';color:' + (on?'#fff':'#9f1239')
     + ';border-color:' + (on?'#e11d48':'#fecdd3') + ';font-size:10px;padding:2px 8px;font-weight:800;"'
-    + ' title="' + (on ? 'Marked to ship today — staff see it in /pic Pending Orders. Click to unmark.'
+    + ' title="' + (on ? 'Marked to ship ' + tdMD(tdDay()) + ' — staff see it in /pic Pending Orders. It clears itself when this ' + wh + ' packing list is completed, or at midnight. Click to unmark.'
                        : 'Mark this ' + wh + ' order to ship TODAY — staff can then select it in one tap in /pic') + '"'
-    + ' onclick="event.stopPropagation();tdToggle(\'' + esc(String(base)) + '\',\'' + esc(String(wh)) + '\')">📅 Today</button>';
+    + ' onclick="event.stopPropagation();tdToggle(\'' + esc(String(base)) + '\',\'' + esc(String(wh)) + '\')">📅 '
+    + (on ? esc(tdMD(tdDay())) : 'Today') + '</button>';
 }
 async function tdToggle(base, wh){
   const on = !tdIsOn(base, wh);
@@ -8683,12 +8722,21 @@ function tdBannerPaint(bases, wh){
   if(!hit.length){ el.innerHTML = ''; return; }
   el.innerHTML = '<div style="background:#fff1f2;border:1.5px solid #fda4af;border-radius:12px;padding:10px 12px;margin-bottom:10px;">'
     + '<div style="font-size:12px;color:#9f1239;font-weight:700;line-height:1.5;margin-bottom:8px;">'
-    +   '📅 <b>' + hit.length + ' order' + (hit.length>1?'s':'') + '</b> marked to ship today in ' + esc(wh) + '.</div>'
+    +   '📅 <b>' + hit.length + ' order' + (hit.length>1?'s':'') + '</b> marked to ship <b>' + esc(tdMD(tdDay())) + '</b> (today) in ' + esc(wh) + '.</div>'
     + '<button onclick="tdSelectAll()" style="width:100%;background:#e11d48;color:#fff;border:none;border-radius:10px;padding:12px;font-size:14px;font-weight:800;cursor:pointer;">'
     +   'Select all ' + hit.length + ' ▸</button>'
     + (hit.some(b=>window._packPacked && window._packPacked[b])
         ? '<div onclick="unpackToday()" style="text-align:center;margin-top:7px;font-size:11.5px;font-weight:800;color:#b91c1c;cursor:pointer;text-decoration:underline;">↩ Undo packing for all ' + hit.length + '</div>' : '')
     + '</div>';
+}
+
+/* 나간 창고 몫의 표시를 끈다 (v818).
+   Today 는 「오늘 나갈 것」, PC Room 은 「뽑아놨다」 — 포장이 끝나 Complete 를 누른 순간
+   둘 다 할 말을 끝냈다. 매니저가 손으로 지우게 두면 안 지워진 게 남아서 다음 날 헷갈린다.
+   실패해도 조용히 넘어간다 — 표시 정리 때문에 출고가 막히면 안 된다. */
+function tdClearDone(base, wh){
+  try{ if(tdIsOn(base, wh)) tdSet(base, wh, false); }catch(e){}
+  try{ if(typeof pcrIsOn==='function' && pcrIsOn(base, wh)) pcrSet(base, wh, false, ''); }catch(e){}
 }
 function tdSelectAll(){
   const hit = window._tdHit || [];
@@ -9148,6 +9196,21 @@ function scanParseQr(text){
       return { sscc, hasSscc:true, ctn, style,
         size: dec(seg[1]), qty: dec(seg[2]), color: dec(seg[3]), con:'', v:3 };
     }
+    // ── v4: 우리가 찍는 PC Room 박스 라벨 (v817)
+    const v4 = t.toUpperCase().match(/PSFLOWX\.COM\/B\/([^\/]*)\/([^\/]*)\/([^\/]*)\/([^\/]*)\/(.*)$/);
+    if(v4){
+      const items = String(v4[5]||'').split('/').map(seg=>{
+        const p = seg.split('*');
+        if(!p[0]) return null;
+        return { style:p[0].trim(), color:String(p[1]||'').trim(), size:String(p[2]||'').trim(), qty:Number(p[3])||0 };
+      }).filter(Boolean);
+      if(!items.length) return null;
+      const po = String(v4[2]||'').trim(), wh = String(v4[3]||'').trim(), bx = String(v4[4]||'').trim();
+      const first = items[0];
+      return { kind:'pbox', sscc:'PB:'+po+'|'+wh+'|'+bx, hasSscc:false, ctn:'',
+        cust:String(v4[1]||'').trim(), po, wh, box:bx, items,
+        style:first.style, color:first.color, size:first.size, qty:first.qty, con:'', v:4 };
+    }
     const hash = t.includes('#') ? t.slice(t.indexOf('#')+1) : t;
     if(!hash) return null;
     if(/^2\|/.test(hash)){                                   // ── v2: 파이프 구분 값 나열
@@ -9357,7 +9420,7 @@ function scanRender(){
   const n = document.getElementById('scan-n'); if(n) n.textContent = got.toLocaleString();
   const bad = rows.filter(r=>r.st!=='match').length;
   const phoUnread = (_spInfo && Number(_spInfo.unread)) || 0;   // 📸 안 읽힌 박스가 있으면 '다 맞음' 이라고 못 한다 (v796)
-  el.innerHTML = spBannerHtml() + `<div style="background:#fff;border-radius:12px;overflow:hidden;border:1px solid #e5e7eb;">
+  el.innerHTML = spBannerHtml() + pboxPanelHtml() + `<div style="background:#fff;border-radius:12px;overflow:hidden;border:1px solid #e5e7eb;">
     <div style="padding:9px 12px;background:${bad?'#fef2f2':(phoUnread?'#fffbeb':'#f0fdf4')};border-bottom:1px solid #e5e7eb;font-size:12.5px;font-weight:800;color:${bad?'#b91c1c':(phoUnread?'#b45309':'#166534')};">${bad? bad+' line(s) do not match' : (phoUnread ? '⚠ Lines match, but '+phoUnread+' box in the photos could not be identified' : '✓ Everything matches')}</div>
     <div style="max-height:52vh;overflow-y:auto;">
     <table style="width:100%;border-collapse:collapse;font-size:12px;">
@@ -10061,6 +10124,34 @@ function pfindCarryInto(bases, wh){
     showToast('📸 photo count carried over — check it against the list');
   }catch(e){}
 }
+
+/* 읽어들인 PC Room 박스 목록 (v817).
+   풀박스 대조표는 「박스 수」를 세지만 이 박스들은 「안에 든 장수」라 단위가 다르다.
+   같은 표에 섞으면 숫자가 거짓말이 되므로 위에 따로 보여준다. */
+function pboxPanelHtml(){
+  const m = (_scan && _scan.pbox) || null;
+  if(!m || !m.size) return '';
+  const rows = Array.from(m.values()).sort((a,b)=>
+    String(a.wh).localeCompare(String(b.wh)) || Number(a.box)-Number(b.box) || String(a.box).localeCompare(String(b.box)));
+  const pcs = rows.reduce((t,b)=>t + (b.items||[]).reduce((a,i)=>a+(Number(i.qty)||0),0), 0);
+  return '<div style="background:#fff;border:1px solid #e5e7eb;border-radius:12px;overflow:hidden;margin-bottom:10px;">'
+    + '<div style="background:#fdf2f8;padding:8px 12px;font-size:11.5px;font-weight:800;color:#9d174d;border-bottom:1px solid #fbcfe8;">'
+    + '🧺 PC Room boxes read — <b>' + rows.length + '</b> box' + (rows.length>1?'es':'') + ' · <b>' + pcs.toLocaleString() + '</b> pcs'
+    + '</div>'
+    + rows.map(b=>{
+        const body = (b.items||[]).map(i=>
+          '<div style="display:flex;gap:6px;font-size:11.5px;padding:1px 0;">'
+          + '<span style="flex:none;width:44px;font-weight:800;color:#111;">' + esc(i.style) + '</span>'
+          + '<span style="flex:1;min-width:0;color:#334155;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">' + esc(i.color) + ' <b>' + esc(i.size) + '</b></span>'
+          + '<span style="flex:none;font-weight:800;color:#0369a1;">' + (Number(i.qty)||0) + ' pc</span></div>').join('');
+        return '<div style="padding:7px 12px;border-bottom:1px solid #f3f4f6;">'
+          + '<div style="font-size:11px;font-weight:800;color:#9d174d;margin-bottom:2px;">'
+          + (b.wh?('[' + esc(b.wh) + '] '):'') + 'BOX ' + esc(b.box)
+          + (b.po?('<span style="color:#94a3b8;font-weight:700;"> · PO ' + esc(b.po) + '</span>'):'') + '</div>'
+          + body + '</div>';
+      }).join('')
+    + '</div>';
+}
 function scanManual(key, d){
   if(!_scan) return;
   _scan.manual = _scan.manual || {};
@@ -10370,6 +10461,12 @@ function scanAccept(hits){
     const t = (typeof hit === 'string') ? hit : hit.text;
     const b = scanParseQr(t);
     if(!b){ bad++; state[t]='bad'; return; }
+    if(b.kind === 'pbox'){                                  // 🧺 우리가 싼 PC Room 박스 (v817)
+      _scan.pbox = _scan.pbox || new Map();
+      if(_scan.pbox.has(b.sscc)){ dup++; state[t]='dup'; return; }
+      _scan.pbox.set(b.sscc, b);
+      added++; state[t]='new'; return;
+    }
     if(_scan.seen.has(b.sscc)){ dup++; state[t]='dup'; return; }
     b.key = scanKeyOf(b.style, b.color, b.size);
     _scan.seen.set(b.sscc, b);
@@ -22519,13 +22616,15 @@ function openInformCustomer(){
   const custs=[...new Set(orders.map(r=>String((r.meta&&r.meta.cust)||'').trim()).filter(Boolean))];
   const pos=orders.map(r=>{ const po=String((r.meta&&r.meta.po)||r.base); const rep=(typeof recIsReplace==='function'&&recIsReplace(r)); return po+(rep?' (replacement)':''); });
   const emails=[...new Set(orders.flatMap(r=>{ const e1=(r.meta&&r.meta.custEmail)||''; const e2=(typeof custEmailFor==='function')?(custEmailFor((r.meta&&r.meta.cust)||'')||''):''; return [e1,e2]; }).map(x=>String(x||'').trim()).filter(x=>x.includes('@')))];   // 거래처 이메일 자동 채움 (v725)
-  window._ic={ cust: custs.length===1?custs[0]:'', time:'3pm', pos:pos.join('\n'), boxes, lbsPer:33, pallets:[{l:48,w:43,h:84,bx:0}], emails };
+  const whs=[...new Set(cbs.map(c=>String(c.dataset.wh||'').toUpperCase()).filter(Boolean))];
+  window._ic={ cust: custs.length===1?custs[0]:'', time:'3pm', pos:pos.join('\n'), boxes, lbsPer:33, pallets:[{l:48,w:43,h:84,bx:0}], emails, wh: whs.join(' + ') };
   // 🚛 직원이 /pic에서 LTL로 넣은 정보(pr_bulkship) 자동 채움 — 총박스·팔레트(수·치수·박스수)
   if(window._icPreload){ const pl=window._icPreload;
     if(pl.boxes!=null && Number(pl.boxes)>0) window._ic.boxes=Number(pl.boxes);
     if(pl.lbsPer!=null) window._ic.lbsPer=Number(pl.lbsPer);
     if(pl.pos) window._ic.pos=pl.pos;
     if(pl.cust) window._ic.cust=pl.cust;
+    if(pl.wh) window._ic.wh=String(pl.wh).toUpperCase();
     if(Array.isArray(pl.pallets)&&pl.pallets.length) window._ic.pallets=pl.pallets.map(p=>({l:Number(p.l)||48,w:Number(p.w)||43,h:Number(p.h)||0,bx:Number(p.bx)||0}));
     window._icPreload=null; }
   // 방금 저장/복원한 클라우드 draft가 지금 선택과 같은 오더면, 그때 입력했던 설정(pallet/무게/문구)을 되살림
@@ -22633,7 +22732,7 @@ function icEmailText(){
   const greeting=s.cust?('Hi '+s.cust+','):'Hi,';
   return `${greeting}
 
-The following PO(s) are ready to ship${s.time?(' @ '+s.time):''}:
+The following PO(s) are ready to ship${s.time?(' @ '+s.time):''}${s.wh?(' from '+String(s.wh).toUpperCase()):''}:
 
 ${s.pos||''}
 
@@ -22657,11 +22756,11 @@ function icEmailHtml(){
   return `<div style="font-family:'Pretendard Variable',Pretendard,Arial,sans-serif;max-width:640px;margin:0 auto;color:#111;font-size:13px;">
     <table width="100%" cellpadding="0" cellspacing="0" style="background:#0f2a4a;"><tr>
       <td style="padding:12px 20px;"><span style="color:#fff;font-size:22px;font-weight:900;letter-spacing:2px;font-family:Helvetica,Arial,sans-serif;">PACIFIC SPORTS</span></td>
-      <td style="padding:12px 20px;text-align:right;"><span style="color:#fff;font-size:20px;font-weight:800;letter-spacing:2px;">READY TO SHIP</span></td>
+      <td style="padding:12px 20px;text-align:right;"><span style="color:#fff;font-size:20px;font-weight:800;letter-spacing:2px;">READY TO SHIP</span>${s.wh?('<span style="display:inline-block;margin-left:10px;background:#fff;color:#0f2a4a;font-size:15px;font-weight:900;letter-spacing:1.5px;border-radius:5px;padding:2px 10px;">'+esc(String(s.wh).toUpperCase())+'</span>'):''}</td>
     </tr></table>
     <div style="padding:20px;background:#fff;border:1px solid #e5e7eb;border-top:none;">
       <p style="margin:0 0 4px;">${greet}</p>
-      <p style="font-size:12.5px;color:#374151;margin:0 0 16px;line-height:1.5;">The following purchase order(s) are packed and <strong>ready to ship${s.time?(' at '+esc(s.time)):''}</strong>. Please arrange pickup and provide the <strong>shipping label</strong> and <strong>BOL</strong> at your earliest convenience.</p>
+      <p style="font-size:12.5px;color:#374151;margin:0 0 16px;line-height:1.5;">The following purchase order(s) are packed and <strong>ready to ship${s.time?(' at '+esc(s.time)):''}</strong>${s.wh?(' from our <strong>'+esc(String(s.wh).toUpperCase())+'</strong> warehouse'):''}. Please arrange pickup and provide the <strong>shipping label</strong> and <strong>BOL</strong> at your earliest convenience.</p>
       <table width="100%" cellpadding="0" cellspacing="0" style="border:1px solid #e5e7eb;border-radius:6px;margin-bottom:16px;">
         <tr><td style="background:#f8fafc;padding:8px 12px;font-size:12px;font-weight:700;color:#0f2a4a;border-bottom:1px solid #e5e7eb;">Purchase Orders</td></tr>
         ${poRows}
@@ -22718,7 +22817,7 @@ async function icSend(){
   const to=toRaw.split(/[,;\s]+/).map(x=>x.trim()).filter(x=>x.includes('@'));
   if(!to.length){ showToast('⚠ Enter a valid customer email in the ✉️ To field'); const el=document.getElementById('ic-to'); if(el) el.focus(); return; }
   const nPo=String(s.pos||'').split('\n').map(x=>x.trim()).filter(Boolean).length;
-  const subj='Ready to Ship — '+(String(s.cust||'').trim()||'Pacific Sports')+(nPo?(' · '+nPo+' PO'):'');
+  const subj='Ready to Ship'+(s.wh?(' ('+String(s.wh).toUpperCase()+')'):'')+' — '+(String(s.cust||'').trim()||'Pacific Sports')+(nPo?(' · '+nPo+' PO'):'');
   if(!confirm('✉️ Send this "Ready to Ship" email now?\n\nTo: '+to.join(', ')+'\nSubject: '+subj)) return;
   const btn=document.getElementById('ic-send-btn'); if(btn){ btn.disabled=true; btn.textContent='Sending…'; }
   try{
@@ -23136,7 +23235,7 @@ async function submitBatchShip(){
     }
     try{
       const r = await sbFetch('/rest/v1/pr_orders?base=eq.'+encodeURIComponent(base), {method:'PATCH', headers:{Prefer:'return=minimal'}, body:JSON.stringify({pl:rec.pl, inv:rec.inv, meta:rec.meta, updated_at:new Date().toISOString()})});
-      if(r.ok){ okCnt++; shipped.push({base:base, wh:bs.wh}); logHist(rec.base, 'Batch shipped — ' + bs.wh + ' (' + rec.pl[bs.wh].serial + ')'); if(em && em.includes('@')) sendQueue.push({rec, em}); }
+      if(r.ok){ okCnt++; shipped.push({base:base, wh:bs.wh}); tdClearDone(base, bs.wh); logHist(rec.base, 'Batch shipped — ' + bs.wh + ' (' + rec.pl[bs.wh].serial + ')'); if(em && em.includes('@')) sendQueue.push({rec, em}); }
       else fails.push(base);
     }catch(e){ fails.push(base); }
   }
