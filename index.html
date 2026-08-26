@@ -162,7 +162,7 @@ body.narrow main{max-width:1100px;}
   </span>
   <select id="lang-sel" onchange="setLang(this.value)" style="font-size:11px;padding:3px 6px;border-radius:5px;border:none;background:#1d3f66;color:#fff;"><option value="ko">한국어</option><option value="en">English</option><option value="es">Español</option></select>
   <button id="wide-btn" class="btn btn-sm" onclick="toggleWide()" title="화면 넓게 / 좁게 — 기본은 넓게 (이 브라우저에만 저장돼)" style="padding:2px 8px;font-size:10px;background:#1d3f66;color:#cfe0f2;border-color:#2b5384;">↔ Wide</button>
-  <span id="app-ver" style="font-size:10px;color:#9fb8d4;">v834</span>
+  <span id="app-ver" style="font-size:10px;color:#9fb8d4;">v835</span>
 </div>
 <script>
 // ↔ 넓게 보기 — 브라우저마다 따로 저장 (v793)
@@ -19003,6 +19003,96 @@ async function trManualLine(pid){
   trRenderPallets();
   await trSaveDraftLines();
 }
+/* ── 입력칸 목록 (한 개만 떠 있는다) ─────────────────────────── */
+let _cbo = null;
+function cboItems(field, l){
+  const st = String((l&&l.style)||'').trim();
+  if(field==='style') return (typeof skuStyles==='function' && skuLoaded) ? skuStyles() : [];
+  if(field==='size')  return (st && typeof bxStyleSizes==='function') ? bxStyleSizes(st) : [];
+  if(!st) return [];
+  return [...new Set((typeof skuColors==='function'?skuColors(st):[]).map(c=>String(c).toUpperCase()))].sort();
+}
+function cboClose(){
+  if(_cbo && _cbo.el && _cbo.el.parentNode) _cbo.el.parentNode.removeChild(_cbo.el);
+  _cbo = null;
+}
+function cboOpen(inp, field, pid, li){
+  cboClose();
+  const p = (typeof _shipPallets!=='undefined'?_shipPallets:[]).find(x=>x.id===pid);
+  const l = p && p.lines[li]; if(!l) return;
+  const all = cboItems(field, l);
+  const el = document.createElement('div');
+  el.id = 'cbo-pop';
+  el.style.cssText = 'position:fixed;z-index:2000;background:#fff;border:1px solid #cbd5e1;border-radius:8px;'
+    + 'box-shadow:0 10px 28px rgba(15,23,42,.22);max-height:230px;overflow-y:auto;min-width:150px;font-size:12px;';
+  el.onmousedown = e=>e.preventDefault();          // blur 로 닫히기 전에 클릭이 먹게
+  document.body.appendChild(el);
+  _cbo = { el, inp, field, pid, li, all, idx:-1 };
+  cboFilter();
+}
+function cboPos(){
+  if(!_cbo) return;
+  const r = _cbo.inp.getBoundingClientRect();
+  _cbo.el.style.left = Math.max(6, Math.min(r.left, window.innerWidth - 220)) + 'px';
+  _cbo.el.style.minWidth = Math.max(150, r.width) + 'px';
+  const below = window.innerHeight - r.bottom;
+  if(below < 150 && r.top > 170){ _cbo.el.style.top = ''; _cbo.el.style.bottom = (window.innerHeight - r.top + 3) + 'px'; }
+  else { _cbo.el.style.bottom = ''; _cbo.el.style.top = (r.bottom + 3) + 'px'; }
+}
+function cboFilter(){
+  if(!_cbo) return;
+  const q = String(_cbo.inp.value||'').trim().toUpperCase();
+  let list = _cbo.all;
+  if(q){
+    const starts = list.filter(x=>String(x).toUpperCase().indexOf(q) === 0);
+    const has    = list.filter(x=>String(x).toUpperCase().indexOf(q) > 0);
+    list = starts.concat(has);                     // 앞에서부터 맞는 것이 위로
+  }
+  _cbo.list = list.slice(0, 60);
+  if(_cbo.idx >= _cbo.list.length) _cbo.idx = _cbo.list.length - 1;
+  if(!_cbo.list.length){
+    const why = (_cbo.field !== 'style' && !String((( _shipPallets.find(x=>x.id===_cbo.pid)||{}).lines[_cbo.li]||{}).style||'').trim())
+      ? 'Enter the style first'
+      : (q ? 'No match — it will be checked when you leave the box' : 'Nothing on file for this style');
+    _cbo.el.innerHTML = '<div style="padding:9px 11px;color:#94a3b8;">' + esc(why) + '</div>';
+    cboPos(); return;
+  }
+  _cbo.el.innerHTML = _cbo.list.map((x,i)=>{
+    const t = String(x).toUpperCase();
+    const at = q ? t.indexOf(q) : -1;
+    const html = at >= 0
+      ? esc(t.slice(0,at)) + '<b style="color:#0f766e;">' + esc(t.slice(at, at+q.length)) + '</b>' + esc(t.slice(at+q.length))
+      : esc(t);
+    return '<div data-i="' + i + '" onclick="cboPick(' + i + ')" style="padding:5px 11px;cursor:pointer;white-space:nowrap;'
+      + (i===_cbo.idx ? 'background:#e0f2fe;font-weight:800;' : '') + '">' + html + '</div>';
+  }).join('');
+  cboPos();
+}
+function cboMove(d){
+  if(!_cbo || !_cbo.list || !_cbo.list.length) return;
+  _cbo.idx = Math.max(0, Math.min(_cbo.list.length - 1, _cbo.idx + d));
+  cboFilter();
+  const row = _cbo.el.querySelector('[data-i="' + _cbo.idx + '"]');
+  if(row && row.scrollIntoView) row.scrollIntoView({block:'nearest'});
+}
+function cboPick(i){
+  if(!_cbo) return;
+  const v = _cbo.list[(i==null?_cbo.idx:i)];
+  if(v == null) return;
+  const { field, pid, li } = _cbo;
+  cboClose();
+  trManualEdit(pid, li, field, String(v));         // 안에서 다시 그린다
+}
+function cboKey(e, inp, field, pid, li){
+  if(!_cbo){ if(e.key==='ArrowDown'){ cboOpen(inp, field, pid, li); e.preventDefault(); } return; }
+  if(e.key==='ArrowDown'){ cboMove(1); e.preventDefault(); }
+  else if(e.key==='ArrowUp'){ cboMove(-1); e.preventDefault(); }
+  else if(e.key==='Enter'){ if(_cbo.idx>=0){ cboPick(); e.preventDefault(); } else cboClose(); }
+  else if(e.key==='Escape'){ cboClose(); e.stopPropagation(); }   // Esc 로 모달까지 닫히지 않게
+  else if(e.key==='Tab'){ cboClose(); }
+}
+window.addEventListener('scroll', ()=>{ if(_cbo) cboClose(); }, true);
+window.addEventListener('resize', ()=>{ if(_cbo) cboPos(); });
 function trManualEdit(pid, li, field, val){
   const p = _shipPallets.find(x=>x.id===pid); if(!p || !p.lines[li]) return;
   p.lines[li][field] = (field==='boxes'||field==='ppb') ? (parseInt(val)||0) : String(val).trim().toUpperCase();
@@ -19099,8 +19189,8 @@ function trRenderPallets(){
   const _hint = document.getElementById('ship-hint'); if(_hint) _hint.style.display = _shipPallets.length ? 'none' : '';
   // 사이즈 정렬 (in-place): 재고 라인은 스타일→칼라→사이즈, 수동(manual) 라인은 맨 뒤 원래 순서 유지
   _shipPallets.forEach(p=>{ if(Array.isArray(p.lines)) p.lines.sort((a,b)=>{ const am=a.is_manual?1:0, bm=b.is_manual?1:0; if(am!==bm) return am-bm; if(am) return 0; return String(a.style||'').localeCompare(String(b.style||'')) || bxBaseColor(String(a.color||'').toUpperCase()).localeCompare(bxBaseColor(String(b.color||'').toUpperCase())) || bxSizeCmp(a.size,b.size); }); });
-  el.innerHTML = (skuLoaded ? '<datalist id="trm-styles">' + skuStyles().map(x=>'<option value="'+esc(x)+'">').join('') + '</datalist>' : '')
-    + trPbBarHtml() + _shipPallets.map(p=>{
+  cboClose();                                        // 다시 그리면 떠 있던 목록은 닫는다 (v835)
+  el.innerHTML = trPbBarHtml() + _shipPallets.map(p=>{
     const _pOrders = ((_shipMeta&&_shipMeta.orderShip)||[]).filter(o=>o.pallet===p.label);
     const pOB = _pOrders.reduce((s,o)=>s+(o.boxes||0),0);
     const pOP = _pOrders.reduce((s,o)=>s+(o.pcs||0),0);
@@ -19115,12 +19205,18 @@ function trRenderPallets(){
         const vTag = (!l.is_manual && vl) ? ` <span style="font-size:9px;font-weight:800;color:#7c3aed;">${esc(vl)}</span>` : '';
         if(l.is_manual){
           return `<tr style="background:#fef3c7;">
-          <td style="padding:4px 6px;"><input class="fi" list="trm-styles" value="${esc(l.style||'')}" placeholder="Style" onchange="trManualEdit('${p.id}',${li},'style',this.value)" style="width:64px;font-size:11px;padding:3px 5px;"></td>
-          <td style="padding:4px 6px;white-space:nowrap;"><input class="fi" list="trm-c-${p.id}-${li}" value="${esc(l.color||'')}" placeholder="Color" onchange="trManualEdit('${p.id}',${li},'color',this.value)" style="width:130px;font-size:11px;padding:3px 5px;text-transform:uppercase;">
-            <datalist id="trm-c-${p.id}-${li}">${(skuLoaded&&l.style?skuColors(String(l.style).trim()):[]).map(c=>'<option value="'+esc(String(c).toUpperCase())+'">').join('')}</datalist>
+          <td style="padding:4px 6px;"><input class="fi" value="${esc(l.style||'')}" placeholder="Style" autocomplete="off"
+            onfocus="cboOpen(this,'style','${p.id}',${li})" oninput="cboFilter()" onkeydown="cboKey(event,this,'style','${p.id}',${li})" onblur="setTimeout(cboClose,120)"
+            onchange="trManualEdit('${p.id}',${li},'style',this.value)" style="width:64px;font-size:11px;padding:3px 5px;"></td>
+          <td style="padding:4px 6px;white-space:nowrap;"><input class="fi" value="${esc(l.color||'')}" placeholder="Color" autocomplete="off"
+            title="Click to see every color on file for this style, or just type — matches narrow as you go"
+            onfocus="cboOpen(this,'color','${p.id}',${li})" oninput="cboFilter()" onkeydown="cboKey(event,this,'color','${p.id}',${li})" onblur="setTimeout(cboClose,120)"
+            onchange="trManualEdit('${p.id}',${li},'color',this.value)" style="width:130px;font-size:11px;padding:3px 5px;text-transform:uppercase;">
             <div style="margin-top:2px;">${trManValHtml(p.id, li, l)}</div></td>
-          <td style="padding:4px 6px;white-space:nowrap;"><input class="fi" list="trm-s-${p.id}-${li}" value="${esc(l.size||'')}" placeholder="Size" onchange="trManualEdit('${p.id}',${li},'size',this.value)" style="width:48px;font-size:11px;padding:3px 5px;text-transform:uppercase;text-align:center;">
-            <datalist id="trm-s-${p.id}-${li}">${(l.style&&typeof bxStyleSizes==='function'?bxStyleSizes(String(l.style).trim()):[]).map(z=>'<option value="'+esc(z)+'">').join('')}</datalist>
+          <td style="padding:4px 6px;white-space:nowrap;"><input class="fi" value="${esc(l.size||'')}" placeholder="Size" autocomplete="off"
+            title="Click to see the sizes this style runs"
+            onfocus="cboOpen(this,'size','${p.id}',${li})" oninput="cboFilter()" onkeydown="cboKey(event,this,'size','${p.id}',${li})" onblur="setTimeout(cboClose,120)"
+            onchange="trManualEdit('${p.id}',${li},'size',this.value)" style="width:48px;font-size:11px;padding:3px 5px;text-transform:uppercase;text-align:center;">
             <div style="margin-top:2px;text-align:center;">${trManSizeHtml(l)}</div></td>
           <td style="text-align:center;color:#92400e;font-size:10px;font-weight:800;">Manual</td>
           <td style="padding:4px 6px;text-align:center;"><input class="fi" type="number" min="0" value="${Number(l.boxes)||0}" onchange="trManualEdit('${p.id}',${li},'boxes',this.value)" style="width:56px;font-size:11px;padding:3px 5px;text-align:center;font-weight:800;"></td>
