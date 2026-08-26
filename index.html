@@ -162,7 +162,7 @@ body.narrow main{max-width:1100px;}
   </span>
   <select id="lang-sel" onchange="setLang(this.value)" style="font-size:11px;padding:3px 6px;border-radius:5px;border:none;background:#1d3f66;color:#fff;"><option value="ko">한국어</option><option value="en">English</option><option value="es">Español</option></select>
   <button id="wide-btn" class="btn btn-sm" onclick="toggleWide()" title="화면 넓게 / 좁게 — 기본은 넓게 (이 브라우저에만 저장돼)" style="padding:2px 8px;font-size:10px;background:#1d3f66;color:#cfe0f2;border-color:#2b5384;">↔ Wide</button>
-  <span id="app-ver" style="font-size:10px;color:#9fb8d4;">v828</span>
+  <span id="app-ver" style="font-size:10px;color:#9fb8d4;">v829</span>
 </div>
 <script>
 // ↔ 넓게 보기 — 브라우저마다 따로 저장 (v793)
@@ -18383,6 +18383,7 @@ async function trBuilderOpen(existingId, route){
   if(!bxLoaded) await bxFetchStore();
   if(!skuLoaded) await skuFetch();
   _shipId = null; _shipNo = null; _shipMeta = {}; _shipPallets = [];
+  _hbGaveUp = false;                                 // 새로 열면 다시 시도 (v829)
   _shipRoute = TR_ROUTES[route] ? route : 'SC2CA';
   if(existingId){
     const rec = await trGet(existingId);
@@ -18563,8 +18564,6 @@ function binLabelCell(bin, sub){
        +   '<div style="font-size:' + fs + 'px;font-weight:900;line-height:1;letter-spacing:2px;color:#111;">' + esc(b) + '</div>'
        + '</div>'
        + (sub ? ('<div style="text-align:center;font-size:24px;font-weight:800;color:#b45309;word-break:break-word;">' + esc(String(sub).substring(0,60)) + '</div>') : '')
-       + '<div style="border-top:2px solid #d1d5db;margin:10px 0 6px;"></div>'
-       + '<div style="text-align:center;font-size:15px;font-weight:700;color:#666;letter-spacing:1px;">epacificsports.com</div>'
        + '</div>';
 }
 async function trBinLabelPrint(pid){
@@ -18595,15 +18594,12 @@ async function hbPeek(){
 }
 async function trAddPallet(){
   const p = { id:'p_'+Math.random().toString(36).slice(2,9), label:'Pallet '+(_shipPallets.length+1), lines:[] };
-  // 3rd party 로 보내는 길이면 팔레트마다 새 H bin 을 지금 매긴다 (v827)
-  if(trDstKind(_shipRoute) === '3P'){
-    const nb = await hbTake();
-    if(nb) p.hbin = 'H' + nb;
-    else showToast('⚠ Could not get the next H bin number — enter it by hand when receiving');
-  }
   _shipPallets.push(p);
-  trRenderPallets();
-  if(p.hbin) showToast('🏭 ' + p.label + ' → ' + p.hbin);
+  trRenderPallets();                                 // 안에서 trEnsureBins 가 번호를 채운다 (v829)
+  if(trDstKind(_shipRoute) === '3P'){
+    await trEnsureBins();
+    if(p.hbin) showToast('🏭 ' + p.label + ' → ' + p.hbin);
+  }
 }
 async function trDelPallet(pid){
   const p = _shipPallets.find(x=>x.id===pid); if(!p) return;
@@ -19008,6 +19004,37 @@ function trRenderPallets(){
   }).join('');
   trRenderOrderShip();
   trSummary();
+  trEnsureBins();                                    // 번호 없는 3P 팔레트 채우기 (v829)
+}
+/* 3rd party 로 가는 팔레트는 전부 H 번호를 갖게 한다 — 어느 경로로 만들어졌든.
+   ① 저장된 라인에 이미 번호가 실려 있으면 그걸 되찾는다 (초안 다시 열기)
+   ② 없으면 서버에서 새로 하나 받는다
+   서버를 못 읽으면 그 자리에서 포기한다 — 렌더할 때마다 다시 두드리지 않게. */
+let _hbBusy = false, _hbGaveUp = false;
+async function trEnsureBins(){
+  if(_hbBusy || _hbGaveUp) return 0;
+  if(typeof trDstKind!=='function' || trDstKind(_shipRoute) !== '3P') return 0;
+  const need = (_shipPallets||[]).filter(p=>p && !p.hbin);
+  if(!need.length) return 0;
+  _hbBusy = true;
+  let got = 0, failed = false;
+  try{
+    for(const p of need){
+      const saved = (p.lines||[]).map(l=>String((l&&l.ca_bin)||'').trim().toUpperCase())
+                                .find(b=>/^H\d+$/.test(b));
+      if(saved){ p.hbin = saved; got++; continue; }   // 이미 나간 번호 — 다시 받지 않는다
+      const nb = await hbTake();
+      if(!nb){ failed = true; break; }
+      p.hbin = 'H' + nb; got++;
+    }
+  }catch(e){ failed = true; }
+  _hbBusy = false;
+  if(failed){
+    _hbGaveUp = true;
+    showToast('⚠ Could not get the next H bin number — enter it by hand when receiving');
+  }
+  if(got) trRenderPallets();
+  return got;
 }
 function trSummary(){
   const set = (id,v)=>{ const e=document.getElementById(id); if(e) e.textContent = v; };
