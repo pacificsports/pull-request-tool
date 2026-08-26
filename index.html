@@ -162,7 +162,7 @@ body.narrow main{max-width:1100px;}
   </span>
   <select id="lang-sel" onchange="setLang(this.value)" style="font-size:11px;padding:3px 6px;border-radius:5px;border:none;background:#1d3f66;color:#fff;"><option value="ko">한국어</option><option value="en">English</option><option value="es">Español</option></select>
   <button id="wide-btn" class="btn btn-sm" onclick="toggleWide()" title="화면 넓게 / 좁게 — 기본은 넓게 (이 브라우저에만 저장돼)" style="padding:2px 8px;font-size:10px;background:#1d3f66;color:#cfe0f2;border-color:#2b5384;">↔ Wide</button>
-  <span id="app-ver" style="font-size:10px;color:#9fb8d4;">v794</span>
+  <span id="app-ver" style="font-size:10px;color:#9fb8d4;">v795</span>
 </div>
 <script>
 // ↔ 넓게 보기 — 브라우저마다 따로 저장 (v793)
@@ -22150,16 +22150,48 @@ function kpiGoReturn(base, ra){
   if(typeof openReturnDetail==='function') openReturnDetail(base, ra);
   else if(typeof openReturnModal==='function') openReturnModal(base);
 }
+// 🖨 Open Orders 줄 안에서 바로 프린트 (v795) — Saved 목록의 버튼과 같은 동작
+function kpiDocBtn(base, wh, kind, bg, label, title){
+  return '<button class="btn btn-sm" style="background:'+bg+';color:#fff;border-color:'+bg+';font-size:10px;padding:2px 7px;"'
+    + ' title="'+esc(title||'')+'"'
+    + ' onclick="event.stopPropagation();kpiDocGo(\''+esc(base)+'\',\''+wh+'\',\''+kind+'\')">'+label+'</button>';
+}
+function kpiDocGo(base, wh, kind){
+  if(kind==='full'){
+    const rec = (savedCache||[]).find(x=>x.base===base);
+    if(rec && typeof holdBlocked==='function' && holdBlocked(rec)){ showToast('🔒 Credit Hold — approve before proceeding'); return; }
+    openBoxLabelForRecWh(base, wh, 'full');
+    return;
+  }
+  docBtnClick(base, wh, kind);
+}
+function kpiDocBtns(s){
+  const whs = (s.whs||[]).filter(w=> w!=='BO' && w!=='NA');
+  if(!whs.length) return '';
+  const mpAll = (s.meta && s.meta._printed) || {};
+  const html = whs.map(w=>{
+    const mp = mpAll[w] || {};
+    const prC = mp.pr ? '#16a34a' : (w==='CA' ? '#c2410c' : '#1d4ed8');
+    const lbC = mp.label ? '#16a34a' : '#7c3aed';
+    return '<span style="display:inline-flex;gap:4px;align-items:center;">'
+      + (whs.length>1 ? '<span style="font-family:Consolas,monospace;font-size:9px;font-weight:800;color:#64748b;">'+w+'</span>' : '')
+      + kpiDocBtn(s.base, w, 'pr',    prC, '🖨 PR',   w+' Pull Request')
+      + kpiDocBtn(s.base, w, 'label', lbC, '🏷 Box',  w+' Box Label')
+      + kpiDocBtn(s.base, w, 'full',  '#0f766e', '🏷 Full', w+' Full Box label (2x1 stock)')
+      + '</span>';
+  }).join('<span style="color:#e2e8f0;">|</span>');
+  return '<div style="display:flex;gap:6px;align-items:center;flex-wrap:wrap;margin-top:6px;">'+html+'</div>';
+}
 function kpiOpenOrders(rushOnly){
   const list = (savedCache||[]).filter(s=>{
     if(typeof recIsDone==='function' && recIsDone(s)) return false;
     if(rushOnly && !(s.meta && s.meta.urgent)) return false;
     return true;
   });
+  // 📋 Saved Pull Requests 와 같은 순서 — 최근 받은 오더가 맨 위 (v795)
   list.sort((a,b)=>{
-    const ra = (a.meta&&a.meta.urgent)?0:1, rb = (b.meta&&b.meta.urgent)?0:1;
-    if(ra!==rb) return ra-rb;
-    return String(a.base) < String(b.base) ? -1 : 1;
+    const ka = String((a.meta&&a.meta.date)||a.savedAt||''), kb = String((b.meta&&b.meta.date)||b.savedAt||'');
+    return kb.localeCompare(ka) || String(b.savedAt||'').localeCompare(String(a.savedAt||''));
   });
   const rows = list.map(s=>{
     const st = (typeof recStatus==='function') ? recStatus(s) : {label:'', color:'#64748b', bg:'#f1f5f9'};
@@ -22180,13 +22212,14 @@ function kpiOpenOrders(rushOnly){
       +     ((m.urgent)?'<span style="color:#dc2626;">🔥 </span>':'') + esc(m.cust||'(no name)')
       +     ' <span style="color:#64748b;font-weight:600;">· PO '+esc(m.po||'—')+'</span></div>'
       +   '<div style="font-size:11px;color:#94a3b8;margin-top:3px;display:flex;gap:6px;align-items:center;flex-wrap:wrap;">'
-      +     '<span style="font-family:Consolas,monospace;">'+esc(String(s.base||'').slice(0,10))+'</span>' + (chips?'<span>'+chips+'</span>':'') + '</div></div>'
+      +     '<span style="font-family:Consolas,monospace;">'+esc(String(s.base||'').slice(0,10))+'</span>' + (chips?'<span>'+chips+'</span>':'') + '</div>'
+      +   kpiDocBtns(s) + '</div>'
       + '<span style="font-size:10px;font-weight:800;color:'+st.color+';background:'+st.bg+';border-radius:20px;padding:3px 9px;white-space:nowrap;">'+esc(st.label||'')+'</span>'
       + '<span style="font-family:Consolas,monospace;font-size:12px;font-weight:700;min-width:88px;text-align:right;">$'+amt.toLocaleString(undefined,{maximumFractionDigits:0})+'</span>'
       + '<span style="font-size:12px;font-weight:800;color:#1d4ed8;">›</span></div>';
   }).join('') || '<div style="padding:24px;text-align:center;color:#94a3b8;font-size:13px;">진행 중인 오더가 없어 🎉</div>';
   kpiShell('modal-kpiopen', (rushOnly?'🔥 Rush':'📋 Open Orders')+' ('+list.length+')', rushOnly?'#dc2626':'#1d4ed8', rows,
-           '줄을 누르면 그 오더가 바로 열려 — 아래로 스크롤할 필요 없어. 🔥 급한 건이 맨 위.');
+           '줄을 누르면 그 오더가 열려. 프린트는 줄 안의 버튼으로 바로 — 최근 받은 오더가 맨 위 (Saved Pull Requests 와 같은 순서).');
 }
 function kpiPendingReturns(){
   const rows0 = [];
