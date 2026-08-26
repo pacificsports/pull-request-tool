@@ -162,7 +162,7 @@ body.narrow main{max-width:1100px;}
   </span>
   <select id="lang-sel" onchange="setLang(this.value)" style="font-size:11px;padding:3px 6px;border-radius:5px;border:none;background:#1d3f66;color:#fff;"><option value="ko">한국어</option><option value="en">English</option><option value="es">Español</option></select>
   <button id="wide-btn" class="btn btn-sm" onclick="toggleWide()" title="화면 넓게 / 좁게 — 기본은 넓게 (이 브라우저에만 저장돼)" style="padding:2px 8px;font-size:10px;background:#1d3f66;color:#cfe0f2;border-color:#2b5384;">↔ Wide</button>
-  <span id="app-ver" style="font-size:10px;color:#9fb8d4;">v802</span>
+  <span id="app-ver" style="font-size:10px;color:#9fb8d4;">v803</span>
 </div>
 <script>
 // ↔ 넓게 보기 — 브라우저마다 따로 저장 (v793)
@@ -9105,32 +9105,109 @@ function spScOf(key){ const p = String(key).split('|'); return p[0] + '|' + p[1]
 
 function spBannerHtml(){
   if(!_spInfo) return '';
-  const i = _spInfo, rows = [];
-  if((i.badPhotos||[]).length) rows.push('<div style="color:#b91c1c;font-weight:800;">⚠ '+i.badPhotos.length+' photo(s) unusable — '+esc(String(i.badPhotos[0]))+'.<br>A shot from too far away comes back with the <b>wrong colour</b>, not just a blank. Retake with the pallet filling the frame.</div>');
-  if(i.unread) rows.push('<div style="color:#b45309;font-weight:800;">⚠ '+i.unread+' box(es) unreadable — glare or shrink wrap over the label. Shoot that side again from another angle, or count them with ＋.</div>');
-  if((i.sizeCheck||[]).length) rows.push('<div style="color:#b45309;font-weight:800;">⚠ size split not confirmed on: '+i.sizeCheck.map(esc).join(', ')+' — total is right but check the sizes by eye.</div>');
-  if((i.unsure||[]).length) rows.push('<div style="color:#b45309;font-weight:800;">⚠ not fully sure about: '+i.unsure.map(esc).join(', ')+' — worth a second look.</div>');
-  if((i.ctnDup||[]).length) rows.push('<div style="color:#b45309;font-weight:800;">⚠ carton no. '+i.ctnDup.map(esc).join(', ')+' appeared twice — counted once.</div>');
-  if(i.noCtn) rows.push('<div style="color:#b45309;font-weight:800;">⚠ '+i.noCtn+' box(es) had no readable carton number — those cannot be matched to a specific box.</div>');
+  const i = _spInfo;
+  const photo = (_scan && _scan.photo) || {};
+  const seenTot = (i.total||0) + (i.unread||0);
+  const expMap = {};
+  ((_scan&&_scan.exp)||[]).forEach(e=>{ expMap[scanKeyOf(e.style,e.color,e.size)] = Number(e.qty)||0; });
+  const expTot = Object.keys(expMap).reduce((a,k)=>a+expMap[k], 0);
+  const headBad = expTot && seenTot !== expTot;
+
+  // ── 표: AI 가 읽은 줄 + (오더에 있는데 사진에 하나도 안 나온 줄)
+  //    앞의 것은 "내가 이걸 읽었다", 뒤의 것은 "이건 못 봤다" — 둘 다 눈으로 확인할 대상이다.
+  const keys = {};
+  Object.keys(photo).forEach(k=>{ if(Number(photo[k])>0) keys[k]=1; });
+  Object.keys(expMap).forEach(k=>{ if(expMap[k]>0) keys[k]=1; });
+  const rows = Object.keys(keys).map(k=>{
+    const p = String(k).split('|');
+    const got = Number(photo[k])||0, exp = Number(expMap[k])||0;
+    return { k, style:p[0]||'', color:p[1]||'', size:p[2]||'', got, exp,
+             st: (exp===0) ? 'extra' : (got===0 ? 'none' : (got===exp ? 'ok' : (got<exp ? 'short' : 'over'))) };
+  });
+  const RANK = { extra:0, none:1, over:2, short:3, ok:4 };
+  rows.sort((a,b)=> (RANK[a.st]-RANK[b.st])
+    || String(a.style).localeCompare(String(b.style),undefined,{numeric:true})
+    || String(a.color).localeCompare(String(b.color))
+    || bxSizeCmp(a.size,b.size));
+
+  const TONE = {
+    ok:    {bg:'#f0fdf4', fg:'#15803d', tag:'✓'},
+    short: {bg:'#fffbeb', fg:'#b45309', tag:''},
+    over:  {bg:'#fef2f2', fg:'#b91c1c', tag:''},
+    none:  {bg:'#fef2f2', fg:'#b91c1c', tag:'not in photos'},
+    extra: {bg:'#fff7ed', fg:'#c2410c', tag:'not on this order'}
+  };
+  const body = rows.map(r=>{
+    const t = TONE[r.st];
+    let note = t.tag;
+    if(r.st==='short') note = r.exp - r.got + ' short';
+    if(r.st==='over')  note = '+' + (r.got - r.exp);
+    return '<tr style="background:'+t.bg+';">'
+      + '<td style="padding:4px 7px;font-weight:800;font-family:Consolas,monospace;">'+esc(r.style)+'</td>'
+      + '<td style="padding:4px 7px;">'+esc(r.color)+'</td>'
+      + '<td style="padding:4px 7px;text-align:center;font-weight:700;">'+esc(r.size)+'</td>'
+      + '<td style="padding:4px 7px;text-align:center;font-weight:800;font-family:Consolas,monospace;color:'+t.fg+';">'+r.got+'</td>'
+      + '<td style="padding:4px 7px;text-align:center;font-family:Consolas,monospace;color:#64748b;">'+(r.exp||'–')+'</td>'
+      + '<td style="padding:4px 7px;font-size:10.5px;font-weight:800;color:'+t.fg+';white-space:nowrap;">'+esc(note)+'</td>'
+      + '</tr>';
+  }).join('');
+  const table = rows.length
+    ? '<div style="overflow-x:auto;margin-top:8px;border-radius:9px;border:1px solid #e2e8f0;">'
+      + '<table style="width:100%;font-size:11.5px;border-collapse:collapse;">'
+      + '<thead><tr style="background:#0f2a4a;color:#fff;">'
+      +   '<th style="padding:4px 7px;text-align:left;">Style</th>'
+      +   '<th style="padding:4px 7px;text-align:left;">Color</th>'
+      +   '<th style="padding:4px 7px;">Sz</th>'
+      +   '<th style="padding:4px 7px;">📸</th>'
+      +   '<th style="padding:4px 7px;">Order</th>'
+      +   '<th style="padding:4px 7px;text-align:left;"></th>'
+      + '</tr></thead><tbody>'+body+'</tbody></table></div>'
+    : '';
+
+  // ── 경고: 세로로 쌓지 않고 한 줄짜리 뱃지로. 자세한 설명은 접는다.
+  const chip = (txt, fg, bg, bd) => '<span style="display:inline-block;font-size:10.5px;font-weight:800;color:'+fg+';background:'+bg+';border:1px solid '+bd+';border-radius:20px;padding:2px 9px;margin:2px 4px 0 0;white-space:nowrap;">'+txt+'</span>';
+  const chips = [];
+  if(headBad) chips.push(chip((seenTot>expTot?'⚠ '+(seenTot-expTot)+' too many':'⚠ '+(expTot-seenTot)+' missing'), '#b91c1c', '#fef2f2', '#fca5a5'));
+  if((i.badPhotos||[]).length) chips.push(chip('⚠ '+i.badPhotos.length+' photo unusable', '#b91c1c', '#fef2f2', '#fca5a5'));
+  if(i.unread)                 chips.push(chip('⚠ '+i.unread+' unreadable', '#b45309', '#fffbeb', '#fcd34d'));
+  if((i.unsure||[]).length)    chips.push(chip('⚠ '+i.unsure.length+' unsure', '#b45309', '#fffbeb', '#fcd34d'));
+  if((i.ctnDup||[]).length)    chips.push(chip('⚠ '+i.ctnDup.length+' dup ctn', '#b45309', '#fffbeb', '#fcd34d'));
+  if(i.noCtn)                  chips.push(chip('⚠ '+i.noCtn+' no ctn#', '#b45309', '#fffbeb', '#fcd34d'));
+  if((i.ctnList||[]).length)   chips.push(chip('🏷 '+i.ctnList.length+' ctn# read', '#166534', '#f0fdf4', '#86efac'));
+  if(i.qrTotal && i.total)     chips.push(chip((i.qrTotal===i.total?'✓':'⚠')+' QR '+i.qrTotal+' vs 📸 '+i.total, (i.qrTotal===i.total?'#166534':'#b91c1c'), (i.qrTotal===i.total?'#f0fdf4':'#fef2f2'), (i.qrTotal===i.total?'#86efac':'#fca5a5')));
+
+  const det = [];
+  if((i.badPhotos||[]).length) det.push('⚠ '+i.badPhotos.length+' photo(s) unusable — '+esc(String(i.badPhotos[0]))+'. A shot from too far away comes back with the <b>wrong colour</b>, not just a blank. Retake with the pallet filling the frame.');
+  if(i.unread)                 det.push('⚠ '+i.unread+' box unreadable — glare or shrink wrap over the label. Shoot that side again from another angle, or count them with ＋ on the row below.');
+  if((i.unsure||[]).length)    det.push('⚠ not fully sure about: '+i.unsure.map(esc).join(', ')+' — worth a second look.');
+  if((i.sizeCheck||[]).length) det.push('⚠ size split not confirmed on: '+i.sizeCheck.map(esc).join(', ')+' — total is right but check the sizes by eye.');
+  if((i.ctnDup||[]).length)    det.push('⚠ carton no. '+i.ctnDup.map(esc).join(', ')+' appeared twice — counted once.');
+  if(i.noCtn)                  det.push('⚠ '+i.noCtn+' box had no readable carton number — those cannot be matched to a specific box.');
   if((i.ctnList||[]).length){
     const cl = i.ctnList.slice().sort();
-    const shown = cl.length > 12 ? (cl.slice(0,6).join(', ') + ' … ' + cl.slice(-3).join(', ')) : cl.join(', ');
-    rows.push('<div style="color:#166534;font-weight:800;">🏷 carton no. read on '+cl.length+' of '+((i.total||0)+(i.unread||0))+' box'
-      + '<div style="font-weight:600;color:#475569;font-family:Consolas,monospace;font-size:10.5px;margin-top:2px;">'+esc(shown)+'</div></div>');
+    det.push('🏷 carton no. read on '+cl.length+' of '+seenTot+' box<br><span style="font-family:Consolas,monospace;font-size:10.5px;color:#475569;">'+esc(cl.join(', '))+'</span>');
   }
-  if(i.qrTotal && i.total) rows.push('<div style="color:'+(i.qrTotal===i.total?'#166534':'#b91c1c')+';font-weight:800;">'+(i.qrTotal===i.total?'✓':'⚠')+' QR '+i.qrTotal+' box vs Photo '+i.total+' box'+(i.qrTotal===i.total?' — they agree.':' — they do NOT agree.')+'</div>');
-  const seenTot = (i.total||0) + (i.unread||0);
-  const expTot = ((_scan&&_scan.exp)||[]).reduce((a,e)=>a+(Number(e.qty)||0),0);
-  const headBad = expTot && seenTot !== expTot;
-  if(headBad) rows.unshift('<div style="color:#b91c1c;font-weight:800;">⚠ '+seenTot+' box visible in the photos but the list says '+expTot+' — '
-    + (seenTot>expTot ? (seenTot-expTot)+' too many.' : (expTot-seenTot)+' missing, or hidden behind the boxes you photographed.')+'</div>');
-  return '<div style="background:'+(headBad?'#fef2f2':'#faf5ff')+';border:1px solid '+(headBad?'#fca5a5':'#ddd6fe')+';border-radius:12px;padding:10px 12px;margin-bottom:10px;font-size:11.5px;line-height:1.6;">'
-    + '<div style="font-weight:800;color:'+(headBad?'#b91c1c':'#6d28d9')+';margin-bottom:4px;">📸 Photo read — '+i.total+' identified'
-    + (i.unread?' + '+i.unread+' unreadable':'') + ' = <b>'+seenTot+' box</b> seen in '+i.photos+' photo(s)'
-    + (expTot?' · list says '+expTot:'') + '</div>'
-    + (rows.join('') || '<div style="color:#166534;font-weight:800;">✓ Every label read cleanly and the sizes were confirmed.</div>')
-    + '<div style="margin-top:6px;"><button onclick="spOpen()" style="background:#7c3aed;color:#fff;border:none;border-radius:7px;padding:4px 10px;font-size:11px;font-weight:800;">Retake / re-read</button>'
-    + '<button onclick="spClear()" style="background:#e2e8f0;color:#334155;border:none;border-radius:7px;padding:4px 10px;font-size:11px;font-weight:800;margin-left:5px;">Clear photo count</button></div></div>';
+  const detail = det.length
+    ? '<div style="margin-top:7px;"><span onclick="spDetTgl()" style="font-size:11px;font-weight:800;color:#6d28d9;cursor:pointer;">Details <span id="sp-det-ar">▾</span></span>'
+      + '<div id="sp-det" style="display:none;margin-top:5px;font-size:11px;line-height:1.6;color:#7c2d12;">'+det.map(x=>'<div style="margin-bottom:3px;">'+x+'</div>').join('')+'</div></div>'
+    : '';
+
+  return '<div style="background:#fff;border:1.5px solid '+(headBad?'#fca5a5':'#ddd6fe')+';border-radius:12px;padding:11px 12px;margin-bottom:10px;font-size:11.5px;line-height:1.5;">'
+    + '<div style="display:flex;align-items:baseline;gap:8px;flex-wrap:wrap;">'
+    +   '<span style="font-size:13px;font-weight:800;color:'+(headBad?'#b91c1c':'#6d28d9')+';">📸 Photo read — '+seenTot+' box</span>'
+    +   '<span style="font-size:11px;color:#64748b;">from '+i.photos+' photo'+(i.photos===1?'':'s')+(expTot?(' · order says '+expTot):'')+'</span>'
+    + '</div>'
+    + (chips.length ? '<div style="margin-top:4px;">'+chips.join('')+'</div>' : '')
+    + table
+    + detail
+    + '<div style="margin-top:8px;"><button onclick="spOpen()" style="background:#7c3aed;color:#fff;border:none;border-radius:7px;padding:5px 11px;font-size:11px;font-weight:800;">Retake / re-read</button>'
+    + '<button onclick="spClear()" style="background:#e2e8f0;color:#334155;border:none;border-radius:7px;padding:5px 11px;font-size:11px;font-weight:800;margin-left:5px;">Clear photo count</button></div></div>';
+}
+function spDetTgl(){
+  const d=document.getElementById('sp-det'), a=document.getElementById('sp-det-ar');
+  if(!d) return; const open = d.style.display !== 'none';
+  d.style.display = open ? 'none' : 'block';
+  if(a) a.textContent = open ? '▾' : '▴';
 }
 function spClear(){ if(!_scan) return; _scan.photo = {}; _spInfo = null; _spImgs = []; scanRender(); }
 
