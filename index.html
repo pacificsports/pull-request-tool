@@ -162,7 +162,7 @@ body.narrow main{max-width:1100px;}
   </span>
   <select id="lang-sel" onchange="setLang(this.value)" style="font-size:11px;padding:3px 6px;border-radius:5px;border:none;background:#1d3f66;color:#fff;"><option value="ko">한국어</option><option value="en">English</option><option value="es">Español</option></select>
   <button id="wide-btn" class="btn btn-sm" onclick="toggleWide()" title="화면 넓게 / 좁게 — 기본은 넓게 (이 브라우저에만 저장돼)" style="padding:2px 8px;font-size:10px;background:#1d3f66;color:#cfe0f2;border-color:#2b5384;">↔ Wide</button>
-  <span id="app-ver" style="font-size:10px;color:#9fb8d4;">v801</span>
+  <span id="app-ver" style="font-size:10px;color:#9fb8d4;">v802</span>
 </div>
 <script>
 // ↔ 넓게 보기 — 브라우저마다 따로 저장 (v793)
@@ -8508,6 +8508,13 @@ function pchkPackOpen(){
   <div style="flex:1;background:#f1f5f9;padding:16px 14px;">
     <div style="max-width:520px;margin:0 auto;">
       <div id="pack-wh-tabs" style="display:flex;gap:8px;margin-bottom:10px;"></div>
+      <div style="background:#faf5ff;border:1.5px solid #ddd6fe;border-radius:12px;padding:10px 12px;margin-bottom:10px;">
+        <div style="font-size:11.5px;color:#5b21b6;font-weight:700;line-height:1.5;margin-bottom:8px;">Pallet in front of you and you don't know which order it is? Read it first — the matching PO gets found for you.</div>
+        <div style="display:flex;gap:8px;">
+          <button onclick="pfindStart('photo')" style="flex:1;background:#7c3aed;color:#fff;border:none;border-radius:10px;padding:13px;font-size:14.5px;font-weight:800;">📸 Photo → find PO</button>
+          <button onclick="pfindStart('scan')" style="flex:1;background:#0e7490;color:#fff;border:none;border-radius:10px;padding:13px;font-size:14.5px;font-weight:800;">📷 Scan → find PO</button>
+        </div>
+      </div>
       <div id="pack-ltl-actions" style="margin-bottom:10px;"></div>
       <input id="pack-q" placeholder="🔍 Search customer / PO #" autocomplete="off" oninput="pchkPackListDeb()" onkeydown="if(event.key==='Enter'){event.preventDefault();pchkPackList();}" style="width:100%;font-size:16px;padding:12px;border:2px solid #cbd5e1;border-radius:10px;box-sizing:border-box;margin-bottom:12px;">
       <div id="pack-list"><div style="color:#94a3b8;font-size:12px;padding:6px;">Loading…</div></div>
@@ -8958,6 +8965,7 @@ async function scanStart(mode, id){
 function scanStartOrder(base, wh, label){
   _scan = { mode:'PO', id:base, ref:label||base, title:'📦 Order '+(label||base),
     exp: scanExpOrder(base, wh), seen: new Map(), manual: {} };
+  pfindCarryInto([String(base)], wh);
   scanSession();
 }
 // 📷 /pic 에서 체크한 여러 PO 를 한 번에 스캔 대조. 기대 목록은 PO 들의 풀박스를 합쳐서 만든다.
@@ -8989,6 +8997,7 @@ async function scanStartSelected(){
   _scan = { mode:'PO', id:bases.join(','), ref:bases.length+' PO', wh, back:'BATCH',
     title:(M==='UPS'?'📦 UPS':'🚛 LTL')+' · '+bases.length+' PO · '+wh,
     exp:Object.values(m), seen:new Map(), manual:{} };
+  pfindCarryInto(bases, wh);
   scanSession();
 }
 function scanSession(){
@@ -9271,6 +9280,7 @@ function spCombine(A){
   _spInfo = { total, unread, badPhotos, sizeCheck:[], photos:_spImgs.length,
               ctnList, ctnDup, noCtn, unsure: [...new Set(unsure)],
               qrTotal: (_scan && _scan.seen) ? _scan.seen.size : 0 };
+  if(window._pfindMode){ const _e=document.getElementById('scan-photo'); if(_e) _e.remove(); pfindDone(); return; }
   spClose();
   showToast(total + ' box read from ' + _spImgs.length + ' photo(s)'
             + (ctnList.length ? ' · ' + ctnList.length + ' carton no.' : '')
@@ -9418,6 +9428,236 @@ function webOrderImport(id){
   try{ saveDraft(); }catch(e){}
   const m=document.getElementById('modal-weborders'); if(m) m.remove();
   showToast('🌐 '+woNum(o)+' 불러왔어 — 창고 확인하고 📦 P.BOX 지정한 뒤 저장해');
+}
+
+/* ═══════════ 🔎 이 팔레트가 어느 PO 인가 (v802) ═══════════
+   순서를 뒤집는다. PO 를 먼저 고르는 대신, 팔레트를 먼저 읽고 PO 를 찾는다.
+
+   라벨에 PO 번호가 안 찍혀 있다 — 그래서 "무슨 박스가 몇 개 있나" 로 맞춘다.
+   1368 BLACK M 한 박스는 열려있는 PO 세 개에 다 들어갈 수 있으니, 조합 전체로 본다:
+   가장 많은 박스를 먹는 PO 를 하나 고르고, 그만큼 빼고, 남은 박스로 다시 고른다.
+   (한 팔레트에 여러 PO 가 섞여 있는 경우가 이렇게 자연스럽게 풀린다.)
+
+   자동으로 확정하지 않는다. 체크만 해주고, 형이 Pack as LTL/UPS 로 들어가서
+   지금처럼 한 번 더 대조표를 보고 진행한다. 대신 읽은 결과를 그대로 물려주니
+   같은 팔레트를 두 번 찍을 일은 없다. */
+let _pfindRes = null;
+
+function pfindStart(how){
+  const wh = window._packWh || 'SC';
+  // 사진/스캔 모듈이 _scan 을 요구한다. 기대목록이 빈 껍데기 세션을 만들어 준다.
+  _scan = { mode:'FIND', id:'find', ref:'find', wh, title:'🔎 Which PO is this?',
+            exp:[], seen:new Map(), manual:{}, photo:{} };
+  window._pfindMode = 1; _pfindRes = null;
+  try{ _spImgs = []; _spInfo = null; }catch(e){}
+  if(how === 'scan') scanCam(); else spOpen();
+}
+function pfindCancel(){
+  window._pfindMode = 0; _scan = null;
+  const e=document.getElementById('pchk-emp'); if(e){ /* 목록으로 */ }
+  pchkPackOpen();
+}
+
+// 지금까지 읽은 것 = 사진 + QR + 손으로 더한 것
+function pfindTally(){
+  const t = {};
+  if(!_scan) return t;
+  try{ _scan.seen.forEach(v=>{ const k=v.key||scanKeyOf(v.style,v.color,v.size); t[k]=(t[k]||0)+1; }); }catch(e){}
+  Object.keys(_scan.photo||{}).forEach(k=>{ t[k]=(t[k]||0)+(Number(_scan.photo[k])||0); });
+  Object.keys(_scan.manual||{}).forEach(k=>{ t[k]=(t[k]||0)+(Number(_scan.manual[k])||0); });
+  return t;
+}
+
+/* 후보 PO 들의 "풀박스 기대"를 만든다. 낱장은 PC Room 몫이라 팔레트에 없다. */
+async function pfindCandidates(wh){
+  let rows = [];
+  try{
+    const r = await fetch(SB_URL+'/rest/v1/rpc/pack_orders', {method:'POST',
+      headers:{apikey:SB_KEY, Authorization:'Bearer '+SB_KEY, 'Content-Type':'application/json'},
+      body: JSON.stringify({q:''})});
+    rows = await r.json();
+  }catch(e){ return null; }
+  if(!Array.isArray(rows)) return null;
+  rows = rows.filter(r=>Array.isArray(r.whs) && r.whs.includes(wh)
+                      && !(Array.isArray(r.shipped_whs) && r.shipped_whs.includes(wh)));
+  if(!rows.length) return [];
+  const bases = rows.map(r=>String(r.base));
+  let lines = {};
+  try{ lines = await pchkFetchLines(bases); }catch(e){ return null; }
+  window._ltlLines = Object.assign(window._ltlLines||{}, lines);
+  return rows.map(r=>{
+    const exp = {}; let tot = 0;
+    (lines[String(r.base)]||[]).forEach(l=>{
+      if(String(l.wh||'') !== wh) return;
+      const c = (typeof boxCalc==='function') ? boxCalc({qty:Number(l.qty)||0, ppb:Number(l.ppb)||72}) : {full:0};
+      if(!c.full) return;
+      const k = scanKeyOf(l.style, l.color, l.size);
+      exp[k] = (exp[k]||0) + c.full; tot += c.full;
+    });
+    return { base:String(r.base), cust:String(r.cust||''), po:String(r.po||''),
+             dt:String(r.dt||''), packed:(Array.isArray(r.packed_whs)&&r.packed_whs.includes(wh)), exp, tot };
+  }).filter(c=>c.tot > 0);
+}
+
+/* 탐욕적 배정 — 남은 박스를 가장 많이 먹는 PO 부터 하나씩 떼어 간다.
+   같은 개수를 먹으면 "그 PO 가 더 많이 채워지는" 쪽을 먼저 잡는다. 그래야
+   큰 PO 가 작은 PO 의 박스를 흡수해 버리는 일이 줄어든다. */
+function pfindAssign(tally, cand){
+  const left = Object.assign({}, tally);
+  const leftTot = () => Object.keys(left).reduce((a,k)=>a+(Number(left[k])||0), 0);
+  const picked = [], taken = {};
+  while(leftTot() > 0){
+    let best = null;
+    cand.forEach(c=>{
+      if(taken[c.base]) return;
+      let cov = 0;
+      Object.keys(c.exp).forEach(k=>{ cov += Math.min(Number(left[k])||0, c.exp[k]); });
+      if(!cov) return;
+      const fill = cov / c.tot;
+      if(!best || cov > best.cov || (cov === best.cov && fill > best.fill)) best = {c, cov, fill};
+    });
+    if(!best) break;
+    const hit = {};
+    Object.keys(best.c.exp).forEach(k=>{
+      const take = Math.min(Number(left[k])||0, best.c.exp[k]);
+      if(take){ hit[k] = take; left[k] -= take; if(left[k] <= 0) delete left[k]; }
+    });
+    taken[best.c.base] = 1;
+    picked.push(Object.assign({}, best.c, {cov:best.cov, fill:best.fill, hit}));
+  }
+  return {picked, left};
+}
+
+async function pfindDone(){
+  const tally = pfindTally();
+  const seenTot = Object.keys(tally).reduce((a,k)=>a+(Number(tally[k])||0), 0);
+  const wh = (_scan && _scan.wh) || window._packWh || 'SC';
+  pfindShell('<div style="color:#64748b;font-size:13px;padding:24px;text-align:center;">Matching against the open orders…</div>');
+  if(!seenTot){
+    pfindShell('<div style="background:#fff;border-radius:12px;padding:18px;text-align:center;">'
+      + '<div style="font-size:14px;font-weight:800;color:#b91c1c;margin-bottom:6px;">Nothing was read</div>'
+      + '<div style="font-size:12px;color:#475569;line-height:1.6;">No box label came through. Try again with the pallet filling the frame, or go back to the list and pick the PO by hand.</div>'
+      + pfindFootHtml(0));
+    return;
+  }
+  const cand = await pfindCandidates(wh);
+  if(cand === null){
+    pfindShell('<div style="background:#fff;border-radius:12px;padding:18px;text-align:center;">'
+      + '<div style="font-size:14px;font-weight:800;color:#b91c1c;margin-bottom:6px;">Could not load the open orders</div>'
+      + '<div style="font-size:12px;color:#475569;">Check the connection and try again.</div>' + pfindFootHtml(0));
+    return;
+  }
+  const {picked, left} = pfindAssign(tally, cand);
+  _pfindRes = {wh, tally, seenTot, picked, left, cand,
+               photo: Object.assign({}, (_scan&&_scan.photo)||{}),
+               info: (typeof _spInfo!=='undefined' ? _spInfo : null),
+               imgs: (typeof _spImgs!=='undefined' ? (_spImgs||[]).slice() : [])};
+  pfindRender();
+}
+
+function pfindShell(inner){
+  const ov = pchkEmpEl();
+  ov.innerHTML = '<div style="background:#5b21b6;color:#fff;padding:14px 16px;display:flex;align-items:center;gap:10px;position:sticky;top:0;z-index:5;">'
+    + '<button onclick="pfindCancel()" style="background:rgba(255,255,255,.2);color:#fff;border:none;border-radius:8px;padding:6px 11px;font-size:13px;font-weight:700;">← Orders</button>'
+    + '<span style="font-size:16px;font-weight:800;">🔎 Which PO is this?</span></div>'
+    + '<div style="flex:1;background:#f1f5f9;padding:14px;"><div style="max-width:560px;margin:0 auto;">' + inner + '</div></div>';
+}
+function pfindFootHtml(nPick){
+  return '<div style="display:flex;gap:8px;margin-top:14px;">'
+    + (nPick ? '<button onclick="pfindApply()" style="flex:2;background:#16a34a;color:#fff;border:none;border-radius:12px;padding:15px;font-size:15px;font-weight:800;">☑ Select these ' + nPick + ' PO ▸</button>' : '')
+    + '<button onclick="pfindCancel()" style="flex:1;background:#fff;color:#475569;border:1.5px solid #cbd5e1;border-radius:12px;padding:15px;font-size:14px;font-weight:800;">Pick by hand</button></div>'
+    + '</div>';
+}
+
+function pfindRender(){
+  const R = _pfindRes; if(!R) return;
+  const leftTot = Object.keys(R.left).reduce((a,k)=>a+(Number(R.left[k])||0), 0);
+  const kLine = (k, n, muted) => {
+    const p = String(k).split('|');
+    return '<div style="display:flex;gap:7px;font-size:11.5px;padding:1.5px 0;' + (muted?'color:#94a3b8;':'') + '">'
+      + '<span style="font-family:Consolas,monospace;font-weight:800;min-width:40px;">' + esc(p[0]||'') + '</span>'
+      + '<span style="flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">' + esc(p[1]||'') + '</span>'
+      + '<span style="font-weight:800;min-width:26px;">' + esc(p[2]||'') + '</span>'
+      + '<span style="font-family:Consolas,monospace;font-weight:800;min-width:34px;text-align:right;">' + n + '</span></div>';
+  };
+  const head = '<div style="background:#fff;border-radius:12px;padding:13px 15px;margin-bottom:12px;">'
+    + '<div style="font-size:14px;font-weight:800;color:#5b21b6;">' + R.seenTot + ' box read on this pallet</div>'
+    + '<div style="font-size:11.5px;color:#64748b;margin-top:3px;">warehouse ' + esc(R.wh) + ' · checked against ' + R.cand.length + ' open order' + (R.cand.length===1?'':'s') + '</div>'
+    + ((R.info && (R.info.badPhotos||[]).length)
+        ? '<div style="font-size:11.5px;color:#b91c1c;font-weight:800;margin-top:6px;line-height:1.5;">⚠ ' + R.info.badPhotos.length + ' photo(s) unusable — ' + esc(String(R.info.badPhotos[0])) + '. A shot from too far comes back with the <b>wrong colour</b>, so the match below may be wrong too.</div>' : '')
+    + ((R.info && R.info.unread) ? '<div style="font-size:11.5px;color:#b45309;font-weight:800;margin-top:5px;">⚠ ' + R.info.unread + ' box unreadable — those could not be matched.</div>' : '')
+    + '</div>';
+
+  let body;
+  if(!R.picked.length){
+    body = '<div style="background:#fff;border-radius:12px;padding:18px;">'
+      + '<div style="font-size:14px;font-weight:800;color:#b91c1c;margin-bottom:6px;">No open order matches this pallet</div>'
+      + '<div style="font-size:12px;color:#475569;line-height:1.6;margin-bottom:10px;">Nothing that was read lines up with an order waiting in ' + esc(R.wh) + '. It may belong to a PO that is already shipped, to the other warehouse, or the labels were misread.</div>'
+      + '<div style="border-top:1px dashed #e2e8f0;padding-top:8px;">' + Object.keys(R.tally).sort().map(k=>kLine(k, R.tally[k])).join('') + '</div></div>';
+  } else {
+    body = R.picked.map((c, i)=>{
+      const pct = Math.round(c.fill*100);
+      const partial = c.cov < c.tot;
+      return '<div style="background:#fff;border-radius:12px;padding:13px 15px;margin-bottom:10px;border:1.5px solid ' + (partial?'#fcd34d':'#86efac') + ';">'
+        + '<div style="display:flex;align-items:center;gap:9px;flex-wrap:wrap;">'
+        +   '<span style="background:' + (i===0?'#5b21b6':'#94a3b8') + ';color:#fff;font-size:10px;font-weight:800;border-radius:20px;padding:2px 9px;">' + (i+1) + '</span>'
+        +   '<span style="font-size:14.5px;font-weight:800;color:#0f2a4a;">' + esc(c.cust||'—') + '</span>'
+        +   '<span style="font-size:11.5px;color:#64748b;">PO ' + esc(c.po||'—') + (c.dt?(' · '+esc(c.dt)):'') + '</span>'
+        +   (c.packed?'<span style="font-size:10.5px;font-weight:800;color:#16a34a;background:#dcfce7;border-radius:20px;padding:2px 9px;">📦 packed</span>':'')
+        + '</div>'
+        + '<div style="font-size:12px;font-weight:800;margin-top:6px;color:' + (partial?'#b45309':'#15803d') + ';">'
+        +   c.cov + ' of this pallet\'s boxes belong to this PO · the PO wants ' + c.tot + ' box' + (c.tot===1?'':'es') + ' (' + pct + '%)'
+        +   (partial ? '<div style="font-weight:700;color:#b45309;margin-top:2px;">' + (c.tot-c.cov) + ' more box' + ((c.tot-c.cov)===1?'':'es') + ' for this PO are not on this pallet — another pallet, or still to be pulled.</div>' : '')
+        + '</div>'
+        + '<div style="margin-top:6px;border-top:1px dashed #e2e8f0;padding-top:5px;">'
+        +   Object.keys(c.hit).sort().map(k=>kLine(k, c.hit[k])).join('')
+        + '</div></div>';
+    }).join('');
+    if(leftTot){
+      body += '<div style="background:#fff7ed;border:1.5px solid #fdba74;border-radius:12px;padding:13px 15px;margin-bottom:10px;">'
+        + '<div style="font-size:13px;font-weight:800;color:#c2410c;">⚠ ' + leftTot + ' box on this pallet belongs to no open ' + esc(R.wh) + ' order</div>'
+        + '<div style="font-size:11.5px;color:#7c2d12;line-height:1.5;margin-top:3px;">Either the label was misread, or these are not part of the orders you are shipping. Worth a look before you pack.</div>'
+        + '<div style="margin-top:6px;border-top:1px dashed #fed7aa;padding-top:5px;">' + Object.keys(R.left).sort().map(k=>kLine(k, R.left[k])).join('') + '</div></div>';
+    }
+    body += '<div style="font-size:11.5px;color:#64748b;line-height:1.55;padding:0 3px;">'
+      + 'These are <b>suggestions</b>, not a decision — a box of the same style/colour/size fits more than one PO. '
+      + 'Press select and the orders get ticked in the list; then <b>Pack as LTL / UPS</b> shows the full comparison, already filled in with what was just read.</div>';
+  }
+  pfindShell(head + body + pfindFootHtml(R.picked.length));
+}
+
+/* 고른 PO 를 목록에 체크해 두고 돌아간다. 읽은 결과는 물려준다. */
+function pfindApply(){
+  const R = _pfindRes; if(!R || !R.picked.length){ pfindCancel(); return; }
+  const bases = R.picked.map(c=>c.base);
+  window._packSel = {};
+  bases.forEach(b=>{ window._packSel[b] = 1; });
+  window._pfindCarry = { wh:R.wh, bases:bases.slice(), photo:Object.assign({}, R.photo), info:R.info, imgs:(R.imgs||[]).slice() };
+  window._pfindMode = 0; _scan = null;
+  pchkPackOpen();
+  showToast('☑ ' + bases.length + ' PO selected — open Pack as LTL / UPS to check them');
+}
+
+/* 방금 읽은 사진 결과를, 그 PO 들로 들어가는 스캔 세션에 그대로 넣어 준다.
+   키는 기대목록에 맞춰 다시 매핑한다 (괄호·공백 차이만 흡수, 진짜 다른 색은 그대로). */
+function pfindCarryInto(bases, wh){
+  try{
+    const cy = window._pfindCarry; if(!cy || !_scan) return;
+    if(String(cy.wh||'') !== String(wh||'')) return;
+    const a = (bases||[]).map(String).slice().sort().join(',');
+    const b = (cy.bases||[]).map(String).slice().sort().join(',');
+    if(a !== b) return;
+    const mp = spExpMap(), out = {};
+    Object.keys(cy.photo||{}).forEach(k=>{
+      const nk = mp[spSquash(k)] || k;
+      out[nk] = (out[nk]||0) + (Number(cy.photo[k])||0);
+    });
+    _scan.photo = out;
+    if(cy.info) _spInfo = cy.info;
+    if(cy.imgs) _spImgs = cy.imgs.slice();
+    window._pfindCarry = null;                       // 한 번만 물려준다
+    showToast('📸 photo count carried over — check it against the list');
+  }catch(e){}
 }
 function scanManual(key, d){
   if(!_scan) return;
@@ -9746,6 +9986,7 @@ function scanStop(){
   try{ (window._scanStream||{getTracks:()=>[]}).getTracks().forEach(t=>t.stop()); }catch(e){}
   window._scanStream = null;
   const ov = document.getElementById('scan-cam'); if(ov) ov.remove();
+  if(window._pfindMode){ pfindDone(); return; }
   scanRender();
 }
 
