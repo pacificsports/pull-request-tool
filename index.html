@@ -162,7 +162,7 @@ body.narrow main{max-width:1100px;}
   </span>
   <select id="lang-sel" onchange="setLang(this.value)" style="font-size:11px;padding:3px 6px;border-radius:5px;border:none;background:#1d3f66;color:#fff;"><option value="ko">한국어</option><option value="en">English</option><option value="es">Español</option></select>
   <button id="wide-btn" class="btn btn-sm" onclick="toggleWide()" title="화면 넓게 / 좁게 — 기본은 넓게 (이 브라우저에만 저장돼)" style="padding:2px 8px;font-size:10px;background:#1d3f66;color:#cfe0f2;border-color:#2b5384;">↔ Wide</button>
-  <span id="app-ver" style="font-size:10px;color:#9fb8d4;">v829</span>
+  <span id="app-ver" style="font-size:10px;color:#9fb8d4;">v830</span>
 </div>
 <script>
 // ↔ 넓게 보기 — 브라우저마다 따로 저장 (v793)
@@ -16773,12 +16773,17 @@ function trBarHtml(){
       const nb = lines.reduce((a,l)=>a+trLineBoxes(l),0);
       const np = lines.reduce((a,l)=>a+trLinePcs(l),0);
       const rt = TR_ROUTES[trRoute(r)] || TR_ROUTES.SC2CA;
-      const st = r.status==='TRANSIT' ? {lb:'In Transit',c:'#b45309',bg:'#fef3c7'} : {lb:'Draft',c:'#92400e',bg:'#fde68a'};
+      const st = r.status==='TRANSIT' ? {lb:'In Transit',c:'#b45309',bg:'#fef3c7'}
+               : (trDstKind(trRoute(r))==='3P' ? {lb:'Ready for pickup',c:'#b45309',bg:'#fed7aa'} : {lb:'Draft',c:'#92400e',bg:'#fde68a'});
       // 🧾 Ship-from-CA customer orders riding along on this same truck (auto — pulled during build) (v765)
       const oShip = (r.meta && Array.isArray(r.meta.orderShip)) ? r.meta.orderShip.filter(Boolean) : [];
+      const _is3P = trDstKind(trRoute(r)) === '3P';
       const act = r.status==='TRANSIT'
         ? `<button class="btn btn-sm btn-primary" style="background:#0f766e;border-color:#0f766e;font-weight:800;" onclick="trRecvOpen('${r.id}')" title="Boxes arrived — assign ${trKindShort(trDstKind(trRoute(r)))} bin">📦 Receive</button> <button class="btn btn-sm" style="font-size:10px;" onclick="trCancelTransit('${r.id}')" title="Cancel departure — revert to Draft">↩</button>`
-        : `<button class="btn btn-sm" onclick="trBuilderOpen('${r.id}')" title="Keep editing this Draft">✏️ Edit</button>`;
+        : `<button class="btn btn-sm" onclick="trBuilderOpen('${r.id}')" title="Keep editing this Draft">✏️ Edit</button> `
+          + (_is3P
+            ? `<button class="btn btn-sm btn-primary" style="background:#b45309;border-color:#b45309;font-weight:800;" onclick="trShipped3P('${r.id}')" title="The truck picked it up — move each pallet into its H bin and close this shipment">🚚 Shipped</button>`
+            : `<button class="btn btn-sm btn-primary" style="background:#7b1fa2;border-color:#7b1fa2;font-weight:800;" onclick="trPostFromList('${r.id}')" title="The truck left — mark this shipment In Transit. Receive it here when it arrives.">🚚 Depart</button>`);
       const oBoxes = oShip.reduce((s,o)=>s+(Number(o.boxes)||0),0);
       const ordersLine = oShip.length ? `<div style="font-size:11px;color:#6d28d9;margin-top:4px;background:#faf5ff;border:1px solid #ddd6fe;border-radius:7px;padding:5px 10px;">🧾 <b>+ ${oShip.length} customer order${oShip.length>1?'s':''} also on this truck</b> <span style="color:#7c3aed;">(${oBoxes} box)</span>: ${oShip.map(o=>esc(o.cust||o.po||'Order')+(o.po?` <span style="color:#a78bfa;font-weight:700;">${esc(o.po)}</span>`:'')+(o.boxes?` · ${o.boxes} box`:'')).join(' &nbsp;|&nbsp; ')} <span style="color:#a78bfa;font-weight:600;">— prepped at SC, route to their order after receiving at ${esc(trKindShort(rt.dest))}</span></div>` : '';
       return `<div style="padding:6px 0;border-top:1px solid #ede9fe;">
@@ -18361,7 +18366,10 @@ function trRenderList(){
       const np = lines.reduce((a,l)=>a+trLinePcs(l),0);
       const M = r.meta||{};
       let act = '';
-      if(r.status==='LOADING') act = `<button class="btn btn-sm" onclick="trBuilderOpen('${r.id}')">✏️ Edit</button>`;
+      if(r.status==='LOADING') act = `<button class="btn btn-sm" onclick="trBuilderOpen('${r.id}')">✏️ Edit</button> `
+        + (trDstKind(trRoute(r))==='3P'
+          ? `<button class="btn btn-sm btn-primary" style="background:#b45309;border-color:#b45309;font-weight:800;" onclick="trShipped3P('${r.id}')" title="Picked up — move each pallet into its H bin and close this shipment">🚚 Shipped</button>`
+          : `<button class="btn btn-sm btn-primary" style="background:#7b1fa2;border-color:#7b1fa2;font-weight:800;" onclick="trPostFromList('${r.id}')" title="The truck left — mark In Transit">🚚 Depart</button>`);
       else if(r.status==='TRANSIT') act = `<button class="btn btn-sm btn-primary" style="background:#0f766e;border-color:#0f766e;" onclick="trRecvOpen('${r.id}')">📦 Receive (${trKindShort(trDstKind(trRoute(r)))})</button> <button class="btn btn-sm" style="font-size:10px;" onclick="trCancelTransit('${r.id}')" title="Cancel departure — back to Draft, boxes stay reserved">↩</button>`;
       else act = `<span style="font-size:10px;color:#15803d;font-weight:800;">✓ Done</span>`;
       return `<tr>
@@ -18450,7 +18458,9 @@ async function trBuilderOpen(existingId, route){
       <button class="btn" style="background:#0f4c8a;color:#fff;border-color:#0f4c8a;" onclick="trPL()">🖨 Packing List Preview/Print</button>
       <button class="btn" style="background:#166534;color:#fff;border-color:#166534;" onclick="trPR()">🖨 Pull Request (per pallet)</button>
       <button class="btn" style="background:#334155;color:#fff;border-color:#334155;" onclick="trBOL()">🖨 BOL</button>
-      <button class="btn btn-primary" style="background:#7b1fa2;border-color:#7b1fa2;" onclick="trPost()">✅ Post — Start Shipment</button>
+      ${trDstKind(_shipRoute)==='3P'
+        ? `<button class="btn btn-primary" style="background:#b45309;border-color:#b45309;" onclick="trSave3P()" title="Save this shipment and put it in Pending. When the truck actually picks it up, press 🚚 Shipped there — that is when the boxes move into their H bins.">💾 Save — ready for pickup</button>`
+        : `<button class="btn btn-primary" style="background:#7b1fa2;border-color:#7b1fa2;" onclick="trPost()">✅ Post — Start Shipment</button>`}
     </div></div>`;
   document.body.appendChild(div);
   trRenderPallets();
@@ -19785,6 +19795,137 @@ async function trPost(){
   showToast('✅ Shipment departed — In Transit');
   if($('bx-body')) renderBoxRoom();
   if(typeof trBarUpd==='function') trBarUpd();   // 배송 표시줄만 갱신 — Transfers 모듈 자동 팝업 안 뜨게 (v489)
+}
+/* 💾 3rd party 행 저장 — 트럭 정보만 챙기고 Pending 으로 보낸다. 재고는 아직 안 움직인다.
+   (박스는 라인을 담을 때 이미 TRANSFER bin 에 스테이징돼 있고, SC 재고로 잡혀 있다) */
+async function trSave3P(){
+  trCaptureInfo();
+  const nL = _shipPallets.reduce((s,p)=>s+p.lines.length,0);
+  if(!nL){ alert('No lines.'); return; }
+  if(!_shipId){ alert('Add lines first (the Draft saves when lines are added).'); return; }
+  const noBin = _shipPallets.filter(p=>p.lines.length && !p.hbin).map(p=>p.label);
+  if(noBin.length && !confirm('These pallets have no H bin number yet:\n\n  ' + noBin.join(', ')
+      + '\n\nSave anyway? You will need a bin number before you can mark it Shipped.')) return;
+  shipNotifySet(String((document.getElementById('ship-notify')||{}).value||'').trim());
+  await trPatchRec(_shipId, { ref:_shipNo, meta:_shipMeta, lines:trLinesFlat() });
+  const m = document.getElementById('modal-trb'); if(m) m.remove();
+  _shipId = null; _shipNo = null; _shipMeta = {}; _shipPallets = [];
+  showToast('💾 Saved — waiting for pickup. Press 🚚 Shipped when the truck takes it.');
+  if(typeof trBarUpd==='function') trBarUpd();
+  if($('bx-body')) renderBoxRoom();
+}
+/* 🚚 Depart — Pending 목록에서 바로 출발 처리 (빌더를 다시 열지 않고).
+   우리가 받는 창고로 가는 길(SC↔CA 등)은 도착해서 bin 을 지정하는 게 진짜 작업이라
+   In Transit 단계를 그대로 둔다 — 여기선 「트럭이 떠났다」만 찍는다. */
+async function trPostFromList(id){
+  const rec = await trGet(id); if(!rec){ showToast('⚠ Load failed'); return; }
+  if(rec.status !== 'LOADING'){ showToast('⚠ This shipment already departed'); return; }
+  if(!bxLoaded) await bxFetchStore();
+  const lines = Array.isArray(rec.lines) ? rec.lines : [];
+  const hasOrderShip = (((rec.meta||{}).orderShip)||[]).length > 0;
+  if(!lines.length && !hasOrderShip){ showToast('⚠ No lines on this shipment'); return; }
+  if(!(rec.meta&&rec.meta.ship_date)){ alert('This shipment has no depart date yet — open it with ✏️ Edit and set one.'); return; }
+  const nb = lines.reduce((a,l)=>a+trLineBoxes(l),0);
+  const np = lines.reduce((a,l)=>a+trLinePcs(l),0);
+  const pals = [...new Set(lines.map(l=>l.pallet||'Pallet 1'))];
+  if(!confirm('Post ' + (rec.ref||'this shipment') + ' as departed?\n\n'
+    + pals.length + ' pallet(s) · ' + nb + ' box(es) · ' + np.toLocaleString() + ' pcs → In Transit.\n\n'
+    + 'Receive it in Pending Transfers when it arrives.')) return;
+  const by = (SESS&&SESS.email)||'';
+  await trPatchRec(id, { status:'TRANSIT', departed_at:new Date().toISOString(), departed_by:by });
+  try{
+    const pids = []; lines.forEach(l=>{ if(!l.is_manual) (l.ids||[]).forEach(x=>pids.push(x)); });
+    const need = bxStore.filter(b=>pids.includes(b.id) && bxWh(b)!=='TRANSIT').map(b=>b.id);
+    if(need.length){ await trPatchBoxes(need, {wh:'TRANSIT'}); const st=new Set(need); bxStore.forEach(b=>{ if(st.has(b.id)) b.wh='TRANSIT'; }); }
+  }catch(e){}
+  try{ for(const o of (((rec.meta||{}).orderShip)||[])) await _scToCaMark(o.base, 'transit', rec.ref); if(typeof renderSaved==='function') renderSaved(); }catch(e){}
+  try{
+    const pm = {}; lines.forEach(l=>{ const k=l.pallet||'Pallet 1'; (pm[k]=pm[k]||[]).push(l); });
+    await trSendShipEmail({ no:rec.ref, meta:rec.meta||{}, route:trRoute(rec),
+      pallets: Object.keys(pm).map(k=>({label:k, lines:pm[k]})) }, shipNotifyGet());
+  }catch(e){}
+  await bxRefetch();
+  if($('bx-body')) renderBoxRoom();
+  if(typeof trBarUpd==='function') trBarUpd();
+  if(typeof trOpen==='function' && document.getElementById('modal-tr')) trOpen();
+  showToast('✅ ' + (rec.ref||'Shipment') + ' departed — In Transit');
+}
+/* 🚚 픽업됨 — 팔레트마다 자기 H bin 으로 넣고 끝낸다.
+   3rd party 는 우리가 받는 게 아니라서 도착 확인 단계가 없다: 이 한 번이 출발이자 완료다. */
+async function trShipped3P(id){
+  const rec = await trGet(id); if(!rec){ showToast('⚠ Load failed'); return; }
+  if(trDstKind(trRoute(rec)) !== '3P'){ showToast('⚠ That route is not a 3rd party shipment'); return; }
+  if(rec.status !== 'LOADING'){ showToast('⚠ Already posted — use 📦 Receive'); return; }
+  if(!bxLoaded) await bxFetchStore();
+  const lines = Array.isArray(rec.lines) ? rec.lines : [];
+  if(!lines.length){ showToast('⚠ No lines on this shipment'); return; }
+
+  // 팔레트별로 묶고 bin 을 확인한다 — bin 없이 보내면 박스가 어디 있는지 모르게 된다
+  const pal = {};
+  lines.forEach(l=>{
+    const lbl = l.pallet || 'Pallet 1';
+    if(!pal[lbl]) pal[lbl] = { label:lbl, bin:'', lines:[] };
+    pal[lbl].lines.push(l);
+    const b = String(l.ca_bin||'').trim().toUpperCase();
+    if(b && !pal[lbl].bin) pal[lbl].bin = b;
+  });
+  const pals = Object.values(pal);
+  const bad = pals.filter(p=>!p.bin || !trLocIsKind(p.bin, '3P')).map(p=>p.label);
+  if(bad.length){
+    alert('These pallets have no 3rd party bin number yet:\n\n  ' + bad.join(', ')
+      + '\n\nOpen the shipment (✏️ Edit) — a number is assigned automatically when it opens — then try again.');
+    return;
+  }
+  const dup = pals.map(p=>p.bin).filter((b,i,a)=>a.indexOf(b)!==i);
+  if(dup.length && !confirm('⚠ Two pallets share the same bin: ' + [...new Set(dup)].join(', ')
+      + '\n\nThat puts different pallets in one spot. Continue anyway?')) return;
+
+  const nb = lines.reduce((a,l)=>a+trLineBoxes(l),0);
+  const np = lines.reduce((a,l)=>a+trLinePcs(l),0);
+  if(!confirm('🚚 Mark ' + (rec.ref||'this shipment') + ' as picked up?\n\n'
+    + pals.map(p=>'  ' + p.label + '  →  ' + p.bin).join('\n')
+    + '\n\n' + nb + ' box(es) · ' + np.toLocaleString() + ' pcs move out of SC bins into the 3rd party bins above.\nThis closes the shipment — there is no receive step.')) return;
+
+  const destWh = trWhOfKind('3P');
+  let ok = 0; const errs = []; const manualNew = []; const by = (SESS&&SESS.email)||'';
+  for(const p of pals){
+    for(const l of p.lines){
+      try{
+        if(l.is_manual){
+          for(let j=0;j<(Number(l.boxes)||0);j++)
+            manualNew.push({ style:l.style, color:l.color, size:l.size, pcs:Number(l.ppb)||72,
+              loc:p.bin, wh:destWh, status:'IN', in_by:by, note:'transfer '+(rec.ref||'') });
+        }else if((l.ids||[]).length){
+          await trPatchBoxes(l.ids, { wh:destWh, loc:p.bin });
+        }
+        l.ca_bin = p.bin;
+        ok++;
+      }catch(e){ errs.push(l.style+'/'+l.color+'/'+l.size+': '+String(e.message||'').slice(0,60)); }
+    }
+  }
+  if(manualNew.length){
+    try{
+      if(!skuLoaded) await skuFetch();
+      if(await skuConfirmRegister(skuGateRows(manualNew))) await bxInsert(manualNew);
+      else errs.push('Manual lines: '+manualNew.length+' box(es) not moved (SKU unregistered)');
+    }catch(e){ errs.push('Manual line move failed'); }
+  }
+  const now = new Date().toISOString();
+  await trPatchRec(id, { status:'RECEIVED', lines,
+    departed_at: rec.departed_at || now, departed_by: rec.departed_by || by,
+    received_at: now, received_by: by });
+  try{
+    await trSendShipEmail({ no:rec.ref, meta:rec.meta||{}, route:trRoute(rec),
+      pallets: pals.map(p=>({ label:p.label + ' — ' + p.bin, lines:p.lines })) }, shipNotifyGet());
+  }catch(e){}
+  await bxRefetch();
+  if($('bx-body')) renderBoxRoom();
+  if(typeof trBarUpd==='function') trBarUpd();
+  if(typeof trOpen==='function' && document.getElementById('modal-tr')) trOpen();
+  let msg = '🚚 ' + (rec.ref||'Shipment') + ' picked up — ' + ok + ' line(s) into '
+          + pals.map(p=>p.bin).join(', ');
+  if(errs.length) msg += '\n\n❌ ' + errs.length + ' error(s):\n' + errs.slice(0,5).join('\n');
+  alert(msg);
 }
 // ═══════ 🚚 Ship-from-CA 오더 박스를 SC→CA 트럭에 태워 보내기 (v635) ═══════
 function trOrderShipEligible(){
