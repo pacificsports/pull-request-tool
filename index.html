@@ -162,7 +162,7 @@ body.narrow main{max-width:1100px;}
   </span>
   <select id="lang-sel" onchange="setLang(this.value)" style="font-size:11px;padding:3px 6px;border-radius:5px;border:none;background:#1d3f66;color:#fff;"><option value="ko">한국어</option><option value="en">English</option><option value="es">Español</option></select>
   <button id="wide-btn" class="btn btn-sm" onclick="toggleWide()" title="화면 넓게 / 좁게 — 기본은 넓게 (이 브라우저에만 저장돼)" style="padding:2px 8px;font-size:10px;background:#1d3f66;color:#cfe0f2;border-color:#2b5384;">↔ Wide</button>
-  <span id="app-ver" style="font-size:10px;color:#9fb8d4;">v808</span>
+  <span id="app-ver" style="font-size:10px;color:#9fb8d4;">v809</span>
 </div>
 <script>
 // ↔ 넓게 보기 — 브라우저마다 따로 저장 (v793)
@@ -8524,6 +8524,18 @@ function pchkPackOpen(){
   if(window._packWh==null){ let s='SC'; try{ s=localStorage.getItem('pack_wh')||'SC'; }catch(e){} window._packWh=(s==='CA'?'CA':'SC'); }
   pchkPackWhTabs();
   pchkPackList();
+  packAutoRefresh();
+}
+/* 60초마다 조용히 다시 읽는다. 화면이 닫히면 스스로 멈춘다. */
+function packAutoRefresh(){
+  clearInterval(window._packTick);
+  window._packTick = setInterval(()=>{
+    if(!document.getElementById('pack-list')){ clearInterval(window._packTick); return; }
+    const q = document.getElementById('pack-q');
+    if(q && document.activeElement === q) return;                       // 검색 치는 중
+    if(Object.keys(window._packSel||{}).length) return;                 // 이미 골라둔 게 있으면 그대로
+    try{ pchkPackList(); }catch(e){}
+  }, 60000);
 }
 function pchkPackWhTabs(){
   const el=document.getElementById('pack-wh-tabs'); if(!el) return;
@@ -8603,7 +8615,7 @@ function tdIsOn(base, wh){
 }
 async function tdLoad(force){
   const now = Date.now();
-  if(!force && _tdAt && (now - _tdAt) < 20000) return window._tdMap;   // 목록을 다시 그릴 때마다 때리지 않게
+  if(!force && _tdAt && (now - _tdAt) < 5000) return window._tdMap;    // 검색 입력으로 연달아 그릴 때만 아끼는 정도
   try{
     const r = await fetch(SB_URL + '/rest/v1/pr_config?select=k,v&k=like.' + encodeURIComponent('@today:%'),
       { headers:{ apikey:SB_KEY, Authorization:'Bearer ' + SB_KEY } });
@@ -8707,7 +8719,7 @@ function pcrWhen(g){
 }
 async function pcrLoad(force){
   const now = Date.now();
-  if(!force && _pcrAt && (now - _pcrAt) < 20000) return window._pcrMap;
+  if(!force && _pcrAt && (now - _pcrAt) < 5000) return window._pcrMap;
   try{
     const r = await fetch(SB_URL + '/rest/v1/pr_config?select=k,v&k=like.' + encodeURIComponent('@pcr:%'),
       { headers:{ apikey:SB_KEY, Authorization:'Bearer ' + SB_KEY } });
@@ -8764,6 +8776,43 @@ let _pcrKpiBooted = 0;
 function pcrKpiBoot(){
   if(_pcrKpiBooted) return; _pcrKpiBooted = 1;
   pcrLoad().then(()=>{ try{ if(typeof renderKpi==='function') renderKpi(); }catch(e){} });
+  mgrWatch();
+}
+
+/* PC Room 이 새로 준비를 끝냈을 때만 소리 + 토스트. 표시를 지운 경우나 Today 변경엔 안 울린다
+   — 아무 때나 울리면 사람은 곧 무시하게 된다. */
+function mgrPing(before){
+  try{
+    const oldMap = JSON.parse(String(before||'{}~{}').split('~')[0] || '{}');
+    const now = window._pcrMap || {};
+    const fresh = Object.keys(now).filter(k=> now[k] && !oldMap[k]);
+    if(!fresh.length) return;
+    try{ if(typeof scanBeep==='function'){ scanBeep(true); setTimeout(()=>scanBeep(true), 160); } }catch(e){}
+    const one = fresh[0].split('|');
+    showToast('🧺 PC Room ready — ' + fresh.length + ' order' + (fresh.length>1?'s':'') + ' (' + (one[0]||'') + ')');
+  }catch(e){}
+}
+
+/* 매니저 화면은 한 번 읽고 끝이라, 창고에서 방금 누른 PC Room ready 나 Today 가
+   새로고침 전까지 안 올라온다. 60초마다 다시 읽되 내용이 실제로 바뀌었을 때만 다시 그린다
+   — 매분 목록이 튀면 오히려 못 쓴다. 탭이 뒤에 있으면 아예 건너뛴다. */
+let _mgrTick = 0;
+function mgrSnap(){
+  try{ return JSON.stringify(window._pcrMap||{}) + '~' + JSON.stringify(window._tdMap||{}); }catch(e){ return ''; }
+}
+function mgrWatch(){
+  if(_mgrTick) return; _mgrTick = 1;
+  setInterval(async ()=>{
+    if(document.hidden) return;
+    const before = mgrSnap();
+    try{ await pcrLoad(true); }catch(e){}
+    try{ await tdLoad(true);  }catch(e){}
+    if(mgrSnap() === before) return;
+    mgrPing(before);
+    try{ if(typeof renderKpi==='function') renderKpi(); }catch(e){}
+    try{ if(typeof renderSaved==='function') renderSaved(); }catch(e){}
+    try{ if(document.getElementById('modal-kpiopen')) kpiOpenOrders(); }catch(e){}
+  }, 60000);
 }
 
 /* 매니저 화면에 보이는 칩 — 준비 안 된 건 아무것도 안 띄운다.
@@ -23547,6 +23596,52 @@ function newsBigChart(ser){
   cx.strokeStyle = col; cx.lineWidth = 2.4; cx.lineJoin='round'; cx.stroke();
   cx.beginPath(); cx.arc(x(v.length-1), y(v[v.length-1]), 4, 0, 7); cx.fillStyle = col; cx.fill();
 }
+
+/* ═══════════ 🔄 새 버전 알림 (v809) ═══════════
+   GitHub Pages 는 index.html 을 잠깐 캐시한다. 그래서 새로 배포해도 폰이나 브라우저는
+   한참 옛날 화면을 그대로 띄우고, 쓰는 사람은 "왜 안 바뀌지" 로 시간을 버린다.
+   (오늘 /pic 이 그랬다 — 서버는 새 버전인데 화면만 옛날 것이었다.)
+
+   그래서 앱이 스스로 확인한다: 5분마다 서버의 index.html 을 캐시 무시하고 받아서
+   거기 박힌 버전 숫자를 지금 띄워둔 것과 비교하고, 다르면 띠를 하나 띄운다.
+   자동으로 새로고침하지는 않는다 — 오더를 쓰다가 화면이 날아가면 그게 더 나쁘다. */
+let _verSeen = '';
+function verNow(){
+  try{ const e = document.getElementById('app-ver'); return e ? String(e.textContent||'').trim() : ''; }catch(e){ return ''; }
+}
+async function verCheck(){
+  const mine = verNow(); if(!mine) return;
+  try{
+    const r = await fetch('index.html?_=' + Date.now(), { cache:'no-store' });
+    if(!r.ok) return;
+    const t = await r.text();
+    const m = t.match(/id="app-ver"[^>]*>([^<]+)</);
+    const live = m ? String(m[1]).trim() : '';
+    if(live && live !== mine && live !== _verSeen){ _verSeen = live; verBanner(mine, live); }
+  }catch(e){}
+}
+function verBanner(mine, live){
+  if(document.getElementById('ver-bar')) return;
+  const d = document.createElement('div');
+  d.id = 'ver-bar';
+  d.style.cssText = 'position:fixed;left:0;right:0;bottom:0;z-index:900;background:#0f2a4a;color:#fff;'
+    + 'display:flex;align-items:center;gap:12px;padding:11px 16px;font-size:13px;font-weight:700;'
+    + 'box-shadow:0 -2px 14px rgba(0,0,0,.28);';
+  d.innerHTML = '<span style="font-size:16px;">🔄</span>'
+    + '<span style="flex:1;min-width:0;">A newer version is out (<b>' + esc(live) + '</b>) — you are on ' + esc(mine) + '.</span>'
+    + '<button onclick="verReload()" style="flex:none;background:#22c55e;color:#fff;border:none;border-radius:9px;padding:9px 16px;font-size:13px;font-weight:800;cursor:pointer;">Update now</button>'
+    + '<button onclick="(function(){var e=document.getElementById(\'ver-bar\'); if(e) e.remove();})()" style="flex:none;background:rgba(255,255,255,.16);color:#fff;border:none;border-radius:9px;padding:9px 12px;font-size:13px;font-weight:700;cursor:pointer;">Later</button>';
+  document.body.appendChild(d);
+}
+function verReload(){
+  // 주소에 시각을 달아 캐시를 확실히 건너뛴다. 홈화면 아이콘으로 띄운 폰도 이걸로 풀린다.
+  try{
+    const u = new URL(location.href);
+    u.searchParams.set('_v', String(Date.now()));
+    location.replace(u.toString());
+  }catch(e){ location.reload(); }
+}
+try{ setTimeout(verCheck, 45000); setInterval(verCheck, 300000); }catch(e){}
 function renderSaved(){
   renderKpi();
   if(typeof icRenderDraftBtn==='function') icRenderDraftBtn();
