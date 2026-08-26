@@ -162,7 +162,7 @@ body.narrow main{max-width:1100px;}
   </span>
   <select id="lang-sel" onchange="setLang(this.value)" style="font-size:11px;padding:3px 6px;border-radius:5px;border:none;background:#1d3f66;color:#fff;"><option value="ko">한국어</option><option value="en">English</option><option value="es">Español</option></select>
   <button id="wide-btn" class="btn btn-sm" onclick="toggleWide()" title="화면 넓게 / 좁게 — 기본은 넓게 (이 브라우저에만 저장돼)" style="padding:2px 8px;font-size:10px;background:#1d3f66;color:#cfe0f2;border-color:#2b5384;">↔ Wide</button>
-  <span id="app-ver" style="font-size:10px;color:#9fb8d4;">v830</span>
+  <span id="app-ver" style="font-size:10px;color:#9fb8d4;">v831</span>
 </div>
 <script>
 // ↔ 넓게 보기 — 브라우저마다 따로 저장 (v793)
@@ -18481,6 +18481,7 @@ async function _trEnsureRow(){
 }
 async function trBuilderClose(){
   trCaptureInfo();
+  await trReleaseEmptyBins();                        // 안 쓴 번호 반납 (v831)
   if(_shipId){
     await trPatchRec(_shipId, {ref:_shipNo, meta:_shipMeta, lines:trLinesFlat()});
     showToast('💾 '+_shipNo+' Draft saved — you can continue later');
@@ -18602,6 +18603,19 @@ async function hbPeek(){
   const nx = await _hbGet('@hbin:next', String(HBIN_SEED));
   return nx === null ? '' : ('H' + (parseInt(nx, 10) || HBIN_SEED));
 }
+/* 아무것도 안 실린 팔레트가 쥐고 있는 H 번호를 반납한다 (v831) */
+async function trReleaseEmptyBins(){
+  if(typeof trDstKind!=='function' || trDstKind(_shipRoute) !== '3P') return 0;
+  const map = trHbinMap();
+  let back = 0;
+  for(const p of (_shipPallets||[])){
+    if(!p || !p.hbin || trPalletHasStuff(p)) continue;
+    try{ await hbGive(p.hbin); back++; }catch(e){}
+    delete map[p.label];
+    delete p.hbin;
+  }
+  return back;
+}
 async function trAddPallet(){
   const p = { id:'p_'+Math.random().toString(36).slice(2,9), label:'Pallet '+(_shipPallets.length+1), lines:[] };
   _shipPallets.push(p);
@@ -18609,6 +18623,7 @@ async function trAddPallet(){
   if(trDstKind(_shipRoute) === '3P'){
     await trEnsureBins();
     if(p.hbin) showToast('🏭 ' + p.label + ' → ' + p.hbin);
+    else showToast('📦 ' + p.label + ' added — its H bin number appears once you put something on it');
   }
 }
 async function trDelPallet(pid){
@@ -18616,7 +18631,7 @@ async function trDelPallet(pid){
   if(p.lines.length && !confirm('Delete all '+p.lines.length+' line(s) on '+p.label+' and restore '+trKindShort(trSrcKind(_shipRoute))+' stock?')) return;
   for(let li=p.lines.length-1;li>=0;li--) await _trRemoveLine(pid, li, true);
   _shipPallets = _shipPallets.filter(x=>x.id!==pid);
-  if(p.hbin) await hbGive(p.hbin);                      // 아직 안 쓴 번호는 되돌려준다 (v827)
+  if(p.hbin){ await hbGive(p.hbin); try{ delete trHbinMap()[p.label]; }catch(e){} }   // 아직 안 쓴 번호는 되돌려준다 (v827·v831)
   if(!trSrcAutoPallet(_shipRoute)) _shipPallets.forEach((x,i)=>x.label='Pallet '+(i+1));
   await trSaveDraftLines();
   trRenderPallets();
@@ -19021,21 +19036,31 @@ function trRenderPallets(){
    ② 없으면 서버에서 새로 하나 받는다
    서버를 못 읽으면 그 자리에서 포기한다 — 렌더할 때마다 다시 두드리지 않게. */
 let _hbBusy = false, _hbGaveUp = false;
+function trPalletHasStuff(p){
+  if(!p) return false;
+  if((p.lines||[]).length) return true;
+  try{ return (((_shipMeta||{}).orderShip)||[]).some(o=>o && o.pallet === p.label); }catch(e){ return false; }
+}
+function trHbinMap(){ _shipMeta = _shipMeta || {}; _shipMeta._hbins = _shipMeta._hbins || {}; return _shipMeta._hbins; }
 async function trEnsureBins(){
   if(_hbBusy || _hbGaveUp) return 0;
   if(typeof trDstKind!=='function' || trDstKind(_shipRoute) !== '3P') return 0;
-  const need = (_shipPallets||[]).filter(p=>p && !p.hbin);
+  // 빈 팔레트엔 번호를 안 매긴다 — 열었다 닫기만 해도 번호가 사라지던 문제 (v831)
+  const need = (_shipPallets||[]).filter(p=>p && !p.hbin && trPalletHasStuff(p));
   if(!need.length) return 0;
   _hbBusy = true;
   let got = 0, failed = false;
+  const map = trHbinMap();
   try{
     for(const p of need){
-      const saved = (p.lines||[]).map(l=>String((l&&l.ca_bin)||'').trim().toUpperCase())
-                                .find(b=>/^H\d+$/.test(b));
-      if(saved){ p.hbin = saved; got++; continue; }   // 이미 나간 번호 — 다시 받지 않는다
+      // 이미 이 초안에 매겨진 번호가 있으면 되찾는다 — 다시 받으면 번호를 태운다
+      const saved = String(map[p.label]||'').trim().toUpperCase()
+        || (p.lines||[]).map(l=>String((l&&l.ca_bin)||'').trim().toUpperCase()).find(b=>/^H\d+$/.test(b))
+        || '';
+      if(/^H\d+$/.test(saved)){ p.hbin = saved; map[p.label] = saved; got++; continue; }
       const nb = await hbTake();
       if(!nb){ failed = true; break; }
-      p.hbin = 'H' + nb; got++;
+      p.hbin = 'H' + nb; map[p.label] = p.hbin; got++;
     }
   }catch(e){ failed = true; }
   _hbBusy = false;
@@ -23535,7 +23560,7 @@ function invNpRowsHtml(){
     const money = '$' + Number(r.amt||0).toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2});
     return '<label style="display:flex;align-items:center;gap:9px;padding:8px 12px;border-bottom:1px solid #f1f5f9;font-size:12.5px;cursor:'+(r.hold?'not-allowed':'pointer')+';'+(r.hold?'background:#fef2f2;':'')+'">'
       + (r.hold ? '<span style="width:16px;text-align:center;">🔒</span>'
-                : '<input type="checkbox" class="invnp-cb" data-base="'+esc(r.base)+'" data-wh="'+esc(r.wh)+'" checked style="width:16px;height:16px;accent-color:#065f46;" onchange="invNpCount()">')
+                : '<input type="checkbox" class="invnp-cb" data-base="'+esc(r.base)+'" data-wh="'+esc(r.wh)+'" data-amt="'+(Number(r.amt)||0)+'" checked style="width:16px;height:16px;accent-color:#065f46;" onchange="invNpCount()">')
       + '<span style="font-family:Consolas,monospace;font-weight:800;color:#0f2a4a;min-width:96px;">PO '+esc(r.po||'—')+'</span>'
       + '<span style="flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">'+esc(r.cust||'')+'</span>'
       + '<span style="font-family:Consolas,monospace;font-size:10.5px;font-weight:800;color:'+(r.wh==='CA'?'#c2410c':'#1d4ed8')+';background:'+(r.wh==='CA'?'#fff7ed':'#eff6ff')+';border-radius:5px;padding:1px 7px;">'+esc(r.wh)+'</span>'
@@ -23547,13 +23572,27 @@ function invNpRowsHtml(){
       + '</label>';
   }).join('');
 }
+function invNpMoney(v){ return '$' + Number(v||0).toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2}); }
 function invNpCount(){
-  const n = document.querySelectorAll('.invnp-cb:checked').length;
+  const boxes = [...document.querySelectorAll('.invnp-cb')];
+  const picked = boxes.filter(c=>c.checked);
+  const n = picked.length;
   const el = document.getElementById('invnp-n'); if(el) el.textContent = n;
   const all = document.getElementById('invnp-all');
-  const tot = document.querySelectorAll('.invnp-cb').length;
+  const tot = boxes.length;
   if(all){ all.checked = tot>0 && n===tot; all.indeterminate = n>0 && n<tot; }
   const btn = document.getElementById('invnp-print'); if(btn) btn.disabled = !n;
+  // 고른 것 합계 — 얼마어치 인쇄하는지 바로 보이게 (v831)
+  const sum = picked.reduce((a,c)=>a+(Number(c.dataset.amt)||0), 0);
+  const sEl = document.getElementById('invnp-sum'); if(sEl) sEl.textContent = invNpMoney(sum);
+  const rows = (typeof invNpList==='function') ? invNpList() : [];
+  const allAmt  = rows.reduce((a,r)=>a+(Number(r.amt)||0), 0);
+  const heldAmt = rows.filter(r=>r.hold).reduce((a,r)=>a+(Number(r.amt)||0), 0);
+  const heldN   = rows.filter(r=>r.hold).length;
+  const fEl = document.getElementById('invnp-foot');
+  if(fEl) fEl.innerHTML = '<b style="color:#065f46;">' + invNpMoney(sum) + '</b> selected'
+    + '<span style="color:#94a3b8;"> · </span>' + rows.length + ' waiting, ' + invNpMoney(allAmt) + ' total'
+    + (heldN ? '<span style="color:#94a3b8;"> · </span><span style="color:#b91c1c;font-weight:800;">🔒 ' + heldN + ' on credit hold, ' + invNpMoney(heldAmt) + '</span>' : '');
 }
 function invNpToggleAll(on){ document.querySelectorAll('.invnp-cb').forEach(c=>{ c.checked = !!on; }); invNpCount(); }
 function invNpRender(){
@@ -23589,9 +23628,11 @@ function invNpOpen(){
     +     '<input type="checkbox" id="invnp-all" checked style="width:16px;height:16px;accent-color:#c2410c;" onchange="invNpToggleAll(this.checked)"> Select all</label>'
     +   '<span style="margin-left:auto;display:flex;gap:8px;align-items:center;">'
     +     '<span style="font-size:11.5px;color:#9a3412;font-weight:700;"><b id="invnp-n">0</b> selected</span>'
+    +     '<span id="invnp-sum" style="font-family:Consolas,monospace;font-size:14px;font-weight:900;color:#065f46;background:#ecfdf5;border:1px solid #a7f3d0;border-radius:7px;padding:2px 11px;" title="Total of the invoices you have checked">$0.00</span>'
     +     '<button class="btn btn-sm btn-primary" id="invnp-print" style="background:#065f46;border-color:#065f46;font-weight:800;" onclick="invNpPrint()">🖨 선택한 것 인쇄</button>'
     +   '</span></div>'
     + '<div id="invnp-body" style="overflow-y:auto;flex:1;"></div>'
+    + '<div id="invnp-foot" style="padding:7px 12px;border-top:1px solid #fed7aa;background:#fffbeb;font-size:12px;font-family:Consolas,monospace;color:#78350f;text-align:right;"></div>'
     + '<div style="padding:8px 12px;border-top:1px solid var(--border);font-size:10.5px;color:#64748b;">인쇄하면 인보이스 번호가 부여되고 <b>Complete(초록)</b> 로 바뀌어 — 개별로 인쇄할 때와 똑같아. 🔒 는 Credit Hold 라 승인 전에는 인쇄 안 돼.</div>'
     + '</div>';
   document.body.appendChild(div);
