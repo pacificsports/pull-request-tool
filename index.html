@@ -162,7 +162,7 @@ body.narrow main{max-width:1100px;}
   </span>
   <select id="lang-sel" onchange="setLang(this.value)" style="font-size:11px;padding:3px 6px;border-radius:5px;border:none;background:#1d3f66;color:#fff;"><option value="ko">한국어</option><option value="en">English</option><option value="es">Español</option></select>
   <button id="wide-btn" class="btn btn-sm" onclick="toggleWide()" title="화면 넓게 / 좁게 — 기본은 넓게 (이 브라우저에만 저장돼)" style="padding:2px 8px;font-size:10px;background:#1d3f66;color:#cfe0f2;border-color:#2b5384;">↔ Wide</button>
-  <span id="app-ver" style="font-size:10px;color:#9fb8d4;">v797</span>
+  <span id="app-ver" style="font-size:10px;color:#9fb8d4;">v798</span>
 </div>
 <script>
 // ↔ 넓게 보기 — 브라우저마다 따로 저장 (v793)
@@ -9259,6 +9259,149 @@ function spCombine(A){
   showToast(total + ' box read from ' + _spImgs.length + ' photo(s)'
             + (ctnList.length ? ' · ' + ctnList.length + ' carton no.' : '')
             + (unread ? ' · ' + unread + ' unreadable' : ''));
+}
+
+/* ═══════════ 🌐 Web Orders (v798) ═══════════
+   웹샵(pacific-sports-shop)에서 손님이 결제하면 web_orders 에 쌓인다.
+   지금까지 psflowx 는 그 테이블을 아예 몰랐다 → 주문이 들어와도 아무 데도 안 떴다.
+
+   여기서 하는 일은 딱 두 가지:
+     1) 안 처리된 주문(new / accepted / partial)을 대시보드 타일에 띄운다
+     2) [불러오기] 를 누르면 PO PDF 를 파싱했을 때와 똑같은 상태로 오더 폼을 채운다
+
+   PDF 로 뽑아서 다시 파싱하지 않는 이유 — items 가 이미 정형이라서다:
+     { style:"1368", color:"Bermuda", size:"M", qty:72, unit_price:3.75, wh:"SC" }
+   창고(wh)도 손님이 웹에서 고르기 때문에 이미 들어있다. 비는 건 P.BOX 뿐.
+
+   재고는 일부러 안 잡는다 (2026-08-26 결정). 도매라 동시 주문이 드물고,
+   모자라면 백오더로 처리하면 되기 때문. 대신 여기서 재고 부족을 미리 보여준다. */
+let _webOrders = [];
+function woCount(){ return (_webOrders||[]).length; }
+function woNum(o){ return String((o&&o.order_number)||'').trim(); }
+function woCust(o){ return String((o&&(o.company_name||o.contact_name))||'').trim() || '(no name)'; }
+function woWh(v){ return String(v||'SC').trim().toUpperCase()==='CA' ? 'CA' : 'SC'; }
+function woColor(c){ try{ return String(normalizePoColor(String(c||''))).toUpperCase(); }catch(e){ return String(c||'').toUpperCase(); } }
+
+// 이 라인이 지금 그 창고에 몇 장 있나 — 풀박스 + 낱장
+function woAvail(style, color, size, wh){
+  let n = 0;
+  try{ (bxFindAll(style, color, size, wh) || []).forEach(b=>{ n += Number(b.pcs)||0; }); }catch(e){}
+  try{
+    const row = pcStore.find(r=>r.k === pcKey(style, color, wh));
+    if(row) n += Number((row.qty||{})[String(size||'').toUpperCase()]) || 0;
+  }catch(e){}
+  return n;
+}
+function woLines(o){
+  return ((o && o.items) || []).map(it=>({
+    style: String(it.style||'').trim(),
+    color: woColor(it.color),
+    size:  (typeof normalizePoSize==='function') ? normalizePoSize(String(it.size||'')) : String(it.size||'').toUpperCase(),
+    qty:   Number(it.qty)||0,
+    price: Number(it.unit_price != null ? it.unit_price : it.price)||0,
+    wh:    woWh(it.wh),
+    styleName: String(it.styleName||'')
+  })).filter(l=>l.qty>0);
+}
+
+async function webOrdersLoad(silent){
+  try{
+    const r = await sbFetch('/rest/v1/web_orders?status=in.(new,accepted,partial)'
+      + '&select=id,order_number,company_name,contact_name,email,phone,items,total_pcs,total_amount,ship_to,shipping_method,shipping_cost,notes,status,created_at,paid_at'
+      + '&order=created_at.desc&limit=60');
+    _webOrders = r.ok ? (await r.json()) : [];
+  }catch(e){ _webOrders = []; }
+  const el = document.getElementById('kpi-web-n');
+  if(el) el.textContent = woCount();
+  if(!silent && woCount()) { /* 조용히 — 알림은 타일 숫자로 */ }
+  return _webOrders;
+}
+
+function webOrdersOpen(){
+  const rows = (_webOrders||[]).map(o=>{
+    const ls = woLines(o);
+    let short = 0;
+    const lineHtml = ls.map(l=>{
+      const av = woAvail(l.style, l.color, l.size, l.wh);
+      const lack = Math.max(0, l.qty - av);
+      if(lack) short++;
+      const c = l.wh==='CA' ? '#c2410c' : '#1d4ed8';
+      return '<div style="display:flex;gap:8px;align-items:baseline;font-size:11.5px;padding:2px 0;">'
+        + '<span style="font-family:Consolas,monospace;font-weight:800;color:#0f2a4a;min-width:38px;">'+esc(l.style)+'</span>'
+        + '<span style="width:160px;flex:none;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">'+esc(l.color)+'</span>'
+        + '<span style="font-weight:800;width:34px;flex:none;">'+esc(l.size)+'</span>'
+        + '<span style="font-family:Consolas,monospace;font-weight:800;width:58px;flex:none;text-align:right;">'+l.qty.toLocaleString()+'</span>'
+        + '<span style="font-size:9.5px;font-weight:800;flex:none;color:'+c+';background:'+(l.wh==='CA'?'#fff7ed':'#eff6ff')+';border-radius:4px;padding:1px 5px;">'+l.wh+'</span>'
+        + (lack
+            ? '<span style="font-size:10px;font-weight:800;color:#b91c1c;white-space:nowrap;">⚠ 재고 '+av.toLocaleString()+' — '+lack.toLocaleString()+'장 부족</span>'
+            : '<span style="font-size:10px;font-weight:700;color:#16a34a;white-space:nowrap;">✓ '+av.toLocaleString()+'</span>')
+        + '</div>';
+    }).join('');
+    const st = o.ship_to || {};
+    const where = [st.city, st.state].filter(Boolean).join(', ');
+    return '<div style="padding:12px 14px;border-bottom:1px solid #f1f5f9;">'
+      + '<div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;">'
+      +   '<span style="font-size:13px;font-weight:800;color:#0f2a4a;">'+esc(woCust(o))+'</span>'
+      +   '<span style="font-family:Consolas,monospace;font-size:11px;color:#0d9488;font-weight:800;">'+esc(woNum(o))+'</span>'
+      +   (where?'<span style="font-size:11px;color:#94a3b8;">'+esc(where)+'</span>':'')
+      +   '<span style="font-size:11px;color:#94a3b8;">'+esc(String(o.paid_at||o.created_at||'').slice(0,10))+'</span>'
+      +   (o.total_amount!=null?'<span style="font-family:Consolas,monospace;font-size:11.5px;font-weight:800;">$'+Number(o.total_amount).toLocaleString(undefined,{maximumFractionDigits:2})+'</span>':'')
+      +   '<button onclick="webOrderImport(\''+esc(String(o.id))+'\')" style="margin-left:auto;background:#0d9488;color:#fff;border:none;border-radius:8px;padding:6px 14px;font-size:12px;font-weight:800;cursor:pointer;">불러오기 ›</button>'
+      + '</div>'
+      + (short ? '<div style="font-size:11px;font-weight:800;color:#b91c1c;margin-top:5px;">⚠ '+short+'개 라인 재고 부족 — 백오더로 나갈 수 있어</div>' : '')
+      + '<div style="margin-top:6px;">'+lineHtml+'</div>'
+      + (o.notes ? '<div style="font-size:11px;color:#7c3aed;margin-top:5px;">📝 '+esc(String(o.notes))+'</div>' : '')
+      + '</div>';
+  }).join('') || '<div style="padding:24px;text-align:center;color:#94a3b8;font-size:13px;">새로 들어온 웹 주문이 없어 🎉</div>';
+
+  kpiShell('modal-weborders', '🌐 Web Orders ('+woCount()+')', '#0d9488', rows,
+    '웹샵에서 결제까지 끝난 주문이야. 주문확인 메일은 이미 손님한테 나갔고, [불러오기] 를 누르면 오더 폼이 채워져 — 창고 확인하고 P.BOX 지정한 뒤 저장하면 지금 PO 처리하는 것과 똑같아.');
+}
+
+// PO PDF 파싱이 끝났을 때와 같은 상태로 오더 폼을 채운다
+function webOrderImport(id){
+  const o = (_webOrders||[]).find(x=>String(x.id)===String(id));
+  if(!o){ showToast('⚠ 주문을 찾을 수 없어'); return; }
+  if(typeof poLines!=='undefined' && poLines && poLines.length){
+    if(!confirm('지금 작성 중인 오더 라인이 있어.\n웹 주문 '+woNum(o)+' 으로 바꿀까?')) return;
+  }
+  const lines = woLines(o).map(l=>({
+    style: l.style, rawDesc: l.styleName, desc: '',
+    color: l.color, size: l.size, qty: l.qty, price: l.price,
+    ppb: DEFAULT_PPB, wh: l.wh
+  }));
+  if(!lines.length){ showToast('⚠ 라인이 비어 있어'); return; }
+  try{ lines.forEach(l=>applyMaster(l)); }catch(e){}
+  poLines = lines;
+  try{ sortLines(); }catch(e){}
+
+  const $$ = id2 => document.getElementById(id2);
+  if($$('m-cust'))    $$('m-cust').value    = smartCase(woCust(o));
+  if($$('m-po'))      $$('m-po').value      = woNum(o);
+  if($$('m-podate'))  $$('m-podate').value  = String(o.paid_at||o.created_at||'').slice(0,10);
+  if($$('m-date'))    $$('m-date').value    = todayStr();
+
+  const st = o.ship_to || {};
+  // 이름 칸은 직접 넣는다 — fillAddr 의 '숫자 없는 첫 줄' 휴리스틱은
+  // 회사명에 숫자가 들어가면(예: Softice23) 이름을 못 골라내고 번지 줄에 붙여버린다.
+  const who  = String(st.company || st.name || woCust(o) || '').trim();
+  const addr = [ st.addr1||'', st.addr2||'',
+                 [ [st.city,st.state].filter(Boolean).join(', '), st.zip||'' ].filter(Boolean).join(' ') ]
+               .map(x=>String(x).trim()).filter(Boolean).join('\n');
+  ['bill','ship'].forEach(p=>{
+    const nm=$$('m-'+p+'-name'); if(nm) nm.value='';
+    ['addr','city','state','zip'].forEach(k=>{ const e=$$('m-'+p+'-'+k); if(e) e.value=''; });
+  });
+  const sab=$$('same-as-bill'); if(sab) sab.checked=false;
+  try{ _sameAsBill=false; }catch(e){}
+  try{ fillAddr('bill', addr); fillAddr('ship', addr); }catch(e){}
+  ['bill','ship'].forEach(p=>{ const nm=$$('m-'+p+'-name'); if(nm && who) nm.value = smartCase(who); });
+
+  try{ renderTable(); }catch(e){}
+  try{ updateNumPreview(); }catch(e){}
+  try{ saveDraft(); }catch(e){}
+  const m=document.getElementById('modal-weborders'); if(m) m.remove();
+  showToast('🌐 '+woNum(o)+' 불러왔어 — 창고 확인하고 📦 P.BOX 지정한 뒤 저장해');
 }
 function scanManual(key, d){
   if(!_scan) return;
@@ -21337,6 +21480,8 @@ function buildTrendHtml(){
 }
 function renderDash(){
   const el = $('dash-body'); if(!el) return;
+  // 🌐 웹 주문은 비동기로 읽어와서 타일 숫자만 갱신 (v798)
+  try{ if(!window._woLoaded){ window._woLoaded = 1; webOrdersLoad(true); setInterval(()=>webOrdersLoad(true), 120000); } }catch(e){}
   const byCust = {}, byItem = {};
   let totQ = 0, totAmt = 0, orders = 0;
   let shipQ = 0, shipAmt = 0;
@@ -22591,7 +22736,7 @@ function renderKpi(){
     ${numTile('🧾 Invoice Not Printed', uninv.toLocaleString(), '#c2410c', '#fff7ed', "invNpOpen()")}
     ${numTile('↩ Pending Return', pret.toLocaleString(), '#ea580c', '#fff7ed', "kpiPendingReturns()")}
     ${numTile('💳 Refund Pending', refund.toLocaleString(), '#7c2d12', '#faf5ff')}
-    ${EMPTY}
+    ${numTile('🌐 Web Orders', '<span id="kpi-web-n">'+woCount()+'</span>', '#0d9488', '#f0fdfa', "webOrdersOpen()")}
     ${laneTile('📦 SC · UPS ready', scUps, '#1d4ed8', "laneListOpen('SC',false)")}
     ${laneTile('🚛 SC · LTL ready', scLtl, '#0e7490', "laneListOpen('SC',true)")}
     ${laneTile('📦 CA · UPS ready', caUps, '#c2410c', "laneListOpen('CA',false)")}
