@@ -167,7 +167,7 @@ body.narrow main{max-width:1100px;}
   </span>
   <select id="lang-sel" onchange="setLang(this.value)" style="font-size:11px;padding:3px 6px;border-radius:5px;border:none;background:#1d3f66;color:#fff;"><option value="ko">한국어</option><option value="en">English</option><option value="es">Español</option></select>
   <button id="wide-btn" class="btn btn-sm" onclick="toggleWide()" title="화면 넓게 / 좁게 — 기본은 넓게 (이 브라우저에만 저장돼)" style="padding:2px 8px;font-size:10px;background:#1d3f66;color:#cfe0f2;border-color:#2b5384;">↔ Wide</button>
-  <span id="app-ver" style="font-size:10px;color:#9fb8d4;">v858</span>
+  <span id="app-ver" style="font-size:10px;color:#9fb8d4;">v859</span>
 </div>
 <script>
 // ↔ 넓게 보기 — 브라우저마다 따로 저장 (v793)
@@ -11072,23 +11072,38 @@ function scanCamListSoon(){
 }
 function scanCamList(){
   const el = document.getElementById('scan-cam-list'); if(!el || !_scan) return;
+  const pcs = scanIsPcs();
   const all = Array.from(_scan.seen.values());
-  const n = document.getElementById('scan-cam-n'); if(n) n.textContent = all.length.toLocaleString();
+  const pbs = (()=>{ try{ return Array.from((_scan.pbox||new Map()).values()); }catch(e){ return []; } })();
+  const boxN = all.length + pbs.length;                     // 실제로 찍은 박스 개수 (두 종류 다)
+
+  // 같은 스타일·컬러·사이즈는 한 줄로 묶는다 (박스마다 한 줄이면 목록이 금방 길어진다)
+  const g = {}, order = [];
+  const bump = (st, co, sz, add) => {
+    const k = scanKeyOf(st, co, sz);
+    if(!g[k]){ g[k] = {k, style:st, color:co, size:sz, n:0, boxes:0}; order.push(k); }
+    g[k].n += add; g[k].boxes++; g[k].last = order.length;   // 최근에 늘어난 줄이 위로
+  };
+  all.forEach(b=> bump(b.style, b.color, b.size, pcs ? (Number(b.qty)||0) : 1));
+  pbs.forEach(b=> (b.items||[]).forEach(i=> bump(i.style, i.color, i.size, pcs ? (Number(i.qty)||0) : 1)));
+  Object.keys((_scan.manual)||{}).forEach(k=>{
+    const p = String(k).split('|');
+    if(!g[k]){ g[k] = {k, style:p[0], color:p[1], size:p[2], n:0, boxes:0}; order.push(k); }
+    g[k].n += Number(_scan.manual[k])||0; g[k].last = order.length;
+  });
+
+  const gotTot = Object.keys(g).reduce((a,k)=>a+(Number(g[k].n)||0), 0);
+  const n = document.getElementById('scan-cam-n');
+  if(n) n.textContent = gotTot.toLocaleString();             // 분모와 같은 단위로
   const expTot = (_scan.exp||[]).reduce((a,x)=>a+(Number(x.qty)||0),0);
   const ex = document.getElementById('scan-cam-exp');
-  if(ex) ex.textContent = expTot ? (' / '+expTot.toLocaleString()) : '';
-  // 같은 스타일·컬러·사이즈는 한 줄로 묶고 개수를 센다 (박스마다 한 줄이면 목록이 금방 길어진다)
-  const g = {}, order = [];
-  all.forEach(b=>{
-    const k = b.key || scanKeyOf(b.style,b.color,b.size);
-    if(!g[k]){ g[k] = {k, style:b.style, color:b.color, size:b.size, n:0}; order.push(k); }
-    g[k].n++; g[k].last = order.length;                     // 최근에 늘어난 줄이 위로
-  });
+  if(ex) ex.textContent = expTot ? (' / '+expTot.toLocaleString() + (pcs?' pcs':'')) : '';
+
   const expMap = {};
   (_scan.exp||[]).forEach(e=>{ expMap[scanKeyOf(e.style,e.color,e.size)] = Number(e.qty)||0; });
   const rows = order.map(k=>g[k]).sort((a,b)=> (b.last-a.last));
   const dn = document.getElementById('scan-drawer-n');
-  if(dn) dn.textContent = all.length ? (all.length+' box · '+rows.length+' line') : '';
+  if(dn) dn.textContent = boxN ? (boxN+' box · '+rows.length+' line') : '';
   if(!rows.length){
     el.innerHTML = '<div style="color:#cbd5e1;font-size:12px;padding:8px 4px 12px;text-shadow:0 1px 3px #000;">Point the camera at the pallet face. Every box you read shows up here.</div>';
     return;
@@ -11105,6 +11120,7 @@ function scanCamList(){
       <span style="flex:1;min-width:0;font-size:13px;line-height:1.3;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">
         <b style="font-weight:900;">${esc(r.style)}</b> ${esc(r.color||'')}
         <span style="color:#cbd5e1;">&middot; ${esc(r.size||'')}</span>
+        ${(scanIsPcs() && r.boxes) ? '<span style="color:#94a3b8;font-size:11px;"> &middot; '+r.boxes+' box</span>' : ''}
       </span>
       <span style="flex:none;font-size:14px;font-weight:900;color:${col};">${tag}</span>
     </div>`;
