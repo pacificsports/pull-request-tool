@@ -167,7 +167,7 @@ body.narrow main{max-width:1100px;}
   </span>
   <select id="lang-sel" onchange="setLang(this.value)" style="font-size:11px;padding:3px 6px;border-radius:5px;border:none;background:#1d3f66;color:#fff;"><option value="ko">한국어</option><option value="en">English</option><option value="es">Español</option></select>
   <button id="wide-btn" class="btn btn-sm" onclick="toggleWide()" title="화면 넓게 / 좁게 — 기본은 넓게 (이 브라우저에만 저장돼)" style="padding:2px 8px;font-size:10px;background:#1d3f66;color:#cfe0f2;border-color:#2b5384;">↔ Wide</button>
-  <span id="app-ver" style="font-size:10px;color:#9fb8d4;">v849</span>
+  <span id="app-ver" style="font-size:10px;color:#9fb8d4;">v850</span>
 </div>
 <script>
 // ↔ 넓게 보기 — 브라우저마다 따로 저장 (v793)
@@ -7065,7 +7065,35 @@ function openBoxLabelForRec(base, mode){
 }
 // 🏷 Full Box Label (2x1 inch) — 목적: 거래처와 PO# 가 멀리서도 잘 보이게. 나머지는 하단에 작게 (v375)
 // dpi: 203(기본) 또는 300 — 라벨 모달에서 선택, 좌표/폰트 전체 스케일
-function blDpi(){ return 203; }   // 프린터 확인 결과 203dpi — 300 옵션 제거 (v377)
+/* 🖨 해상도는 사람이 설정하지 않는다 — 프린터가 이름으로 스스로 알려준다.
+   Browser Print 가 주는 이름이 "ZD421-203dpi (192.168.1.62)" 이런 식이라
+   거기서 숫자만 읽으면 된다. 300dpi 기계를 꽂으면 그날로 300 으로 돈다.
+   라벨 좌표는 전부 인치 × blDpi() 로 잡혀 있어서 이 값 하나만 맞으면 크기가 유지된다.
+   이름에서 못 읽으면 203 — 지금 쓰는 기계가 203 이고, 틀려도 안 찍히는 게 아니라
+   크기만 어긋나므로 조용히 멈추는 것보다 낫다. (v850) */
+let _blDpiVal = 203;
+function blDpiFromName(name){
+  const m = String(name||'').match(/(\d{3})\s*dpi/i);
+  const v = m ? parseInt(m[1],10) : 0;
+  return (v===203 || v===300 || v===600) ? v : 0;   // 조판용으로 말이 되는 값만
+}
+/* 지금 고른 프린터를 보고 값을 맞춘다. list 를 넘기면 다시 안 물어본다. */
+async function blDpiSync(list){
+  try{
+    if(!list) list = await blGetPrinters();
+    if(!list || !list.length) return _blDpiVal;
+    let p = list[0];
+    try{
+      const want = localStorage.getItem(blPrinterKey());
+      const m = list.find(x=>x && ((x.uid && x.uid===want) || x.name===want));
+      if(m) p = m;
+    }catch(e){}
+    const d = blDpiFromName(p && p.name);
+    if(d) _blDpiVal = d;
+  }catch(e){}
+  return _blDpiVal;
+}
+function blDpi(){ return _blDpiVal; }
 function buildFullBoxLabelZpl(box, totalBoxes, order) {
   const S = blDpi()/203;                       // 300dpi 프린터면 1.478배 확대
   const k = v => Math.round(v*S);
@@ -7251,6 +7279,7 @@ async function blPrintIdLabels(){
   const order=window._blOrder||{};
   if(!(order.customer_name||order.customer_po)){ showToast('⚠ No customer / PO# on this order'); return; }
   let n=parseInt((document.getElementById('bl-idqty')||{}).value,10)||0; if(n<1)n=1; if(n>200)n=200;
+  await blDpiSync();                  // (v850)
   const zpl=Array.from({length:n},()=>buildIdLabelZpl(order)).join('\n');
   const ok=await sendToZebraBrowserPrint(zpl, n);
   if(ok) showToast('🏷 '+n+' customer / PO# label(s) sent');
@@ -7456,6 +7485,28 @@ function pbQrText(box, order, host){
     return (host || PB_QR_HOST) + cust + '/' + po + '/' + wh + '/' + bn + '/' + body;
   }catch(e){ return ''; }
 }
+/* 🧺 PC Room 4×6 라벨만 IMS 원본에서 그대로 온 203dpi 좌표를 쓴다.
+   다른 라벨들처럼 인치로 다시 짜려면 좌표 수십 개를 전부 손대야 해서,
+   대신 다 만든 뒤에 좌표만 배율로 옮긴다.
+   203dpi 면 배율이 1 이라 글자 하나 안 바뀐다 — 지금 쓰는 기계에는 위험이 0 이고,
+   300dpi 를 꽂았을 때만 커진다.
+   ^FD…^FS 사이(=실제로 찍히는 내용)는 절대 건드리지 않는다.
+   'BOX 12 of 40' 이나 'PO-99812' 안의 숫자가 배율로 바뀌면 큰일이니까. (v850) */
+function zplScale(zpl, f){
+  if(!(f > 0) || Math.abs(f - 1) < 1e-9) return zpl;
+  const S = v => String(Math.round(Number(v) * f));
+  const C = v => String(Math.max(1, Math.round(Number(v) * f)));   // 선 두께·QR 배율은 0 이 되면 안 된다
+  return String(zpl).split(/(\^FD[\s\S]*?\^FS)/).map((chunk, i)=>{
+    if(i % 2) return chunk;                                  // ^FD…^FS = 데이터
+    return chunk
+      .replace(/\^(PW|LL|LS)(-?\d+)/g,           (m,c,a)=>'^'+c+S(a))
+      .replace(/\^(FO|LH)(-?\d+),(-?\d+)/g,      (m,c,a,b)=>'^'+c+S(a)+','+S(b))
+      .replace(/\^FB(\d+),(\d+),(-?\d+),/g,     (m,w,l,sp)=>'^FB'+S(w)+','+l+','+S(sp)+',')
+      .replace(/\^A0([NRIB]),(\d+),(\d+)/g,      (m,o,h,w)=>'^A0'+o+','+C(h)+','+C(w))
+      .replace(/\^GB(\d+),(\d+),(\d+)/g,        (m,w,h,t)=>'^GB'+S(w)+','+S(h)+','+C(t))
+      .replace(/\^BQ([NRIB]),(\d+),(\d+)/g,      (m,o,b,g)=>'^BQ'+o+','+b+','+Math.max(1,Math.min(100,Math.round(g*f))));
+  }).join('');
+}
 function buildBoxLabelZpl(box, totalBoxes, order) {
   // ZP450 4x6 inch = 812w x 1218h dots (203 dpi) — IMS 원본 그대로
   const poNum = (order.customer_po || '').substring(0, 26);
@@ -7506,7 +7557,7 @@ function buildBoxLabelZpl(box, totalBoxes, order) {
   });
   const totalDivY = yPos + 4;
   const totalTextY = totalDivY + 10;
-  return '^XA\n'
+  return zplScale('^XA\n'
     + '^POI\n'                                  // 180° invert — box label prints upside down (UPS labels unaffected; printer zpl.label_orientation must be 0)
     + '^MMT\n^PW812\n^LL1218\n^LS0\n'
     + '^FO30,30^FB' + HDRW + ',2,0,L,0^A0N,' + custFontSize + ',' + custFontSize + '^FD' + custName + '^FS\n'
@@ -7520,7 +7571,7 @@ function buildBoxLabelZpl(box, totalBoxes, order) {
     + '^FO30,' + totalTextY + '^A0N,' + itemFontH + ',' + itemFontH + '^FDTotal:^FS\n'
     + '^FO300,' + totalTextY + '^A0N,' + itemFontH + ',' + itemFontH + '^FD' + totalQty + ' pcs^FS\n'
     + '^FO0,1175^FB812,1,0,C,0^A0N,28,28^FDPacific Sports^FS\n'
-    + '^XZ';
+    + '^XZ', blDpi()/203);
 }
 async function blGetPrinters(){
   const r = await fetch('http://localhost:9100/available', { method:'GET', headers:{'Content-Type':'application/json'} });
@@ -7572,10 +7623,10 @@ function openBoxLabelModal(boxes, order){
     + '<span style="color:#fff;font-weight:700;font-size:14px;">' + (window._blMode==='full' ? '\uD83C\uDFF7 Full Box Label (2x2) — select boxes' : t('bl_title')) + '</span>'
     + '<button onclick="document.getElementById(\'modal-box-select\').remove()" style="background:none;border:none;color:#fff;font-size:18px;cursor:pointer;">✕</button>'
     + '</div>'
-    + (window._blMode==='full' ? '<div style="background:#ecfeff;border-bottom:1px solid #a5f3fc;padding:7px 14px;font-size:11.5px;color:#0e7490;font-weight:700;display:flex;align-items:center;gap:8px;flex-wrap:wrap;">\uD83C\uDFF7 <span id="bl-count">' + boxes.length + ' full box(es) \u2192 ' + boxes.length + ' label(s)</span> &nbsp;\u00B7&nbsp; \u26A0 Load <b>2\" x 2\"</b> label stock first.</div>'
+    + (window._blMode==='full' ? '<div style="background:#ecfeff;border-bottom:1px solid #a5f3fc;padding:7px 14px;font-size:11.5px;color:#0e7490;font-weight:700;display:flex;align-items:center;gap:8px;flex-wrap:wrap;">\uD83C\uDFF7 <span id="bl-count">' + boxes.length + ' full box(es) \u2192 ' + boxes.length + ' label(s)</span> &nbsp;\u00B7&nbsp; \u26A0 Load <b>2\" x 2\"</b> label stock first. <span id="bl-dpi" style="font-weight:800;"></span></div>'
       : '')
     + '<div style="padding:6px 14px;border-bottom:1px solid #eee;font-size:11.5px;display:flex;gap:6px;align-items:center;background:#f8fafc;">🖨 <b>Printer</b> '
-    + '<select id="bl-printer" class="fi" style="font-size:11.5px;flex:1;padding:3px 6px;" onchange="try{localStorage.setItem(blPrinterKey(), this.value)}catch(e){}"><option value="">Loading printers...</option></select>'
+    + '<select id="bl-printer" class="fi" style="font-size:11.5px;flex:1;padding:3px 6px;" onchange="try{localStorage.setItem(blPrinterKey(), this.value)}catch(e){}; blDpiSync().then(blDpiPaint)"><option value="">Loading printers...</option></select>'
     + '<button class="btn btn-sm" style="white-space:nowrap;font-size:11px;" onclick="blCalibrate()" title="Run ONCE after swapping label stock (4x6 ↔ 2x2) — the printer feeds a few labels to measure the new size. Fixes labels not coming out or printing in the wrong spot.">\uD83D\uDD27 Calibrate</button></div>'
     + '<div style="overflow-y:auto;flex:1;">' + (boxes.length ? boxListHtml : '<div style="padding:20px;text-align:center;color:#94a3b8;font-size:12px;">No full boxes on this order — use the 🏷 Customer + PO# label below.</div>') + '</div>'
     + '<div style="padding:9px 14px;border-top:1px solid #eee;background:#fff7ed;display:flex;align-items:center;gap:8px;flex-wrap:wrap;">'
@@ -7635,9 +7686,18 @@ async function blFillPrinterSel(){
       return '<option value="'+esc(id)+'"'+(on?' selected':'')+'>'+esc(p.name||id)+(p.connection?' · '+esc(p.connection):'')+'</option>';
     }).join('');
     if(!has){ try{ localStorage.setItem(blPrinterKey(), list[0].uid||list[0].name||'printer0'); }catch(e){} }
+    await blDpiSync(list);            // 고른 프린터에 맞춰 해상도도 같이 (v850)
+    blDpiPaint();
   }catch(e){ sel.innerHTML = '<option value="">⚠ Browser Print not reachable</option>'; }
 }
+/* 모달 머리에 "203 dpi" 를 적어둔다. 라벨이 이상한 크기로 나오면
+   제일 먼저 의심할 값이라 눈에 보이는 게 낫다. (v850) */
+function blDpiPaint(){
+  const el = document.getElementById('bl-dpi'); if(!el) return;
+  el.textContent = '\u00B7 ' + blDpi() + ' dpi';
+}
 async function confirmBoxLabelPrint(){
+  await blDpiSync();                  // ZPL 을 만들기 전에 해상도부터 (v850)
   const boxes = window._blBoxes || [];
   const checked = [...document.querySelectorAll('.box-label-cb:checked')].map(cb=>Number(cb.value));
   const sel = boxes.filter((_,i)=>checked.includes(i));
@@ -14905,7 +14965,7 @@ async function bxQrOpen(style, color){
     +       '<input id="bxqr-ppb" type="number" min="1" max="999" class="fi" style="width:100%;font-size:13px;padding:6px;text-align:center;font-weight:800;"></label>'
     +   '</div>'
     +   '<div style="margin-top:12px;font-size:11px;display:flex;align-items:center;gap:6px;flex-wrap:wrap;">\uD83D\uDDA8 <b>Printer</b>'
-    +     '<select id="bl-printer" class="fi" style="font-size:11.5px;flex:1;padding:3px 6px;" onchange="try{localStorage.setItem(blPrinterKey(), this.value)}catch(e){}"><option value="">Loading printers\u2026</option></select></div>'
+    +     '<select id="bl-printer" class="fi" style="font-size:11.5px;flex:1;padding:3px 6px;" onchange="try{localStorage.setItem(blPrinterKey(), this.value)}catch(e){}; blDpiSync().then(blDpiPaint)"><option value="">Loading printers\u2026</option></select></div>'
     +   '<div style="margin-top:8px;font-size:10.5px;color:#6d28d9;font-weight:800;display:flex;align-items:center;gap:8px;flex-wrap:wrap;">'
     +     '<span id="bxqr-next">\u267E numbers never run out</span>'
     +     '<span style="color:#94a3b8;font-weight:600;">\u26A0 Load 2\" x 2\" label stock</span></div>'
@@ -14937,6 +14997,7 @@ async function bxQrPrint(style, color){
   if(n < 1) n = 1; if(n > 200) n = 200;
   if(!sz){ showToast('⚠ Pick a size'); return; }
   if(ppb < 1){ showToast('⚠ Enter pcs per box'); return; }
+  await blDpiSync();                  // (v850)
   const go = document.getElementById('bxqr-go');
   if(go){ go.disabled = true; go.textContent = 'Printing…'; }
   /* v842: 서버에서 번호를 받아오지 않는다. 번호를 여기서 만들고, 겹치지 않는 건
