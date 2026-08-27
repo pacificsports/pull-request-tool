@@ -150,6 +150,11 @@ body.narrow main{max-width:1100px;}
 .pdf-mode .inv-tbl td.c-pbox{font-size:11px;}
 @media print{ .top,.card:not(#doc-card),.no-print,.doc-tabs{display:none!important;} .doc-view{border:none;padding:0;} #doc-card{border:none;padding:0;} .card-title{display:none;} }
 </style>
+<style>
+/* v840 — 뉴스바가 좁아지면 지수부터 접는다. 헤드라인이 먼저 읽혀야 한다. */
+@media (max-width: 1180px){ #news-idx .newsidx[data-k="NASDAQ"]{ display:none !important; } }
+@media (max-width: 1040px){ #news-idx{ display:none !important; } }
+</style>
 </head>
 <body>
 <div class="top">
@@ -162,7 +167,7 @@ body.narrow main{max-width:1100px;}
   </span>
   <select id="lang-sel" onchange="setLang(this.value)" style="font-size:11px;padding:3px 6px;border-radius:5px;border:none;background:#1d3f66;color:#fff;"><option value="ko">한국어</option><option value="en">English</option><option value="es">Español</option></select>
   <button id="wide-btn" class="btn btn-sm" onclick="toggleWide()" title="화면 넓게 / 좁게 — 기본은 넓게 (이 브라우저에만 저장돼)" style="padding:2px 8px;font-size:10px;background:#1d3f66;color:#cfe0f2;border-color:#2b5384;">↔ Wide</button>
-  <span id="app-ver" style="font-size:10px;color:#9fb8d4;">v839</span>
+  <span id="app-ver" style="font-size:10px;color:#9fb8d4;">v840</span>
 </div>
 <script>
 // ↔ 넓게 보기 — 브라우저마다 따로 저장 (v793)
@@ -24916,7 +24921,10 @@ function renderKpi(){
    워커가 30분 캐시를 물고 있어서 여기서는 세션당 한 번만 받아오면 된다.
    대시보드는 다시 그릴 때마다 renderKpi 가 돌기 때문에, 받아온 값은 밖에 두고
    그리기(newsPaint)와 받아오기(newsBoot)를 나눠 두었다. */
-const NEWS_URL  = 'https://parse-po.hjbae.workers.dev/news';
+/* v840 — 시세·뉴스 전용 워커로 이사했다.
+   parse-po 는 이제 PO 파싱만 한다 (거기 /news 는 당분간 여기로 넘겨주기만 함).
+   응답에 indices(다우·S&P·나스닥)와 items[].breaking / .tag 가 추가됐다. */
+const NEWS_URL  = 'https://market.hjbae.workers.dev/news';
 const NEWS_EVERY = 8000;                      // 헤드라인 넘어가는 간격
 let _news = null, _newsI = 0, _newsT = null, _newsLoading = false;
 
@@ -24927,6 +24935,7 @@ function newsBarHtml(){
     +   '<div id="news-ct" style="font-size:13px;font-weight:800;color:#94a3b8;font-family:Consolas,monospace;white-space:nowrap;">…</div></div>'
     +   '<canvas id="news-spark" width="150" height="34" style="width:75px;height:17px;flex:none;"></canvas>'
     + '</div>'
+    + newsIdxHtml()
     + '<div id="news-head" onclick="newsGo()" style="flex:1;min-width:0;display:flex;align-items:center;gap:9px;padding:8px 14px;cursor:pointer;overflow:hidden;">'
     +   '<span style="font-size:12px;flex:none;">📰</span>'
     +   '<span id="news-txt" style="flex:1;min-width:0;font-size:12.5px;font-weight:700;color:var(--text,#0f2a4a);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;transition:opacity .25s;">Loading industry news…</span>'
@@ -24935,14 +24944,62 @@ function newsBarHtml(){
     + '</div></div>';
 }
 
+/* 📈 다우 · S&P 500 · 나스닥 — 면화 칸과 같은 높이로 세 칸.
+   화면이 좁으면 지수부터 접는다 (헤드라인이 먼저 살아야 한다). */
+const NEWS_IDX = [
+  { key:'DOW',    label:'DOW',      dec:0 },
+  { key:'SP500',  label:'S&P 500',  dec:0 },
+  { key:'NASDAQ', label:'NASDAQ',   dec:0 }
+];
+function newsIdxHtml(){
+  return '<div id="news-idx" style="flex:none;display:flex;align-items:stretch;">'
+    + NEWS_IDX.map(function(d){
+        return '<div class="newsidx" data-k="' + d.key + '" style="flex:none;display:flex;flex-direction:column;justify-content:center;'
+             + 'padding:8px 13px;border-right:1px solid var(--line,#e2e8f0);min-width:0;">'
+             +   '<div style="font-size:9px;font-weight:800;letter-spacing:.07em;color:#64748b;white-space:nowrap;">' + esc(d.label) + '</div>'
+             +   '<div id="nidx-' + d.key + '" style="font-size:13px;font-weight:800;color:#94a3b8;font-family:Consolas,monospace;white-space:nowrap;">…</div>'
+             + '</div>';
+      }).join('')
+    + '</div>';
+}
+function newsIdxPaint(){
+  const box = document.getElementById('news-idx'); if(!box) return;
+  const list = (_news && _news.indices) || [];
+  let any = 0;
+  NEWS_IDX.forEach(function(d){
+    const el = document.getElementById('nidx-' + d.key); if(!el) return;
+    const q = list.find(function(x){ return x && x.key === d.key; });
+    const cell = el.parentNode;
+    if(!q || q.price == null){
+      el.textContent = 'n/a'; el.style.color = '#94a3b8';
+      if(cell) cell.title = '';
+      return;
+    }
+    any++;
+    const up = Number(q.change) >= 0;
+    el.style.color = '#0f2a4a';
+    el.innerHTML = Number(q.price).toLocaleString('en-US', { maximumFractionDigits: d.dec })
+      + (q.change == null ? '' : ' <span style="font-size:10.5px;font-weight:800;color:' + (up ? '#15803d' : '#b91c1c') + ';">'
+          + (up ? '▲' : '▼')
+          + (q.pct != null ? Math.abs(Number(q.pct)).toFixed(2) + '%' : Math.abs(Number(q.change)).toFixed(0))
+          + '</span>');
+    if(cell) cell.title = (q.name || d.label) + '  ' + Number(q.price).toLocaleString('en-US')
+      + (q.change != null ? ('  ' + (up ? '+' : '−') + Math.abs(Number(q.change)).toFixed(2)) : '')
+      + (q.asOf ? ('\nas of ' + String(q.asOf).replace('T',' ').slice(0,16)) : '');
+  });
+  box.style.display = any ? 'flex' : 'none';     // 셋 다 죽으면 자리만 차지하지 않게
+}
+
 async function newsBoot(){
   if(_news || _newsLoading) { newsPaint(); newsTimer(); return; }
   _newsLoading = true;
   try{
     const r = await fetch(NEWS_URL);
     const j = await r.json();
-    _news = { cotton: j.cotton || null, items: Array.isArray(j.items) ? j.items : [] };
-  }catch(e){ _news = { cotton:null, items:[] }; }
+    _news = { cotton: j.cotton || null,
+              indices: Array.isArray(j.indices) ? j.indices : [],
+              items: Array.isArray(j.items) ? j.items : [] };
+  }catch(e){ _news = { cotton:null, indices:[], items:[] }; }
   _newsLoading = false;
   _newsI = 0;
   newsPaint(); newsTimer();
@@ -24959,17 +25016,26 @@ function newsStep(d){
   else newsPaintHead();
   newsTimer();                                  // 손으로 넘기면 타이머도 다시 센다
 }
+/* 헤드라인 한 줄. 워커가 breaking 으로 찍어 준 건 앞에 빨간 딱지를 붙인다.
+   (CPI · PPI · 고용 · 연준 · 관세 · GDP · 경기침체 · 면화 — 우리 원가에 바로 오는 것들) */
 function newsPaintHead(){
   const t = document.getElementById('news-txt'), sc = document.getElementById('news-src');
   if(!t) return;
   if(!_news){ t.textContent = 'Loading industry news…'; return; }
   const it = _news.items[_newsI];
   if(!it){ t.textContent = 'No industry news right now.'; if(sc) sc.textContent=''; return; }
-  t.textContent = String(it.title||'');
+  const chip = it.breaking
+    ? '<span style="flex:none;display:inline-block;background:#dc2626;color:#fff;font-size:9px;font-weight:900;'
+      + 'letter-spacing:.06em;padding:2px 6px;border-radius:4px;margin-right:7px;vertical-align:1px;">🔴 BREAKING'
+      + (it.tag ? ' · ' + esc(String(it.tag)) : '') + '</span>'
+    : '';
+  t.innerHTML = chip + esc(String(it.title||''));
+  t.title = String(it.title||'') + (it.summary ? ('\n\n' + String(it.summary).slice(0,300)) : '');
   if(sc) sc.textContent = String(it.source||'');
 }
 function newsPaint(){
   newsPaintHead();
+  newsIdxPaint();
   const el = document.getElementById('news-ct'); if(!el) return;
   const c = _news && _news.cotton;
   if(!c || !c.ok){ el.textContent = 'n/a'; el.style.color = '#94a3b8'; return; }
@@ -25017,7 +25083,8 @@ function newsCottonOpen(){
   const lo = Math.min(...v), hi = Math.max(...v);
   const first = v[0], last = v[v.length-1];
   const chg = last - first, pct = first ? (chg/first*100) : 0;
-  const dstr = t => { try{ return new Date(Number(t)*1000).toISOString().slice(0,10); }catch(e){ return ''; } };
+  // v840: 옛 워커는 초, 새 워커는 밀리초로 준다. 둘 다 읽는다.
+  const dstr = t => { try{ const n = Number(t); return new Date(n > 1e12 ? n : n*1000).toISOString().slice(0,10); }catch(e){ return ''; } };
   const body = '<div style="padding:16px;">'
     + '<div style="display:flex;align-items:baseline;gap:12px;flex-wrap:wrap;margin-bottom:10px;">'
     +   '<span style="font-size:26px;font-weight:800;font-family:Consolas,monospace;color:#0f2a4a;">'+Number(c.price).toFixed(2)+'</span>'

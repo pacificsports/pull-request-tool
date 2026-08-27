@@ -123,7 +123,19 @@ async function getCotton() {
     const series = [];
     for (let i = 0; i < ts.length; i++) if (cl[i] != null) series.push([ts[i] * 1000, round2(cl[i])]);
     const price = meta && (meta.regularMarketPrice != null ? meta.regularMarketPrice : null);
-    const prev  = meta && (meta.chartPreviousClose != null ? meta.chartPreviousClose : meta.previousClose);
+    /* 전일 대비여야 한다.
+       range=6mo 로 부르면 meta.chartPreviousClose 는 "6개월 전 종가"라서
+       그걸 쓰면 하루 변동이 아니라 반년 변동이 찍힌다 (+25.30 / +39.9% 같은 값).
+       그래서 시계열의 바로 앞 종가를 전일 종가로 쓴다.
+       마지막 점이 오늘 값과 사실상 같으면 그 앞 점이 어제 종가다. */
+    let prev = null;
+    if (series.length >= 2) {
+      const lastC = series[series.length - 1][1];
+      prev = (price != null && Math.abs(lastC - price) < 0.005)
+             ? series[series.length - 2][1]      // 마지막 점 = 오늘 → 그 앞이 어제
+             : lastC;                            // 마지막 점 = 어제 (오늘 아직 안 닫힘)
+    }
+    if (prev == null && meta) prev = (meta.previousClose != null ? meta.previousClose : meta.chartPreviousClose);
     if (price != null) {
       const change = prev != null ? round2(price - prev) : null;
       return { ok: true, price: round2(price), change,
