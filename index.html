@@ -167,7 +167,7 @@ body.narrow main{max-width:1100px;}
   </span>
   <select id="lang-sel" onchange="setLang(this.value)" style="font-size:11px;padding:3px 6px;border-radius:5px;border:none;background:#1d3f66;color:#fff;"><option value="ko">한국어</option><option value="en">English</option><option value="es">Español</option></select>
   <button id="wide-btn" class="btn btn-sm" onclick="toggleWide()" title="화면 넓게 / 좁게 — 기본은 넓게 (이 브라우저에만 저장돼)" style="padding:2px 8px;font-size:10px;background:#1d3f66;color:#cfe0f2;border-color:#2b5384;">↔ Wide</button>
-  <span id="app-ver" style="font-size:10px;color:#9fb8d4;">v861</span>
+  <span id="app-ver" style="font-size:10px;color:#9fb8d4;">v862</span>
 </div>
 <script>
 // ↔ 넓게 보기 — 브라우저마다 따로 저장 (v793)
@@ -11039,6 +11039,46 @@ function scanBeep(ok){
     o.stop(ac.currentTime + (ok?0.07:0.18));
   }catch(e){}
 }
+/* 앱 안에 박힌 브라우저인가 — 거긴 카메라를 안 준다 */
+function scanInApp(){
+  const u = String(navigator.userAgent||'');
+  return /KAKAOTALK|FBAN|FBAV|FB_IAB|Instagram|Line\/|NAVER|DaumApps|Snapchat|WhatsApp|WebView|; wv\)/i.test(u);
+}
+function scanCamHelp(kind, detail){
+  const ov = document.getElementById('scan-cam'); if(!ov) return;
+  const A = {
+    insecure: { t:'This page is not on a secure address',
+      b:['The camera only works on <b>https://psflowx.com</b>.',
+         'Open psflowx.com in Chrome and try again.'] },
+    inapp: { t:'This browser cannot use the camera',
+      b:['The page was opened inside another app (KakaoTalk, Facebook, etc.).',
+         'Tap the <b>\u22EE</b> menu \u2192 <b>Open in Chrome</b>, then try again.'] },
+    denied: { t:'Camera permission is off',
+      b:['<b>1.</b> Tap the <b>\u{1F512} lock</b> next to psflowx.com in the address bar \u2192 Permissions \u2192 Camera \u2192 <b>Allow</b>.',
+         '<b>2.</b> If it is already allowed there, Chrome itself may not have camera permission:<br>Android <b>Settings \u2192 Apps \u2192 Chrome \u2192 Permissions \u2192 Camera \u2192 Allow</b>.',
+         '<b>3.</b> Close and reopen the page.'] },
+    busy: { t:'Another app is using the camera',
+      b:['Close the Camera app (and any video call), then try again.'] },
+    none: { t:'No camera found on this phone',
+      b:['Try the other phone, or count the boxes by hand with the <b>\uFF0B</b> buttons.'] },
+    other: { t:'The camera could not start',
+      b:['Try again. If it keeps failing, use another phone, or count by hand with <b>\uFF0B</b>.'] }
+  }[kind] || {t:'The camera could not start', b:[]};
+  const pane = document.createElement('div');
+  pane.id = 'scan-cam-help';
+  pane.style.cssText = 'position:absolute;inset:0;background:#0f172a;color:#e2e8f0;z-index:5;'
+    + 'display:flex;flex-direction:column;justify-content:center;padding:26px 22px;overflow-y:auto;';
+  pane.innerHTML = '<div style="font-size:44px;margin-bottom:10px;">\u{1F4F7}</div>'
+    + '<div style="font-size:19px;font-weight:900;color:#fca5a5;margin-bottom:12px;line-height:1.35;">'+A.t+'</div>'
+    + A.b.map(x=>'<div style="font-size:14px;line-height:1.65;margin-bottom:10px;color:#cbd5e1;">'+x+'</div>').join('')
+    + (detail ? '<div style="font-size:11px;color:#64748b;margin-top:6px;">('+esc(String(detail))+')</div>' : '')
+    + '<div style="display:flex;gap:9px;margin-top:20px;">'
+    +   '<button onclick="scanCamRetry()" style="flex:2;background:#22c55e;color:#fff;border:none;border-radius:12px;padding:16px;font-size:16px;font-weight:800;">Try again</button>'
+    +   '<button onclick="scanStop()" style="flex:1;background:#334155;color:#fff;border:none;border-radius:12px;padding:16px;font-size:15px;font-weight:800;">Back</button>'
+    + '</div>';
+  ov.appendChild(pane);
+}
+function scanCamRetry(){ try{ scanStop(); }catch(e){} setTimeout(()=>{ try{ scanCam(); }catch(e){} }, 120); }
 function scanLoadJsQr(){
   return new Promise((res,rej)=>{
     if(window.jsQR) return res();
@@ -11079,18 +11119,43 @@ async function scanCam(){
   document.body.appendChild(ov);
   window._scanMarks = [];                    // 화면에 잠깐 떠 있는 체크 표시들
   scanCamList();
+  try{
+    if(navigator.permissions && navigator.permissions.query){
+      const st = await navigator.permissions.query({name:'camera'});
+      if(st && st.state === 'prompt'){
+        const m0=document.getElementById('scan-cam-msg');
+        if(m0) m0.innerHTML = '<span style="color:#fde68a;">Tap <b>Allow</b> when the phone asks for the camera</span>';
+      }
+    }
+  }catch(e){}
   const msg = t => { const m=document.getElementById('scan-cam-msg'); if(m) m.innerHTML=t; };
   const video = document.getElementById('scan-video');
   let stream = null;
+  // 카메라를 아예 못 쓰는 자리부터 걸러낸다 — 여기서 걸리면 권한을 아무리 눌러도 안 된다
+  if(!window.isSecureContext){ scanCamHelp('insecure'); return; }
+  if(!(navigator.mediaDevices && navigator.mediaDevices.getUserMedia)){
+    scanCamHelp(scanInApp() ? 'inapp' : 'other', 'getUserMedia unavailable'); return; }
+  if(scanInApp()){ scanCamHelp('inapp'); return; }
+  let camErr = null;
   try{
-    // 📷 최대 해상도로 — QR 이 화면에서 차지하는 픽셀이 곧 인식 거리다 (4K 되면 4K)
-    // 4K 로 받아도 어차피 QR 이 125px 되게 줄여서 훑는다. 4K 영상 디코딩·합성 자체가 폰 CPU 를
-    // 계속 먹어서 스캔이 버벅였다 → 1080p 로 받고, 부족하면 아래에서 필요할 때만 올린다.
+    // 📷 QR 이 화면에서 차지하는 픽셀이 곧 인식 거리다. 4K 는 폰 CPU 를 계속 먹어서
+    // 1080p 로 받고, 부족하면 아래에서 필요할 때만 올린다.
     stream = await navigator.mediaDevices.getUserMedia({ video:{ facingMode:{ideal:'environment'},
       width:{ideal:1920}, height:{ideal:1080}, frameRate:{ideal:30} }, audio:false });
   }catch(e){
     try{ stream = await navigator.mediaDevices.getUserMedia({ video:{ facingMode:{ideal:'environment'} }, audio:false }); }
-    catch(e2){ msg('&#9888; Camera blocked — allow camera access for psflowx.com'); return; }
+    catch(e2){
+      try{ stream = await navigator.mediaDevices.getUserMedia({ video:true, audio:false }); }   // 마지막 — 조건 없이
+      catch(e3){ camErr = e3; }
+    }
+  }
+  if(!stream){
+    const nm = String((camErr&&camErr.name)||'');
+    const kind = /NotAllowed|Security/i.test(nm) ? 'denied'
+               : /NotReadable|TrackStart|Aborted/i.test(nm) ? 'busy'
+               : /NotFound|Overconstrained|DevicesNotFound/i.test(nm) ? 'none' : 'other';
+    scanCamHelp(kind, nm || (camErr&&camErr.message));
+    return;
   }
   window._scanStream = stream; video.srcObject = stream;
   try{ await video.play(); }catch(e){}
@@ -11366,6 +11431,7 @@ function scanAccept(hits){
 }
 function scanStop(){
   window._scanRun = false;
+  try{ const h=document.getElementById('scan-cam-help'); if(h) h.remove(); }catch(e){}
   try{ (window._scanStream||{getTracks:()=>[]}).getTracks().forEach(t=>t.stop()); }catch(e){}
   window._scanStream = null;
   const ov = document.getElementById('scan-cam'); if(ov) ov.remove();
