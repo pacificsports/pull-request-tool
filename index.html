@@ -167,7 +167,7 @@ body.narrow main{max-width:1100px;}
   </span>
   <select id="lang-sel" onchange="setLang(this.value)" style="font-size:11px;padding:3px 6px;border-radius:5px;border:none;background:#1d3f66;color:#fff;"><option value="ko">한국어</option><option value="en">English</option><option value="es">Español</option></select>
   <button id="wide-btn" class="btn btn-sm" onclick="toggleWide()" title="화면 넓게 / 좁게 — 기본은 넓게 (이 브라우저에만 저장돼)" style="padding:2px 8px;font-size:10px;background:#1d3f66;color:#cfe0f2;border-color:#2b5384;">↔ Wide</button>
-  <span id="app-ver" style="font-size:10px;color:#9fb8d4;">v854</span>
+  <span id="app-ver" style="font-size:10px;color:#9fb8d4;">v855</span>
 </div>
 <script>
 // ↔ 넓게 보기 — 브라우저마다 따로 저장 (v793)
@@ -14492,6 +14492,33 @@ function bxVariantLabel(c, style){
   if(isUS) m.push('US');
   return m.join('·');
 }
+/* ═══ 🔒 이송에 잡힌 박스 (v855) ═══
+   실제로 사고가 났다: 8/19 에 SC→CA 이송에 실어둔 8368 PISTACHIO S 박스를
+   8/20 에 오더가 PC Room 으로 뜯어 갔다. 그 박스는 8/21 에 트럭에 실려 CA 로 갔고,
+   8/25 CA 도착 처리에서 '이미 나간 박스' 인 채로 CA 재고에 들어갔다.
+   한 박스가 두 번 쓰인 것이다.
+
+   구멍은 여기였다 — 이송 초안에 담아도 박스는 status='IN' 이고 원래 bin 에 그대로 있다.
+   (일부러 그렇게 해뒀다. 트럭에 싣기 전에는 SC 재고로 세야 하니까.)
+   그래서 오더 화면에서는 아무 표시 없이 그냥 집을 수 있는 박스로 보였다.
+
+   막는 방법: 아직 안 끝난 이송(LOADING/TRANSIT)에 실린 박스 id 를 들고 있다가
+   오더가 박스를 고를 때 빼버린다. 재고 숫자에서 빼지는 않는다 — 아직 SC 에 있는 게 맞으니까.
+   집을 수만 없게 한다. */
+let TXHOLD = new Set(), TXHOLD_REF = {}, _txHoldAt = 0;
+async function txHoldRefresh(force){
+  if(!force && Date.now() - _txHoldAt < 60000) return TXHOLD;
+  try{
+    const r = await sbFetch('/rest/v1/pr_transfers?select=ref,status,lines&status=in.(LOADING,TRANSIT)&limit=200');
+    if(!r.ok) return TXHOLD;
+    const set = new Set(), ref = {};
+    (await r.json()).forEach(t=>{ (Array.isArray(t.lines)?t.lines:[]).forEach(l=>{
+      (l.ids||[]).forEach(id=>{ set.add(id); ref[id] = t.ref || '(transfer)'; }); }); });
+    TXHOLD = set; TXHOLD_REF = ref; _txHoldAt = Date.now();
+  }catch(e){}
+  return TXHOLD;
+}
+function txHeld(id){ return TXHOLD.has(id); }
 function bxFindBase(style, color, size, wh){
   const st = String(style).trim().toUpperCase(), bc = bxBaseColor(color), sz = String(size||'').trim().toUpperCase();
   const w = wh ? String(wh).trim().toUpperCase() : '';
@@ -14915,6 +14942,7 @@ async function _bxFetchStore(){
     out.sort((a,b)=> a._sk<b._sk?-1:(a._sk>b._sk?1:0));
     bxStore = out; bxLoaded = true;
     window._bxRev = (window._bxRev||0)+1;
+    try{ await txHoldRefresh(true); }catch(e){}      // 이송에 잡힌 박스 (v855)
     // 박스 로드 완료 → 재고 캐시 무효화 + 오더 줄 SC/CA·FULL BOX 재고 숫자 즉시 갱신 (로딩 전 "0" 고착 해결) (v495)
     try{ _lineAvailCache = {}; if(typeof poLines!=='undefined' && poLines.length && typeof refreshRow==='function'){ poLines.forEach((l,i)=>{ try{ refreshRow(i); }catch(e){} }); } }catch(e){}
     // 🚢 Incoming (Haiti PENDING) 도 함께 갱신 — Full Box 표시용 (v371)
@@ -15829,6 +15857,7 @@ async function bxToPcFromEditor(i){
   const lwh0 = String(L.wh||'SC').trim().toUpperCase() || 'SC';
   if(lwh0 !== 'SC' && lwh0 !== 'CA'){ showToast('⚠ PC Room is SC/CA warehouses only'); return; }
   if(!bxLoaded) await bxFetchStore();
+  await txHoldRefresh();                 // 이송에 잡힌 박스 목록 최신화 (v855)
   const poN = String(((typeof getMeta==='function'?getMeta():{}).po)||'').trim();
   bxOpenPicker(L, lwh0, 'PC ROOM' + (poN?' (PO '+poN+')':''), res=>{
     if(res && res.locs && res.locs.length){
@@ -15845,11 +15874,19 @@ function bxOpenPicker(L, lwh, po, onDone, mode, needOverride){
   if(!need){ showToast('⚠ This line has no full boxes (loose only) — handle it in PC Room'); if(onDone) onDone(false); return; }
   const st = bxStyleFor(L);
   const wantCol = String(bxColorFor(L)).toUpperCase();
-  const avail = bxFindBase(st, wantCol, L.size, lwh);   // 같은 base 칼라의 모든 변형 (Tubular/Side Seam/US) · in_at asc = 오래된 순
+  const _all = bxFindBase(st, wantCol, L.size, lwh);   // 같은 base 칼라의 모든 변형 (Tubular/Side Seam/US) · in_at asc = 오래된 순
+  /* 🔒 이송에 실린 박스는 후보에서 뺀다 — 트럭에 실릴 물건을 오더가 가져가면 안 된다 (v855) */
+  const _held = _all.filter(b=>txHeld(b.id));
+  const avail = _all.filter(b=>!txHeld(b.id));
+  if(_held.length){
+    const _refs = [...new Set(_held.map(b=>TXHOLD_REF[b.id]).filter(Boolean))];
+    showToast('\u{1F512} ' + _held.length + ' box(es) skipped \u2014 already on transfer ' + _refs.join(', '));
+  }
   if(!avail.length){ showToast('⚠ ['+lwh+'] '+L.style+' '+String(L.color).toUpperCase()+' '+String(L.size).toUpperCase()+' no full box stock'); if(onDone) onDone(false); return; }
   // 🔒 reserve 보호: 이 라인이 _useReserve(dip-in) 아니면 예약 박스는 자동배정·가용에서 제외
   const _lineUseRsv = !!(L && L._useReserve);
   const _rsvN = _lineUseRsv ? 0 : ((typeof reservedBoxes==='function') ? reservedBoxes(st, bxColorFor(L), L.size, lwh) : 0);
+  void _all;
   const _effAvail = Math.max(0, avail.length - _rsvN);
   const _rsvCust = (()=>{ try{ const r=reserveFor(st, bxColorFor(L), L.size, lwh); return r&&r.cust?r.cust:''; }catch(e){ return ''; } })();
   // 변형+location별 그룹 (주문과 같은 변형 먼저, 그 다음 오래된 순)
@@ -18833,6 +18870,19 @@ let _shipId = null, _shipNo = null, _shipMeta = {}, _shipPallets = [], _shipRout
 let _trFilter = 'all';
 function trChunk(ids){ const out=[]; for(let i=0;i<ids.length;i+=80) out.push(ids.slice(i,i+80)); return out; }
 async function trPatchBoxes(ids, body){ for(const ch of trChunk(ids)) await bxPatch(ch, body); }
+/* 도착 처리 전에 확인 — 실려온 박스가 그 사이에 이미 출고돼 버렸으면 받으면 안 된다.
+   받아버리면 이미 판 물건이 재고로 되살아난다 (v855) */
+async function trRecvVerifyIn(ids){
+  try{
+    const bad = [];
+    for(const ch of trChunk(ids)){
+      const r = await sbFetch('/rest/v1/pr_boxes?select=id,status,out_po,out_at&id=in.('+ch.join(',')+')');
+      if(!r.ok) continue;
+      (await r.json()).forEach(b=>{ if(b.status !== 'IN') bad.push(b); });
+    }
+    return bad;
+  }catch(e){ return []; }
+}
 // ── 노선 (Route) ── SC↔CA 외에 3rd Party(Hodge, H* bin) 노선 지원
 // 위치 종류: SC=SC 자체 bin · CA=CA 자체 bin · 3P=SC 3rd party(H*) · LK=CA 3rd party(SPECIAL*)
 const TR_ROUTES = {
@@ -21316,7 +21366,19 @@ async function trRecvApplyOne(pi, li){
     label = '↩ '+window._trRecvRetRef+' ×'+qty;
   } else {   // sc
     if(l.is_manual){ const arr=[]; for(let j=0;j<qty;j++) arr.push({style:l.style,color:l.color,size:l.size,pcs:ppb,loc:bin,wh:destWh,status:'IN',in_by:by,note:'transfer '+(_trRecvRec.ref||'')}); if(typeof skuLoaded!=='undefined'&&!skuLoaded) await skuFetch(); await bxInsert(arr); }
-    else if(takeIds.length){ await trPatchBoxes(takeIds, {wh:destWh, loc:bin}); }
+    else if(takeIds.length){
+      /* 도착 = 그 창고에 '오늘' 들어온 것이다. 예전에는 wh 와 loc 만 바꿔서
+         입고일(in_at)이 SC 에 처음 들어온 날 그대로 남았다 — 그래서 CA 이동내역이
+         몇 주 전 날짜로 찍혔다. 도착한 날로 다시 찍는다. (v855) */
+      const _chk = await trRecvVerifyIn(takeIds);
+      if(_chk.length){
+        throw new Error(l.style+' '+l.color+' '+l.size+': '+_chk.length
+          + ' box(es) already went out before this arrival ('+_chk[0].out_po+'). '
+          + 'Do not receive them \u2014 tell the office.');
+      }
+      await trPatchBoxes(takeIds, { wh:destWh, loc:bin,
+        in_at:new Date().toISOString(), in_by:by, note:'transfer '+(_trRecvRec.ref||'') });
+    }
     label = '📍 '+bin+' ×'+qty;
   }
   if(l.is_manual) l.boxes = Math.max(0, (Number(l.boxes)||0) - qty);
