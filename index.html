@@ -167,7 +167,7 @@ body.narrow main{max-width:1100px;}
   </span>
   <select id="lang-sel" onchange="setLang(this.value)" style="font-size:11px;padding:3px 6px;border-radius:5px;border:none;background:#1d3f66;color:#fff;"><option value="ko">한국어</option><option value="en">English</option><option value="es">Español</option></select>
   <button id="wide-btn" class="btn btn-sm" onclick="toggleWide()" title="화면 넓게 / 좁게 — 기본은 넓게 (이 브라우저에만 저장돼)" style="padding:2px 8px;font-size:10px;background:#1d3f66;color:#cfe0f2;border-color:#2b5384;">↔ Wide</button>
-  <span id="app-ver" style="font-size:10px;color:#9fb8d4;">v853</span>
+  <span id="app-ver" style="font-size:10px;color:#9fb8d4;">v854</span>
 </div>
 <script>
 // ↔ 넓게 보기 — 브라우저마다 따로 저장 (v793)
@@ -7210,29 +7210,76 @@ function buildFbQrLabelZpl(box, sscc){
    찍혀 다 잘린다 — 어떤 프린터를 사도 그냥 돌아가게 한다.
    ZPL ^BQ 배율은 1~100 이라 300dpi 에서도 같은 물리 크기가 나온다. */
 function bq2Dots(inch){ return Math.round(inch * blDpi()); }
-function bq2Mag(txt){
+function bq2Mag(txt, boxDots){
   const m = pbQrModules(String(txt||'').length);
-  const box = Math.round(1.68 * blDpi());        // QR 이 들어갈 자리 — 인치로 잡는다
+  // 자리를 안 주면 예전처럼 1.68인치 — 재고용 QR-only 스티커가 그대로 나오게 (v854)
+  const box = (boxDots && boxDots > 0) ? boxDots : Math.round(1.68 * blDpi());
   return { mod:m, mag: Math.max(2, Math.min(100, Math.floor(box / m))) };
 }
-function buildBoxQr2x2Zpl(it, ctn){
+function buildBoxQr2x2Zpl(it, ctn, order){
   if(!it || !ctn) return '';
-  const BQ2_W = bq2Dots(2), BQ2_H = bq2Dots(2);
+  const D = blDpi(), BQ2_W = bq2Dots(2), BQ2_H = bq2Dots(2);
   const qr = fbQrText(it, ctn);
-  const g  = bq2Mag(qr);
-  const qrD = g.mod * g.mag;
-  const qx  = Math.max(6, Math.round((BQ2_W - qrD) / 2));
-  const qy  = Math.round(0.07 * blDpi());
-  // QR 아래 한 줄 — QR 폭을 넘지 않게 글자 크기를 맞춘다
   const line = (pbSafe(it.styleNum) + ' ' + pbSafe(it.color) + ' ' + pbSafe(it.size))
                .replace(/\s+/g,' ').trim() || '-';
-  let f = Math.floor(qrD / (line.length * 0.60));
-  f = Math.max(Math.round(0.07*blDpi()), Math.min(Math.round(0.17*blDpi()), f));
-  const ty = Math.min(BQ2_H - f - Math.round(0.03*blDpi()), qy + qrD + Math.round(0.05*blDpi()));
-  return '^XA\n^POI\n^MMT\n^PW' + BQ2_W + '\n^LL' + BQ2_H + '\n^LS0\n'
-    + '^FO' + qx + ',' + qy + '^BQN,2,' + g.mag + '^FDMA,' + qr + '^FS\n'
-    + '^FO' + qx + ',' + ty + '^FB' + qrD + ',1,0,C,0^A0N,' + f + ',' + f + '^FD' + line + '^FS\n'
-    + '^XZ';
+
+  /* ═══ 같은 스티커, 붙이는 때가 둘 ═══
+       · 재고용 — 박스를 만들 때 붙인다. 그때는 누구 물건이 될지 모른다 → QR 만 (예전 그대로).
+       · 오더용 — QR 이 이미 붙은 박스를 오더에 태울 때 그 위에 덧붙인다 (v854).
+                 거래처가 "우리 이름과 PO# 를 박스에 적어달라" 고 하는 그 자리다.
+     order 를 안 넘기면 아래 옛 코드로 그대로 빠진다 — 재고쪽 스티커는 한 점도 안 바뀐다. */
+  const cust = order ? pbSafe(order.customer_name).substring(0,38) : '';
+  const poNo = order ? pbSafe(order.customer_po).substring(0,28)   : '';
+
+  if(!(cust || poNo)){
+    const g0   = bq2Mag(qr);
+    const qrD0 = g0.mod * g0.mag;
+    const qx0  = Math.max(6, Math.round((BQ2_W - qrD0) / 2));
+    const qy0  = Math.round(0.07 * D);
+    let f0 = Math.floor(qrD0 / (line.length * 0.60));
+    f0 = Math.max(Math.round(0.07*D), Math.min(Math.round(0.17*D), f0));
+    const ty0 = Math.min(BQ2_H - f0 - Math.round(0.03*D), qy0 + qrD0 + Math.round(0.05*D));
+    return '^XA\n^POI\n^MMT\n^PW' + BQ2_W + '\n^LL' + BQ2_H + '\n^LS0\n'
+      + '^FO' + qx0 + ',' + qy0 + '^BQN,2,' + g0.mag + '^FDMA,' + qr + '^FS\n'
+      + '^FO' + qx0 + ',' + ty0 + '^FB' + qrD0 + ',1,0,C,0^A0N,' + f0 + ',' + f0 + '^FD' + line + '^FS\n'
+      + '^XZ';
+  }
+
+  /* ── 오더용 ──
+     ZPL 기본 글꼴(A0)은 글자 폭이 높이의 약 0.60 배다.
+     칸에 맞는 최대 크기를 고르되, 너무 작아져 못 읽는 일이 없게 바닥을 둔다. */
+  const fit = (txt, avail, max, min) => {
+    const len = Math.max(1, String(txt).length);
+    return Math.max(min, Math.min(max, Math.floor(avail / (len * 0.60))));
+  };
+  const R = v => Math.round(v * D);
+  const pad = R(0.05), UW = BQ2_W - pad*2;
+
+  /* 줄 높이는 고정, 글자만 폭에 맞춰 줄어든다 — 거래처 이름이 짧다는 이유로
+     QR 이 커졌다 작아졌다 하면 라벨마다 모양이 달라진다. 이러면 QR 은 늘 같은 크기다.
+     PO# 자리를 더 크게 준다: 창고에서 박스를 찾을 때 눈이 먼저 가는 건 번호다. */
+  const SLOT_C = R(0.17), SLOT_P = R(0.25), GAP_CP = R(0.012);
+  const fC = cust ? fit(cust, UW, SLOT_C, R(0.075)) : 0;
+  const fP = poNo ? fit('PO# ' + poNo, UW, SLOT_P, R(0.09)) : 0;
+  const yC = pad + (SLOT_C - fC);                       // 작아진 글자는 제 칸 밑줄에 맞춘다
+  const yP = pad + SLOT_C + GAP_CP + (SLOT_P - fP);
+  const qrTop = pad + SLOT_C + GAP_CP + SLOT_P + R(0.04);
+
+  const fB = fit(line, UW, R(0.105), R(0.055));
+  const qrAvail = BQ2_H - pad - fB - R(0.03) - qrTop;
+  const g = bq2Mag(qr, Math.min(UW, qrAvail));
+  const qrD = g.mod * g.mag;
+  const qx  = Math.max(pad, Math.round((BQ2_W - qrD) / 2));
+  const qy  = qrTop + Math.max(0, Math.round((qrAvail - qrD) / 2));
+  const ty  = BQ2_H - pad - fB;
+
+  let z = '^XA\n^POI\n^MMT\n^PW' + BQ2_W + '\n^LL' + BQ2_H + '\n^LS0\n';
+  if(cust) z += '^FO' + pad + ',' + yC + '^FB' + UW + ',1,0,C,0^A0N,' + fC + ',' + fC + '^FD' + cust + '^FS\n';
+  if(poNo) z += '^FO' + pad + ',' + yP + '^FB' + UW + ',1,0,C,0^A0N,' + fP + ',' + fP + '^FDPO# ' + poNo + '^FS\n';
+  z += '^FO' + qx + ',' + qy + '^BQN,2,' + g.mag + '^FDMA,' + qr + '^FS\n'
+     + '^FO' + pad + ',' + ty + '^FB' + UW + ',1,0,C,0^A0N,' + fB + ',' + fB + '^FD' + line + '^FS\n'
+     + '^XZ';
+  return z;
 }
 
 // 🏷 거래처 + PO# 만 크게 찍는 식별 라벨 (2x1) — pallet/박스에 붙여 어느 거래처·PO 물건인지 구분 (v699)
@@ -7721,7 +7768,7 @@ async function confirmBoxLabelPrint(){
     parts.push(isFull ? buildFullBoxLabelZpl(box, whTotal, order) : buildBoxLabelZpl(box, whTotal, order));
     if(fbQr){
       const it = (box.items||[])[0];
-      if(it){ const c = ctnNew(); made.push(c); parts.push(buildBoxQr2x2Zpl(it, c)); }
+      if(it){ const c = ctnNew(); made.push(c); parts.push(buildBoxQr2x2Zpl(it, c, order)); }
     }
   });
   if(idWanted){ for(let i=0;i<idN;i++) parts.push(buildIdLabelZpl(order)); }
