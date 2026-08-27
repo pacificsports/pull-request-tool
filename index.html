@@ -167,7 +167,7 @@ body.narrow main{max-width:1100px;}
   </span>
   <select id="lang-sel" onchange="setLang(this.value)" style="font-size:11px;padding:3px 6px;border-radius:5px;border:none;background:#1d3f66;color:#fff;"><option value="ko">한국어</option><option value="en">English</option><option value="es">Español</option></select>
   <button id="wide-btn" class="btn btn-sm" onclick="toggleWide()" title="화면 넓게 / 좁게 — 기본은 넓게 (이 브라우저에만 저장돼)" style="padding:2px 8px;font-size:10px;background:#1d3f66;color:#cfe0f2;border-color:#2b5384;">↔ Wide</button>
-  <span id="app-ver" style="font-size:10px;color:#9fb8d4;">v846</span>
+  <span id="app-ver" style="font-size:10px;color:#9fb8d4;">v847</span>
 </div>
 <script>
 // ↔ 넓게 보기 — 브라우저마다 따로 저장 (v793)
@@ -9197,7 +9197,9 @@ function tdBtn(base, wh){
     + ' title="' + (on ? 'Marked to ship ' + tdMD(tdDay()) + ' — staff see it in /pic Pending Orders. It clears itself when this ' + wh + ' packing list is completed, or at midnight. Click to unmark.'
                        : 'Mark this ' + wh + ' order to ship TODAY — staff can then select it in one tap in /pic') + '"'
     + ' onclick="event.stopPropagation();tdToggle(\'' + esc(String(base)) + '\',\'' + esc(String(wh)) + '\')">📅 '
-    + (on ? esc(tdMD(tdDay())) : 'Today') + '</button>';
+    /* v847: 꺼진 버튼은 「누르면 뭐가 되는지」를 말해야 한다 — 예전 'Today' 는 날짜 필터처럼 읽혔다.
+       켜진 쪽에 날짜를 찍던 것도 뺐다: 오늘 날짜가 아니면 애초에 꺼진 걸로 치므로 늘 오늘이라 정보가 없었다. */
+    + (on ? ('Ship Today \u00B7 ' + esc(tdMD(tdDay()))) : 'Ship Today') + '</button>';
 }
 async function tdToggle(base, wh){
   const on = !tdIsOn(base, wh);
@@ -16448,13 +16450,15 @@ function rptOptGet(){
   let o = {};
   try{ o = JSON.parse(localStorage.getItem(LS_RPTOPT)||'{}'); }catch(e){}
   return { noRsv: (o.noRsv === undefined ? true : !!o.noRsv),   // 기본은 예약분 빼고 (v839)
-           no3P: !!o.no3P,                                     // 3rd party 재고 빼기 (v846, 기본 꺼짐)
+           /* v847: '' 전부포함 · 'LK' SPECIAL 만 빼기 · 'ALL' 3rd party 전부 빼기.
+              v846 의 참/거짓 설정은 'ALL' 로 읽어 준다 */
+           x3p: (o.x3p === 'LK' || o.x3p === 'ALL') ? o.x3p : (o.no3P ? 'ALL' : ''),
            cap: Number(o.cap)||0, cut: Number(o.cut)||0 };
 }
 function rptOptRead(){
   const g = id => document.getElementById(id);
   const o = { noRsv: !!(g('rpt-norsv')||{}).checked,
-              no3P: !!(g('rpt-no3p')||{}).checked,
+              x3p: String((g('rpt-x3p')||{}).value || ''),
               cap: parseInt((g('rpt-cap')||{}).value||'0',10)||0,
               cut: parseInt((g('rpt-cut')||{}).value||'0',10)||0 };
   try{ localStorage.setItem(LS_RPTOPT, JSON.stringify(o)); }catch(e){}
@@ -16491,8 +16495,9 @@ function rptShow(raw, o){
 /* 옵션 두 개(예약 빼기 · 3rd party 빼기)의 조합으로 어느 값을 쓸지 고른다 (v846) */
 function rptSrc(r, o){
   if(!r) return {};
-  if(o && o.no3P) return (o.noRsv ? (r.byOwnFree || r.byOwn) : (r.byOwn || {})) || {};
-  return (o && o.noRsv ? (r.bySizeFree || r.bySize) : r.bySize) || {};
+  const mode = (o && (o.x3p === 'LK' || o.x3p === 'ALL')) ? o.x3p : '';
+  const bank = (r.banks && r.banks[mode]) || r.banks && r.banks[''] || { gross:r.bySize, free:r.bySizeFree };
+  return ((o && o.noRsv) ? (bank.free || bank.gross) : bank.gross) || {};
 }
 function bxRptApplyOpts(){
   const o = rptOptRead();
@@ -16508,11 +16513,12 @@ function bxRptApplyOpts(){
       e.dataset.base = has ? sh.v : 0;
       e.style.background = has ? '' : '#f8fafc';
       const _all = r.bySize[z]||0, _shown = src[z]||0;
-      const _cut3p = o.no3P ? (_all - (r.byOwn ? (r.byOwn[z]||0) : _all)) : 0;
+      const _bank0 = (r.banks && r.banks[o.x3p||'']) || null;
+      const _cut3p = (o.x3p && _bank0) ? (_all - (_bank0.gross[z]||0)) : 0;
       const _cutRsv = Math.max(0, (_all - _shown) - _cut3p);
-      e.title = has && (o.noRsv || o.no3P || o.cut || sh.capped)
+      e.title = has && (o.noRsv || o.x3p || o.cut || sh.capped)
         ? ('On hand ' + _all.toLocaleString() + ' pcs'
-           + (_cut3p ? ' · 3rd party ' + _cut3p.toLocaleString() + ' removed' : '')
+           + (_cut3p ? ' · ' + (o.x3p==='LK'?'Special bin ':'3rd party ') + _cut3p.toLocaleString() + ' removed' : '')
            + (o.noRsv && _cutRsv ? ' · reserved ' + _cutRsv.toLocaleString() + ' removed' : '')
            + (o.cut ? ' · shown ' + o.cut + '% lower' : '')
            + (sh.capped ? ' · capped at ' + o.cap + '+' : ''))
@@ -16534,7 +16540,8 @@ function bxRptOptBanner(o){
   const el = document.getElementById('rpt-optbar'); if(!el) return;
   const on = [];
   if(o.noRsv) on.push('🔒 reserved stock removed');
-  if(o.no3P)  on.push('🏭 3rd party stock removed');
+  if(o.x3p==='LK')  on.push('🔒 Special bin (3rd party CA) removed');
+  if(o.x3p==='ALL') on.push('🔒🏭 all 3rd party stock removed');
   if(o.cut)   on.push('▼ shown ' + o.cut + '% lower');
   if(o.cap)   on.push('⌃ anything over ' + o.cap.toLocaleString() + ' shows as ' + o.cap.toLocaleString() + '+');
   if(!on.length){ el.style.display='none'; el.innerHTML=''; return; }
@@ -16566,25 +16573,30 @@ async function bxRptOpen(){
   const rows = keys.map(k=>{
     const p = k.split('||'); const s = p[0], c = p[1], w = p[2];
     const boxes = bxStore.filter(b=>bxWh(b)!=='TRANSIT' && String(b.style)===s && bxBaseColor(String(b.color).toUpperCase())===c && (w==='TOTAL' || bxWh(b)===w));
-    /* v846: 3rd party(🏭 H* Hodge · 🔒 SPECIAL* 락커) 재고를 뺀 값도 같이 만들어 둔다.
-       그 물건은 우리 창고에 없어서 바로 못 뽑는다 — 거래처에 "있다"고 보내면 안 될 때가 있다.
-       옵션은 켜고 끄는 거라, 켤 때마다 다시 세지 않게 여기서 미리 계산한다. */
-    const is3P = b => { try{ return !!bxSpecLoc(b.loc, bxWh(b)); }catch(e){ return false; } };
-    const bySize = {}, bySizeFree = {}, szBoxes = {};
-    const byOwn  = {}, byOwnFree  = {}, szOwn   = {};
-    boxes.forEach(b=>{ const sz = String(b.size).toUpperCase(); const n = Number(b.pcs)||0;
-      bySize[sz] = (bySize[sz]||0) + n;
-      (szBoxes[sz] = szBoxes[sz] || []).push(n);
-      if(!is3P(b)){ byOwn[sz] = (byOwn[sz]||0) + n; (szOwn[sz] = szOwn[sz] || []).push(n); } });
+    /* v847: 3rd party 재고를 어디까지 뺄지 세 가지로 미리 계산해 둔다.
+         ''    전부 포함
+         'LK'  🔒 SPECIAL* 만 뺀다 — 그 거래처 PO 로만 나가는 물건이라 남한테 팔 수 없다
+         'ALL' 🔒 SPECIAL* + 🏭 H*(Hodge) 둘 다 — Hodge 는 Transfer 로 불러오면 나가긴 한다
+       옵션을 켤 때마다 다시 세지 않으려고 여기서 한 번에 만든다. */
+    const kindOf = b => { try{ return bxSpecLoc(b.loc, bxWh(b)) || ''; }catch(e){ return ''; } };
+    const KEEP = { '': ()=>true, 'LK': b=>kindOf(b)!=='LK', 'ALL': b=>!kindOf(b) };
     // 예약된 박스 수만큼 빼고 남는 pcs — 큰 박스부터 빼서 남는 수를 보수적으로 (v839)
     const minusRsv = (bank, out)=>Object.keys(bank).forEach(sz=>{
       const arr = bank[sz].slice().sort((x,y)=>y-x);
       const rsvN = rptReservedBoxes(s, c, sz, w);
       out[sz] = arr.slice(Math.min(rsvN, arr.length)).reduce((a,x)=>a+x, 0);
     });
-    minusRsv(szBoxes, bySizeFree);
-    minusRsv(szOwn,   byOwnFree);
-    return { s, c, w, bySize, bySizeFree, byOwn, byOwnFree };
+    const banks = {};
+    ['', 'LK', 'ALL'].forEach(mode=>{
+      const gross = {}, free = {}, szB = {};
+      boxes.filter(KEEP[mode]).forEach(b=>{ const sz = String(b.size).toUpperCase(); const n = Number(b.pcs)||0;
+        gross[sz] = (gross[sz]||0) + n; (szB[sz] = szB[sz] || []).push(n); });
+      minusRsv(szB, free);
+      banks[mode] = { gross, free };
+    });
+    // bySize / bySizeFree 는 다른 코드도 보므로 이름을 그대로 남긴다
+    return { s, c, w, banks, bySize: banks[''].gross, bySizeFree: banks[''].free,
+             byOwn: banks.ALL.gross, byOwnFree: banks.ALL.free };
   }).sort((a,b)=>a.s.localeCompare(b.s) || a.c.localeCompare(b.c) || a.w.localeCompare(b.w));
   // 🚢 Incoming: Haiti 인보이스 (pr_inbound PENDING) — SC로 들어오는 물량
   let incLines = [];
@@ -16636,8 +16648,12 @@ async function bxRptOpen(){
       <span style="font-size:10.5px;font-weight:800;color:#0f766e;white-space:nowrap;">Show customer</span>
       <label style="display:flex;align-items:center;gap:5px;font-size:11.5px;font-weight:700;color:#b45309;cursor:pointer;white-space:nowrap;" title="Stock you have promised to someone else is not really available — leave it out so the customer only sees what they can actually buy">
         <input type="checkbox" id="rpt-norsv" ${_o.noRsv?'checked':''} onchange="bxRptApplyOpts()" style="width:15px;height:15px;accent-color:#b45309;cursor:pointer;">🔒 Exclude reserved</label>
-      <label style="display:flex;align-items:center;gap:5px;font-size:11.5px;font-weight:700;color:#7c3aed;cursor:pointer;white-space:nowrap;" title="Stock sitting at a 3rd party warehouse (\uD83C\uDFED Hodge H* bins and \uD83D\uDD12 SPECIAL* bins) cannot be pulled today — it has to be recalled by Transfer first. Tick this to leave it out.">
-        <input type="checkbox" id="rpt-no3p" ${_o.no3P?'checked':''} onchange="bxRptApplyOpts()" style="width:15px;height:15px;accent-color:#7c3aed;cursor:pointer;">\uD83C\uDFED Exclude 3rd party</label>
+      <label style="font-size:10.5px;color:var(--text2);white-space:nowrap;">3rd party</label>
+      <select class="fi" id="rpt-x3p" onchange="bxRptApplyOpts()" style="width:186px;font-size:11.5px;" title="\uD83D\uDD12 SPECIAL* bins (3rd party warehouse, CA) hold stock that only goes out on that customer's own PO \u2014 you cannot sell it to anyone else, so it usually should not be shown.&#10;\uD83C\uDFED H* bins (Hodge, SC) are our own stock parked offsite \u2014 it does ship, but only after a Transfer brings it back.">
+        <option value=""${_o.x3p===''?' selected':''}>include all</option>
+        <option value="LK"${_o.x3p==='LK'?' selected':''}>\uD83D\uDD12 minus Special bin</option>
+        <option value="ALL"${_o.x3p==='ALL'?' selected':''}>\uD83D\uDD12\uD83C\uDFED minus all 3rd party</option>
+      </select>
       <label style="font-size:10.5px;color:var(--text2);white-space:nowrap;">Cap at</label>
       <select class="fi" id="rpt-cap" onchange="bxRptApplyOpts()" style="width:110px;font-size:11.5px;" title="Real numbers up to this, anything above shows as e.g. 3,000+ — so you don't reveal exactly how deep the stock is">
         ${[0,1000,2000,3000,5000,10000].map(v=>'<option value="'+v+'"'+(_o.cap===v?' selected':'')+'>'+(v?v.toLocaleString()+'+':'no cap')+'</option>').join('')}
