@@ -129,27 +129,24 @@ export default {
     //   피드 하나 고치려다 PO 파서를 깨뜨리게 되니까 아예 떼어냈다.
     //   지우지 않고 넘겨주는 이유: 옛날 psflowx 탭을 띄워둔 직원이 아직
     //   /news 를 부를 수 있다. 그쪽도 그대로 돌아가야 한다.
-    //   리다이렉트가 아니라 그대로 받아서 넘겨준다 — 브라우저는 cors 모드에서
-    //   리다이렉트 응답에도 CORS 검사를 걸기 때문에, 그냥 통과시키는 게 안전하다.
+    //   여기서 market 워커를 fetch 해서 넘겨주려고 했더니 Cloudflare 가
+    //   error 1042 로 막는다 (같은 존의 워커끼리는 서로 못 부른다).
+    //   그래서 브라우저한테 직접 가라고 302 를 돌려준다.
+    //   Response.redirect() 를 쓰면 안 된다 — 브라우저는 cors 모드에서
+    //   리다이렉트 응답에도 CORS 검사를 걸기 때문에, 헤더를 직접 붙여야 한다.
     if (new URL(request.url).pathname === '/news') {
       const q = new URL(request.url).search || '';
-      try {
-        const r = await fetch('https://market.hjbae.workers.dev/news' + q, { method: 'GET' });
-        const b = await r.text();
-        return new Response(b, {
-          status: r.status,
-          headers: {
-            'Content-Type': 'application/json',
-            'Cache-Control': 'public, max-age=900',
-            'X-Moved-To': 'market.hjbae.workers.dev',
-            'Access-Control-Allow-Origin': '*',
-            'Access-Control-Allow-Methods': 'GET, POST, OPTIONS',
-            'Access-Control-Allow-Headers': 'Content-Type'
-          }
-        });
-      } catch (e) {
-        return respond({ error: 'news moved to market.hjbae.workers.dev', detail: String(e && e.message || e) }, 502);
-      }
+      return new Response('', {
+        status: 302,
+        headers: {
+          'Location': 'https://market.hjbae.workers.dev/news' + q,
+          'Cache-Control': 'public, max-age=900',
+          'X-Moved-To': 'market.hjbae.workers.dev',
+          'Access-Control-Allow-Origin': '*',
+          'Access-Control-Allow-Methods': 'GET, POST, OPTIONS',
+          'Access-Control-Allow-Headers': 'Content-Type'
+        }
+      });
     }
 
     try {
