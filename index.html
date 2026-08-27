@@ -167,7 +167,7 @@ body.narrow main{max-width:1100px;}
   </span>
   <select id="lang-sel" onchange="setLang(this.value)" style="font-size:11px;padding:3px 6px;border-radius:5px;border:none;background:#1d3f66;color:#fff;"><option value="ko">한국어</option><option value="en">English</option><option value="es">Español</option></select>
   <button id="wide-btn" class="btn btn-sm" onclick="toggleWide()" title="화면 넓게 / 좁게 — 기본은 넓게 (이 브라우저에만 저장돼)" style="padding:2px 8px;font-size:10px;background:#1d3f66;color:#cfe0f2;border-color:#2b5384;">↔ Wide</button>
-  <span id="app-ver" style="font-size:10px;color:#9fb8d4;">v843</span>
+  <span id="app-ver" style="font-size:10px;color:#9fb8d4;">v845</span>
 </div>
 <script>
 // ↔ 넓게 보기 — 브라우저마다 따로 저장 (v793)
@@ -24837,10 +24837,35 @@ function kpiDocBtns(s){
   }).join('<span style="color:#e2e8f0;">|</span>');
   return '<div style="display:flex;gap:6px;align-items:center;flex-wrap:wrap;margin-top:6px;">'+html+'</div>';
 }
-function kpiOpenOrders(rushOnly){
+/* 창고 몫이 전부 나갔으면(Packing List Complete) 그 오더는 더 이상 남은 일이 아니다.
+   예전에는 「상태가 Complete 인가」만 봐서, 물건이 다 나갔는데 인보이스를 안 찍었다는
+   이유로 계속 세어졌다 — 인보이스는 옆 타일(🧾 Invoice Not Printed)이 따로 세고 있어
+   같은 오더를 두 타일이 겹쳐 세고 있었다. (v844)
+   타일과 목록이 같은 함수를 봐야 숫자와 목록이 어긋나지 않는다. (v845) */
+function recAllShipped(rec){
+  const ws = ((rec && rec.whs)||[]).filter(w => w==='SC' || w==='CA');
+  return ws.length > 0 && ws.every(w => rec.pl && rec.pl[w] && rec.pl[w]._completed);
+}
+/* 그 오더에서 아직 「뽑아야 할」 창고 몫. 오더당 창고 하나에 한 번만 — Ship-from-CA 로
+   SC 가 CA 로 넘어간 오더는 CA 몫으로 이미 잡혀 있으므로 두 번 세면 안 된다. (v844) */
+function recOpenLegs(rec){
+  const legs = new Set();
+  if(!rec || recAllShipped(rec)) return legs;
+  ((rec.whs)||[]).forEach(w=>{
+    if(w!=='SC' && w!=='CA') return;
+    if(rec.pl && rec.pl[w] && rec.pl[w].savedAt) return;      // Packing List 를 이미 뽑은 몫
+    legs.add((w==='SC' && rec.meta && rec.meta._shipFromCA) ? 'CA' : w);
+  });
+  return legs;
+}
+
+function kpiOpenLegs(wh){ return kpiOpenOrders(false, wh); }
+function kpiOpenOrders(rushOnly, onlyWh){
   const list = (savedCache||[]).filter(s=>{
     if(typeof recIsDone==='function' && recIsDone(s)) return false;
+    if(recAllShipped(s)) return false;                          // 전부 나간 오더는 뺀다 (v845)
     if(rushOnly && !(s.meta && s.meta.urgent)) return false;
+    if(onlyWh && !recOpenLegs(s).has(onlyWh)) return false;     // SC / CA 칸을 눌렀을 때
     return true;
   });
   // 📋 Saved Pull Requests 와 같은 순서 — 최근 받은 오더가 맨 위 (v795)
@@ -24875,7 +24900,9 @@ function kpiOpenOrders(rushOnly){
       + '<span style="font-family:Consolas,monospace;font-size:12px;font-weight:700;min-width:88px;text-align:right;">$'+amt.toLocaleString(undefined,{maximumFractionDigits:0})+'</span>'
       + '<span style="font-size:12px;font-weight:800;color:#1d4ed8;">›</span></div>';
   }).join('') || '<div style="padding:24px;text-align:center;color:#94a3b8;font-size:13px;">진행 중인 오더가 없어 🎉</div>';
-  kpiShell('modal-kpiopen', (rushOnly?'🔥 Rush':'📋 Open Orders')+' ('+list.length+')', rushOnly?'#dc2626':'#1d4ed8', rows,
+  kpiShell('modal-kpiopen',
+    (rushOnly ? '🔥 Rush' : (onlyWh ? ('📋 To Pull \u00B7 ' + onlyWh) : '📋 To Pull'))+' ('+list.length+')',
+    rushOnly?'#dc2626':(onlyWh==='CA'?'#c2410c':'#1d4ed8'), rows,
            '줄을 누르면 그 오더가 열려. 프린트는 줄 안의 버튼으로 바로 — 최근 받은 오더가 맨 위 (Saved Pull Requests 와 같은 순서).');
 }
 function kpiPendingReturns(){
@@ -24954,6 +24981,12 @@ function renderKpi(){
   const slots = document.querySelectorAll('.kpi-slot'); if(!slots.length) return;
   const cache = savedCache||[];
   let open=0, rush=0, uninv=0, pret=0, refund=0;
+  /* 🚚 Ship from CA — SC 몫이 CA 로 넘어가 CA 에서 한 번에 나가는 오더.
+     준비 레인(laneReadyLegs)은 이미 이걸 보고 있는데 아래 창고별 집계는 안 봤다.
+     그래서 SC 에서 할 일이 없는 오더가 계속 SC 로 세어졌다. (v844)
+     주의: 그 오더는 CA 몫으로 이미 한 번 잡혀 있다 — SC 를 CA 로 옮기면
+     같은 오더가 CA 에 두 번 세어지므로, 창고를 Set 으로 모아 오더당 한 번만 센다. */
+  const _allShipped = recAllShipped;
   // 창고별 미완 건수와 그중 PC Room 이 준비해 둔 건수.
   // 한 오더가 SC·CA 를 다 갖고 있으면 양쪽에 한 건씩 — "그 창고에서 처리할 일"이 기준이라 그게 맞다.
   const _oW = {SC:0, CA:0}, _pW = {SC:0, CA:0};
@@ -24961,16 +24994,19 @@ function renderKpi(){
   let scUps=0, scLtl=0, caUps=0, caLtl=0;   // 준비된(packed, 미진행) 물량 — 창고×배송방식 (v675/v677)
   cache.forEach(s=>{
     const done = recIsDone(s);
-    if(!done) open++;
-    if(s.meta && s.meta.urgent && !done) rush++;
+    const shipped = _allShipped(s);
+    if(!done && !shipped) open++;
+    if(s.meta && s.meta.urgent && !done && !shipped) rush++;   // 나간 rush 는 더 이상 급한 게 아니다
     if(!recIsReplace(s) && (s.whs||[]).some(w=> s.pl && s.pl[w] && s.pl[w].savedAt && !(s.inv && s.inv[w] && s.inv[w].printed))) uninv++;
     if(recHasPendingReturn(s)) pret++;
     if(recReturns(s).some(r=>r && r.status==='received' && r.cc && !r.refunded)) refund++;
-    if(!done){
+    if(!done && !shipped){
+      recOpenLegs(s).forEach(w=>{ _oW[w]++; });
+      /* 🧺 PC Room 은 물건이 실제로 있는 창고에서 준비한다 —
+         Ship-from-CA 여도 준비는 SC 에서 했으므로 진짜 창고로 센다 */
       (s.whs||[]).forEach(w=>{
         if(w!=='SC' && w!=='CA') return;
-        if(s.pl && s.pl[w] && s.pl[w].savedAt) return;                 // 이미 나간 창고 몫은 뺀다
-        _oW[w]++;
+        if(s.pl && s.pl[w] && s.pl[w].savedAt) return;
         try{ if(typeof pcrIsOn==='function' && pcrIsOn(s.base, w)) _pW[w]++; }catch(e){}
       });
     }
@@ -25000,16 +25036,23 @@ function renderKpi(){
     <div style="font-size:10px;font-weight:800;color:#4b5563;letter-spacing:.3px;margin-top:4px;text-transform:uppercase;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">${label}</div></div>`;
   /* Open Orders 전용 타일 — 큰 숫자 + 창고 쪼개기 + PC Room 준비 수.
      준비가 하나도 없으면 그 줄은 아예 안 그린다 (0 만 늘어놓으면 읽을 게 없다). */
+  /* v845: 큰 숫자를 SC+CA 합으로 바꾼다.
+     예전에는 큰 숫자가 「오더 개수」, 아래가 「창고 일감 개수」라 단위가 서로 달랐다.
+     그래서 3 + 12 이 27 과 안 맞아 보여 보는 사람이 계속 숫자를 의심하게 됐다.
+     이제 위아래가 같은 단위라 항상 합이 맞는다 — 이름도 그에 맞춰 TO PULL 로. */
   const openTile=(tot,oW,pW)=>{
     const pTot = (pW.SC||0) + (pW.CA||0);
-    const seg = (lab,v,c) => '<span style="white-space:nowrap;"><b style="color:'+c+';">'+lab+'</b> '+v+'</span>';
+    const sum  = (oW.SC||0) + (oW.CA||0);
+    const seg = (lab,v,c,click) => '<span style="white-space:nowrap;'+(click?'cursor:pointer;text-decoration:underline dotted;text-underline-offset:2px;':'')+'"'
+      + (click?(' onclick="event.stopPropagation();'+click+'" title="'+lab+' \u2014 click for the list"'):'')
+      + '><b style="color:'+c+';">'+lab+'</b> '+v+'</span>';
     return `<div onclick="kpiOpenOrders()" title="click" style="${CELL}background:#eff6ff;border:1px solid #1d4ed844;border-left:5px solid #1d4ed8;cursor:pointer;">
       <div style="display:flex;align-items:baseline;gap:7px;">
-        <span style="font-size:23px;font-weight:900;color:#1d4ed8;line-height:1;">${tot.toLocaleString()}</span>
-        <span style="font-size:10px;font-weight:800;color:#4b5563;letter-spacing:.3px;text-transform:uppercase;">Open Orders</span>
+        <span style="font-size:23px;font-weight:900;color:#1d4ed8;line-height:1;">${sum.toLocaleString()}</span>
+        <span style="font-size:10px;font-weight:800;color:#4b5563;letter-spacing:.3px;text-transform:uppercase;">To Pull</span>
       </div>
       <div style="display:flex;gap:9px;font-size:11px;font-family:Consolas,monospace;font-weight:700;color:#334155;margin-top:5px;">
-        ${seg('SC', (oW.SC||0), '#1d4ed8')}${seg('CA', (oW.CA||0), '#c2410c')}
+        ${seg('SC', (oW.SC||0), '#1d4ed8', "kpiOpenLegs('SC')")}${seg('CA', (oW.CA||0), '#c2410c', "kpiOpenLegs('CA')")}
       </div>
       ${pTot ? `<div style="display:flex;gap:9px;align-items:center;font-size:10.5px;font-family:Consolas,monospace;font-weight:700;color:#9d174d;margin-top:3px;">
         <span style="font-family:inherit;">🧺</span>${seg('SC', (pW.SC||0), '#be185d')}${seg('CA', (pW.CA||0), '#be185d')}
