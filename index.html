@@ -167,7 +167,7 @@ body.narrow main{max-width:1100px;}
   </span>
   <select id="lang-sel" onchange="setLang(this.value)" style="font-size:11px;padding:3px 6px;border-radius:5px;border:none;background:#1d3f66;color:#fff;"><option value="ko">한국어</option><option value="en">English</option><option value="es">Español</option></select>
   <button id="wide-btn" class="btn btn-sm" onclick="toggleWide()" title="화면 넓게 / 좁게 — 기본은 넓게 (이 브라우저에만 저장돼)" style="padding:2px 8px;font-size:10px;background:#1d3f66;color:#cfe0f2;border-color:#2b5384;">↔ Wide</button>
-  <span id="app-ver" style="font-size:10px;color:#9fb8d4;">v862</span>
+  <span id="app-ver" style="font-size:10px;color:#9fb8d4;">v863</span>
 </div>
 <script>
 // ↔ 넓게 보기 — 브라우저마다 따로 저장 (v793)
@@ -4284,6 +4284,318 @@ async function delSaved(base){
     }
   }catch(e){}
 }
+/* ═══════════════ ❌ 오더 CANCEL + Put Back Request (v863) ═══════════════
+   거래처가 오더를 취소했는데 창고는 이미 다 뽑아 놓은 상황.
+   지금까지는 delete 밖에 없었는데 delete 는 오더 자체를 지워 버려서
+   "이 PO 는 취소됐다" 는 기록이 남지 않았고, 되돌리기도 confirm 3번을 눌러야 했다.
+
+   Cancel 이 하는 일 세 가지:
+     ① 오더를 CANCELLED 로 표시 (지우지 않는다 — 기록이 남아야 한다)
+     ② 이 PO 로 나간 재고를 전부 자동으로 되돌린다
+          · 풀박스        → status OUT→IN. loc(빈 번호)은 출고 때도 안 지워지므로
+                            원래 자리로 그대로 돌아간다.
+          · PC Room 이동분 → 풀박스로 복구 + PC Room 장수에서 그만큼 빼기
+          · PC Room 자동차감 낱장 → PC Room 에 도로 더하기
+     ③ Put Back Request 를 뽑는다 — 직원이 들고 다니며 물건을 제자리에 넣는 종이.
+        bin 번호로 묶어서 정렬하니까 창고를 한 바퀴만 돌면 된다.
+
+   되돌리기(Undo)는 표시만 푼다. 재고를 다시 뽑아오지는 않는다 —
+   물건은 이미 사람 손으로 선반에 들어갔으므로 프로그램이 마음대로 빼면 안 된다. */
+function recCancelled(s){ return (s && s.meta && s.meta._cancelled) || null; }
+function cxlPo(rec){ return String((rec && rec.meta && rec.meta.po) || '').trim(); }
+
+/* 취소된 오더 base 목록 — /pic 목록에서 감추는 데 쓴다.
+   pack_orders RPC 는 meta 를 안 주므로 여기서 따로 한 번 읽는다. */
+window._cxlBases = window._cxlBases || null;
+async function cxlLoadBases(force){
+  if(window._cxlBases && !force) return window._cxlBases;
+  const set = new Set();
+  try{
+    const r = await sbFetch('/rest/v1/pr_orders?select=base&deleted_at=is.null&meta->>_cancelled=not.is.null');
+    if(r.ok){ (await r.json()).forEach(x=>set.add(String(x.base))); }
+  }catch(e){}
+  window._cxlBases = set;
+  return set;
+}
+function cxlHidden(base){ return !!(window._cxlBases && window._cxlBases.has(String(base))); }
+
+/* ─── 되돌릴 것을 훑는다 (아직 아무것도 안 바꾼다) ─── */
+async function cxlScan(rec){
+  const poN = cxlPo(rec);
+  const out = { full:[], move:[], loose:[], poN };
+  if(!poN) return out;
+  const grab = async (q)=>{
+    try{
+      const r = await sbFetch('/rest/v1/pr_boxes?select=id,style,color,size,pcs,loc,wh&status=eq.OUT&out_po=eq.'+encodeURIComponent(q));
+      return r.ok ? (await r.json()) : [];
+    }catch(e){ return []; }
+  };
+  out.full = await grab('PO ' + poN);
+  out.move = await grab('PC ROOM (PO ' + poN + ')');
+  /* PC Room 에서 낱장으로 까 놓은 것 — 키는 style|color|size[|CA][|B] */
+  const lines = (rec.meta && rec.meta._pcAuto && rec.meta._pcAuto.lines) || {};
+  if(Object.keys(lines).some(k=>Number(lines[k])>0)){
+    if(!pcLoaded){
+      try{
+        const r4 = await sbFetch('/rest/v1/pr_pcroom?select=k,style,color,qty,bqty,bnote,sizes,wh,locs,updated_at,updated_by');
+        if(r4.ok){ pcStore = await r4.json(); pcLoaded = true; }
+      }catch(e){}
+    }
+    Object.keys(lines).forEach(key=>{
+      const v = Number(lines[key])||0; if(v<=0) return;
+      const parts = key.split('|');
+      const st = parts[0], col = parts[1], sz = parts[2];
+      const wh = parts.includes('CA') ? 'CA' : 'SC';
+      const isB = parts.includes('B');
+      const row = (pcStore||[]).find(x=>x.k===pcKey(st, col, wh));
+      /* 낱장은 PC Room 선반으로 돌아간다 — 사이즈별 bin 이 잡혀 있으면 그 자리,
+         없으면 그냥 'PC ROOM'. '(no bin)' 이라고 적으면 직원이 어디로 가야 할지 모른다. */
+      out.loose.push({ key, style:st, color:col, size:sz, wh, isB, pcs:v,
+                       loc: (row && row.locs && row.locs[String(sz||'').toUpperCase()]) || 'PC ROOM' });
+    });
+  }
+  return out;
+}
+
+/* ─── bin 별로 묶는다 — 창고를 한 바퀴만 돌게 ─── */
+function cxlGroup(rows, kind){
+  const g = {};
+  (rows||[]).forEach(b=>{
+    const wh = String(b.wh||'SC').toUpperCase()==='CA' ? 'CA' : 'SC';
+    const loc = String(b.loc||'').trim().toUpperCase() || '(no bin)';
+    const k = wh+'|'+loc+'|'+String(b.style||'')+'|'+String(b.color||'')+'|'+String(b.size||'');
+    if(!g[k]) g[k] = { wh, loc, style:b.style, color:b.color, size:b.size,
+                       ppb:Number(b.pcs)||0, boxes:0, pcs:0, kind };
+    if(kind==='loose'){ g[k].pcs += Number(b.pcs)||0; }
+    else { g[k].boxes++; g[k].pcs += Number(b.pcs)||0; }
+  });
+  return Object.values(g).sort((a,b)=>
+    a.wh.localeCompare(b.wh) || a.loc.localeCompare(b.loc, undefined, {numeric:true}) ||
+    String(a.style).localeCompare(String(b.style)) || String(a.color).localeCompare(String(b.color)) ||
+    (PB_SZ_ORD.indexOf(String(a.size||'').toUpperCase()) - PB_SZ_ORD.indexOf(String(b.size||'').toUpperCase())));
+}
+var PB_SZ_ORD = ['2T','3T','4T','5T','XS','S','M','L','XL','2XL','3XL','4XL','5XL','6XL','OS'];
+
+/* ─── 취소 화면 ─── */
+async function cancelOrderOpen(base){
+  const rec = (savedCache||[]).find(s=>s.base===base);
+  if(!rec){ showToast('⚠ Order not found'); return; }
+  if(recCancelled(rec)){ cancelUndo(base); return; }
+  const ex = document.getElementById('modal-cxl'); if(ex) ex.remove();
+  const div = document.createElement('div');
+  div.id = 'modal-cxl';
+  div.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,.55);z-index:130;display:flex;align-items:center;justify-content:center;';
+  div.innerHTML = `<div style="background:#fff;border-radius:12px;width:760px;max-width:95vw;max-height:88vh;display:flex;flex-direction:column;box-shadow:0 20px 60px rgba(0,0,0,.35);">
+    <div style="background:#7f1d1d;color:#fff;border-radius:12px 12px 0 0;padding:12px 18px;font-weight:800;display:flex;justify-content:space-between;align-items:center;">
+      <span>❌ Cancel order — ${esc(rec.meta.cust||'')} · PO ${esc(cxlPo(rec))}</span>
+      <button onclick="document.getElementById('modal-cxl').remove()" style="background:none;border:none;color:#fff;font-size:17px;cursor:pointer;">✕</button></div>
+    <div id="cxl-body" style="overflow-y:auto;flex:1;padding:16px 18px;">
+      <div class="muted" style="font-size:12px;">Checking what was already pulled for this order…</div>
+    </div>
+  </div>`;
+  document.body.appendChild(div);
+  if(typeof initModalDrag==='function') initModalDrag(div);
+
+  const scan = await cxlScan(rec);
+  window._cxlScan = scan;
+  const gFull = cxlGroup(scan.full,'full'), gMove = cxlGroup(scan.move,'move'), gLoose = cxlGroup(scan.loose,'loose');
+  const nFull = scan.full.length, nMove = scan.move.length;
+  const nLoose = scan.loose.reduce((a,x)=>a+x.pcs,0);
+  const tbl = (rows, head, note) => !rows.length ? '' : `
+    <div style="font-size:12px;font-weight:800;color:#0f2a4a;margin:14px 0 4px;">${head}</div>
+    ${note?`<div style="font-size:11px;color:#64748b;margin-bottom:5px;">${note}</div>`:''}
+    <table style="width:100%;border-collapse:collapse;font-size:12px;">
+      <thead><tr style="background:#f1f5f9;">
+        <th style="text-align:left;padding:5px 8px;border:1px solid #e2e8f0;">📍 Put back to</th>
+        <th style="text-align:left;padding:5px 8px;border:1px solid #e2e8f0;">Style · Color · Size</th>
+        <th style="text-align:right;padding:5px 8px;border:1px solid #e2e8f0;">${rows[0].kind==='loose'?'Pcs':'Boxes'}</th>
+      </tr></thead><tbody>${rows.map(r=>`<tr>
+        <td style="padding:5px 8px;border:1px solid #e2e8f0;font-family:Consolas,monospace;font-weight:800;color:#1d4ed8;">[${r.wh}] ${esc(r.loc)}</td>
+        <td style="padding:5px 8px;border:1px solid #e2e8f0;">${esc(String(r.style))} · ${esc(String(r.color))} · ${esc(String(r.size))}</td>
+        <td style="padding:5px 8px;border:1px solid #e2e8f0;text-align:right;font-weight:800;">${r.kind==='loose'?r.pcs:r.boxes}</td>
+      </tr>`).join('')}</tbody></table>`;
+  const nothing = !nFull && !nMove && !nLoose;
+  document.getElementById('cxl-body').innerHTML = `
+    <div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:6px;">
+      ${nFull?`<span style="background:#dbeafe;color:#1e40af;font-size:11.5px;font-weight:800;padding:4px 11px;border-radius:20px;">📦 ${nFull} full box${nFull>1?'es':''}</span>`:''}
+      ${nMove?`<span style="background:#ede9fe;color:#5b21b6;font-size:11.5px;font-weight:800;padding:4px 11px;border-radius:20px;">📦→🧺 ${nMove} box${nMove>1?'es':''} moved to PC Room</span>`:''}
+      ${nLoose?`<span style="background:#fef3c7;color:#92400e;font-size:11.5px;font-weight:800;padding:4px 11px;border-radius:20px;">🧺 ${nLoose.toLocaleString()} loose pcs from PC Room</span>`:''}
+      ${nothing?`<span style="background:#f1f5f9;color:#475569;font-size:11.5px;font-weight:800;padding:4px 11px;border-radius:20px;">Nothing was pulled for this order yet</span>`:''}
+    </div>
+    ${(()=>{ const shipped=(rec.whs||[]).filter(w=>rec.pl&&rec.pl[w]&&rec.pl[w].savedAt);
+      return shipped.length ? `<div style="background:#fef2f2;border:2px solid #dc2626;border-radius:8px;padding:9px 12px;margin:8px 0;font-size:12.5px;font-weight:800;color:#b91c1c;">\u26A0 This order already has a saved Packing List for ${shipped.join(' + ')} \u2014 the goods may have shipped.<div style="font-weight:600;margin-top:3px;">Putting stock back now would add goods that are no longer in the building. Use \u21A9 Return instead if it already left.</div></div>` : ''; })()}
+    ${nothing?'<div style="font-size:12px;color:#64748b;">The order will just be marked cancelled — there is nothing to put back.</div>':''}
+    ${tbl(gFull,'📦 Full boxes — back to the bin they came from')}
+    ${tbl(gMove,'📦→🧺 Boxes that went to the PC Room — back to their bin','These also come off the PC Room count.')}
+    ${tbl(gLoose,'🧺 Loose pcs — back onto the PC Room shelf')}
+    <div style="margin-top:16px;">
+      <div style="font-size:11.5px;font-weight:800;color:#334155;margin-bottom:4px;">Why was it cancelled? <span style="font-weight:400;color:#94a3b8;">(optional — shows on the order and the sheet)</span></div>
+      <input id="cxl-why" class="fi" type="text" placeholder="e.g. customer cancelled — wrong colour ordered" style="width:100%;font-size:13px;">
+    </div>
+    <label style="display:flex;align-items:center;gap:8px;margin-top:12px;font-size:12.5px;font-weight:700;color:#334155;cursor:pointer;">
+      <input type="checkbox" id="cxl-print" checked style="width:16px;height:16px;accent-color:#7f1d1d;">
+      Print the Put Back Request right away
+    </label>
+    <div style="display:flex;gap:8px;margin-top:16px;">
+      <button class="btn" onclick="document.getElementById('modal-cxl').remove()">Keep the order</button>
+      <button class="btn" id="cxl-go" style="margin-left:auto;background:#b91c1c;color:#fff;border-color:#b91c1c;font-weight:800;" onclick="cancelOrderDo('${esc(base)}')">❌ Cancel this order${nothing?'':' &amp; put the stock back'}</button>
+    </div>`;
+}
+
+async function cancelOrderDo(base){
+  const rec = (savedCache||[]).find(s=>s.base===base); if(!rec) return;
+  const scan = window._cxlScan; if(!scan) return;
+  const why = String((document.getElementById('cxl-why')||{}).value||'').trim();
+  const wantPrint = !!(document.getElementById('cxl-print')||{}).checked;
+  const btn = document.getElementById('cxl-go');
+  if(btn){ btn.disabled = true; btn.textContent = 'Putting the stock back…'; }
+  const poN = scan.poN, by = (SESS&&SESS.email)||'';
+  const back = {status:'IN', out_at:null, out_by:null, out_po:null};
+  let err = '';
+  try{
+    /* ① 풀박스 — loc 은 출고 때도 안 지워졌으므로 원래 bin 으로 그대로 돌아간다 */
+    if(scan.full.length) await trPatchBoxes(scan.full.map(b=>b.id), back);
+    /* ② PC Room 으로 뜯었던 박스 — 박스로 복구하고 PC Room 장수에서 뺀다 */
+    if(scan.move.length){
+      await trPatchBoxes(scan.move.map(b=>b.id), back);
+      const byKey = {};
+      scan.move.forEach(bx=>{
+        const k2 = pcKey(bx.style, bx.color, String(bx.wh||'SC').toUpperCase()==='CA'?'CA':'SC');
+        const s2 = String(bx.size||'').toUpperCase();
+        byKey[k2] = byKey[k2] || {};
+        byKey[k2][s2] = (byKey[k2][s2]||0) + (Number(bx.pcs)||0);
+      });
+      for(const k2 of Object.keys(byKey)){
+        const row2 = await pcFetchRowFresh(k2); if(!row2) continue;
+        row2.qty = row2.qty || {};
+        for(const s2 of Object.keys(byKey[k2])){
+          const nv = (Number(row2.qty[s2])||0) - byKey[k2][s2];
+          if(nv === 0) delete row2.qty[s2]; else row2.qty[s2] = nv;
+          pcLogMove(row2, s2, -byKey[k2][s2], nv, 'PO '+poN+' cancelled — box move undone');
+        }
+        await pcSaveRow(row2);
+      }
+    }
+    /* ③ 낱장 자동차감분 — PC Room 에 도로 더한다.
+       delSaved 는 여기서 |CA 와 |B 를 흘려버려서 CA 물건을 SC 에 넣고
+       B-grade 를 A-grade 로 되돌렸다. 여기서는 키를 제대로 읽는다. */
+    for(const L of scan.loose){
+      const k2 = pcKey(L.style, L.color, L.wh);
+      let row = await pcFetchRowFresh(k2) || (pcStore||[]).find(x=>x.k===k2);
+      if(!row){ row = { k:k2, style:L.style, color:L.color, wh:L.wh, qty:{} }; pcStore.push(row); }
+      const fld = L.isB ? 'bqty' : 'qty';
+      row[fld] = row[fld] || {};
+      const nv = (Number(row[fld][L.size])||0) + L.pcs;
+      if(nv === 0) delete row[fld][L.size]; else row[fld][L.size] = nv;
+      await pcSaveRow(row);
+      pcLogMove(row, L.size, L.pcs, Number((row.qty||{})[L.size])||0,
+                (L.isB?'[B-grade] ':'') + 'PO '+poN+' cancelled — loose pcs restored');
+    }
+  }catch(e){ err = e.message||String(e); }
+
+  /* ④ 오더에 취소 도장 — 지우지 않는다. 되돌린 내역도 같이 남겨서
+        나중에 "뭘 얼마나 도로 넣었나" 를 종이 없이도 다시 뽑을 수 있게 한다. */
+  rec.meta = rec.meta || {};
+  rec.meta._cancelled = {
+    at: new Date().toISOString(), by, reason: why,
+    put: { full: scan.full, move: scan.move, loose: scan.loose },
+    restored: !err
+  };
+  /* 낱장 스냅샷은 비운다 — 이미 되돌렸으므로 다시 저장될 때 또 차감되면 안 된다 */
+  if(rec.meta._pcAuto) rec.meta._pcAuto = { ...rec.meta._pcAuto, lines: {} };
+  try{
+    await sbFetch('/rest/v1/pr_orders?base=eq.'+encodeURIComponent(base),
+      {method:'PATCH', headers:{Prefer:'return=minimal'},
+       body: JSON.stringify({meta: rec.meta, updated_at:new Date().toISOString()})});
+  }catch(e){ err = err || (e.message||String(e)); }
+
+  const i = savedCache.findIndex(s=>s.base===base); if(i>=0) savedCache[i] = rec;
+  if(window._cxlBases) window._cxlBases.add(String(base));
+  document.getElementById('modal-cxl')?.remove();
+  if(typeof renderSaved==='function') renderSaved();
+  if(bxLoaded){ try{ await bxRefetch(); if($('bx-body')) renderBoxRoom(); }catch(e){} }
+  if(typeof renderPcRoom==='function' && $('pc-body')) renderPcRoom();
+
+  const n = scan.full.length + scan.move.length + scan.loose.length;
+  showToast(err ? ('⚠ Cancelled, but the stock did not fully go back: '+err)
+                : ('❌ Cancelled' + (n ? ' · stock put back' : '')));
+  if(wantPrint && n) printPutBack(base);
+}
+
+async function cancelUndo(base){
+  const rec = (savedCache||[]).find(s=>s.base===base); if(!rec) return;
+  const c = recCancelled(rec); if(!c) return;
+  const n = ((c.put&&c.put.full)||[]).length + ((c.put&&c.put.move)||[]).length + ((c.put&&c.put.loose)||[]).length;
+  if(!confirm('↩ Un-cancel PO ' + esc(cxlPo(rec)) + '?\n\n'
+    + (n ? ('The ' + n + ' item(s) that were put back STAY on the shelf — this only removes the cancelled mark.\n'
+          + 'Open the order and save it again to pull the stock a second time.\n\n') : '')
+    + 'Continue?')) return;
+  delete rec.meta._cancelled;
+  try{
+    await sbFetch('/rest/v1/pr_orders?base=eq.'+encodeURIComponent(base),
+      {method:'PATCH', headers:{Prefer:'return=minimal'},
+       body: JSON.stringify({meta: rec.meta, updated_at:new Date().toISOString()})});
+  }catch(e){ showToast('❌ '+e.message); return; }
+  const i = savedCache.findIndex(s=>s.base===base); if(i>=0) savedCache[i] = rec;
+  if(window._cxlBases) window._cxlBases.delete(String(base));
+  showToast('↩ Cancel removed — the order is open again');
+  if(typeof renderSaved==='function') renderSaved();
+}
+
+/* ─── 직원이 들고 다니는 종이 ───
+   bin 번호로 묶어서 정렬한다 — 창고를 한 바퀴만 돌면 되게.
+   체크칸을 왼쪽에 크게 둬서 넣은 것을 표시하며 다닐 수 있다. */
+function printPutBack(base){
+  const rec = (savedCache||[]).find(s=>s.base===base); if(!rec) return;
+  const c = recCancelled(rec);
+  if(!c){ showToast('⚠ This order is not cancelled'); return; }
+  const put = c.put || {};
+  const rows = [].concat(cxlGroup(put.full||[],'full'), cxlGroup(put.move||[],'move'), cxlGroup(put.loose||[],'loose'))
+    .sort((a,b)=> a.wh.localeCompare(b.wh) || a.loc.localeCompare(b.loc, undefined, {numeric:true}));
+  if(!rows.length){ showToast('⚠ Nothing was put back for this order'); return; }
+  const kindLbl = { full:'full box', move:'full box (was in PC Room)', loose:'loose pcs → PC Room shelf' };
+  const totB = rows.filter(r=>r.kind!=='loose').reduce((a,r)=>a+r.boxes,0);
+  const totP = rows.filter(r=>r.kind==='loose').reduce((a,r)=>a+r.pcs,0);
+  const body = rows.map(r=>`<tr>
+      <td style="border:1px solid #333;padding:9px 6px;text-align:center;font-size:20px;">☐</td>
+      <td style="border:1px solid #333;padding:9px 10px;font-family:Consolas,monospace;font-weight:800;font-size:16px;white-space:nowrap;">[${r.wh}] ${esc(r.loc)}</td>
+      <td style="border:1px solid #333;padding:9px 10px;font-size:14px;">
+        <b style="font-size:15px;">${esc(String(r.style))}</b> &nbsp; ${esc(String(r.color))} &nbsp; <b>${esc(String(r.size))}</b>
+        <div style="font-size:10.5px;color:#555;">${kindLbl[r.kind]||''}</div></td>
+      <td style="border:1px solid #333;padding:9px 10px;text-align:right;font-weight:900;font-size:17px;white-space:nowrap;">
+        ${r.kind==='loose' ? (r.pcs.toLocaleString()+' pcs') : (r.boxes+' box'+(r.boxes>1?'es':''))}</td>
+    </tr>`).join('');
+  const html = `<div style="font-family:Arial,Helvetica,sans-serif;color:#111;">
+    <div style="border:3px solid #b91c1c;border-radius:8px;padding:10px 14px;margin-bottom:12px;">
+      <div style="font-size:26px;font-weight:900;color:#b91c1c;letter-spacing:1px;">PUT BACK REQUEST</div>
+      <div style="font-size:14px;font-weight:800;margin-top:3px;">ORDER CANCELLED &mdash; return this stock to the shelf</div>
+    </div>
+    <table style="width:100%;font-size:13px;margin-bottom:10px;">
+      <tr><td style="padding:2px 0;width:110px;color:#555;">Customer</td><td style="font-weight:800;font-size:15px;">${esc(rec.meta.cust||'')}</td>
+          <td style="padding:2px 0;width:90px;color:#555;">Cancelled</td><td style="font-weight:700;">${new Date(c.at).toLocaleString('en-US',{month:'numeric',day:'numeric',year:'numeric',hour:'numeric',minute:'2-digit'})}</td></tr>
+      <tr><td style="padding:2px 0;color:#555;">PO #</td><td style="font-weight:800;font-size:15px;font-family:Consolas,monospace;">${esc(cxlPo(rec))}</td>
+          <td style="padding:2px 0;color:#555;">By</td><td style="font-weight:700;">${esc(String(c.by||'').split('@')[0])}</td></tr>
+      <tr><td style="padding:2px 0;color:#555;">Ref #</td><td style="font-family:Consolas,monospace;">${esc(rec.base)}</td>
+          <td style="padding:2px 0;color:#555;">Total</td><td style="font-weight:800;">${totB?totB+' box'+(totB>1?'es':''):''}${totB&&totP?' + ':''}${totP?totP.toLocaleString()+' pcs':''}</td></tr>
+      ${c.reason?`<tr><td style="padding:2px 0;color:#555;">Reason</td><td colspan="3" style="font-weight:700;">${esc(c.reason)}</td></tr>`:''}
+    </table>
+    <div style="font-size:12px;font-weight:800;background:#fef2f2;border:1px solid #fca5a5;border-radius:6px;padding:7px 10px;margin-bottom:8px;">
+      The system already put this stock back on the books. Now put the goods back in the bins below and tick each line.
+      Bins are listed in walking order.</div>
+    <table style="width:100%;border-collapse:collapse;">
+      <thead><tr style="background:#eee;">
+        <th style="border:1px solid #333;padding:6px;width:34px;">✓</th>
+        <th style="border:1px solid #333;padding:6px;text-align:left;width:150px;">📍 Put back to</th>
+        <th style="border:1px solid #333;padding:6px;text-align:left;">Style &middot; Color &middot; Size</th>
+        <th style="border:1px solid #333;padding:6px;text-align:right;width:110px;">Qty</th>
+      </tr></thead><tbody>${body}</tbody></table>
+    <div style="margin-top:22px;font-size:13px;">
+      Put back by: <span style="display:inline-block;border-bottom:1px solid #111;width:210px;">&nbsp;</span>
+      &nbsp;&nbsp; Date: <span style="display:inline-block;border-bottom:1px solid #111;width:150px;">&nbsp;</span>
+    </div></div>`;
+  printDocHtml(html, 'Put Back Request — PO ' + cxlPo(rec));
+}
+
 async function openTrash(){
   const ex = document.getElementById('modal-trash'); if(ex) ex.remove();
   let rows = [];
@@ -9184,7 +9496,9 @@ async function pchkPackList(){
   try{ await tdLoad(); }catch(e){}
   try{ await pcrLoad(); }catch(e){}
   // 이 창고 몫이면서 + 아직 발송(패킹리스트 저장) 안 된 것만 (이미 나간 오더 제외)
-  if(Array.isArray(rows)) rows=rows.filter(r=>Array.isArray(r.whs)&&r.whs.includes(_wh)&&!(Array.isArray(r.shipped_whs)&&r.shipped_whs.includes(_wh)));
+  try{ await cxlLoadBases(true); }catch(e){}
+  // 취소된 오더는 목록에서 뺀다 — 직원이 취소된 PO 를 싸고 있으면 안 된다 (v863)
+  if(Array.isArray(rows)) rows=rows.filter(r=>Array.isArray(r.whs)&&r.whs.includes(_wh)&&!(Array.isArray(r.shipped_whs)&&r.shipped_whs.includes(_wh))&&!cxlHidden(r.base));
   if(!Array.isArray(rows)||!rows.length){ el.innerHTML='<div style="color:#94a3b8;font-size:12px;padding:6px;">No '+_wh+' orders'+(q?' for "'+esc(q)+'"':'')+'.</div>'; return; }
   const c=(_wh==='SC'?'#1d4ed8':'#c2410c');
   window._packSel=window._packSel||{};
@@ -10790,8 +11104,10 @@ async function pfindCandidates(wh){
     rows = await r.json();
   }catch(e){ return null; }
   if(!Array.isArray(rows)) return null;
+  try{ await cxlLoadBases(); }catch(e){}
   rows = rows.filter(r=>Array.isArray(r.whs) && r.whs.includes(wh)
-                      && !(Array.isArray(r.shipped_whs) && r.shipped_whs.includes(wh)));
+                      && !(Array.isArray(r.shipped_whs) && r.shipped_whs.includes(wh))
+                      && !cxlHidden(r.base));
   if(!rows.length) return [];
   const bases = rows.map(r=>String(r.base));
   let lines = {};
@@ -24566,6 +24882,8 @@ function updateItemRows(){
 
 function recIsReplace(s){ return !!(s && s.meta && s.meta._replaceOf); }
 function recStatus(s){
+  /* 취소된 오더는 다른 어떤 상태보다 먼저다 — 문서가 얼마나 진행됐든 상관없다 (v863) */
+  if(s && s.meta && s.meta._cancelled) return { label:'\u274C CANCELLED', color:'#fff', bg:'#b91c1c', cancelled:true };
   let whs = (s.whs||[]).filter(w=>w!=='BO' && w!=='NA');
   // 🚚 CA 통합 발송: SC 몫은 CA 문서로 합쳐지므로 SC를 상태 집계에서 제외 (CA 한 곳만 카운트)
   if(recShipFromCA(s) && whs.includes('CA')) whs = whs.filter(w=>w!=='SC');
@@ -25323,7 +25641,7 @@ function savedBlindToggle(ev, base){
   const card = ev.currentTarget;
   if(card) card.classList.toggle('blind-off', !!window._blindOff[base]);
 }
-function recIsDone(s){ return recStatus(s).label === t('st_complete'); }
+function recIsDone(s){ const st=recStatus(s); return st.cancelled || st.label === t('st_complete'); }
 let readyOnly = false;
 function isReadyToShip(s){
   return (s.whs||[]).some(w=>s.pl && s.pl[w] && s.pl[w]._completed && plFutureDate(s, w));
@@ -26149,6 +26467,10 @@ function renderSaved(){
       ${!recIsReplace(s) && (s.whs||[]).some(w=>s.pl && s.pl[w] && s.pl[w].savedAt) ? `<button class="btn btn-sm" style="color:#ea580c;border-color:#fdba74;" onclick="openReturnModal('${esc(s.base)}')" title="Customer return — create RA#, choose return warehouse & qty, email the customer">↩ Return</button>` : ''}
       ${recReturns(s).map(r=>`<button class="btn btn-sm" style="background:${r.status==='received'?'#166534':'#ea580c'};color:#fff;border-color:${r.status==='received'?'#166534':'#ea580c'};font-weight:800;" onclick="openReturnDetail('${esc(s.base)}','${esc(r.ra)}')" title="View return details / email customer / cancel">↩ ${esc(r.ra)}${r.status==='received'?' ✓':''}</button>`).join('')}
       <button class="btn btn-sm" onclick="loadSaved('${esc(s.base)}')">${t('open_edit')}</button>
+      ${recCancelled(s)
+        ? `<button class="btn btn-sm" style="background:#0f2a4a;color:#fff;border-color:#0f2a4a;font-weight:800;" onclick="printPutBack('${esc(s.base)}')" title="Reprint the sheet the staff walk around with">\u{1F5A8} Put Back Request</button>
+           <button class="btn btn-sm" style="color:#166534;border-color:#86efac;" onclick="cancelUndo('${esc(s.base)}')" title="Remove the cancelled mark. The stock stays on the shelf \u2014 open &amp; save the order again to pull it once more.">\u21A9 Un-cancel</button>`
+        : `<button class="btn btn-sm" style="color:#b91c1c;border-color:#fca5a5;font-weight:700;" onclick="cancelOrderOpen('${esc(s.base)}')" title="Order cancelled \u2014 put the pulled stock back and print a Put Back Request for the staff">\u274C Cancel</button>`}
       <button class="btn btn-sm" style="color:var(--bad);" onclick="delSaved('${esc(s.base)}')">${t('del')}</button>
       </div>
       ${['SC','CA','BO','NA'].filter(w=>whs.includes(w)).map(w=>{
