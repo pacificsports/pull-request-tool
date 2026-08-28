@@ -167,7 +167,7 @@ body.narrow main{max-width:1100px;}
   </span>
   <select id="lang-sel" onchange="setLang(this.value)" style="font-size:11px;padding:3px 6px;border-radius:5px;border:none;background:#1d3f66;color:#fff;"><option value="ko">한국어</option><option value="en">English</option><option value="es">Español</option></select>
   <button id="wide-btn" class="btn btn-sm" onclick="toggleWide()" title="화면 넓게 / 좁게 — 기본은 넓게 (이 브라우저에만 저장돼)" style="padding:2px 8px;font-size:10px;background:#1d3f66;color:#cfe0f2;border-color:#2b5384;">↔ Wide</button>
-  <span id="app-ver" style="font-size:10px;color:#9fb8d4;">v870</span>
+  <span id="app-ver" style="font-size:10px;color:#9fb8d4;">v871</span>
 </div>
 <script>
 // ↔ 넓게 보기 — 브라우저마다 따로 저장 (v793)
@@ -10319,6 +10319,35 @@ function pchkUpsTotal(val){
   const c=document.getElementById('ups-cmp'); if(c) c.textContent=pchkUpsCmpText();
 }
 function pchkLtlSet(i,val){ if(window._ltlRows&&window._ltlRows[i]){ window._ltlRows[i].boxes=Math.max(0,parseInt(val,10)||0); } const t=document.getElementById('ltl-total'); if(t) t.textContent=(window._ltlRows||[]).reduce((s,r)=>s+(Number(r.boxes)||0),0).toLocaleString(); }
+/* 아직 안 나간(PENDING) 묶음 중에서 이 PO 들과 겹치는 것을 찾는다 (v871).
+   같은 창고 · 같은 방식(LTL/UPS) 안에서만 본다 — SC 묶음과 CA 묶음은 별개다.
+   돌려주는 것:
+     same     : PO 조합이 정확히 같은 묶음 (있으면 새로 만들지 말고 이걸 고친다)
+     conflict : 일부만 겹치는 묶음들 (사람에게 물어봐야 한다)
+   찾다가 실패하면 둘 다 비워서 돌려준다 — 확인을 못 했다고 저장을 막지는 않는다. */
+async function bulkFindPending(wh, mode, bases){
+  const out = { same:null, conflict:[] };
+  try{
+    const want = new Set((bases||[]).map(String));
+    if(!want.size) return out;
+    const r = await fetch(SB_URL+'/rest/v1/pr_bulkship?wh=eq.'+encodeURIComponent(wh)
+      + '&status=eq.PENDING&select=id,ref,pos,created_at&order=created_at.desc&limit=50',
+      {headers:{apikey:SB_KEY,Authorization:'Bearer '+SB_KEY}});
+    if(!r.ok) return out;
+    const rows = await r.json();
+    if(!Array.isArray(rows)) return out;
+    rows.forEach(b=>{
+      if(String(b.ref||'').indexOf(mode+'-')!==0) return;      // 같은 방식끼리만
+      const have = new Set((b.pos||[]).map(p=>String(p&&p.base||'')).filter(Boolean));
+      if(!have.size) return;
+      let hit=0; want.forEach(x=>{ if(have.has(x)) hit++; });
+      if(!hit) return;
+      if(hit===want.size && have.size===want.size){ if(!out.same) out.same=b; }
+      else out.conflict.push({ ref:b.ref, pos:(b.pos||[]).map(p=>String((p&&p.po)||(p&&p.base)||'')) });
+    });
+  }catch(e){}
+  return out;
+}
 async function pchkLtlBatchSave(){
   const wh=window._packWh||'SC'; const rows=window._ltlRows||[]; const msg=document.getElementById('ltl-msg'); const btn=document.getElementById('ltl-save');
   const M=(window._packMode==='UPS')?'UPS':'LTL';   // 📦 UPS = 여러 PO를 합쳐 박스를 줄여 보내는 배치 (v775)
@@ -10343,10 +10372,43 @@ async function pchkLtlBatchSave(){
       pallet_dims: M==='UPS' ? upsBoxes : (window._ltlPalletDims||[]).slice(0,nPal),
       note: M==='UPS' ? ('UPS combined — '+tot+' box(es) actually shipped; '+estTot+' if sent separately; labels on PO '+((rows[0]||{}).po||'')) : null,
       created_by:_pchkWho||null };
-    try{ await fetch(SB_URL+'/rest/v1/pr_bulkship',{method:'POST',headers:{apikey:SB_KEY,Authorization:'Bearer '+SB_KEY,'Content-Type':'application/json',Prefer:'return=minimal'},body:JSON.stringify([bulk])}); }catch(e){}
-    if(msg){ msg.style.color='#16a34a'; msg.innerHTML= M==='UPS'
-      ? '✅ UPS batch created — '+rows.length+' PO combined into '+tot+' box(es).<br>Manager can review it in <b>📦 Bulk Shipments</b>.'
-      : '✅ Bulk shipment created — '+rows.length+' PO · '+tot+' boxes · '+nPal+' pallet(s).<br>Manager can review it in <b>📦 Bulk Shipments</b>.'; }
+    /* 🔁 같은 묶음을 두 번 만들지 않는다 (v871).
+       실제로 이런 일이 있었다: 같은 PO 두 개짜리 UPS 배치가 6분 사이에 두 번 생겼다.
+       직원이 뒤로 갔다가 다시 저장한 것이다. 버튼 잠금으로는 못 막는다 — 연타가 아니니까.
+       그래서 저장 전에 "아직 안 나간 같은 묶음" 을 찾아본다:
+        · PO 조합이 완전히 같으면 → 새로 만들지 않고 그 묶음을 고친다
+        · 일부만 겹치면 → 그 PO 가 다른 묶음에 이미 들어 있다는 뜻이라 먼저 물어본다
+          (한 PO 가 두 묶음에 들어가면 나중에 어느 쪽으로 나갔는지 알 수 없게 된다) */
+    const dup = await bulkFindPending(wh, M, rows.map(r=>r.base));
+    if(!dup.same && dup.conflict.length){
+      const go = confirm('⚠ 이 PO 는 이미 다른 묶음에 들어 있습니다.\n\n'
+        + dup.conflict.map(c=>'· '+c.ref+' — PO '+c.pos.join(', ')).join('\n')
+        + '\n\n한 PO 가 두 묶음에 들어가면 나중에 어느 쪽으로 나갔는지 알 수 없습니다.\n'
+        + '그래도 새 묶음을 만들까요?');
+      if(!go){
+        if(btn){ btn.disabled=false; btn.textContent='💾 Save & create bulk shipment'; }
+        if(msg){ msg.style.color='#b45309'; msg.textContent='취소했습니다 — 기존 묶음을 먼저 확인해 주세요.'; }
+        return;
+      }
+    }
+    let updated=false;
+    if(dup.same){
+      try{
+        const pr=await fetch(SB_URL+'/rest/v1/pr_bulkship?id=eq.'+encodeURIComponent(dup.same.id),
+          {method:'PATCH',headers:{apikey:SB_KEY,Authorization:'Bearer '+SB_KEY,'Content-Type':'application/json',Prefer:'return=minimal'},
+           body:JSON.stringify({ pos:bulk.pos, total_boxes:bulk.total_boxes, pallets:bulk.pallets,
+                                 pallet_dims:bulk.pallet_dims, note:bulk.note, created_by:bulk.created_by })});
+        updated=pr.ok;
+      }catch(e){}
+    }
+    if(!updated){
+      try{ await fetch(SB_URL+'/rest/v1/pr_bulkship',{method:'POST',headers:{apikey:SB_KEY,Authorization:'Bearer '+SB_KEY,'Content-Type':'application/json',Prefer:'return=minimal'},body:JSON.stringify([bulk])}); }catch(e){}
+    }
+    if(msg){ msg.style.color='#16a34a'; msg.innerHTML= updated
+      ? '✅ 이미 있던 묶음 <b>'+esc(dup.same.ref)+'</b> 을 최신 내용으로 고쳤습니다 — 새로 만들지 않았습니다.<br>'+rows.length+' PO · '+tot+' box(es).'
+      : (M==='UPS'
+        ? '✅ UPS batch created — '+rows.length+' PO combined into '+tot+' box(es).<br>Manager can review it in <b>📦 Bulk Shipments</b>.'
+        : '✅ Bulk shipment created — '+rows.length+' PO · '+tot+' boxes · '+nPal+' pallet(s).<br>Manager can review it in <b>📦 Bulk Shipments</b>.'); }
     window._packSel={};
     setTimeout(pchkPackOpen, 1800);
   }catch(e){ if(msg){ msg.style.color='#dc2626'; msg.textContent='Could not save: '+(e.message||e); } if(btn){ btn.disabled=false; btn.textContent='💾 Save & create bulk shipment'; } }
