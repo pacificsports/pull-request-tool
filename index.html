@@ -167,7 +167,7 @@ body.narrow main{max-width:1100px;}
   </span>
   <select id="lang-sel" onchange="setLang(this.value)" style="font-size:11px;padding:3px 6px;border-radius:5px;border:none;background:#1d3f66;color:#fff;"><option value="ko">한국어</option><option value="en">English</option><option value="es">Español</option></select>
   <button id="wide-btn" class="btn btn-sm" onclick="toggleWide()" title="화면 넓게 / 좁게 — 기본은 넓게 (이 브라우저에만 저장돼)" style="padding:2px 8px;font-size:10px;background:#1d3f66;color:#cfe0f2;border-color:#2b5384;">↔ Wide</button>
-  <span id="app-ver" style="font-size:10px;color:#9fb8d4;">v884</span>
+  <span id="app-ver" style="font-size:10px;color:#9fb8d4;">v885</span>
 </div>
 <script>
 // ↔ 넓게 보기 — 브라우저마다 따로 저장 (v793)
@@ -3543,11 +3543,13 @@ function openReturnModal(base){
           <td style="font-weight:700;">${esc(String(x.size).toUpperCase())}</td>
           <td><span class="chip chip-${esc(x.wh)}" style="font-size:9.5px;padding:1px 7px;">${esc(x.wh)}</span></td>
           <td style="font-family:Consolas,monospace;">${x.qty.toLocaleString()}</td>
-          <td><input class="fi num rt-q" data-i="${i}" type="number" min="0" max="${x.qty}" placeholder="0" style="width:75px;font-weight:800;"></td>
+          <td><input class="fi num rt-q" data-i="${i}" type="number" min="0" placeholder="0" onchange="rtQtyChk(${i},${x.qty})" style="width:75px;font-weight:800;"></td>
           <td><select class="fi rt-wh" data-i="${i}" style="width:72px;padding:3px 6px;font-weight:700;">${whOpt(x.wh)}</select></td>
           <td style="min-width:230px;">
             <div id="rt-lr-${i}" style="display:flex;flex-wrap:wrap;">${rtLineChipsHtml(i)}</div>
             <input class="fi rt-reason-line" data-i="${i}" placeholder="note (optional)" style="width:210px;font-size:10.5px;padding:2px 6px;margin-top:3px;">
+            <label style="display:block;margin-top:4px;font-size:10px;font-weight:800;color:#0369a1;cursor:pointer;" title="We shipped more than we billed. These pieces were never charged, so they come back to stock with NO credit.">
+              <input type="checkbox" class="rt-nc" data-i="${i}" style="width:13px;height:13px;accent-color:#0369a1;vertical-align:-2px;"> Overship — no credit</label>
           </td>
         </tr>`).join('')}</tbody>
       </table>
@@ -3566,6 +3568,20 @@ function rtApplyAllReason(){
   const v = String((document.getElementById('rt-reason-all')||{}).value||'');
   document.querySelectorAll('#modal-return .rt-reason-line').forEach(inp=>{ inp.value = v; });
 }
+/* 보낸 수량보다 많이 돌아오는 일이 실제로 있다 — 우리가 실수로 더 보냈을 때다.
+   그래서 막지 않고, 대신 그 줄을 'Overship — no credit' 로 표시하도록 권한다 (v885). */
+function rtQtyChk(i, shipped){
+  const q = document.querySelector('#modal-return .rt-q[data-i="'+i+'"]');
+  const nc = document.querySelector('#modal-return .rt-nc[data-i="'+i+'"]');
+  if(!q) return;
+  const v = parseInt(q.value)||0;
+  q.style.borderColor = (v > shipped) ? '#0369a1' : '';
+  q.style.background  = (v > shipped) ? '#f0f9ff' : '';
+  if(v > shipped && nc && !nc.checked){
+    nc.checked = true;
+    showToast('ℹ 보낸 것보다 ' + (v-shipped) + '장 많습니다 — 이 줄을 "Overship — no credit" 로 표시했습니다');
+  }
+}
 async function returnDo(base, doEmail){
   const rec = savedCache.find(s=>s.base===base); if(!rec) return;
   const items = window._rtItems||[];
@@ -3573,12 +3589,17 @@ async function returnDo(base, doEmail){
   document.querySelectorAll('#modal-return .rt-cb:checked').forEach(cb=>{
     const i = Number(cb.dataset.i);
     const x = items[i]; if(!x) return;
-    const q = Math.min(parseInt((document.querySelector('#modal-return .rt-q[data-i="'+i+'"]')||{}).value)||0, x.qty);
+    const q = Math.max(0, parseInt((document.querySelector('#modal-return .rt-q[data-i="'+i+'"]')||{}).value)||0);   // 보낸 것보다 많을 수 있다 (오출고)
     const toWh = ((document.querySelector('#modal-return .rt-wh[data-i="'+i+'"]')||{}).value)||x.wh;
     const lr = ((window._rtLineReasons||{})[i]||[]).slice();
     const note = String((document.querySelector('#modal-return .rt-reason-line[data-i="'+i+'"]')||{}).value||'').trim();
     const rsn = [lr.join(', '), note].filter(Boolean).join(' — ');
-    if(q>0) lines.push({ style:x.style, desc:x.desc, color:x.color, size:x.size, qty:q, price:x.price, ppb:x.ppb, wh:x.wh, toWh:toWh, reasons:lr, reason:rsn });
+    const noCredit = !!((document.querySelector('#modal-return .rt-nc[data-i="'+i+'"]')||{}).checked);
+    if(q>0) lines.push({ style:x.style, desc:x.desc, color:x.color, size:x.size, qty:q,
+      price: noCredit ? 0 : x.price,          // 청구한 적 없는 물건이라 값이 0 이다
+      listPrice: x.price,                     // 원래 단가는 참고로 남긴다
+      noCredit: noCredit, shippedQty: x.qty,
+      ppb:x.ppb, wh:x.wh, toWh:toWh, reasons:lr, reason:rsn });
   });
   if(!lines.length){ alert('⚠ Check items to return and enter quantities.'); return; }
   const reasons = [...new Set(lines.flatMap(l=>l.reasons||[]))];   // RA 전체 사유 = 각 아이템 사유 합집합 (추적/집계용)
@@ -3934,10 +3955,15 @@ function openReturnReceive(base, ra){
   const rec = savedCache.find(s=>s.base===base); if(!rec) return;
   const ret = recReturns(rec).find(r=>r.ra===ra); if(!ret){ showToast('⚠ Return not found'); return; }
   if(ret.status==='received'){ openCreditMemo(base, ra); return; }
+  window._rrRet = ret;   // rrRecalc 이 줄별 noCredit 을 봐야 한다 (v885)
   const ex=document.getElementById('modal-rareceive'); if(ex) ex.remove();
-  const rows=(ret.lines||[]).map((l,i)=>{ const rq=Number(l.qty)||0, price=Number(l.price)||0, toWh=(l.toWh||l.wh)==='CA'?'CA':'SC';
-    return `<tr>
-      <td style="border:1px solid #e5e7eb;padding:5px 8px;font-weight:700;">${esc(l.style)}</td>
+  const rows=(ret.lines||[]).map((l,i)=>{ const rq=Number(l.qty)||0, toWh=(l.toWh||l.wh)==='CA'?'CA':'SC';
+    /* 오출고로 돌아오는 줄은 청구한 적이 없다 — 단가를 0 으로 잠근다 (v885).
+       열어두면 습관적으로 원래 단가가 들어가서, 안 받은 돈을 돌려주는 크레딧이 만들어진다. */
+    const nc = !!l.noCredit;
+    const price = nc ? 0 : (Number(l.price)||0);
+    return `<tr${nc?' style="background:#f0f9ff;"':''}>
+      <td style="border:1px solid #e5e7eb;padding:5px 8px;font-weight:700;">${esc(l.style)}${nc?'<div style="font-size:9px;font-weight:900;color:#0369a1;white-space:nowrap;">OVERSHIP · NO CREDIT</div>':''}</td>
       <td style="border:1px solid #e5e7eb;padding:5px 8px;">${esc(String(l.color).toUpperCase())}</td>
       <td style="border:1px solid #e5e7eb;padding:5px 8px;text-align:center;">${esc(l.size)}</td>
       <td style="border:1px solid #e5e7eb;padding:5px 8px;font-size:10.5px;color:#9a3412;">${esc(l.reason||ret.reason||'')}</td>
@@ -3945,7 +3971,7 @@ function openReturnReceive(base, ra){
       <td style="border:1px solid #e5e7eb;padding:4px 6px;text-align:right;white-space:nowrap;background:#f0fdf4;"><input class="fi num rr-a" data-i="${i}" type="number" min="0" value="${rq}" oninput="rrRecalc('${esc(base)}','${esc(ra)}')" style="width:50px;font-weight:800;text-align:right;color:#166534;"> <span class="chip chip-${toWh}" style="font-size:9px;padding:1px 5px;">${toWh}</span></td>
       <td style="border:1px solid #e5e7eb;padding:4px 6px;text-align:right;background:#fffbeb;"><input class="fi num rr-b" data-i="${i}" type="number" min="0" value="0" oninput="rrRecalc('${esc(base)}','${esc(ra)}')" style="width:46px;font-weight:800;text-align:right;color:#b45309;"></td>
       <td style="border:1px solid #e5e7eb;padding:4px 6px;text-align:right;background:#fef2f2;"><input class="fi num rr-f" data-i="${i}" type="number" min="0" value="0" oninput="rrRecalc('${esc(base)}','${esc(ra)}')" style="width:46px;font-weight:800;text-align:right;color:#b91c1c;"></td>
-      <td style="border:1px solid #e5e7eb;padding:4px 6px;text-align:right;"><input class="fi num rr-price" data-i="${i}" type="number" min="0" step="0.01" value="${price.toFixed(2)}" oninput="rrRecalc('${esc(base)}','${esc(ra)}')" style="width:60px;text-align:right;"></td>
+      <td style="border:1px solid #e5e7eb;padding:4px 6px;text-align:right;"><input class="fi num rr-price" data-i="${i}" type="number" min="0" step="0.01" value="${price.toFixed(2)}"${nc?' readonly title="Overship — never billed, so no credit is due"':''} oninput="rrRecalc('${esc(base)}','${esc(ra)}')" style="width:60px;text-align:right;${nc?'background:#e0f2fe;color:#0369a1;font-weight:800;':''}"></td>
       <td style="border:1px solid #e5e7eb;padding:5px 8px;text-align:right;color:#374151;font-weight:700;" class="rr-recv" data-i="${i}">${rq.toLocaleString()}</td>
       <td style="border:1px solid #e5e7eb;padding:5px 8px;text-align:right;font-weight:800;" class="rr-amt" data-i="${i}">$${(rq*price).toFixed(2)}</td>
     </tr>`; }).join('');
@@ -3983,7 +4009,8 @@ function rrRecalc(base, ra){
     const b=Math.max(0, parseInt((div.querySelector('.rr-b[data-i="'+i+'"]')||{}).value)||0);
     const f=Math.max(0, parseInt((div.querySelector('.rr-f[data-i="'+i+'"]')||{}).value)||0);
     const recv=a+b+f;
-    const price=Number((div.querySelector('.rr-price[data-i="'+i+'"]')||{}).value)||0;
+    const _l=((window._rrRet&&window._rrRet.lines)||[])[i]||{};
+    const price=_l.noCredit ? 0 : (Number((div.querySelector('.rr-price[data-i="'+i+'"]')||{}).value)||0);
     const amt=recv*price; total+=amt;
     const rc=div.querySelector('.rr-recv[data-i="'+i+'"]'); if(rc) rc.textContent=recv.toLocaleString();
     const cell=div.querySelector('.rr-amt[data-i="'+i+'"]'); if(cell) cell.textContent='$'+amt.toFixed(2);
@@ -4000,14 +4027,18 @@ async function returnReceiveConfirm(base, ra){
     const b=Math.max(0, parseInt((div.querySelector('.rr-b[data-i="'+i+'"]')||{}).value)||0);
     const f=Math.max(0, parseInt((div.querySelector('.rr-f[data-i="'+i+'"]')||{}).value)||0);
     const recv=a+b+f;
-    const price=Number((div.querySelector('.rr-price[data-i="'+i+'"]')||{}).value)||Number(l.price)||0;
+    /* 오출고 줄은 무슨 일이 있어도 0 — 화면에서 누가 고쳤더라도 여기서 다시 잠근다 (v885) */
+    const price = l.noCredit ? 0 : (Number((div.querySelector('.rr-price[data-i="'+i+'"]')||{}).value)||Number(l.price)||0);
     creditAmt+=recv*price; totA+=a; totB+=b; totF+=f;
-    recvLines.push(Object.assign({}, l, {receivedQty:recv, gradeA:a, gradeB:b, failed:f, restockA:a, restockB:b, restockQty:a+b, price:price}));
+    recvLines.push(Object.assign({}, l, {receivedQty:recv, gradeA:a, gradeB:b, failed:f, restockA:a, restockB:b, restockQty:a+b, price:price, noCredit:!!l.noCredit}));
   });
   creditAmt=Math.round(creditAmt*100)/100;
   const restockA=totA, restockB=totB, restockTot=totA+totB;
   const cm=ra.replace(/^RA-/, 'CM-');
-  if(!confirm('Confirm receipt of '+ra+'?\n\n• Credit memo '+cm+':  $'+creditAmt.toFixed(2)+' ('+(totA+totB+totF).toLocaleString()+' pcs)\n• A Grade: '+totA.toLocaleString()+' → stock · B Grade: '+totB.toLocaleString()+' → B-grade · Failed: '+totF.toLocaleString()+' → scrap\n\nThis cannot be edited afterward.')) return;
+  const ncPcs = recvLines.filter(l=>l.noCredit).reduce((a,l)=>a+(Number(l.receivedQty)||0),0);
+  if(!confirm('Confirm receipt of '+ra+'?\n\n• Credit memo '+cm+':  $'+creditAmt.toFixed(2)+' ('+(totA+totB+totF).toLocaleString()+' pcs)\n'
+    + (ncPcs?('• Overship (never billed): '+ncPcs.toLocaleString()+' pcs → back to stock, NO credit\n'):'')
+    + '• A Grade: '+totA.toLocaleString()+' → stock · B Grade: '+totB.toLocaleString()+' → B-grade · Failed: '+totF.toLocaleString()+' → scrap\n\nThis cannot be edited afterward.')) return;
   for(const l of recvLines){
     const toWh=(l.toWh||l.wh)==='CA'?'CA':'SC';
     const k=pcKey(l.style, l.color, toWh), sz=String(l.size).toUpperCase();
@@ -4033,7 +4064,9 @@ function buildCreditMemoHtml(rec, ret){
   const dt=rc.at?new Date(rc.at):new Date();
   const src=(rc.lines&&rc.lines.length)?rc.lines:(ret.lines||[]);
   const rows=src.map(l=>{ const q=Number(l.receivedQty!=null?l.receivedQty:l.qty)||0; const price=Number(l.price)||0; const amt=q*price;
-    return `<tr><td style="font-weight:700;">${esc(l.style)}</td><td class="tl">${esc(String(l.color).toUpperCase())}</td><td>${esc(l.size)}</td><td class="tl" style="font-size:10.5px;">${esc(l.reason||ret.reason||'')}</td><td style="text-align:right;font-weight:700;">${q.toLocaleString()}</td><td style="text-align:right;">$${price.toFixed(2)}</td><td style="text-align:right;font-weight:800;">$${amt.toFixed(2)}</td></tr>`; }).join('');
+    /* 오출고로 돌아온 줄은 거래처에게 왜 $0 인지 종이에 적어준다 — 안 적으면 실수로 보인다 (v885) */
+    const _nc = !!l.noCredit;
+    return `<tr><td style="font-weight:700;">${esc(l.style)}</td><td class="tl">${esc(String(l.color).toUpperCase())}</td><td>${esc(l.size)}</td><td class="tl" style="font-size:10.5px;">${esc(l.reason||ret.reason||'')}${_nc?'<div style="font-size:9.5px;font-weight:800;color:#0369a1;">Shipped in error — not invoiced, no credit due</div>':''}</td><td style="text-align:right;font-weight:700;">${q.toLocaleString()}</td><td style="text-align:right;">${_nc?'—':('$'+price.toFixed(2))}</td><td style="text-align:right;font-weight:800;">${_nc?'$0.00':('$'+amt.toFixed(2))}</td></tr>`; }).join('');
   const total=Number(rc.creditAmount!=null?rc.creditAmount:src.reduce((a,l)=>a+(Number(l.receivedQty!=null?l.receivedQty:l.qty)||0)*(Number(l.price)||0),0));
   let _pd=(rec.inv&&rec.inv[wh]&&rec.inv[wh].paid)||null;
   if((!_pd || _pd.method==='website') && rec.inv){ for(const w of Object.keys(rec.inv)){ const q=rec.inv[w]&&rec.inv[w].paid; if(q && q.method!=='website' && String(q.acct||'').replace(/[^0-9]/g,'')){ _pd=q; break; } } }
