@@ -167,7 +167,7 @@ body.narrow main{max-width:1100px;}
   </span>
   <select id="lang-sel" onchange="setLang(this.value)" style="font-size:11px;padding:3px 6px;border-radius:5px;border:none;background:#1d3f66;color:#fff;"><option value="ko">한국어</option><option value="en">English</option><option value="es">Español</option></select>
   <button id="wide-btn" class="btn btn-sm" onclick="toggleWide()" title="화면 넓게 / 좁게 — 기본은 넓게 (이 브라우저에만 저장돼)" style="padding:2px 8px;font-size:10px;background:#1d3f66;color:#cfe0f2;border-color:#2b5384;">↔ Wide</button>
-  <span id="app-ver" style="font-size:10px;color:#9fb8d4;">v872</span>
+  <span id="app-ver" style="font-size:10px;color:#9fb8d4;">v873</span>
 </div>
 <script>
 // ↔ 넓게 보기 — 브라우저마다 따로 저장 (v793)
@@ -5976,6 +5976,34 @@ async function _savePLInner(rec){
   logHist(plBase, 'Packing List saved — ' + plWh + (plDrafts[plWh].serial ? ' (' + plDrafts[plWh].serial + ')' : ''));
   showToast(t('a_plsaved',{x:plNum(plBase, plWh)}) + (plDrafts[plWh].serial ? ` (${plDrafts[plWh].serial})` : '') + ' — email is sent only when you press ✅ Complete');
 }
+/* 이 PO 와 한 박스로 함께 나가는 다른 PO 들 (v873).
+   같은 거래처 메일로 가는 것만 묶는다 — 남의 회사 packing list 가 섞여 나가면 큰일이다.
+   돌려주는 것: { ref, mates:[{base, po, rec, done}] }  · done = 이미 Complete 됨 */
+async function plBatchMates(base, wh, custEm){
+  const out = { ref:'', mates:[] };
+  try{
+    if(!base || !custEm) return out;
+    const r = await sbFetch('/rest/v1/pr_bulkship?wh=eq.'+encodeURIComponent(wh)
+      + '&status=eq.PENDING&select=ref,pos,created_at&order=created_at.desc&limit=50');
+    if(!r.ok) return out;
+    const rows = await r.json();
+    if(!Array.isArray(rows)) return out;
+    const b = rows.find(x => String(x.ref||'').indexOf('UPS-')===0
+                          && (x.pos||[]).some(p => p && String(p.base)===String(base)));
+    if(!b) return out;
+    out.ref = b.ref;
+    (b.pos||[]).forEach(p=>{
+      const mb = String((p&&p.base)||''); if(!mb || mb===String(base)) return;
+      const mr = savedCache.find(s=>s.base===mb); if(!mr) return;
+      const mpl = (mr.pl||{})[wh] || {};
+      // 같은 거래처 메일로 가는 것만
+      const mem = String(mpl.custEmail||'').trim().toLowerCase();
+      if(mem && mem !== String(custEm).trim().toLowerCase()) return;
+      out.mates.push({ base:mb, po:(mr.meta&&mr.meta.po)||mb, rec:mr, done:!!mpl._completed });
+    });
+  }catch(e){}
+  return out;
+}
 async function completePL(){
   const rec = savedCache.find(s=>s.base===plBase); if(!rec) return;
   plFieldsToDraft();
@@ -5997,11 +6025,43 @@ async function completePL(){
   try{ await sbFetch('/rest/v1/pr_orders?base=eq.'+encodeURIComponent(plBase), {method:'PATCH', headers:{Prefer:'return=minimal'}, body:JSON.stringify({pl:rec.pl, updated_at:new Date().toISOString()})}); }catch(e){}
   logHist(plBase, 'Packing List COMPLETED — ' + plWh + (wantSend ? ' (emailed ' + custEm + ')' : ''));
   if(wantSend){
-    showToast('📧 Sending Packing List...');
-    try{
-      await sendPLEmailFor(rec, plWh, custEm);
-      showToast('✅ Complete — Packing List sent → ' + custEm);
-    }catch(e){ alert('📧 Email failed: ' + e.message + '\n(Still marked Complete — use Resend PL to retry)'); }
+    /* 📧 한 박스로 함께 나간 PO 는 메일도 한 통으로 (v873).
+       LTL 배치는 원래 거래처당 한 통으로 나간다(sendBatchPLEmail). 그런데 UPS 배치는
+       PO 를 하나씩 Complete 하다 보니, 같은 거래처에게 같은 박스 이야기를 두 번 세 번 보냈다.
+       받는 쪽에서는 몇 개가 오는 건지 알 수 없다. */
+    const _mates = await plBatchMates(plBase, plWh, custEm);
+    let _alone = true;
+    if(_mates.mates.length){
+      const _left = _mates.mates.filter(m=>!m.done);
+      if(!_left.length){
+        showToast('📧 Sending one email for ' + (_mates.mates.length+1) + ' POs...');
+        try{
+          await sendBatchPLEmail([rec].concat(_mates.mates.map(m=>m.rec)), plWh, custEm);
+          _mates.mates.forEach(m=>{ try{ logHist(m.base, 'Packing List emailed together with PO '+((rec.meta&&rec.meta.po)||plBase)+' — one box, one email'); }catch(_){} });
+          showToast('✅ Complete — 1 email for ' + (_mates.mates.length+1) + ' POs → ' + custEm);
+        }catch(e){ alert('📧 Email failed: ' + e.message + '\n(Still marked Complete — use Resend PL to retry)'); }
+        _alone = false;
+      } else {
+        /* 아직 안 끝난 PO 가 있다. 여기서 조용히 안 보내면 영영 안 나갈 수도 있으니
+           사람이 고르게 한다 — 기다릴지, 지금 따로 보낼지. */
+        const _wait = confirm('📦 이 오더는 한 박스로 함께 나가는 묶음의 일부입니다 (' + _mates.ref + ').\n\n'
+          + '아직 Complete 안 된 PO:\n' + _left.map(m=>'· PO ' + m.po).join('\n')
+          + '\n\n[확인] 기다렸다가 마지막 PO 를 Complete 할 때 한 통으로 보냅니다 (권장)\n'
+          + '[취소] 지금 이 PO 만 따로 보냅니다');
+        if(_wait){
+          showToast('📧 보류 — 나머지 ' + _left.length + '개가 Complete 되면 한 통으로 나갑니다');
+          try{ logHist(plBase, 'PL email held — waiting for PO '+_left.map(m=>m.po).join(', ')+' (same box, one email)'); }catch(_){}
+          _alone = false;
+        }
+      }
+    }
+    if(_alone){
+      showToast('📧 Sending Packing List...');
+      try{
+        await sendPLEmailFor(rec, plWh, custEm);
+        showToast('✅ Complete — Packing List sent → ' + custEm);
+      }catch(e){ alert('📧 Email failed: ' + e.message + '\n(Still marked Complete — use Resend PL to retry)'); }
+    }
   } else {
     showToast('✅ Packing List marked Complete');
   }
