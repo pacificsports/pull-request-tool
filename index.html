@@ -167,7 +167,7 @@ body.narrow main{max-width:1100px;}
   </span>
   <select id="lang-sel" onchange="setLang(this.value)" style="font-size:11px;padding:3px 6px;border-radius:5px;border:none;background:#1d3f66;color:#fff;"><option value="ko">한국어</option><option value="en">English</option><option value="es">Español</option></select>
   <button id="wide-btn" class="btn btn-sm" onclick="toggleWide()" title="화면 넓게 / 좁게 — 기본은 넓게 (이 브라우저에만 저장돼)" style="padding:2px 8px;font-size:10px;background:#1d3f66;color:#cfe0f2;border-color:#2b5384;">↔ Wide</button>
-  <span id="app-ver" style="font-size:10px;color:#9fb8d4;">v863</span>
+  <span id="app-ver" style="font-size:10px;color:#9fb8d4;">v864</span>
 </div>
 <script>
 // ↔ 넓게 보기 — 브라우저마다 따로 저장 (v793)
@@ -9893,21 +9893,56 @@ function pchkExpectedHtml(base, wh){
   if(!(window._ltlLines&&window._ltlLines[String(base)])) return `<div style="font-size:10.5px;color:#94a3b8;margin-top:5px;">📋 (item detail loading…)</div>`;
   if(!lines.length) return `<div style="font-size:10.5px;color:#94a3b8;margin-top:5px;">📋 no ${wh} items on this order</div>`;
   lines.sort((a,b)=> String(a.style).localeCompare(String(b.style),undefined,{numeric:true}) || String(a.color).localeCompare(String(b.color)) || ((_PCHK_SZI[String(a.size).toUpperCase()]??99)-(_PCHK_SZI[String(b.size).toUpperCase()]??99)));
+  /* 스캔을 끝내고 돌아왔으면 줄마다 ✔ / ✘ 를 붙인다 (v864).
+     직원이 위쪽 목록만 보고도 어느 줄이 안 맞는지 바로 알 수 있어야 한다. */
+  const _sr = (window._packScanRes
+      && String(window._packScanRes.base)===String(base)
+      && String(window._packScanRes.wh||'')===String(wh)) ? window._packScanRes : null;
+  const _smap = {};
+  if(_sr) (_sr.rows||[]).forEach(r=>{ _smap[r.k]=r; });
+  const _extra = _sr ? (_sr.rows||[]).filter(r=>r.st==='extra') : [];
   let tFull=0,tLoose=0;
   const rowsHtml=lines.map(l=>{ const c=boxCalc({qty:Number(l.qty)||0, ppb:Number(l.ppb)||72}); tFull+=c.full; tLoose+=c.loose;
     const parts=[];
     if(c.full>0) parts.push(`<b style="color:#7c2d12;">full box ${c.full}</b>`);
     if(c.loose>0) parts.push(`<span style="color:#0369a1;">${c.loose} pc</span>`);
     if(!parts.length) parts.push(`<span style="color:#94a3b8;">${l.qty} pc</span>`);
-    return `<div style="display:flex;gap:6px;font-size:11.5px;padding:2px 0;border-top:1px dashed #eef2f7;">
-      <span style="font-weight:800;color:#111;flex:none;width:44px;">${esc(l.style)}</span>
+    let mark='', tone='';
+    if(_sr){
+      const r=_smap[scanKeyOf(l.style,l.color,l.size)];
+      if(r && r.st==='match'){
+        mark=`<span title="스캔 결과 맞음" style="flex:none;width:13px;color:#15803d;font-weight:900;">✔</span>`; tone='background:#f0fdf4;';
+      } else if(r){
+        const st=SCAN_ST[r.st]||{c:'#b91c1c',t:r.st};
+        mark=`<span title="${esc(String(st.t).replace(/[✔✖]/g,'').trim()||r.st)} — 스캔 ${r.got} / 있어야 할 것 ${r.exp}" style="flex:none;width:13px;color:${st.c};font-weight:900;">✘</span>`;
+        tone='background:#fef2f2;';
+      } else {
+        mark=`<span title="스캔에 안 잡혔다" style="flex:none;width:13px;color:#b91c1c;font-weight:900;">✘</span>`; tone='background:#fef2f2;';
+      }
+    }
+    return `<div style="display:flex;gap:6px;font-size:11.5px;padding:2px 4px;border-top:1px dashed #eef2f7;border-radius:5px;${tone}">
+      ${mark}<span style="font-weight:800;color:#111;flex:none;width:44px;">${esc(l.style)}</span>
       <span style="flex:1;min-width:0;color:#334155;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${esc(String(l.color||'').toUpperCase())} <b>${esc(String(l.size||'').toUpperCase())}</b></span>
       <span style="flex:none;white-space:nowrap;">${parts.join(' + ')}</span>
     </div>`;
   }).join('');
+  let scanHdr='';
+  if(_sr){
+    const bad = lines.filter(l=>{ const r=_smap[scanKeyOf(l.style,l.color,l.size)]; return !(r && r.st==='match'); }).length;
+    const okAll = (bad===0 && !_extra.length);
+    scanHdr = `<div style="margin:4px 0 3px;padding:4px 7px;border-radius:7px;font-size:10.5px;font-weight:800;`
+      + `background:${okAll?'#f0fdf4':'#fef2f2'};color:${okAll?'#166534':'#b91c1c'};">`
+      + (okAll ? '📷 스캔 결과 — 전부 맞음' : `📷 스캔 결과 — ${bad?bad+'줄 안 맞음':''}${bad&&_extra.length?' · ':''}${_extra.length?_extra.length+'줄은 이 오더에 없는 물건':''}`)
+      + `</div>`
+      + (_extra.length ? _extra.map(r=>`<div style="display:flex;gap:6px;font-size:11px;padding:2px 4px;border-radius:5px;background:#f5f3ff;color:#5b21b6;">
+          <span style="flex:none;width:13px;font-weight:900;">✘</span>
+          <span style="font-weight:800;flex:none;width:44px;">${esc(String(r.style))}</span>
+          <span style="flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${esc(String(r.color||'').toUpperCase())} <b>${esc(String(r.size||'').toUpperCase())}</b></span>
+          <span style="flex:none;white-space:nowrap;">스캔 ${r.got} · 이 오더에 없음</span></div>`).join('') : '');
+  }
   return `<div style="background:#f8fafc;border:1px solid #e2e8f0;border-radius:9px;padding:6px 9px;margin-top:6px;">
     <div style="font-size:10.5px;font-weight:800;color:#475569;margin-bottom:1px;">📋 Should contain (${wh}) — <b style="color:#7c2d12;">full box ${tFull}</b>${tLoose?` + <span style="color:#0369a1;">${tLoose} pc</span>`:''}</div>
-    ${rowsHtml}</div>`;
+    ${scanHdr}${rowsHtml}</div>`;
 }
 async function pchkLtlBatch(mode){
   const M=(String(mode||'LTL').toUpperCase()==='UPS')?'UPS':'LTL';
@@ -10322,7 +10357,7 @@ async function scanStart(mode, id){
   scanSession();
 }
 function scanStartOrder(base, wh, label){
-  _scan = { mode:'PO', id:base, ref:label||base, title:'📦 Order '+(label||base), back:'PACK',
+  _scan = { mode:'PO', id:base, wh:wh, ref:label||base, title:'📦 Order '+(label||base), back:'PACK',
     unit:'pcs', exp: scanExpOrder(base, wh), seen: new Map(), manual: {}, pbox:new Map() };
   pfindCarryInto([String(base)], wh);
   scanSession();
@@ -10488,6 +10523,14 @@ function scanSession(){
   scanRender();
 }
 function scanExit(){ scanStop();
+  /* 스캔 결과를 Pack 화면으로 들고 나간다 (v864).
+     전에는 여기서 _scan 을 그냥 버려서, 포장 화면으로 돌아오면 무엇이 맞고 틀렸는지
+     화면에 아무 흔적이 없었다. 이제 줄마다 ✔ / ✘ 로 남는다. */
+  try{
+    if(_scan && _scan.mode==='PO' && _scan.back==='PACK'){
+      window._packScanRes = { base:String(_scan.id), wh:String(_scan.wh||''), at:Date.now(), rows:scanReconcile() };
+    }
+  }catch(e){}
   const back = _scan && _scan.back;
   if(back==='BATCH'){ _scan=null; pchkLtlBatch(window._packMode||'LTL'); return; }   // LTL/UPS 배치 화면에서 들어왔으면 그리로 복귀
   if(back==='PACK'){ _scan=null; pchkPackRender(); return; }                         // 한 오더 Pack 화면에서 들어왔으면 그리로 (v860)
@@ -11997,7 +12040,31 @@ function packRowsWanted(){
 function packBoxSet(i, f, v){
   if(!_packBoxes[i]) _packBoxes[i] = {name:'',l:'',w:'',h:'',wt:''};
   _packBoxes[i][f] = (f==='name') ? String(v||'') : (String(v||'').trim()===''? '' : Number(v));
-  if(f==='name'){ const p=BOX_PRESETS.find(x=>x.n===v); if(p){ _packBoxes[i].l=p.l; _packBoxes[i].w=p.w; _packBoxes[i].h=p.h; pchkPackBoxesRender(); } }
+  if(f==='name'){ const p=BOX_PRESETS.find(x=>x.n===v); if(p){ _packBoxes[i].l=p.l; _packBoxes[i].w=p.w; _packBoxes[i].h=p.h; pchkPackBoxesRender(); return; } }
+  /* 그 줄만 즉시 다시 칠한다 (v864).
+     전에는 여기서 화면을 안 건드려서, 다음 박스를 만질 때 화면이 통째로 다시 그려질 때까지
+     방금 다 채운 줄이 초록으로 안 바뀌었다. 그래서 마지막 박스는 영원히 초록이 안 되고,
+     직원이 초록을 보려고 쓸데없는 박스를 하나 더 만들어야 했다.
+     여기서 전체를 다시 그리면 타이핑 중에 커서가 튀므로, 그 줄의 색만 바꾼다. */
+  packPaintRow(i);
+}
+function packBoxOk(b){ return !!(b && b.l>0 && b.w>0 && b.h>0 && b.wt>0); }
+function packPaintRow(i){
+  const ok  = packBoxOk(_packBoxes[i]);
+  const row = document.getElementById('packrow-'+i);
+  const num = document.getElementById('packnum-'+i);
+  const tik = document.getElementById('packok-'+i);
+  if(row){ row.style.borderColor = ok ? '#bbf7d0' : '#e5e7eb'; row.style.background = ok ? '#f6fef9' : '#fff'; }
+  if(num)  num.style.color = ok ? '#16a34a' : '#b45309';
+  if(tik)  tik.style.visibility = ok ? 'visible' : 'hidden';
+  packPaintDone();
+}
+function packPaintDone(){
+  const el = document.getElementById('pack-done'); if(!el) return;
+  const nWant = packRowsWanted();
+  const done  = _packBoxes.filter(packBoxOk).length;
+  el.textContent = done+' / '+nWant+' filled';
+  el.style.color = (nWant>0 && done===nWant) ? '#16a34a' : '#b45309';
 }
 function packCopyFirst(){
   const a=_packBoxes[0]; if(!a){ return; }
@@ -12018,22 +12085,23 @@ function pchkPackBoxesRender(){
   const inp = (i,f,ph,w,extra)=>'<input value="'+esc(String((_packBoxes[i]||{})[f] ?? ''))+'" placeholder="'+ph+'" '
     + 'type="number" inputmode="decimal" step="0.1" oninput="packBoxSet('+i+',\''+f+'\',this.value)" '
     + 'style="width:'+w+';font-size:16px;padding:9px 4px;border:2px solid '+(extra||'#cbd5e1')+';border-radius:9px;box-sizing:border-box;text-align:center;">';
-  const done = _packBoxes.filter(b=>b && b.l>0 && b.w>0 && b.h>0 && b.wt>0).length;
+  const done = _packBoxes.filter(packBoxOk).length;
   el.innerHTML =
     '<div style="display:flex;align-items:center;gap:8px;margin:2px 0 8px;">'
     + '<div style="font-size:12px;font-weight:800;color:#0f2a4a;">Box sizes &amp; weight &mdash; '
-    +   '<span style="color:'+(done===nWant?'#16a34a':'#b45309')+';">'+done+' / '+nWant+' filled</span></div>'
+    +   '<span id="pack-done" style="color:'+(done===nWant?'#16a34a':'#b45309')+';">'+done+' / '+nWant+' filled</span></div>'
     + (nWant>1 ? '<button onclick="packCopyFirst()" style="margin-left:auto;background:#e0f2fe;color:#0369a1;border:none;border-radius:8px;padding:7px 11px;font-size:12px;font-weight:800;">\u2193 copy #1 to the rest</button>' : '')
     + '</div>'
     + _packBoxes.map((b,i)=>{
-        const ok = b && b.l>0 && b.w>0 && b.h>0 && b.wt>0;
-        return '<div style="background:#fff;border:1.5px solid '+(ok?'#bbf7d0':'#e5e7eb')+';border-radius:10px;padding:9px 10px;margin-bottom:7px;">'
+        const ok = packBoxOk(b);
+        return '<div id="packrow-'+i+'" style="background:'+(ok?'#f6fef9':'#fff')+';border:1.5px solid '+(ok?'#bbf7d0':'#e5e7eb')+';border-radius:10px;padding:9px 10px;margin-bottom:7px;">'
         + '<div style="display:flex;align-items:center;gap:7px;margin-bottom:6px;">'
-        +   '<span style="font-size:13px;font-weight:900;color:'+(ok?'#16a34a':'#b45309')+';">#'+(i+1)+'</span>'
+        +   '<span id="packnum-'+i+'" style="font-size:13px;font-weight:900;color:'+(ok?'#16a34a':'#b45309')+';">#'+(i+1)+'</span>'
         +   '<select onchange="packBoxSet('+i+',\'name\',this.value)" style="flex:1;font-size:13px;padding:7px;border:2px solid #cbd5e1;border-radius:9px;">'
         +     '<option value="">\u2014 size \u2014</option>'
         +     BOX_PRESETS.map(p=>'<option value="'+esc(p.n)+'"'+(b&&b.name===p.n?' selected':'')+'>'+esc(p.n)+' ('+p.l+'\u00D7'+p.w+'\u00D7'+p.h+')</option>').join('')
         +   '</select>'
+        +   '<span id="packok-'+i+'" title="\uC774 \uBC15\uC2A4\uB294 \uB2E4 \uCC44\uC6CC\uC84C\uB2E4" style="flex:none;font-size:17px;font-weight:900;color:#16a34a;line-height:1;'+(ok?'':'visibility:hidden;')+'">\u2714</span>'
         + '</div>'
         + '<div style="display:flex;gap:6px;align-items:center;">'
         +   inp(i,'l','L','100%') + '<span style="color:#94a3b8;">\u00D7</span>'
