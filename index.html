@@ -167,7 +167,7 @@ body.narrow main{max-width:1100px;}
   </span>
   <select id="lang-sel" onchange="setLang(this.value)" style="font-size:11px;padding:3px 6px;border-radius:5px;border:none;background:#1d3f66;color:#fff;"><option value="ko">한국어</option><option value="en">English</option><option value="es">Español</option></select>
   <button id="wide-btn" class="btn btn-sm" onclick="toggleWide()" title="화면 넓게 / 좁게 — 기본은 넓게 (이 브라우저에만 저장돼)" style="padding:2px 8px;font-size:10px;background:#1d3f66;color:#cfe0f2;border-color:#2b5384;">↔ Wide</button>
-  <span id="app-ver" style="font-size:10px;color:#9fb8d4;">v864</span>
+  <span id="app-ver" style="font-size:10px;color:#9fb8d4;">v865</span>
 </div>
 <script>
 // ↔ 넓게 보기 — 브라우저마다 따로 저장 (v793)
@@ -189,7 +189,8 @@ try{ applyWide(localStorage.getItem('psx_wide') !== '0'); }catch(e){ applyWide(t
 <div id="po-viewer" style="display:none;position:fixed;top:0;right:0;width:44%;height:100vh;background:#fff;border-left:2px solid var(--border);z-index:60;box-shadow:-6px 0 20px rgba(0,0,0,.15);">
   <div style="display:flex;align-items:center;gap:8px;padding:7px 12px;background:var(--header);color:#fff;font-size:12px;font-weight:700;">
     <span style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">📄 <span id="po-viewer-name"></span></span>
-    <button onclick="togglePoViewer(false)" style="margin-left:auto;background:rgba(255,255,255,.15);border:none;color:#fff;padding:3px 10px;border-radius:4px;cursor:pointer;font-size:12px;">✕</button>
+    <button id="po-viewer-replace" onclick="replaceSavedPO()" title="거래처가 수정된 PO 를 보내왔을 때 — 새 파일로 바꾼다 (기록에 남는다)" style="margin-left:auto;background:#b45309;border:none;color:#fff;padding:3px 10px;border-radius:4px;cursor:pointer;font-size:12px;font-weight:700;display:none;">⬆ Revised PO</button>
+    <button onclick="togglePoViewer(false)" style="background:rgba(255,255,255,.15);border:none;color:#fff;padding:3px 10px;border-radius:4px;cursor:pointer;font-size:12px;">✕</button>
   </div>
   <div id="po-viewer-body" style="height:calc(100vh - 38px);background:#525659;"></div>
 </div>
@@ -1369,6 +1370,9 @@ function showPoViewer(file){
     $('po-viewer-name').textContent = file.name || 'PO.pdf';
     $('po-viewer-body').innerHTML = `<iframe src="${_poBlobUrl}" style="width:100%;height:100%;border:none;"></iframe>`;
     $('po-viewer-tab').style.display = 'block';
+    /* 저장된 오더를 열었을 때만 '수정된 PO' 버튼을 낸다 — viewSavedPO 가 다시 켠다 (v865) */
+    window._poViewBase = null;
+    const _rb = $('po-viewer-replace'); if(_rb) _rb.style.display = 'none';
     togglePoViewer(true);
   }catch(e){ console.warn('showPoViewer', e); }
 }
@@ -4827,7 +4831,7 @@ async function osumViewPO(base){
   const mo = document.getElementById('modal-osum');
   if(mo && window.innerWidth > 1100) mo.style.paddingRight = '45%';
 }
-async function attachPoToSaved(base){
+async function attachPoToSaved(base, isRevised){
   const inp = document.createElement('input');
   inp.type = 'file'; inp.accept = 'application/pdf,image/*';
   inp.onchange = async ()=>{
@@ -4852,12 +4856,41 @@ async function attachPoToSaved(base){
       const r = await sbFetch('/rest/v1/pr_orders?base=eq.'+encodeURIComponent(base), {method:'PATCH', headers:{Prefer:'return=minimal'}, body:JSON.stringify({po_pdf: b64, updated_at:new Date().toISOString()})});
       if(!r.ok) throw new Error('save ' + r.status);
       const rc = savedCache.find(s=>s.base===base); if(rc) rc.poPdf = b64;
-      logHist(base, 'Customer PO attached (after save)');
-      showToast('✅ PO attached — view it with the 📄 PO button');
+      logHist(base, isRevised
+        ? ('REVISED PO uploaded — replaced the previous file (' + (f.name||'file') + ')')
+        : 'Customer PO attached (after save)');
+      showToast(isRevised ? '✅ 수정된 PO 로 바뀌었습니다' : '✅ PO attached — view it with the 📄 PO button');
       viewSavedPO(base);
     }catch(e){ showToast('⚠ PO attach failed: ' + (e.message||e)); }
   };
   inp.click();
+}
+/* ═══════════ 📦 박스 QR ↔ 출고 (v865) ═══════════
+   포장 때 붙여둔 박스들을 "진짜 나갔다" 로 바꾼다. 이때부터 손님이 QR 을 찍으면
+   거래처 이름과 PO# 가 나온다. Undo Ship 하면 도로 닫히고, 박스 내용만 나온다.
+   실패해도 Complete 자체는 막지 않는다 — 서류가 우선이다. */
+async function boxLinkCount(base, wh){
+  try{
+    const r = await sbFetch('/rest/v1/pr_boxship?select=ctn,shipped_at&base=eq.'+encodeURIComponent(base)+'&wh=eq.'+encodeURIComponent(wh));
+    if(!r.ok) return {total:0, shipped:0};
+    const j = await r.json();
+    return { total:(j||[]).length, shipped:(j||[]).filter(x=>x.shipped_at).length };
+  }catch(e){ return {total:0, shipped:0}; }
+}
+async function boxLinkShip(base, wh, rec){
+  try{
+    const meta = (rec && rec.meta) || {};
+    const body = { shipped_at:new Date().toISOString(), shipped_by:((typeof SESS!=='undefined'&&SESS&&SESS.email)||null),
+                   po: meta.po||null, cust: meta.cust||null };
+    await sbFetch('/rest/v1/pr_boxship?base=eq.'+encodeURIComponent(base)+'&wh=eq.'+encodeURIComponent(wh),
+      {method:'PATCH', headers:{Prefer:'return=minimal'}, body:JSON.stringify(body)});
+  }catch(e){ console.warn('boxLinkShip', e); }
+}
+async function boxLinkUnship(base, wh){
+  try{
+    await sbFetch('/rest/v1/pr_boxship?base=eq.'+encodeURIComponent(base)+'&wh=eq.'+encodeURIComponent(wh),
+      {method:'PATCH', headers:{Prefer:'return=minimal'}, body:JSON.stringify({ shipped_at:null, shipped_by:null })});
+  }catch(e){ console.warn('boxLinkUnship', e); }
 }
 async function viewSavedPO(base){
   try{
@@ -4873,7 +4906,19 @@ async function viewSavedPO(base){
     for(let i=0;i<bin.length;i++) arr[i] = bin.charCodeAt(i);
     showPoViewer(new Blob([arr], {type:'application/pdf'}));
     $('po-viewer-name').textContent = base + ' — PO';
+    /* 거래처가 PO 를 고쳐서 다시 보내오는 일이 잦다. 전에는 이미 PO 가 붙어 있으면
+       바꿀 방법이 아예 없었다 (없을 때만 올리라고 물었다). 그래서 여기에 버튼을 낸다 (v865). */
+    window._poViewBase = base;
+    const rb = $('po-viewer-replace'); if(rb) rb.style.display = '';
   }catch(e){ alert(t('save_fail')); }
+}
+/* 수정된 PO 로 바꾸기 — 파일은 새것으로 덮어쓰고, 바꾼 사실은 기록에 남는다 (v865) */
+function replaceSavedPO(){
+  const base = window._poViewBase;
+  if(!base){ showToast('⚠ 어느 오더인지 알 수 없습니다 — 📄 PO 로 다시 열어주세요'); return; }
+  if(!confirm('⬆ 수정된 PO 로 바꿉니다.\n\n오더: ' + base
+    + '\n\n지금 붙어 있는 PO 파일은 새 파일로 바뀝니다 (되돌릴 수 없음).\n바꾼 날짜와 사람은 History 에 남습니다.\n\n계속할까요?')) return;
+  attachPoToSaved(base, true);
 }
 function loadPdfJsLib(){
   if(window.pdfjsLib) return Promise.resolve();
@@ -5939,8 +5984,15 @@ async function completePL(){
   await savePL(); // 최신 수정사항 저장부터
   const d = rec.pl && rec.pl[plWh]; if(!d || !d.savedAt) return;
   if(wantSend && (!custEm || !custEm.includes('@'))){ alert('📧 Please enter the customer email (Customer Email field)'); return; }
-  if(!confirm('✅ Mark ' + plWh + ' Packing List Complete?' + (wantSend ? '\n📧 Email to customer: ' + custEm : '\n(No email — checkbox unchecked)'))) return;
+  /* 📦 이 창고 몫으로 QR 이 몇 박스나 연결돼 있는지 미리 보여준다 (v865).
+     스캔을 건너뛰고 포장했으면 여기서 0 으로 보이니까 바로 알 수 있다. */
+  const _bl = await boxLinkCount(plBase, plWh);
+  const _blMsg = _bl.total>0
+    ? ('\n\n📦 박스 QR ' + _bl.total + '개 연결됨 — Complete 하면 손님이 QR 을 찍었을 때\n   거래처 이름과 PO# 가 보입니다.')
+    : '\n\n⚠ 이 오더에 연결된 박스 QR 이 없습니다 (포장할 때 스캔을 안 했거나 PC Room 박스).\n   Complete 는 그대로 진행되지만, 손님이 QR 을 찍어도 거래처·PO 는 안 나옵니다.';
+  if(!confirm('✅ Mark ' + plWh + ' Packing List Complete?' + (wantSend ? '\n📧 Email to customer: ' + custEm : '\n(No email — checkbox unchecked)') + _blMsg)) return;
   d._completed = new Date().toISOString();
+  boxLinkShip(plBase, plWh, rec);   // 📦 진짜 나갔다 — 박스 QR 을 손님에게 열어준다 (v865)
   tdClearDone(plBase, plWh);                        // 나간 창고 몫의 Today / PC Room 표시를 끈다 (v818)
   try{ await sbFetch('/rest/v1/pr_orders?base=eq.'+encodeURIComponent(plBase), {method:'PATCH', headers:{Prefer:'return=minimal'}, body:JSON.stringify({pl:rec.pl, updated_at:new Date().toISOString()})}); }catch(e){}
   logHist(plBase, 'Packing List COMPLETED — ' + plWh + (wantSend ? ' (emailed ' + custEm + ')' : ''));
@@ -6049,6 +6101,7 @@ async function unshipPL(){
   rec.pl = rec.pl || {}; rec.inv = rec.inv || {};
   delete rec.pl[plWh];
   delete rec.inv[plWh];
+  boxLinkUnship(plBase, plWh);   // 📦 안 나간 걸로 되돌린다 — 손님 화면은 다시 박스 내용만 (v865)
   const r = await sbFetch('/rest/v1/pr_orders?base=eq.'+encodeURIComponent(plBase), {method:'PATCH', headers:{Prefer:'return=minimal'}, body:JSON.stringify({pl:rec.pl, inv:rec.inv, updated_at:new Date().toISOString()})});
   if(!r.ok){ alert(t('save_fail')); return; }
   delete plDrafts[plWh];
@@ -10528,7 +10581,12 @@ function scanExit(){ scanStop();
      화면에 아무 흔적이 없었다. 이제 줄마다 ✔ / ✘ 로 남는다. */
   try{
     if(_scan && _scan.mode==='PO' && _scan.back==='PACK'){
-      window._packScanRes = { base:String(_scan.id), wh:String(_scan.wh||''), at:Date.now(), rows:scanReconcile() };
+      /* 박스번호도 같이 들고 나간다 (v865) — Save 할 때 이 오더에 붙여 기록한다.
+         그래야 손님이 박스 QR 을 찍었을 때 거래처·PO 가 나온다. */
+      const _bx=[];
+      try{ _scan.seen.forEach(v=>{ if(v && v.ctn) _bx.push({ ctn:String(v.ctn).toUpperCase(),
+             style:String(v.style||''), color:String(v.color||''), size:String(v.size||''), qty:Number(v.qty)||0 }); }); }catch(e){}
+      window._packScanRes = { base:String(_scan.id), wh:String(_scan.wh||''), at:Date.now(), rows:scanReconcile(), boxes:_bx };
     }
   }catch(e){}
   const back = _scan && _scan.back;
@@ -12200,10 +12258,33 @@ async function pchkPackSave(){
   try{
     const r=await fetch(SB_URL+'/rest/v1/pr_pack?on_conflict=base,wh',{method:'POST',headers:{apikey:SB_KEY,Authorization:'Bearer '+SB_KEY,'Content-Type':'application/json',Prefer:'resolution=merge-duplicates,return=minimal'},body:JSON.stringify([row])});
     if(!r.ok){ const t=await r.text(); throw new Error('HTTP '+r.status+' '+t.slice(0,120)); }
-    if(msg){msg.style.color='#16a34a';msg.textContent=_packVia==='LTL'?'✅ Saved — '+(total||0)+' box(es), LTL.':'✅ Saved — manager can print the UPS label.';}
+    const _linked = await packLinkBoxes();   // 📦 스캔한 박스번호를 이 오더에 붙여둔다 (v865)
+    if(msg){msg.style.color='#16a34a';msg.textContent=(_packVia==='LTL'?'✅ Saved — '+(total||0)+' box(es), LTL.':'✅ Saved — manager can print the UPS label.')
+      + (_linked>0 ? ' · QR '+_linked+'박스 연결됨' : '');}
     if(btn){btn.disabled=false;btn.textContent='💾 Save packing';}
     setTimeout(pchkPackOpen, 900);
   }catch(e){ if(msg){msg.style.color='#dc2626';msg.textContent='Could not save: '+(e.message||e);} if(btn){btn.disabled=false;btn.textContent='💾 Save packing';} }
+}
+/* ═══════════ 📦 박스 QR → 오더 연결 (v865) ═══════════
+   손님이 받은 박스의 QR 을 찍으면 거래처 이름과 PO# 가 나오게 하는 고리.
+   스티커는 한 장도 더 안 붙인다 — 박스번호는 이미 QR 안에 들어 있다.
+   여기서는 "이 박스가 이 오더 것" 이라고만 적어둔다. 아직 나간 게 아니므로
+   shipped_at 은 비워둔다. Packing List 에서 ✅ Complete 를 눌러야 진짜 나간 게 된다. */
+async function packLinkBoxes(){
+  try{
+    const sr = window._packScanRes;
+    if(!sr || String(sr.base)!==String(_packBase) || String(sr.wh||'')!==String(_packBoxWh)) return 0;
+    const bx = (sr.boxes||[]).filter(b=>b && b.ctn);
+    if(!bx.length) return 0;
+    const rows = bx.map(b=>({ ctn:b.ctn, base:_packBase, wh:_packBoxWh,
+      po:_packPo||null, cust:_packCust||null,
+      style:b.style||null, color:b.color||null, size:b.size||null, qty:b.qty||null,
+      packed_by:_pchkWho||null, packed_at:new Date().toISOString(), shipped_at:null }));
+    const r = await fetch(SB_URL+'/rest/v1/pr_boxship?on_conflict=ctn',
+      {method:'POST',headers:{apikey:SB_KEY,Authorization:'Bearer '+SB_KEY,'Content-Type':'application/json',
+        Prefer:'resolution=merge-duplicates,return=minimal'}, body:JSON.stringify(rows)});
+    return r.ok ? rows.length : 0;
+  }catch(e){ return 0; }   // 연결이 실패해도 포장 저장은 막지 않는다
 }
 // ═══════════ 📦 Request a Box — pr_boxreq(anon) 저장, 매니저 처리 (v605) ═══════════
 const BOXREQ_URL = SB_URL + '/rest/v1/pr_boxreq';
