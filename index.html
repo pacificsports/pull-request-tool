@@ -167,7 +167,7 @@ body.narrow main{max-width:1100px;}
   </span>
   <select id="lang-sel" onchange="setLang(this.value)" style="font-size:11px;padding:3px 6px;border-radius:5px;border:none;background:#1d3f66;color:#fff;"><option value="ko">한국어</option><option value="en">English</option><option value="es">Español</option></select>
   <button id="wide-btn" class="btn btn-sm" onclick="toggleWide()" title="화면 넓게 / 좁게 — 기본은 넓게 (이 브라우저에만 저장돼)" style="padding:2px 8px;font-size:10px;background:#1d3f66;color:#cfe0f2;border-color:#2b5384;">↔ Wide</button>
-  <span id="app-ver" style="font-size:10px;color:#9fb8d4;">v877</span>
+  <span id="app-ver" style="font-size:10px;color:#9fb8d4;">v878</span>
 </div>
 <script>
 // ↔ 넓게 보기 — 브라우저마다 따로 저장 (v793)
@@ -18644,8 +18644,11 @@ function trBarHtml(){
       const nb = lines.reduce((a,l)=>a+trLineBoxes(l),0);
       const np = lines.reduce((a,l)=>a+trLinePcs(l),0);
       const rt = TR_ROUTES[trRoute(r)] || TR_ROUTES.SC2CA;
+      /* 이제 빌더에서 나오는 길은 💾 Save 뿐이라, 저장된 건 '만드는 중' 이 아니라
+         '트럭 기다리는 중' 이다. 다만 줄도 날짜도 없는 건 진짜 아직 만드는 중이다 (v878). */
+      const _ready = (lines.length || ((r.meta&&Array.isArray(r.meta.orderShip))?r.meta.orderShip.length:0)) && (r.meta&&r.meta.ship_date);
       const st = r.status==='TRANSIT' ? {lb:'In Transit',c:'#b45309',bg:'#fef3c7'}
-               : (trDstKind(trRoute(r))==='3P' ? {lb:'Ready for pickup',c:'#b45309',bg:'#fed7aa'} : {lb:'Draft',c:'#92400e',bg:'#fde68a'});
+               : (_ready ? {lb:'Ready for pickup',c:'#b45309',bg:'#fed7aa'} : {lb:'Draft',c:'#92400e',bg:'#fde68a'});
       // 🧾 Ship-from-CA customer orders riding along on this same truck (auto — pulled during build) (v765)
       const oShip = (r.meta && Array.isArray(r.meta.orderShip)) ? r.meta.orderShip.filter(Boolean) : [];
       const _is3P = trDstKind(trRoute(r)) === '3P';
@@ -20376,7 +20379,7 @@ async function trBuilderOpen(existingId, route){
       ${trSrcAutoPallet(_shipRoute)?`<div id="ship-hint" style="margin-top:10px;padding:14px;border:1.5px dashed #fbbf24;border-radius:8px;background:#fffbeb;font-size:12px;color:#92400e;">🏭 This route moves <b>whole pallets</b> — press <b>Pick from ${esc(trKindShort(trSrcKind(_shipRoute)))}</b> and each bin you choose becomes its own pallet automatically. No need to create Pallet 1 / Pallet 2 yourself.</div>`:''}
     </div>
     <div style="padding:12px 16px;border-top:1px solid var(--border);display:flex;gap:8px;justify-content:flex-end;background:#fff;flex-wrap:wrap;">
-      ${trDstKind(_shipRoute)==='3P' ? '' : `<button class="btn" style="background:#f5f5f5;" onclick="trBuilderClose()">📝 Close (keep Draft)</button>`}
+
       <button class="btn" style="background:#0f766e;color:#fff;border-color:#0f766e;font-weight:700;" onclick="trReserveDraft()" title="Move the pulled boxes into the TRANSFER bin — leaves the original bin (matches physical), still counted as SC stock">📦 Move to TRANSFER bin</button>
       <button class="btn" style="background:#fee2e2;color:#c62828;border-color:#fecaca;" onclick="trCancelDraft()">🗑 Delete Draft (restore stock)</button>
       <button class="btn" style="background:#fff7ed;color:#c2410c;border-color:#fdba74;font-weight:700;" onclick="trPutBackHistOpen()" title="See past Put Back Requests and reprint any of them">↩ Put-back history</button>
@@ -20388,7 +20391,7 @@ async function trBuilderOpen(existingId, route){
       <button class="btn" style="background:#334155;color:#fff;border-color:#334155;" onclick="trBOL()">🖨 BOL</button>
       ${trDstKind(_shipRoute)==='3P'
         ? `<button class="btn btn-primary" style="background:#b45309;border-color:#b45309;" onclick="trSave3P()" title="Save this shipment and put it in Pending. When the truck actually picks it up, press 🚚 Shipped there — that is when the boxes move into their H bins.">💾 Save</button>`
-        : `<button class="btn btn-primary" style="background:#7b1fa2;border-color:#7b1fa2;" onclick="trPost()">✅ Post — Start Shipment</button>`}
+        : `<button class="btn btn-primary" style="background:#7b1fa2;border-color:#7b1fa2;font-weight:800;" onclick="trSaveShipDraft()" title="이 화면에서는 저장만 한다. 트럭이 실제로 가져간 뒤 Pending Transfers 에서 🚚 Depart 를 누르면 그때가 출발 시각으로 남는다.">💾 Save</button>`}
     </div></div>`;
   document.body.appendChild(div);
   window._hbNext = '';
@@ -22218,6 +22221,33 @@ async function trSendShipEmail(D, toList){
     if(!r.ok){ const e=await r.json().catch(()=>({})); throw new Error(e.error||e.message||('HTTP '+r.status)); }
     showToast('📧 Shipment email sent to '+to.length+' staff');
   }catch(e){ console.warn(e); showToast('⚠ Staff email failed: '+(e.message||e)+' — shipment still posted'); }
+}
+/* 💾 Save — 이 화면에서는 저장만 한다 (v878).
+   전에는 여기서 바로 'Post — Start Shipment' 를 눌러 출발 처리까지 했다. 그런데
+   물건을 고르는 사람과 트럭이 떠나는 걸 보는 사람이 다르다. 그래서 출발 시각이
+   "트럭이 온 때" 가 아니라 "누가 이 버튼을 기억해서 누른 때" 로 남았다.
+   실제 기록에 출발과 도착이 같은 분에 찍힌 것도 있고, 계획일보다 하루 먼저 찍힌 것도 있다.
+
+   이제 흐름을 나눈다:
+     이 화면            = 💾 Save (준비 끝. 재고는 라인을 담을 때 이미 잡혀 있다)
+     Pending Transfers = 🚚 Depart (트럭이 실제로 가져간 그때 누른다 → 그 시각이 남는다)
+   3자 창고로 보내는 길(dest 3P)은 원래 이렇게 되어 있었다. 나머지도 같게 맞춘다.
+   (이름이 trSaveDraftLines 와 겹치지 않게 trSaveShipDraft 로 둔다) */
+async function trSaveShipDraft(){
+  trCaptureInfo();
+  const nL = _shipPallets.reduce((s2,p)=>s2+p.lines.length,0);
+  const hasOrderShip = ((_shipMeta.orderShip||[]).length)>0;
+  if(!nL && !hasOrderShip){ alert('Nothing to save yet — pick the stock first.'); return; }
+  if(!_shipId && !(await _trEnsureRow())) return;
+  shipNotifySet(String((document.getElementById('ship-notify')||{}).value||'').trim());
+  await trPatchRec(_shipId, { ref:_shipNo, meta:_shipMeta, lines:trLinesFlat() });
+  const ref = _shipNo;
+  const m = document.getElementById('modal-trb'); if(m) m.remove();
+  _shipId = null; _shipNo = null; _shipMeta = {}; _shipPallets = [];
+  await bxRefetch();
+  if($('bx-body')) renderBoxRoom();
+  if(typeof trBarUpd==='function') trBarUpd();
+  showToast('💾 ' + ref + ' 저장됨 — 트럭이 가져가면 🚚 Depart 를 누르세요');
 }
 async function trPost(){
   trCaptureInfo();
