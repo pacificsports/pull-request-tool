@@ -167,7 +167,7 @@ body.narrow main{max-width:1100px;}
   </span>
   <select id="lang-sel" onchange="setLang(this.value)" style="font-size:11px;padding:3px 6px;border-radius:5px;border:none;background:#1d3f66;color:#fff;"><option value="ko">한국어</option><option value="en">English</option><option value="es">Español</option></select>
   <button id="wide-btn" class="btn btn-sm" onclick="toggleWide()" title="화면 넓게 / 좁게 — 기본은 넓게 (이 브라우저에만 저장돼)" style="padding:2px 8px;font-size:10px;background:#1d3f66;color:#cfe0f2;border-color:#2b5384;">↔ Wide</button>
-  <span id="app-ver" style="font-size:10px;color:#9fb8d4;">v867</span>
+  <span id="app-ver" style="font-size:10px;color:#9fb8d4;">v868</span>
 </div>
 <script>
 // ↔ 넓게 보기 — 브라우저마다 따로 저장 (v793)
@@ -8207,6 +8207,23 @@ async function lblLoadBoxes(base, wh){
   }catch(e){}
   if(!_lblBoxes.length) _lblBoxes = [{name:'',l:'',w:'',h:'',wt:''}];
 }
+/* 📦 창고별 포장 현황 — SC 몫과 CA 몫은 절대 섞이면 안 된다 (v868).
+   한 오더가 두 창고에서 따로 나가는 일이 흔한데(수량이 모자라 한쪽에서 보충),
+   전에는 라벨 화면이 "이 창고에 포장 기록이 있는지" 를 아무 말도 안 해줬다.
+   기록이 없으면 그냥 빈 박스 한 줄을 띄웠고, 사람이 손으로 채워 넣으면
+   창고가 실제로 싼 것과 라벨이 어긋난 채로 UPS 까지 나갔다. */
+async function lblLoadPackInfo(base, whs){
+  const info = {};
+  try{
+    const r = await sbFetch('/rest/v1/pr_pack?base=eq.'+encodeURIComponent(base)+'&select=wh,total_boxes,boxes,via,updated_by,updated_at');
+    const j = await r.json();
+    if(Array.isArray(j)) j.forEach(p=>{ info[p.wh] = {
+      n: (Array.isArray(p.boxes)&&p.boxes.length) ? p.boxes.length : (Number(p.total_boxes)||0),
+      via: p.via||'', by: p.updated_by||'', at: p.updated_at||'' }; });
+  }catch(e){}
+  (whs||[]).forEach(w=>{ if(!info[w]) info[w] = null; });   // null = 포장 기록 없음
+  window._lblPack = info;
+}
 // 두 창고(SC+CA)의 박스를 합쳐서 로드 — CA 통합 발송용 (각 박스에 출처 창고 src 표시)
 async function lblLoadBoxesCombined(base, whs){
   _lblBoxes = [];
@@ -8235,6 +8252,7 @@ async function openLabelModal(base, forceWh){
   window._lblShipFrom = combine ? 'CA' : lblShipFromFor(rec, window._lblOrigin);   // 실제 라벨 출발지 (이관이면 CA)
   window._lblLock = combine ? true : !!(forceWh==='SC'||forceWh==='CA');   // 창고별 버튼으로 열면 출발지 고정
   _lblResult = upsForWh(rec, window._lblOrigin);
+  await lblLoadPackInfo(base, whs);                    // 창고별 포장 현황 (v868)
   if(combine) await lblLoadBoxesCombined(base, whs);   // 두 창고 박스 합쳐서 로드
   else await lblLoadBoxes(base, window._lblOrigin);   // 출발창고(SC/CA)에 해당하는 박스만 로드
   // 서비스 기본값: 기존 라벨 > 패킹리스트 Method > Ground
@@ -8299,6 +8317,40 @@ function lblRender(){
   const xferBanner = isCombine
     ? `<div style="margin-top:7px;background:#fffbeb;border:1px solid #fcd34d;border-radius:8px;padding:7px 10px;font-size:11px;color:#92400e;">🚚 <b>Consolidated at CA</b> — ${esc(_cwhs.join(' + ')||'SC + CA')} portion${_cwhs.length>1?'s':''} ship together from <b>Eastvale, CA</b> as one shipment. Boxes below are pulled from both SC and CA packing (source tagged on each row).</div>`
     : (isXfer ? `<div style="margin-top:7px;background:#fffbeb;border:1px solid #fcd34d;border-radius:8px;padding:7px 10px;font-size:11px;color:#92400e;">🚚 <b>SC → CA transfer</b> — packed in <b>Sumter, SC</b>, ships from <b>Eastvale, CA</b>. The UPS rate &amp; label use the <b>CA</b> origin; boxes come from SC's packing.</div>` : '');
+  /* 📦 창고별 현황 줄 (v868) — SC 몫과 CA 몫이 섞이지 않게 눈으로 확인시킨다.
+     각 창고에 대해 "포장 몇 박스 / 라벨 있음·없음" 을 나란히 보여준다.
+     지금 만들려는 창고에 포장 기록이 없으면 빨갛게 세운다. */
+  const whBanner = (function(){
+    const packInfo = window._lblPack || {};
+    const ows = (rec.whs||[]).filter(w=>w==='SC'||w==='CA');
+    if(!ows.length) return '';
+    const ups = (rec.meta && rec.meta._ups) || {};
+    const cells = ows.map(function(w){
+      const p = packInfo[w], u = ups[w], cur = (!isCombine && w===origin);
+      const nTrk = u && Array.isArray(u.tracking) ? u.tracking.length : 0;
+      const packTxt = p ? (p.n + ' box' + (p.n===1?'':'es')) : '<b style="color:#b91c1c;">no packing</b>';
+      const upsTxt  = nTrk ? ('🏷 ' + nTrk) : '<span style="color:#b45309;">no label</span>';
+      return '<div style="flex:1;min-width:118px;border:1.5px solid '+(cur?'#7c2d12':'#e2e8f0')+';'
+        + 'background:'+(cur?'#fff7ed':'#fff')+';border-radius:9px;padding:6px 9px;">'
+        + '<div style="font-size:10.5px;font-weight:900;color:'+(w==='SC'?'#1d4ed8':'#c2410c')+';">'+w
+        +   (cur?' <span style="color:#7c2d12;">· making now</span>':'')+'</div>'
+        + '<div style="font-size:11.5px;color:#334155;margin-top:2px;">'+packTxt+' &nbsp;·&nbsp; '+upsTxt+'</div>'
+        + '</div>';
+    }).join('');
+    const mine = packInfo[origin];
+    const other = ows.filter(w=>w!==origin && packInfo[w]);
+    let warn = '';
+    if(!isCombine && !mine){
+      warn = '<div style="margin-top:6px;background:#fef2f2;border:1px solid #fecaca;border-radius:8px;'
+        + 'padding:7px 10px;font-size:11.5px;color:#b91c1c;line-height:1.5;">'
+        + '⚠ <b>' + origin + ' 에 포장 기록이 없다.</b> 아래 박스는 창고가 실제로 싼 것이 아니라 빈 칸이다.'
+        + (other.length ? (' ' + other.map(w=>w+' 에는 '+packInfo[w].n+'박스 기록이 있다').join(', ') + ' — 출발 창고를 잘못 고른 게 아닌지 확인해라.') : ' 창고에서 포장 저장을 먼저 해야 한다.')
+        + '</div>';
+    }
+    return '<div style="margin-top:8px;"><div style="font-size:10.5px;font-weight:800;color:#64748b;margin-bottom:4px;">'
+      + '창고별 현황 — SC 몫과 CA 몫은 각각 따로 나간다</div>'
+      + '<div style="display:flex;gap:7px;flex-wrap:wrap;">'+cells+'</div>' + warn + '</div>';
+  })();
   const originBtns = window._lblLock
     ? `<div style="padding:8px 13px;border-radius:8px;background:${isCombine?'#b45309':(origin==='SC'?'#1d4ed8':'#c2410c')};color:#fff;font-weight:800;font-size:13px;display:inline-block;">${isCombine?'Eastvale, CA · combined ('+(esc(_cwhs.join('+'))||'SC+CA')+')':(origin==='SC'?'Sumter, SC':'Eastvale, CA')}</div>`
     : ['SC','CA'].map(w=>`<button class="btn btn-sm" onclick="lblSetOrigin('${w}')" style="${origin===w?'background:'+(w==='SC'?'#1d4ed8':'#c2410c')+';color:#fff;border-color:'+(w==='SC'?'#1d4ed8':'#c2410c')+';':''}">${w==='SC'?'Sumter, SC':'Eastvale, CA'}</button>`).join('');
@@ -8324,7 +8376,17 @@ function lblRender(){
           : (_lblResult.billing==='receiver' ? `<div style="margin-top:2px;color:#64748b;">Billed to customer's UPS # — not added to invoice.</div>`
           : (_lblResult.billing==='free' ? `<div style="margin-top:2px;color:#15803d;font-weight:700;">🎁 Free shipping — Pacific Sports absorbs ${_oc!=null?money(_oc):'the cost'}. No freight on the invoice.</div>` : ''))}
       </div>` : '';
+  const _saveErr = window._lblSaveErr;
+  const saveErrHtml = _saveErr ? `
+    <div style="margin-top:10px;padding:10px 12px;background:#fef2f2;border:1.5px solid #fca5a5;border-radius:10px;">
+      <div style="font-size:12px;font-weight:800;color:#b91c1c;">⚠ 라벨은 만들어졌지만 시스템에 저장되지 않았습니다</div>
+      <div style="font-size:11.5px;color:#7f1d1d;margin-top:4px;line-height:1.5;">
+        ${esc(_saveErr.base)} (${esc(_saveErr.wh)}) · Tracking ${esc((_saveErr.tracking||[]).join(', '))}<br>
+        <span style="color:#991b1b;">${esc(_saveErr.msg)}</span></div>
+      <button class="btn btn-sm" style="margin-top:7px;background:#b91c1c;color:#fff;border-color:#b91c1c;font-weight:800;" onclick="lblRetrySave()">🔄 저장 다시</button>
+    </div>` : '';
   const resHtml = _lblResult && (_lblResult.tracking||[]).length ? `
+    ${saveErrHtml}
     <div style="margin-top:12px;padding:11px 13px;background:#f0fdf4;border:1.5px solid #86efac;border-radius:10px;">
       <div style="font-size:12px;font-weight:800;color:#166534;margin-bottom:6px;">✅ Label created${_lblResult.test?' <span style="color:#b45309;">(TEST / CIE)</span>':''} — ${_lblResult.tracking.length} package(s)${_lblResult.service?' · '+esc((UPS_SERVICES.find(s=>s.code===_lblResult.service)||{}).name||_lblResult.service):''}</div>
       ${(_lblResult.tracking||[]).length>1?`<div style="font-size:10.5px;color:#64748b;margin-bottom:3px;">Check the boxes to print, then 🖨 Print. <a href="#" onclick="document.querySelectorAll('#modal-upslabel .lbl-print-cb').forEach(c=>c.checked=true);return false;" style="color:#0f766e;">all</a> · <a href="#" onclick="document.querySelectorAll('#modal-upslabel .lbl-print-cb').forEach(c=>c.checked=false);return false;" style="color:#0f766e;">none</a></div>`:''}
@@ -8345,6 +8407,7 @@ function lblRender(){
         <div style="font-size:11px;font-weight:800;color:#0f2a4a;margin-bottom:5px;">SHIP FROM (origin warehouse)</div>
         <div style="display:flex;gap:8px;">${originBtns}</div>
         ${xferBanner}
+        ${whBanner}
       </div>
       <div>
         <div style="font-size:11px;font-weight:800;color:#0f2a4a;margin-bottom:5px;">SHIP TO</div>
@@ -8485,6 +8548,24 @@ async function lblCreate(){
     zip: ($('lbl-zip').value||'').trim()
   };
   if(!shipTo.addr1 || !shipTo.city || !shipTo.state || !shipTo.zip){ showToast('⚠ Ship-to address is incomplete'); return; }
+  /* 📦 창고 포장과 라벨이 어긋나면 여기서 멈춘다 (v868).
+     한 오더가 SC·CA 로 나눠 나갈 때, 엉뚱한 창고로 라벨을 만들면 그 창고 몫이
+     통째로 잘못 나간다. UPS 라벨은 돈이 나가고 되돌리기도 번거로우니 미리 묻는다. */
+  if(!window._lblCombine){
+    const _o = window._lblOrigin, _p = (window._lblPack||{})[_o];
+    let ask = '';
+    if(!_p){
+      const other = Object.keys(window._lblPack||{}).filter(w=>w!==_o && (window._lblPack||{})[w]);
+      ask = '⚠ ' + _o + ' 창고에 포장 기록이 없습니다.\n\n지금 만드는 라벨의 박스 ' + boxes.length + '개는 손으로 넣은 값입니다.'
+          + (other.length ? ('\n' + other.map(w=>'· ' + w + ' 에는 ' + window._lblPack[w].n + '박스 포장 기록이 있습니다').join('\n')
+                             + '\n\n출발 창고를 잘못 고른 것은 아닌가요?') : '')
+          + '\n\n이대로 UPS 라벨을 만들까요?';
+    } else if(_p.n !== boxes.length){
+      ask = '⚠ 박스 수가 다릅니다.\n\n· ' + _o + ' 창고 포장 기록: ' + _p.n + '박스\n· 지금 라벨: ' + boxes.length + '박스'
+          + '\n\n이대로 UPS 라벨을 만들까요?';
+    }
+    if(ask && !confirm(ask)){ return; }
+  }
   lblSyncBill();
   const bmode = window._lblBillMode==='receiver' ? 'receiver' : 'shipper';
   const bacct = String(window._lblUpsAcct||'').trim().toUpperCase();
@@ -8560,7 +8641,29 @@ async function lblSaveTracking(){
       if(typeof renderPL==='function' && plWh===_lblResult.origin) renderPL();
     } }catch(e){}
     if(typeof renderSaved==='function') renderSaved();
-  }catch(e){}
+    window._lblSaveErr = null;
+  }catch(e){
+    /* 여기서 조용히 삼키면 안 된다 (v868).
+       UPS 에는 라벨이 만들어졌는데 시스템에는 아무 기록이 없는 상태가 되고,
+       나중에 "라벨을 만들었는데 시스템이 모른다" 로 나타난다. 실제로 그런 일이 있었다.
+       tracking 번호를 화면에 남기고 다시 저장할 수 있게 한다. */
+    window._lblSaveErr = { msg:String(e&&e.message||e), tracking:(_lblResult.tracking||[]).slice(),
+                           base:rec.base, wh:_lblResult.origin };
+    try{ alert('⚠ UPS 라벨은 만들어졌는데 시스템에 저장이 안 됐습니다.\n\n'
+      + '오더: ' + rec.base + ' (' + _lblResult.origin + ')\n'
+      + 'Tracking: ' + (_lblResult.tracking||[]).join(', ')
+      + '\n\n이 번호를 적어두세요. 라벨 창의 [🔄 저장 다시] 를 눌러 다시 시도할 수 있습니다.\n'
+      + '오류: ' + String(e&&e.message||e)); }catch(_){}
+    try{ lblRender(); }catch(_){}
+  }
+}
+/* 저장이 실패했을 때 다시 시도 (v868) */
+async function lblRetrySave(){
+  if(!_lblResult){ showToast('⚠ 저장할 라벨 정보가 없습니다'); return; }
+  showToast('저장 다시 시도 중…');
+  await lblSaveTracking();
+  if(window._lblSaveErr) showToast('❌ 아직 저장이 안 됩니다 — ' + window._lblSaveErr.msg);
+  else { showToast('✅ 저장됐습니다'); lblRender(); }
 }
 // 체크된 박스의 라벨만 선택 (체크박스 없으면 전체)
 function _lblSelected(){
