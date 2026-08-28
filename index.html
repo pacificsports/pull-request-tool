@@ -167,7 +167,7 @@ body.narrow main{max-width:1100px;}
   </span>
   <select id="lang-sel" onchange="setLang(this.value)" style="font-size:11px;padding:3px 6px;border-radius:5px;border:none;background:#1d3f66;color:#fff;"><option value="ko">한국어</option><option value="en">English</option><option value="es">Español</option></select>
   <button id="wide-btn" class="btn btn-sm" onclick="toggleWide()" title="화면 넓게 / 좁게 — 기본은 넓게 (이 브라우저에만 저장돼)" style="padding:2px 8px;font-size:10px;background:#1d3f66;color:#cfe0f2;border-color:#2b5384;">↔ Wide</button>
-  <span id="app-ver" style="font-size:10px;color:#9fb8d4;">v868</span>
+  <span id="app-ver" style="font-size:10px;color:#9fb8d4;">v869</span>
 </div>
 <script>
 // ↔ 넓게 보기 — 브라우저마다 따로 저장 (v793)
@@ -8223,6 +8223,31 @@ async function lblLoadPackInfo(base, whs){
   }catch(e){}
   (whs||[]).forEach(w=>{ if(!info[w]) info[w] = null; });   // null = 포장 기록 없음
   window._lblPack = info;
+
+  /* 🌐 그 창고가 애초에 포장 기록을 쓰는 창고인가 (v869).
+     CA 는 인터넷이 잘 안 돼서 포장 저장을 아예 못 쓴다 — 기록이 없는 게 정상이다.
+     그런데도 매번 "포장 기록이 없다" 고 빨갛게 세우면 경고가 늘 켜져 있는 셈이고,
+     늘 켜진 경고는 아무도 안 본다. 그러면 진짜 잘못 고른 날에도 그냥 지나친다.
+     그래서 "이 창고가 여태 한 번이라도 포장을 저장한 적이 있나" 로 갈라놓는다.
+      · 한 번도 없다  → 원래 안 쓰는 창고. 조용히 넘어간다.
+      · 쓰던 창고인데 이 오더만 없다 → 이건 진짜 신호다. 세운다.
+     CA 에 인터넷이 들어와서 포장을 저장하기 시작하면 이 판정이 저절로 바뀐다.
+     손댈 곳이 없다. */
+  const uses = {};
+  await Promise.all((whs||[]).map(async function(w){
+    if(info[w]){ uses[w] = true; return; }               // 이 오더에 기록이 있으면 당연히 쓰는 창고
+    try{
+      const r2 = await sbFetch('/rest/v1/pr_pack?wh=eq.'+encodeURIComponent(w)+'&select=base&limit=1');
+      const j2 = await r2.json();
+      uses[w] = Array.isArray(j2) && j2.length > 0;
+    }catch(e){ uses[w] = true; }                          // 못 물어봤으면 안전하게 "쓰는 창고" 취급
+  }));
+  window._lblPackUses = uses;
+}
+/* 이 창고의 포장 기록 없음을 문제로 볼 것인가 (v869) */
+function lblPackExpected(wh){
+  const u = window._lblPackUses || {};
+  return u[wh] !== false;      // false 일 때만 "원래 안 쓰는 창고"
 }
 // 두 창고(SC+CA)의 박스를 합쳐서 로드 — CA 통합 발송용 (각 박스에 출처 창고 src 표시)
 async function lblLoadBoxesCombined(base, whs){
@@ -8328,7 +8353,9 @@ function lblRender(){
     const cells = ows.map(function(w){
       const p = packInfo[w], u = ups[w], cur = (!isCombine && w===origin);
       const nTrk = u && Array.isArray(u.tracking) ? u.tracking.length : 0;
-      const packTxt = p ? (p.n + ' box' + (p.n===1?'':'es')) : '<b style="color:#b91c1c;">no packing</b>';
+      const packTxt = p ? (p.n + ' box' + (p.n===1?'':'es'))
+        : (lblPackExpected(w) ? '<b style="color:#b91c1c;">no packing</b>'
+                              : '<span style="color:#94a3b8;">포장 기록 안 쓰는 창고</span>');
       const upsTxt  = nTrk ? ('🏷 ' + nTrk) : '<span style="color:#b45309;">no label</span>';
       return '<div style="flex:1;min-width:118px;border:1.5px solid '+(cur?'#7c2d12':'#e2e8f0')+';'
         + 'background:'+(cur?'#fff7ed':'#fff')+';border-radius:9px;padding:6px 9px;">'
@@ -8340,7 +8367,13 @@ function lblRender(){
     const mine = packInfo[origin];
     const other = ows.filter(w=>w!==origin && packInfo[w]);
     let warn = '';
-    if(!isCombine && !mine){
+    if(!isCombine && !mine && !lblPackExpected(origin)){
+      /* 원래 포장 기록을 안 쓰는 창고 — 경고가 아니라 안내다 (v869) */
+      warn = '<div style="margin-top:6px;background:#f8fafc;border:1px solid #e2e8f0;border-radius:8px;'
+        + 'padding:7px 10px;font-size:11.5px;color:#475569;line-height:1.5;">'
+        + 'ℹ ' + origin + ' 는 포장 저장을 안 쓰는 창고다. 아래 박스는 손으로 넣는 값이니 실제 박스와 맞는지 직접 확인해라.'
+        + '</div>';
+    } else if(!isCombine && !mine){
       warn = '<div style="margin-top:6px;background:#fef2f2;border:1px solid #fecaca;border-radius:8px;'
         + 'padding:7px 10px;font-size:11.5px;color:#b91c1c;line-height:1.5;">'
         + '⚠ <b>' + origin + ' 에 포장 기록이 없다.</b> 아래 박스는 창고가 실제로 싼 것이 아니라 빈 칸이다.'
@@ -8554,7 +8587,10 @@ async function lblCreate(){
   if(!window._lblCombine){
     const _o = window._lblOrigin, _p = (window._lblPack||{})[_o];
     let ask = '';
-    if(!_p){
+    if(!_p && !lblPackExpected(_o)){
+      /* 원래 포장 기록을 안 쓰는 창고(CA 는 인터넷이 안 된다)면 묻지 않는다 (v869).
+         매번 뜨는 확인창은 확인이 아니라 습관이 된다. */
+    } else if(!_p){
       const other = Object.keys(window._lblPack||{}).filter(w=>w!==_o && (window._lblPack||{})[w]);
       ask = '⚠ ' + _o + ' 창고에 포장 기록이 없습니다.\n\n지금 만드는 라벨의 박스 ' + boxes.length + '개는 손으로 넣은 값입니다.'
           + (other.length ? ('\n' + other.map(w=>'· ' + w + ' 에는 ' + window._lblPack[w].n + '박스 포장 기록이 있습니다').join('\n')
