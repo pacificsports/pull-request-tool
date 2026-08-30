@@ -167,7 +167,7 @@ body.narrow main{max-width:1100px;}
   </span>
   <select id="lang-sel" onchange="setLang(this.value)" style="font-size:11px;padding:3px 6px;border-radius:5px;border:none;background:#1d3f66;color:#fff;"><option value="ko">한국어</option><option value="en">English</option><option value="es">Español</option></select>
   <button id="wide-btn" class="btn btn-sm" onclick="toggleWide()" title="화면 넓게 / 좁게 — 기본은 넓게 (이 브라우저에만 저장돼)" style="padding:2px 8px;font-size:10px;background:#1d3f66;color:#cfe0f2;border-color:#2b5384;">↔ Wide</button>
-  <span id="app-ver" style="font-size:10px;color:#9fb8d4;">v899</span>
+  <span id="app-ver" style="font-size:10px;color:#9fb8d4;">v900</span>
 </div>
 <script>
 // ↔ 넓게 보기 — 브라우저마다 따로 저장 (v793)
@@ -21688,6 +21688,44 @@ async function trManAddSku(pid, li){
   trSaveDraftLines(); trRenderPallets();
   showToast('🎨 ' + st + ' / ' + co + ' added to the SKU master');
 }
+/* ═══ 📦 팔레트 사이로 라인 옮기기 — Haiti 배치 화면과 같은 드래그 (v900) ═══
+   박스는 이미 TRANSFER bin 에 있고 팔레트는 이름표일 뿐이라, 재고는 하나도 안 건드린다. */
+let _trLnDrag = null;
+function trLnDragStart(ev, pid, li){
+  _trLnDrag = {pid, li};
+  try{ ev.dataTransfer.effectAllowed='move'; ev.dataTransfer.setData('text/plain', pid+':'+li); }catch(e){}
+}
+function trLnDragEnd(){ _trLnDrag=null; document.querySelectorAll('[data-trdz="1"]').forEach(el=>{ el.style.outline=''; el.removeAttribute('data-trdz'); }); }
+function trLnOver(ev, el){
+  if(!_trLnDrag) return;
+  ev.preventDefault(); try{ ev.dataTransfer.dropEffect='move'; }catch(e){}
+  if(el && el.getAttribute('data-trdz')!=='1'){ el.setAttribute('data-trdz','1'); el.style.outline='3px solid #7b1fa2'; el.style.outlineOffset='2px'; }
+}
+function trLnOut(el){ if(el){ el.style.outline=''; el.removeAttribute('data-trdz'); } }
+async function trLnDrop(ev, pid, el){
+  ev.preventDefault(); trLnOut(el);
+  const d=_trLnDrag; _trLnDrag=null;
+  if(!d) return;
+  if(pid && d.pid===pid) return;                    // 같은 팔레트면 할 일 없음
+  const src=_shipPallets.find(x=>x.id===d.pid); if(!src) return;
+  const line=src.lines[d.li]; if(!line) return;
+  let tgt;
+  if(!pid){
+    let n=_shipPallets.length+1; while(_shipPallets.some(x=>x.label==='Pallet '+n)) n++;
+    tgt={ id:'p_'+Math.random().toString(36).slice(2,9), label:'Pallet '+n, lines:[] };
+    _shipPallets.push(tgt);
+  } else { tgt=_shipPallets.find(x=>x.id===pid); if(!tgt) return; }
+  src.lines.splice(d.li,1);
+  /* 옮긴 곳에 같은 조합(같은 bin·박스입수)이 있으면 한 줄로 합친다 */
+  const same = (!line.is_manual) ? tgt.lines.find(l=>!l.is_manual
+      && l.style===line.style && l.color===line.color && l.size===line.size
+      && String(l.bin||'')===String(line.bin||'') && Number(l.ppb)===Number(line.ppb)) : null;
+  if(same){ same.ids=(same.ids||[]).concat(line.ids||[]); if(typeof same.boxes==='number') same.boxes=same.ids.length; }
+  else tgt.lines.push(line);
+  await trSaveDraftLines();
+  trRenderPallets();
+  showToast('\u{1F4E6} '+(line.style||'line')+' '+(line.color||'')+' '+(line.size||'')+' → '+tgt.label);
+}
 function trRenderPallets(){
   const el = document.getElementById('ship-pallets'); if(!el) return;
   const _hint = document.getElementById('ship-hint'); if(_hint) _hint.style.display = _shipPallets.length ? 'none' : '';
@@ -21712,9 +21750,11 @@ function trRenderPallets(){
       : p.lines.map((l,li)=>{
         const vl = bxVariantLabel(l.color, l.style);
         const vTag = (!l.is_manual && vl) ? ` <span style="font-size:9px;font-weight:800;color:#7c3aed;">${esc(vl)}</span>` : '';
+        /* ⠿ 손잡이를 잡고 다른 팔레트로 끌어다 놓는다 (v900). 3자 창고 출발은 팔레트=bin 이라 제외 */
+        const _dh = _spSrc ? '' : `<span draggable="true" ondragstart="trLnDragStart(event,'${p.id}',${li})" ondragend="trLnDragEnd()" title="Drag to another pallet" style="cursor:grab;color:#a78bfa;font-size:13px;font-weight:900;user-select:none;margin-right:6px;">\u283F</span>`;
         if(l.is_manual){
           return `<tr style="background:#fef3c7;">
-          <td style="padding:4px 6px;"><input class="fi" value="${esc(l.style||'')}" placeholder="Style" autocomplete="off"
+          <td style="padding:4px 6px;white-space:nowrap;">${_dh}<input class="fi" value="${esc(l.style||'')}" placeholder="Style" autocomplete="off"
             onfocus="cboOpen(this,'style','${p.id}',${li})" oninput="cboFilter()" onkeydown="cboKey(event,this,'style','${p.id}',${li})" onblur="setTimeout(cboClose,120)"
             onchange="trManualEdit('${p.id}',${li},'style',this.value)" style="width:64px;font-size:11px;padding:3px 5px;"></td>
           <td style="padding:4px 6px;white-space:nowrap;"><input class="fi" value="${esc(l.color||'')}" placeholder="Color" autocomplete="off"
@@ -21736,7 +21776,7 @@ function trRenderPallets(){
           </tr>`;
         }
         return `<tr>
-        <td style="font-family:Consolas,monospace;font-weight:700;font-size:11px;padding:5px 8px;">#${esc(l.style)}</td>
+        <td style="font-family:Consolas,monospace;font-weight:700;font-size:11px;padding:5px 8px;white-space:nowrap;">${_dh}#${esc(l.style)}</td>
         <td style="font-size:11px;padding:5px 8px;">${esc(bxBaseColor(l.color))}${vTag}</td>
         <td style="text-align:center;font-size:11px;">${esc(l.size)}</td>
         <td style="text-align:center;"><span style="background:#dbeafe;color:#1e40af;padding:2px 8px;border-radius:8px;font-weight:700;font-family:Consolas,monospace;font-size:11px;">${esc(l.bin||'?')}</span></td>
@@ -21747,7 +21787,7 @@ function trRenderPallets(){
         <td style="text-align:center;"><button onclick="trDelLine('${p.id}',${li})" style="border:none;background:none;color:#e53935;cursor:pointer;font-weight:800;" title="Delete whole line + return all boxes to bin">✕</button></td>
         </tr>`;
       }).join('');
-    return `<div style="border:2px solid ${_spSrc?'#fbbf24':'#d8b4fe'};border-radius:8px;background:#fff;">
+    return `<div ${_spSrc?'':`ondragover="trLnOver(event,this)" ondragleave="trLnOut(this)" ondrop="trLnDrop(event,'${p.id}',this)"`} style="border:2px solid ${_spSrc?'#fbbf24':'#d8b4fe'};border-radius:8px;background:#fff;">
       <div style="background:${_spSrc?'#fffbeb':'#f3e8ff'};padding:8px 14px;display:flex;align-items:center;gap:10px;border-radius:6px 6px 0 0;flex-wrap:wrap;">
         <span style="font-weight:700;color:${_spSrc?'#b45309':'#7b1fa2'};">${_spSrc?'🏭 Bin':'📦'} ${esc(p.label)}</span>
         ${_spSrc ? hodgePalTag(p.label, 'SC') : ''}
@@ -21767,7 +21807,9 @@ function trRenderPallets(){
         <thead><tr style="background:${_spSrc?'#fef3c7':'#fce7f3'};"><th class="tl">Style</th><th class="tl">Color</th><th>Size</th><th>From Bin</th><th>Boxes</th><th>Pcs</th><th>pcs/box</th><th title="Check lines → Pull Request or Put Back; or ↩ return one line">☑ / ↩</th><th style="width:30px;"></th></tr></thead>
         <tbody>${rows}</tbody>
       </table></div>${trOrderShipRowsForPallet(p.label)}</div>`;
-  }).join('');
+  }).join('') + ((trSrcAutoPallet(_shipRoute) || !_shipPallets.length) ? '' :
+    `<div ondragover="trLnOver(event,this)" ondragleave="trLnOut(this)" ondrop="trLnDrop(event,'',this)"
+       style="border:2px dashed #cbd5e1;border-radius:10px;padding:13px;text-align:center;color:#94a3b8;font-size:12px;font-weight:700;background:#fafafa;margin-top:10px;">\u2295 Drag a line here to start a new pallet</div>`);
   trRenderOrderShip();
   trSummary();
   trRecoverBins();                                   // 이미 매긴 번호만 되찾는다 — 새로 받지 않는다 (v832)
