@@ -167,7 +167,7 @@ body.narrow main{max-width:1100px;}
   </span>
   <select id="lang-sel" onchange="setLang(this.value)" style="font-size:11px;padding:3px 6px;border-radius:5px;border:none;background:#1d3f66;color:#fff;"><option value="ko">한국어</option><option value="en">English</option><option value="es">Español</option></select>
   <button id="wide-btn" class="btn btn-sm" onclick="toggleWide()" title="화면 넓게 / 좁게 — 기본은 넓게 (이 브라우저에만 저장돼)" style="padding:2px 8px;font-size:10px;background:#1d3f66;color:#cfe0f2;border-color:#2b5384;">↔ Wide</button>
-  <span id="app-ver" style="font-size:10px;color:#9fb8d4;">v898</span>
+  <span id="app-ver" style="font-size:10px;color:#9fb8d4;">v899</span>
 </div>
 <script>
 // ↔ 넓게 보기 — 브라우저마다 따로 저장 (v793)
@@ -13096,6 +13096,8 @@ function careqMgr(){
     </tr>`;
   }).join('');
   const tot=rows.reduce((a,r)=>a+(Number(r.boxes)||0),0);
+  const ready=rows.filter(r=>_crPlan(r).reduce((a,x)=>a+x.n,0)>0).length;
+  const readyBoxes=rows.reduce((a,r)=>a+_crPlan(r).reduce((b,x)=>b+x.n,0),0);
   el.innerHTML=`<div style="background:#fff;border:1px solid #e2e8f0;border-radius:12px;overflow:hidden;">
     <div style="display:flex;align-items:center;gap:10px;padding:10px 13px;background:#faf5ff;border-bottom:1px solid #d8b4fe;">
       <span style="font-size:12.5px;font-weight:800;color:#6b21a8;">🚚 CA requests — ${rows.length} line(s) · ${tot} box(es)</span>
@@ -13115,18 +13117,51 @@ function careqMgr(){
       <tbody>${body}</tbody>
     </table>
     <div style="display:flex;align-items:center;gap:9px;padding:11px 13px;background:#f8fafc;border-top:1px solid #e2e8f0;">
-      <span style="flex:1;min-width:0;font-size:11px;color:#64748b;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">Set a location and Pick SC Inventory opens filtered to it — leave it empty to pick from anywhere.</span>
-      <button onclick="careqToTransfer('cur')" style="flex:none;background:#fff;border:1.5px solid #7b1fa2;color:#7b1fa2;border-radius:9px;padding:9px 15px;font-size:12.5px;font-weight:800;cursor:pointer;white-space:nowrap;">＋ Add to current Transfer</button>
-      <button onclick="careqToTransfer('new')" style="flex:none;background:#7b1fa2;color:#fff;border:none;border-radius:9px;padding:9px 18px;font-size:13px;font-weight:800;cursor:pointer;white-space:nowrap;">🚚 Create Transfer (SC → CA)</button>
+      <span style="flex:1;min-width:0;font-size:11.5px;font-weight:700;color:${ready?'#166534':'#b45309'};white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">${
+        ready ? ('📍 '+ready+' of '+rows.length+' line(s) located · '+readyBoxes+' box(es) go straight onto the pallet')
+              : '📍 Set a location first — press the pin on each line'
+      }</span>
+      <button onclick="careqToTransfer('cur')" ${ready?'':'disabled'} style="flex:none;background:#fff;border:1.5px solid ${ready?'#7b1fa2':'#cbd5e1'};color:${ready?'#7b1fa2':'#cbd5e1'};border-radius:9px;padding:9px 15px;font-size:12.5px;font-weight:800;cursor:${ready?'pointer':'default'};white-space:nowrap;">＋ Add to current Transfer</button>
+      <button onclick="careqToTransfer('new')" ${ready?'':'disabled'} style="flex:none;background:${ready?'#7b1fa2':'#cbd5e1'};color:#fff;border:none;border-radius:9px;padding:9px 18px;font-size:13px;font-weight:800;cursor:${ready?'pointer':'default'};white-space:nowrap;">🚚 Create Transfer (SC → CA)</button>
     </div>
   </div>`;
 }
 
-async function careqToTransfer(mode){
-  const rows=(window._crRows||[]).filter(r=>String(r.status||'').toUpperCase()==='OPEN');
-  if(!rows.length){ showToast('⚠ No requests'); return; }
-  window._crJob = rows.map(r=>({id:r.id, style:String(r.style||''), color:String(r.color||''), size:String(r.size||''), boxes:Number(r.boxes)||0, bin:String(r.bin||''), plan:_crPlan(r), done:false}));
-  if(mode==='cur'){
+/* ═══ 지정한 bin 에서 박스를 골라 곧바로 팔레트에 담는다 (v899) ═══
+   SC 검토에서 이미 bin 과 수량을 정했으므로 Pick SC Inventory 를 한 번 더 거치지 않는다.
+   담는 건 기존 _trAddLinesBulk 가 하므로 TRANSFER bin 스테이징·txHeld 잠금은 평소와 똑같다. */
+function _crReady(r){ const p=_crPlan(r); return p.reduce((a,x)=>a+x.n,0)>0; }
+
+async function careqToTransfer(mode, existingId){
+  const all=(window._crRows||[]).filter(r=>String(r.status||'').toUpperCase()==='OPEN');
+  const rows=all.filter(_crReady);
+  if(!rows.length){ showToast('⚠ Set a location first — nothing to send'); return; }
+
+  /* 1) 지정한 bin 에서 실제 박스를 고른다 — 그 bin 안에서 오래된 것부터 */
+  const boxes=[], used=new Set(), took={}, short=[];
+  for(const r of rows){
+    const plan=_crPlan(r); let got=0;
+    for(const p of plan){
+      const cand=_crPickable(String(r.style||''),String(r.color||''),String(r.size||''))
+        .filter(b=>!used.has(b.id) && String(b.loc||'').toUpperCase()===p.loc)
+        .sort((a,b)=>String(a.in_at||'').localeCompare(String(b.in_at||'')));
+      cand.slice(0,p.n).forEach(b=>{ used.add(b.id); boxes.push(b); got++; });
+    }
+    took[r.id]=got;
+    const want=plan.reduce((a,x)=>a+x.n,0);
+    if(got<want) short.push(r.style+' '+r.color+' '+r.size+' — '+got+'/'+want);
+  }
+  if(!boxes.length){ showToast('⚠ Those boxes are gone — set the locations again'); return; }
+  if(short.length && !confirm('Some lines came up short (a box moved or went out since you set it):\n\n'+short.join('\n')+'\n\nLoad what is there?')) return;
+
+  /* 2) 예약(@rsv:) 침범 검사 — 기존 By-Location 흐름과 같은 규칙 */
+  if(typeof reserveBlock==='function'){
+    const need={}; boxes.forEach(b=>{ const k=String(b.style)+'|'+String(b.color).toUpperCase()+'|'+String(b.size).toUpperCase(); need[k]=(need[k]||0)+1; });
+    for(const k in need){ const p=k.split('|'); const blk=reserveBlock(p[0],p[1],p[2],'SC',need[k]); if(blk){ alert(blk); return; } }
+  }
+
+  /* 3) 진행 중인 draft 에 넣는 경우 — 어느 것인지 먼저 고른다 */
+  if(mode==='cur' && !existingId){
     let list=[];
     try{
       const r=await sbFetch('/rest/v1/pr_transfers?select=id,ref,status,lines,meta&status=eq.LOADING&order=created_at.desc&limit=30');
@@ -13134,102 +13169,66 @@ async function careqToTransfer(mode){
     }catch(e){}
     list=(Array.isArray(list)?list:[]).filter(t=>trRoute(t)==='SC2CA');
     if(!list.length){ showToast('⚠ No SC→CA transfer in progress — create a new one'); return; }
-    if(list.length===1){ await careqOpenBuilder(list[0].id); return; }
-    const el=document.getElementById('cr-body'); if(!el) return;
-    el.innerHTML=`<div style="background:#fff;border:1px solid #d8b4fe;border-radius:12px;overflow:hidden;">
-      <div style="padding:10px 13px;background:#faf5ff;border-bottom:1px solid #d8b4fe;font-size:12.5px;font-weight:800;color:#6b21a8;">Which transfer?</div>
-      ${list.map(t=>{
-        const n=(Array.isArray(t.lines)?t.lines:[]).length;
-        const b=(Array.isArray(t.lines)?t.lines:[]).reduce((a,l)=>a+((l.ids||[]).length||Number(l.boxes)||0),0);
-        return `<div style="display:flex;align-items:center;gap:10px;padding:9px 13px;border-top:1px solid #eef2f7;">
-          <b style="font-family:Consolas,monospace;color:#7b1fa2;">${esc(t.ref||('#'+t.id))}</b>
-          <span style="font-size:12px;color:#64748b;">${n} line(s) · ${b} box(es)</span>
-          <button onclick="careqOpenBuilder(${t.id})" style="margin-left:auto;background:#7b1fa2;color:#fff;border:none;border-radius:8px;padding:6px 14px;font-size:12.5px;font-weight:800;cursor:pointer;">Use this</button>
-        </div>`; }).join('')}
-      <div style="padding:9px 13px;border-top:1px solid #eef2f7;"><button onclick="careqMgr()" style="background:#fff;border:1px solid #cbd5e1;color:#475569;border-radius:8px;padding:6px 14px;font-size:12.5px;font-weight:700;cursor:pointer;">← Back</button></div>
-    </div>`;
-    return;
+    if(list.length>1){
+      const el=document.getElementById('cr-body'); if(!el) return;
+      el.innerHTML=`<div style="background:#fff;border:1px solid #d8b4fe;border-radius:12px;overflow:hidden;">
+        <div style="padding:10px 13px;background:#faf5ff;border-bottom:1px solid #d8b4fe;font-size:12.5px;font-weight:800;color:#6b21a8;">Which transfer?</div>
+        ${list.map(t=>{
+          const n=(Array.isArray(t.lines)?t.lines:[]).length;
+          const b=(Array.isArray(t.lines)?t.lines:[]).reduce((a,l)=>a+((l.ids||[]).length||Number(l.boxes)||0),0);
+          return `<div style="display:flex;align-items:center;gap:10px;padding:9px 13px;border-top:1px solid #eef2f7;">
+            <b style="font-family:Consolas,monospace;color:#7b1fa2;">${esc(t.ref||('#'+t.id))}</b>
+            <span style="font-size:12px;color:#64748b;">${n} line(s) · ${b} box(es)</span>
+            <button onclick="careqToTransfer('cur','${esc(String(t.id))}')" style="margin-left:auto;background:#7b1fa2;color:#fff;border:none;border-radius:8px;padding:6px 14px;font-size:12.5px;font-weight:800;cursor:pointer;">Use this</button>
+          </div>`; }).join('')}
+        <div style="padding:9px 13px;border-top:1px solid #eef2f7;"><button onclick="careqMgr()" style="background:#fff;border:1px solid #cbd5e1;color:#475569;border-radius:8px;padding:6px 14px;font-size:12.5px;font-weight:700;cursor:pointer;">← Back</button></div>
+      </div>`;
+      return;
+    }
+    existingId=list[0].id;
   }
-  await careqOpenBuilder(null);
-}
 
-/* 빌더 + Pick SC Inventory 를 열고, 요청 메모를 옆에 띄운다 */
-async function careqOpenBuilder(existingId){
+  /* 4) 빌더를 열고 라인을 담는다 */
   const m=document.getElementById('modal-careq'); if(m) m.remove();
-  await trBuilderOpen(existingId||null, 'SC2CA');
-  if(!_shipPallets.length) _shipPallets.push({ id:'p_'+Math.random().toString(36).slice(2,9), label:'Pallet 1', lines:[] });
-  await trScOpen(_shipPallets[_shipPallets.length-1].id);
-  careqMemo();
-}
+  const ok=await careqLoadPallet(boxes, mode==='cur'?existingId:null);
 
-/* 📋 요청 메모 — Pick 화면 위에 떠 있는 작은 카드. 줄을 누르면 그 스타일·칼라로 검색이 걸린다 */
-function careqMemo(){
-  const ex=document.getElementById('cr-memo'); if(ex) ex.remove();
-  const job=window._crJob||[]; if(!job.length) return;
-  const d=document.createElement('div'); d.id='cr-memo';
-  d.style.cssText='position:fixed;right:14px;bottom:14px;z-index:130;width:340px;max-height:64vh;display:flex;flex-direction:column;background:#fff;border:2px solid #9a3412;border-radius:12px;box-shadow:0 12px 34px rgba(0,0,0,.3);overflow:hidden;';
-  document.body.appendChild(d);
-  careqMemoPaint();
-}
-function careqMemoPaint(){
-  const d=document.getElementById('cr-memo'); if(!d) return;
-  const job=window._crJob||[];
-  const left=job.filter(j=>!j.done).length;
-  d.innerHTML=`<div style="background:#9a3412;color:#fff;padding:9px 12px;display:flex;align-items:center;gap:8px;">
-      <span style="font-size:13px;font-weight:800;">📋 CA requests ${left}/${job.length}</span>
-      <button onclick="document.getElementById('cr-memo').remove()" title="Close" style="margin-left:auto;background:rgba(255,255,255,.2);color:#fff;border:none;border-radius:7px;padding:3px 9px;font-size:13px;font-weight:800;cursor:pointer;">✕</button>
-    </div>
-    <div style="padding:7px 10px;font-size:10.5px;color:#7c2d12;background:#fff7ed;border-bottom:1px solid #fed7aa;line-height:1.5;">Click a line to filter Pick SC Inventory to that style and colour. Choose the bin, then <b>→ Add to Shipment</b>.</div>
-    <div style="flex:1;overflow-y:auto;padding:8px 9px;">
-      ${job.map((j,i)=>`<div onclick="careqMemoFind(${i})" title="Search this style &amp; colour" style="display:flex;align-items:center;gap:7px;padding:7px 9px;margin-bottom:5px;border:1px solid ${j.done?'#bbf7d0':'#e5e7eb'};background:${j.done?'#f0fdf4':'#fff'};border-radius:9px;cursor:pointer;font-size:12px;">
-        <b style="color:#0f2a4a;">${esc(j.style)}</b>
-        <span style="color:#334155;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:130px;">${esc(j.color)}</span>
-        <span style="font-weight:800;">${esc(j.size)}</span>
-        ${(j.plan&&j.plan.length)?`<span style="font-family:Consolas,monospace;font-size:10.5px;font-weight:800;color:#1d4ed8;background:#eff6ff;border:1px solid #bfdbfe;border-radius:5px;padding:0 5px;white-space:nowrap;">📍${esc(j.plan.map(x=>x.loc+'\u00D7'+x.n).join(' '))}</span>`:''}
-        <span style="margin-left:auto;font-family:Consolas,monospace;font-weight:800;color:#9a3412;white-space:nowrap;">${j.boxes} box</span>
-        <button onclick="event.stopPropagation();careqMemoTick(${i})" title="${j.done?'Undo':'Mark as picked'}" style="border:none;background:${j.done?'#16a34a':'#e2e8f0'};color:${j.done?'#fff':'#64748b'};border-radius:6px;padding:2px 7px;font-size:11px;font-weight:800;cursor:pointer;">✓</button>
-      </div>`).join('')}
-    </div>
-    <div style="padding:9px 10px;border-top:1px solid #e2e8f0;background:#f8fafc;">
-      <button onclick="careqMemoDone()" style="width:100%;background:#166534;color:#fff;border:none;border-radius:9px;padding:9px;font-size:12.5px;font-weight:800;cursor:pointer;">✅ Close these against this transfer</button>
-    </div>`;
-}
-function careqMemoFind(i){
-  const j=(window._crJob||[])[i]; if(!j) return;
-  const f=document.getElementById('scv-style-f');
-  if(!f){ showToast('⚠ Pick SC Inventory is not open'); return; }
-  const co=String(j.color||'').replace(/\([^)]*\)/g,'').trim();   // (US) 같은 변형 표시는 빼고 검색
-  f.value=(j.style+' '+co).trim();
-  const bf=document.getElementById('scv-bin-f'); if(bf) bf.value=String(j.bin||'');
-  if(typeof _scvLimit!=='undefined') _scvLimit=200;
-  if(typeof trScRender==='function') trScRender();
-  showToast('🔎 '+j.style+' '+co+' — '+j.size+', '+j.boxes+' box(es) needed'+(j.bin?(' @ '+j.bin):''));
-}
-function careqMemoTick(i){
-  const j=(window._crJob||[])[i]; if(!j) return;
-  j.done=!j.done; careqMemoPaint();
-}
-/* 요청 줄을 이 Transfer 번호로 닫는다 — 재고는 이미 빌더가 처리했다 */
-async function careqMemoDone(){
-  const job=window._crJob||[]; if(!job.length) return;
+  /* 5) 요청 줄을 이 Transfer 번호로 닫는다 */
   const ref=(typeof _shipNo!=='undefined' && _shipNo)?_shipNo:'';
-  const tick=job.filter(j=>j.done);
-  const target=tick.length?tick:job;
-  if(!confirm('Close '+(tick.length?(tick.length+' ticked'):('all '+job.length))+' request(s) against '+(ref||'this transfer')+'?\n\nThey leave the CA list and get the transfer number.')) return;
   const who=(typeof SESS!=='undefined' && SESS && SESS.email)?SESS.email:'';
   const now=new Date().toISOString();
-  let ok=0;
-  for(const j of target){
+  for(const r of rows){
+    const n=took[r.id]||0; if(!n) continue;
     try{
-      const r=await sbFetch(CAREQ_URL+'?id=eq.'+j.id, {method:'PATCH', headers:{Prefer:'return=minimal'},
-        body:JSON.stringify({status:'DONE', transfer_ref:ref, reviewed_by:who, reviewed_at:now})});
-      if(r.ok) ok++;
+      await sbFetch(CAREQ_URL+'?id=eq.'+r.id, {method:'PATCH', headers:{Prefer:'return=minimal'}, body:JSON.stringify({
+        status: n>=(Number(r.boxes)||0) ? 'DONE' : 'PARTIAL',
+        ok_boxes:n, transfer_ref:ref, reviewed_by:who, reviewed_at:now })});
     }catch(e){}
   }
-  window._crJob=job.filter(j=>!target.includes(j));
-  if(window._crJob.length) careqMemoPaint(); else { const d=document.getElementById('cr-memo'); if(d) d.remove(); }
   careqBadge();
-  showToast('✅ '+ok+' request(s) closed'+(ref?(' — '+ref):''));
+  showToast('✅ '+ok+' line(s) · '+boxes.length+' box(es) loaded'+(ref?(' — '+ref):'')+' · print the Pull Request when the pallet is done');
+}
+
+/* 박스 묶음 → (bin·스타일·칼라·사이즈·박스입수) 별 라인으로 팔레트에 담기 */
+async function careqLoadPallet(boxes, existingId){
+  const gm={};
+  boxes.forEach(b=>{
+    const loc=String(b.loc||'?').toUpperCase();
+    const k=loc+'|'+String(b.style)+'|'+String(b.color).toUpperCase()+'|'+String(b.size).toUpperCase()+'|'+(Number(b.pcs)||0);
+    if(!gm[k]) gm[k]={loc, style:String(b.style), color:String(b.color).toUpperCase(), size:String(b.size).toUpperCase(), ppb:Number(b.pcs)||0, ids:[]};
+    gm[k].ids.push(b.id);
+  });
+  const groups=Object.values(gm).sort((a,b)=>
+    a.loc.localeCompare(b.loc,undefined,{numeric:true}) || a.style.localeCompare(b.style) ||
+    a.color.localeCompare(b.color) || bxSizeCmp(a.size,b.size));
+  await trBuilderOpen(existingId||null, 'SC2CA');
+  if(!_shipPallets.length) _shipPallets.push({ id:'p_'+Math.random().toString(36).slice(2,9), label:'Pallet 1', lines:[] });
+  const target=_shipPallets[_shipPallets.length-1].id;
+  const items=groups.map(g=>({ pid:target, line:{ is_manual:false, style:g.style, color:g.color, size:g.size, bin:g.loc, ppb:g.ppb, ids:g.ids } }));
+  const ok=await _trAddLinesBulk(items);
+  await trSaveDraftLines();
+  trRenderPallets();
+  if($('bx-body') && typeof renderBoxRoom==='function') setTimeout(renderBoxRoom,0);
+  return ok;
 }
 
 
