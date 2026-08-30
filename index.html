@@ -167,7 +167,7 @@ body.narrow main{max-width:1100px;}
   </span>
   <select id="lang-sel" onchange="setLang(this.value)" style="font-size:11px;padding:3px 6px;border-radius:5px;border:none;background:#1d3f66;color:#fff;"><option value="ko">한국어</option><option value="en">English</option><option value="es">Español</option></select>
   <button id="wide-btn" class="btn btn-sm" onclick="toggleWide()" title="화면 넓게 / 좁게 — 기본은 넓게 (이 브라우저에만 저장돼)" style="padding:2px 8px;font-size:10px;background:#1d3f66;color:#cfe0f2;border-color:#2b5384;">↔ Wide</button>
-  <span id="app-ver" style="font-size:10px;color:#9fb8d4;">v897</span>
+  <span id="app-ver" style="font-size:10px;color:#9fb8d4;">v898</span>
 </div>
 <script>
 // ↔ 넓게 보기 — 브라우저마다 따로 저장 (v793)
@@ -12963,59 +12963,104 @@ function _crBins(st,co,sz){
   return Object.keys(gm).sort((a,b)=>gm[b].length-gm[a].length || a.localeCompare(b,undefined,{numeric:true}))
                         .map(L=>({loc:L, n:gm[L].length}));
 }
-/* 📍 Pin — 그 조합이 실제로 있는 bin 만 박스 수와 함께 띄우고 하나 고르게 한다 */
+/* 📍 어느 bin 에서 몇 박스씩 — 한 bin 으로 안 되면 여러 곳에 나눠 담는다 */
+function _crPlan(r){
+  const a = Array.isArray(r && r.bins) ? r.bins : [];
+  const out = a.map(x=>({loc:String(x.loc||'').toUpperCase(), n:Math.max(0,Math.round(Number(x.n)||0))})).filter(x=>x.loc && x.n>0);
+  if(out.length) return out;
+  const b = String((r&&r.bin)||'').trim().toUpperCase();      // 옛 단일 bin 값 호환
+  return b ? [{loc:b, n:Math.max(0,Math.round(Number(r.boxes)||0))}] : [];
+}
+let _crBinSel = {};   // {loc: n} — 팝업이 열려 있는 동안만
 function careqBinPick(id){
   const r=(window._crRows||[]).find(x=>x.id===id); if(!r) return;
   const bins=_crBins(String(r.style||''),String(r.color||''),String(r.size||''));
-  if(!bins.length){ showToast('\u26A0 No SC stock for this item'); return; }
+  if(!bins.length){ showToast('⚠ No SC stock for this item'); return; }
+  const want=Math.max(0,Math.round(Number(r.boxes)||0));
+  _crBinSel={};
+  const saved=_crPlan(r);
+  if(saved.length){ saved.forEach(x=>{ const b=bins.find(y=>y.loc===x.loc); if(b) _crBinSel[x.loc]=Math.min(x.n,b.n); }); }
+  else { let left=want; bins.forEach(b=>{ if(left<=0) return; const n=Math.min(b.n,left); if(n>0){ _crBinSel[b.loc]=n; left-=n; } }); }
   const ex=document.getElementById('modal-crbin'); if(ex) ex.remove();
   const d=document.createElement('div'); d.id='modal-crbin';
   d.style.cssText='position:fixed;inset:0;background:rgba(15,23,42,.5);z-index:230;display:flex;align-items:center;justify-content:center;padding:16px;';
   d.addEventListener('mousedown', e=>{ d._bgDown=(e.target===d); });
   d.onclick=e=>{ if(e.target===d && d._bgDown) d.remove(); };
   const tot=bins.reduce((a,b)=>a+b.n,0);
-  d.innerHTML=`<div style="background:#fff;border-radius:13px;width:410px;max-width:96vw;max-height:80vh;display:flex;flex-direction:column;overflow:hidden;box-shadow:0 18px 44px rgba(0,0,0,.3);">
+  d.innerHTML=`<div style="background:#fff;border-radius:13px;width:470px;max-width:96vw;max-height:82vh;display:flex;flex-direction:column;overflow:hidden;box-shadow:0 18px 44px rgba(0,0,0,.3);">
     <div style="background:#1d4ed8;color:#fff;padding:12px 15px;">
       <div style="display:flex;align-items:center;gap:8px;">
-        <span style="font-size:14.5px;font-weight:800;">\uD83D\uDCCD Pull from which bin?</span>
-        <button onclick="document.getElementById('modal-crbin').remove()" style="margin-left:auto;background:rgba(255,255,255,.2);color:#fff;border:none;border-radius:7px;padding:4px 10px;font-size:14px;font-weight:800;cursor:pointer;">\u2715</button>
+        <span style="font-size:14.5px;font-weight:800;">📍 Pull from which bins?</span>
+        <button onclick="document.getElementById('modal-crbin').remove()" style="margin-left:auto;background:rgba(255,255,255,.2);color:#fff;border:none;border-radius:7px;padding:4px 10px;font-size:14px;font-weight:800;cursor:pointer;">✕</button>
       </div>
-      <div style="font-size:12px;opacity:.9;margin-top:3px;">${esc(r.style)} \u00B7 ${esc(r.color)} \u00B7 ${esc(r.size)} \u2014 ${bins.length} bin(s), ${tot} box(es) in SC</div>
+      <div style="font-size:12px;opacity:.92;margin-top:3px;">${esc(r.style)} · ${esc(r.color)} · ${esc(r.size)} — need <b>${want}</b> box(es) · ${bins.length} bin(s), ${tot} in SC</div>
     </div>
-    ${bins.length>8?`<div style="padding:8px 12px;border-bottom:1px solid #e2e8f0;"><input id="crbin-f" placeholder="Filter bin\u2026" oninput="careqBinFilter()" style="width:100%;box-sizing:border-box;font-size:12.5px;font-family:Consolas,monospace;padding:7px 9px;border:1.5px solid #cbd5e1;border-radius:8px;text-transform:uppercase;"></div>`:''}
+    ${bins.length>7?`<div style="padding:8px 12px;border-bottom:1px solid #e2e8f0;"><input id="crbin-f" placeholder="Filter bin…" oninput="careqBinFilter()" style="width:100%;box-sizing:border-box;font-size:12.5px;font-family:Consolas,monospace;padding:7px 9px;border:1.5px solid #cbd5e1;border-radius:8px;text-transform:uppercase;"></div>`:''}
     <div id="crbin-list" style="flex:1;overflow-y:auto;padding:8px;">
-      ${bins.map(b=>`<button class="crbin-row" data-loc="${esc(b.loc)}" onclick="careqSetBin(${id},'${esc(b.loc)}');document.getElementById('modal-crbin').remove();"
-        style="width:100%;box-sizing:border-box;display:flex;align-items:center;gap:10px;text-align:left;margin-bottom:5px;padding:10px 12px;border-radius:9px;cursor:pointer;border:1.5px solid ${r.bin===b.loc?'#60a5fa':'#e5e7eb'};background:${r.bin===b.loc?'#eff6ff':'#fff'};">
-        <span style="font-family:Consolas,monospace;font-size:14px;font-weight:800;color:#1d4ed8;">${esc(b.loc)}</span>
-        <span style="margin-left:auto;font-family:Consolas,monospace;font-size:12.5px;font-weight:700;color:#475569;">${b.n} box(es)</span>
-        ${r.bin===b.loc?'<span style="color:#1d4ed8;font-weight:800;">\u2713</span>':''}
-      </button>`).join('')}
+      ${bins.map(b=>`<div class="crbin-row" data-loc="${esc(b.loc)}" style="display:flex;align-items:center;gap:9px;margin-bottom:5px;padding:8px 11px;border-radius:9px;border:1.5px solid #e5e7eb;background:#fff;">
+        <span style="font-family:Consolas,monospace;font-size:14px;font-weight:800;color:#1d4ed8;min-width:74px;">${esc(b.loc)}</span>
+        <span style="font-family:Consolas,monospace;font-size:12px;color:#64748b;">has ${b.n}</span>
+        <span style="margin-left:auto;display:inline-flex;align-items:center;gap:6px;">
+          <input type="number" min="0" max="${b.n}" step="1" value="${_crBinSel[b.loc]||0}" data-bin="${esc(b.loc)}" data-max="${b.n}"
+            oninput="careqBinQty('${esc(b.loc)}',this.value,${b.n})"
+            style="width:66px;text-align:center;font-family:Consolas,monospace;font-size:13.5px;font-weight:800;padding:6px;border:1.5px solid #cbd5e1;border-radius:7px;">
+          <button onclick="careqBinAll('${esc(b.loc)}',${b.n})" title="Take everything in this bin" style="border:1px solid #bbf7d0;background:#f0fdf4;color:#15803d;border-radius:6px;padding:4px 8px;font-size:11px;font-weight:800;cursor:pointer;">All</button>
+          <button onclick="careqBinQty('${esc(b.loc)}',0,${b.n})" title="Clear this bin" style="border:1px solid #e5e7eb;background:#fff;color:#94a3b8;border-radius:6px;padding:4px 8px;font-size:11px;font-weight:800;cursor:pointer;">0</button>
+        </span>
+      </div>`).join('')}
     </div>
-    <div style="padding:9px 12px;border-top:1px solid #e2e8f0;background:#f8fafc;display:flex;align-items:center;gap:9px;">
-      <span style="flex:1;min-width:0;font-size:11px;color:#64748b;">Leave it unset to pick from anywhere.</span>
-      <button onclick="careqSetBin(${id},'');document.getElementById('modal-crbin').remove();" style="flex:none;background:#fff;border:1px solid #cbd5e1;color:#475569;border-radius:8px;padding:7px 14px;font-size:12.5px;font-weight:700;cursor:pointer;">Clear</button>
+    <div style="padding:10px 12px;border-top:1px solid #e2e8f0;background:#f8fafc;display:flex;align-items:center;gap:9px;">
+      <span id="crbin-sum" style="flex:1;min-width:0;font-size:12.5px;font-weight:800;"></span>
+      <button onclick="careqBinSave(${id},true)" style="flex:none;background:#fff;border:1px solid #cbd5e1;color:#475569;border-radius:8px;padding:8px 14px;font-size:12.5px;font-weight:700;cursor:pointer;">Clear</button>
+      <button onclick="careqBinSave(${id})" style="flex:none;background:#1d4ed8;color:#fff;border:none;border-radius:8px;padding:8px 20px;font-size:13px;font-weight:800;cursor:pointer;">Save</button>
     </div>
   </div>`;
   document.body.appendChild(d);
+  window._crBinWant=want;
+  careqBinSum();
   const f=document.getElementById('crbin-f'); if(f) setTimeout(()=>f.focus(),0);
+}
+function careqBinQty(loc, v, max){
+  let n=Math.max(0,Math.round(Number(v)||0)); if(n>max) n=max;
+  if(n>0) _crBinSel[loc]=n; else delete _crBinSel[loc];
+  const inp=document.querySelector('#crbin-list input[data-bin="'+loc+'"]'); if(inp && String(inp.value)!==String(n)) inp.value=n;
+  const row=document.querySelector('#crbin-list .crbin-row[data-loc="'+loc+'"]');
+  if(row){ row.style.borderColor = n>0 ? '#60a5fa' : '#e5e7eb'; row.style.background = n>0 ? '#eff6ff' : '#fff'; }
+  careqBinSum();
+}
+function careqBinAll(loc, max){ careqBinQty(loc, max, max); }
+function careqBinSum(){
+  const el=document.getElementById('crbin-sum'); if(!el) return;
+  const n=Object.values(_crBinSel).reduce((a,x)=>a+x,0);
+  const want=Number(window._crBinWant)||0;
+  const c = n===want ? '#166534' : (n<want ? '#b45309' : '#b91c1c');
+  el.style.color=c;
+  el.innerHTML = 'Allocated <b style="font-size:15px;">'+n+'</b> / '+want+
+    (n===want?' ✓':(n<want?(' — '+(want-n)+' short'):(' — '+(n-want)+' over')));
+  const rows=[...document.querySelectorAll('#crbin-list .crbin-row')];
+  rows.forEach(r=>{ const loc=r.getAttribute('data-loc'); const v=_crBinSel[loc]||0;
+    r.style.borderColor = v>0 ? '#60a5fa' : '#e5e7eb'; r.style.background = v>0 ? '#eff6ff' : '#fff'; });
+}
+async function careqBinSave(id, clear){
+  const plan = clear ? [] : Object.keys(_crBinSel).map(loc=>({loc, n:_crBinSel[loc]})).filter(x=>x.n>0);
+  const bin  = plan.length===1 ? plan[0].loc : '';
+  try{
+    const r=await sbFetch(CAREQ_URL+'?id=eq.'+id, {method:'PATCH', headers:{Prefer:'return=minimal'},
+      body:JSON.stringify({bins:plan, bin:bin})});
+    if(!r.ok) throw new Error('HTTP '+r.status);
+    const row=(window._crRows||[]).find(x=>x.id===id); if(row){ row.bins=plan; row.bin=bin; }
+    showToast(plan.length?('📍 '+plan.map(x=>x.loc+' ×'+x.n).join(' · ')):'📍 Location cleared');
+  }catch(e){ showToast('⚠ Could not save'); }
+  const d=document.getElementById('modal-crbin'); if(d) d.remove();
+  careqMgr();
 }
 function careqBinFilter(){
   const q=String((document.getElementById('crbin-f')||{}).value||'').trim().toUpperCase();
   [...document.querySelectorAll('#crbin-list .crbin-row')].forEach(b=>{
-    b.style.display = (!q || String(b.getAttribute('data-loc')||'').includes(q)) ? 'flex' : 'none';
+    b.style.display = (!q || String(b.getAttribute('data-loc')||'').includes(q)) ? 'none'.replace('none','flex') : 'none';
   });
 }
-/* 📍 뽑을 위치 지정 — 저장만 한다. 박스는 Pick 화면에서 담는다 */
-async function careqSetBin(id, v){
-  const bin=String(v||'').trim().toUpperCase();
-  try{
-    const r=await sbFetch(CAREQ_URL+'?id=eq.'+id, {method:'PATCH', headers:{Prefer:'return=minimal'}, body:JSON.stringify({bin:bin})});
-    if(!r.ok) throw new Error('HTTP '+r.status);
-    const row=(window._crRows||[]).find(x=>x.id===id); if(row) row.bin=bin;
-    showToast(bin?('📍 Set to '+bin):'📍 Location cleared');
-  }catch(e){ showToast('⚠ Could not save'); }
-  careqMgr();
-}
+
 
 function careqMgr(){
   const el=document.getElementById('cr-body'); if(!el) return;
@@ -13039,8 +13084,11 @@ function careqMgr(){
       <td style="padding:8px 9px;border-top:1px solid #eef2f7;text-align:center;font-size:10.5px;color:#94a3b8;white-space:nowrap;">${ds}</td>
       <td style="padding:6px 9px;border-top:1px solid #eef2f7;">${
         bins.length
-          ? `<button onclick="careqBinPick(${r.id})" title="Choose which bin to pull from — Pick SC Inventory opens filtered to it"
-               style="min-width:124px;text-align:left;font-size:12.5px;font-family:Consolas,monospace;font-weight:800;padding:6px 11px;cursor:pointer;border-radius:8px;border:1.5px solid ${r.bin?'#60a5fa':'#cbd5e1'};background:${r.bin?'#eff6ff':'#fff'};color:${r.bin?'#1d4ed8':'#94a3b8'};">📍 ${r.bin?esc(r.bin):'Set location'}</button>`
+          ? (()=>{ const pl=_crPlan(r), n=pl.reduce((a,x)=>a+x.n,0);
+              const lbl = pl.length ? pl.map(x=>esc(x.loc)+' \u00D7'+x.n).join('  ') : 'Set location';
+              const okAll = n>=want;
+              return `<button onclick="careqBinPick(${r.id})" title="Choose which bins to pull from, and how many boxes from each"
+                style="max-width:230px;text-align:left;font-size:12px;font-family:Consolas,monospace;font-weight:800;padding:6px 11px;cursor:pointer;border-radius:8px;line-height:1.4;white-space:normal;border:1.5px solid ${pl.length?(okAll?'#60a5fa':'#fdba74'):'#cbd5e1'};background:${pl.length?(okAll?'#eff6ff':'#fff7ed'):'#fff'};color:${pl.length?(okAll?'#1d4ed8':'#b45309'):'#94a3b8'};">\uD83D\uDCCD ${lbl}${pl.length&&!okAll?` <span style="font-weight:700;">(${n}/${want})</span>`:''}</button>`; })()
           : `<span style="font-size:11px;color:#cbd5e1;">no stock</span>`
       }</td>
       <td style="padding:8px 9px;border-top:1px solid #eef2f7;text-align:center;">
@@ -13077,7 +13125,7 @@ function careqMgr(){
 async function careqToTransfer(mode){
   const rows=(window._crRows||[]).filter(r=>String(r.status||'').toUpperCase()==='OPEN');
   if(!rows.length){ showToast('⚠ No requests'); return; }
-  window._crJob = rows.map(r=>({id:r.id, style:String(r.style||''), color:String(r.color||''), size:String(r.size||''), boxes:Number(r.boxes)||0, bin:String(r.bin||''), done:false}));
+  window._crJob = rows.map(r=>({id:r.id, style:String(r.style||''), color:String(r.color||''), size:String(r.size||''), boxes:Number(r.boxes)||0, bin:String(r.bin||''), plan:_crPlan(r), done:false}));
   if(mode==='cur'){
     let list=[];
     try{
@@ -13137,7 +13185,7 @@ function careqMemoPaint(){
         <b style="color:#0f2a4a;">${esc(j.style)}</b>
         <span style="color:#334155;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:130px;">${esc(j.color)}</span>
         <span style="font-weight:800;">${esc(j.size)}</span>
-        ${j.bin?`<span style="font-family:Consolas,monospace;font-size:10.5px;font-weight:800;color:#1d4ed8;background:#eff6ff;border:1px solid #bfdbfe;border-radius:5px;padding:0 5px;white-space:nowrap;">📍${esc(j.bin)}</span>`:''}
+        ${(j.plan&&j.plan.length)?`<span style="font-family:Consolas,monospace;font-size:10.5px;font-weight:800;color:#1d4ed8;background:#eff6ff;border:1px solid #bfdbfe;border-radius:5px;padding:0 5px;white-space:nowrap;">📍${esc(j.plan.map(x=>x.loc+'\u00D7'+x.n).join(' '))}</span>`:''}
         <span style="margin-left:auto;font-family:Consolas,monospace;font-weight:800;color:#9a3412;white-space:nowrap;">${j.boxes} box</span>
         <button onclick="event.stopPropagation();careqMemoTick(${i})" title="${j.done?'Undo':'Mark as picked'}" style="border:none;background:${j.done?'#16a34a':'#e2e8f0'};color:${j.done?'#fff':'#64748b'};border-radius:6px;padding:2px 7px;font-size:11px;font-weight:800;cursor:pointer;">✓</button>
       </div>`).join('')}
