@@ -167,7 +167,7 @@ body.narrow main{max-width:1100px;}
   </span>
   <select id="lang-sel" onchange="setLang(this.value)" style="font-size:11px;padding:3px 6px;border-radius:5px;border:none;background:#1d3f66;color:#fff;"><option value="ko">한국어</option><option value="en">English</option><option value="es">Español</option></select>
   <button id="wide-btn" class="btn btn-sm" onclick="toggleWide()" title="화면 넓게 / 좁게 — 기본은 넓게 (이 브라우저에만 저장돼)" style="padding:2px 8px;font-size:10px;background:#1d3f66;color:#cfe0f2;border-color:#2b5384;">↔ Wide</button>
-  <span id="app-ver" style="font-size:10px;color:#9fb8d4;">v886</span>
+  <span id="app-ver" style="font-size:10px;color:#9fb8d4;">v887</span>
 </div>
 <script>
 // ↔ 넓게 보기 — 브라우저마다 따로 저장 (v793)
@@ -2905,10 +2905,11 @@ async function enterApp(){
   }).catch(()=>{});
   if(typeof pchkReviewBadge==='function') pchkReviewBadge();
   if(typeof pchkBoxreqBadge==='function') pchkBoxreqBadge();
+  if(typeof careqBadge==='function') careqBadge();
   if(typeof bulkBadge==='function') bulkBadge();
   if(typeof loadPackedMap==='function') loadPackedMap();   // 📦 직원 박스입력 상태 → UPS 버튼 색
   try{ clearInterval(window._mgrBoxreqPoll); }catch(e){}
-  window._mgrBoxreqPoll=setInterval(()=>{ if(typeof pchkBoxreqBadge==='function') pchkBoxreqBadge(); if(typeof bulkBadge==='function') bulkBadge(); if(typeof apprPollAll==='function') apprPollAll(); if(typeof loadPackedMap==='function') loadPackedMap(); }, 20000);   // 📦 box request 알람 + 포장상태 + 배송비승인 20초마다 갱신
+  window._mgrBoxreqPoll=setInterval(()=>{ if(typeof pchkBoxreqBadge==='function') pchkBoxreqBadge(); if(typeof careqBadge==='function') careqBadge(); if(typeof bulkBadge==='function') bulkBadge(); if(typeof apprPollAll==='function') apprPollAll(); if(typeof loadPackedMap==='function') loadPackedMap(); }, 20000);   // 📦 box request 알람 + 포장상태 + 배송비승인 20초마다 갱신
 }
 // 직원이 창고별로 박스를 넣었는지 맵 (base → Set(wh)). UPS 버튼 색상용.
 async function loadPackedMap(){
@@ -12703,6 +12704,199 @@ async function packLinkBoxes(){
     return Number(n)||0;
   }catch(e){ return 0; }   // 연결이 실패해도 포장 저장은 막지 않는다
 }
+/* ═══════════ 📥 CA Stock Request — CA 창고가 SC 에 필요한 물건을 요청 (v887) ═══════════
+   CA 가 style / color / size / 박스수 만 올린다. 재고는 아무것도 안 건드린다.
+   SC 는 다음 단계(검토 화면)에서 이 줄을 골라 Transfer 로 만든다.
+   테이블: pr_stockreq {id, from_wh, to_wh, status, lines jsonb, transfer_ref,
+                        created_by, created_at, reviewed_by, reviewed_at} */
+const CAREQ_URL = '/rest/v1/pr_stockreq';
+let _crLines = [];
+const _CRIN = 'width:100%;box-sizing:border-box;font-size:13.5px;padding:8px 9px;border:1.5px solid #cbd5e1;border-radius:9px;height:38px;background:#fff;';
+function _crv(id){ const e=document.getElementById(id); return e?String(e.value||'').trim().toUpperCase():''; }
+function _crFld(lab, inner){ return `<div><div style="font-size:10.5px;font-weight:800;color:#475569;letter-spacing:.2px;margin-bottom:4px;">${lab}</div>${inner}</div>`; }
+
+async function careqOpen(){
+  const ex=document.getElementById('modal-careq'); if(ex) ex.remove();
+  const div=document.createElement('div'); div.id='modal-careq';
+  div.style.cssText='position:fixed;inset:0;background:rgba(15,23,42,.55);z-index:210;display:flex;align-items:flex-start;justify-content:center;padding:20px 12px;overflow-y:auto;';
+  div.onclick=e=>{ if(e.target===div) div.remove(); };
+  div.innerHTML=`<div style="background:#fff;border-radius:14px;max-width:860px;width:100%;max-height:92vh;display:flex;flex-direction:column;overflow:hidden;">
+    <div style="background:#9a3412;color:#fff;padding:14px 18px;display:flex;align-items:center;gap:10px;">
+      <span style="font-size:16px;font-weight:800;">📥 CA Stock Request</span>
+      <span style="font-size:11.5px;opacity:.85;">CA → SC · 필요한 박스를 올리면 SC 가 검토합니다</span>
+      <button onclick="document.getElementById('modal-careq').remove()" style="margin-left:auto;background:rgba(255,255,255,.2);color:#fff;border:none;border-radius:8px;padding:6px 12px;font-size:15px;font-weight:800;">✕</button>
+    </div>
+    <div style="flex:1;overflow-y:auto;background:#f8fafc;padding:14px;">
+      <div id="cr-form"></div>
+      <div id="cr-cart" style="margin-top:12px;"></div>
+      <div style="margin-top:20px;">
+        <div style="font-size:12.5px;font-weight:800;color:#0f2a4a;margin-bottom:7px;display:flex;align-items:center;">📋 최근 요청
+          <button onclick="careqMine()" title="Refresh" style="margin-left:auto;background:#e2e8f0;border:none;border-radius:8px;padding:3px 10px;font-size:11.5px;">🔄</button></div>
+        <div id="cr-mine" style="font-size:12px;color:#94a3b8;">Loading…</div>
+      </div>
+    </div>
+  </div>`;
+  document.body.appendChild(div);
+  if(typeof skuLoaded!=='undefined' && !skuLoaded && typeof skuFetch==='function'){ try{ await skuFetch(); }catch(e){} }
+  if(typeof bxLoaded!=='undefined' && !bxLoaded && typeof bxFetchStore==='function'){ try{ await bxFetchStore(); }catch(e){} }
+  careqForm(); careqCart(); careqMine();
+}
+
+function careqForm(){
+  const el=document.getElementById('cr-form'); if(!el) return;
+  const sty=(typeof skuStyles==='function' && typeof skuLoaded!=='undefined' && skuLoaded)?skuStyles():[];
+  el.innerHTML=`<div style="background:#fff;border:1px solid #e2e8f0;border-radius:12px;padding:13px 14px;">
+    <div style="display:grid;grid-template-columns:1fr 1.5fr .9fr .7fr auto;gap:9px;align-items:end;">
+      ${_crFld('Style', `<select id="cr-style" onchange="careqStyleChg()" style="${_CRIN}"><option value="">— 선택 —</option>${sty.map(s=>`<option>${esc(s)}</option>`).join('')}</select>`)}
+      ${_crFld('Color', `<select id="cr-color" onchange="careqAvail()" style="${_CRIN}"><option value="">—</option></select>`)}
+      ${_crFld('Size',  `<select id="cr-size" onchange="careqAvail()" style="${_CRIN}"><option value="">—</option></select>`)}
+      ${_crFld('Boxes', `<input id="cr-box" type="number" min="1" step="1" value="1" onkeydown="if(event.key==='Enter')careqAdd()" style="${_CRIN}text-align:center;font-weight:800;">`)}
+      <button onclick="careqAdd()" style="background:#16a34a;color:#fff;border:none;border-radius:9px;padding:0 18px;font-size:13.5px;font-weight:800;height:38px;white-space:nowrap;cursor:pointer;">＋ 추가</button>
+    </div>
+    <div id="cr-avail" style="margin-top:10px;font-size:12px;min-height:19px;color:#94a3b8;">스타일 · 칼라 · 사이즈를 고르면 SC 재고가 여기 나옵니다.</div>
+  </div>`;
+}
+
+function careqStyleChg(){
+  const st=_crv('cr-style');
+  const cSel=document.getElementById('cr-color'), sSel=document.getElementById('cr-size');
+  const cols=st?[...new Set((typeof skuColors==='function'?skuColors(st):[]).map(c=>String(c).toUpperCase()))].sort():[];
+  const szs =st?((typeof bxStyleSizes==='function'?bxStyleSizes(st):[])||[]):[];
+  if(cSel) cSel.innerHTML='<option value="">—</option>'+cols.map(c=>`<option>${esc(c)}</option>`).join('');
+  if(sSel) sSel.innerHTML='<option value="">—</option>'+szs.map(s=>`<option>${esc(s)}</option>`).join('');
+  careqAvail();
+}
+
+/* SC 에 지금 몇 박스 있는지 — 읽기만 한다 (박스를 건드리지 않는다) */
+function careqAvail(){
+  const el=document.getElementById('cr-avail'); if(!el) return;
+  const st=_crv('cr-style'), co=_crv('cr-color'), sz=_crv('cr-size');
+  if(!st||!co||!sz){ el.style.color='#94a3b8'; el.innerHTML='스타일 · 칼라 · 사이즈를 고르면 SC 재고가 여기 나옵니다.'; return; }
+  const list=(typeof bxFindAll==='function'?(bxFindAll(st,co,sz,'SC')||[]):[]);
+  const n=list.length;
+  const gm={}; list.forEach(b=>{ const L=String(b.loc||'?').toUpperCase(); gm[L]=(gm[L]||0)+1; });
+  const locs=Object.keys(gm).sort().map(L=>esc(L)+' <b>'+gm[L]+'</b>').join(' · ');
+  const held=(typeof txHeld==='function')?list.filter(b=>txHeld(b.id)).length:0;
+  el.style.color = n?'#166534':'#b91c1c';
+  el.innerHTML = n
+    ? `📍 SC 보유 <b style="font-size:14px;">${n}</b> 박스${held?` <span style="color:#b45309;">(이송 중 ${held})</span>`:''} <span style="color:#64748b;font-weight:400;margin-left:6px;">${locs}</span>`
+    : `⚠ SC 에 이 조합의 풀박스가 없습니다 — 그래도 요청은 올릴 수 있습니다.`;
+}
+
+function careqAdd(){
+  const st=_crv('cr-style'), co=_crv('cr-color'), sz=_crv('cr-size');
+  const nb=Math.round(Number((document.getElementById('cr-box')||{}).value)||0);
+  if(!st){ showToast('⚠ Style 을 고르세요'); return; }
+  if(!co){ showToast('⚠ Color 를 고르세요'); return; }
+  if(!sz){ showToast('⚠ Size 를 고르세요'); return; }
+  if(nb<1){ showToast('⚠ 박스 수를 넣으세요'); return; }
+  const ex=_crLines.find(l=>l.style===st && l.color===co && l.size===sz);
+  if(ex) ex.boxes += nb; else _crLines.push({style:st, color:co, size:sz, boxes:nb});
+  const b=document.getElementById('cr-box'); if(b) b.value='1';
+  careqCart();
+}
+function careqDel(i){ _crLines.splice(i,1); careqCart(); }
+function careqQty(i, v){ const n=Math.round(Number(v)||0); if(n<1) return; _crLines[i].boxes=n; careqCart(); }
+
+function careqCart(){
+  const el=document.getElementById('cr-cart'); if(!el) return;
+  if(!_crLines.length){
+    el.innerHTML=`<div style="background:#fff;border:1.5px dashed #cbd5e1;border-radius:12px;padding:22px;text-align:center;color:#94a3b8;font-size:12.5px;">아직 담긴 줄이 없습니다. 위에서 골라 <b>＋ 추가</b> 를 누르세요.</div>`;
+    return;
+  }
+  const tot=_crLines.reduce((a,l)=>a+l.boxes,0);
+  const rows=_crLines.map((l,i)=>{
+    const have=(typeof bxFindAll==='function'?(bxFindAll(l.style,l.color,l.size,'SC')||[]).length:0);
+    const short=have<l.boxes;
+    return `<tr>
+      <td style="padding:7px 9px;border-top:1px solid #eef2f7;font-weight:800;color:#0f2a4a;">${esc(l.style)}</td>
+      <td style="padding:7px 9px;border-top:1px solid #eef2f7;">${esc(l.color)}</td>
+      <td style="padding:7px 9px;border-top:1px solid #eef2f7;font-weight:700;">${esc(l.size)}</td>
+      <td style="padding:7px 9px;border-top:1px solid #eef2f7;text-align:center;">
+        <input type="number" min="1" step="1" value="${l.boxes}" onchange="careqQty(${i},this.value)" style="width:64px;text-align:center;font-weight:800;font-size:13px;padding:5px;border:1.5px solid #cbd5e1;border-radius:7px;"></td>
+      <td style="padding:7px 9px;border-top:1px solid #eef2f7;text-align:center;font-family:Consolas,monospace;color:${short?'#b91c1c':'#166534'};font-weight:800;">${have}${short?' ⚠':''}</td>
+      <td style="padding:7px 9px;border-top:1px solid #eef2f7;text-align:center;"><button onclick="careqDel(${i})" title="빼기" style="border:1px solid #fecaca;background:#fef2f2;color:#b91c1c;border-radius:7px;padding:3px 9px;font-size:11.5px;font-weight:800;cursor:pointer;">✕</button></td>
+    </tr>`;
+  }).join('');
+  el.innerHTML=`<div style="background:#fff;border:1px solid #e2e8f0;border-radius:12px;overflow:hidden;">
+    <table style="width:100%;border-collapse:collapse;font-size:12.5px;">
+      <thead><tr style="background:#f1f5f9;">
+        <th style="padding:7px 9px;text-align:left;font-size:10.5px;letter-spacing:.3px;color:#475569;">STYLE</th>
+        <th style="padding:7px 9px;text-align:left;font-size:10.5px;letter-spacing:.3px;color:#475569;">COLOR</th>
+        <th style="padding:7px 9px;text-align:left;font-size:10.5px;letter-spacing:.3px;color:#475569;">SIZE</th>
+        <th style="padding:7px 9px;text-align:center;font-size:10.5px;letter-spacing:.3px;color:#475569;">필요 박스</th>
+        <th style="padding:7px 9px;text-align:center;font-size:10.5px;letter-spacing:.3px;color:#475569;">SC 보유</th>
+        <th style="width:44px;"></th>
+      </tr></thead>
+      <tbody>${rows}</tbody>
+    </table>
+    <div style="display:flex;align-items:center;gap:12px;padding:11px 13px;background:#f8fafc;border-top:1px solid #e2e8f0;">
+      <span style="font-size:12.5px;font-weight:800;color:#0f2a4a;">${_crLines.length} 줄 · 합계 <b style="font-size:15px;">${tot}</b> 박스</span>
+      <button onclick="careqClear()" style="margin-left:auto;background:#fff;border:1px solid #cbd5e1;color:#475569;border-radius:9px;padding:8px 14px;font-size:12.5px;font-weight:700;cursor:pointer;">비우기</button>
+      <button id="cr-send" onclick="careqSubmit()" style="background:#9a3412;color:#fff;border:none;border-radius:9px;padding:9px 20px;font-size:13.5px;font-weight:800;cursor:pointer;">📤 SC 에 요청 보내기</button>
+    </div>
+  </div>`;
+}
+function careqClear(){ if(_crLines.length && !confirm('담긴 '+_crLines.length+'줄을 전부 지울까요?')) return; _crLines=[]; careqCart(); }
+
+async function careqSubmit(){
+  if(!_crLines.length) return;
+  const btn=document.getElementById('cr-send'); if(btn){ btn.disabled=true; btn.textContent='보내는 중…'; }
+  const row={ from_wh:'CA', to_wh:'SC', status:'OPEN', lines:_crLines,
+              created_by:(typeof SESS!=='undefined' && SESS && SESS.email)?SESS.email:'' };
+  try{
+    const r=await sbFetch(CAREQ_URL, {method:'POST', headers:{Prefer:'return=representation'}, body:JSON.stringify([row])});
+    if(!r.ok){ const t=await r.text(); throw new Error('HTTP '+r.status+' '+t.slice(0,140)); }
+    const rec=(await r.json())[0]||{};
+    _crLines=[]; careqCart(); careqMine(); careqBadge();
+    showToast('✅ 요청 보냈습니다 — CR-'+(rec.id||'?')+' · SC 대시보드에 뜹니다');
+  }catch(e){ showToast('⚠ 보내기 실패: '+(e.message||e)); }
+  if(btn){ btn.disabled=false; btn.textContent='📤 SC 에 요청 보내기'; }
+}
+
+async function careqMine(){
+  const el=document.getElementById('cr-mine'); if(!el) return;
+  let rows=[];
+  try{
+    const r=await sbFetch(CAREQ_URL+'?select=*&order=created_at.desc&limit=25');
+    if(!r.ok) throw new Error('HTTP '+r.status);
+    rows=await r.json();
+  }catch(e){ el.innerHTML='<div style="color:#b91c1c;">불러오지 못했습니다 — pr_stockreq 테이블이 아직 없을 수 있습니다.</div>'; return; }
+  if(!Array.isArray(rows) || !rows.length){ el.innerHTML='<div style="color:#94a3b8;">아직 요청이 없습니다.</div>'; return; }
+  const BADGE={OPEN:['#f59e0b','OPEN'], PARTIAL:['#0891b2','일부 승인'], DONE:['#16a34a','✓ 완료'], CANCELED:['#94a3b8','취소']};
+  el.innerHTML=rows.map(x=>{
+    const L=Array.isArray(x.lines)?x.lines:[];
+    const tot=L.reduce((a,l)=>a+(Number(l.boxes)||0),0);
+    const d=x.created_at?new Date(x.created_at):null;
+    const ds=d?d.toLocaleDateString('en-US',{month:'numeric',day:'numeric'})+' '+d.toLocaleTimeString('en-US',{hour:'numeric',minute:'2-digit'}):'';
+    const bg=BADGE[String(x.status||'OPEN').toUpperCase()]||BADGE.OPEN;
+    return `<div style="background:#fff;border:1px solid #e5e7eb;border-radius:10px;padding:9px 12px;margin-bottom:7px;">
+      <div style="display:flex;align-items:center;gap:9px;flex-wrap:wrap;">
+        <b style="font-size:13px;color:#0f2a4a;">CR-${x.id}</b>
+        <span style="font-size:12px;color:#475569;">${L.length} 줄 · ${tot} 박스</span>
+        ${x.transfer_ref?`<span style="font-size:10.5px;font-weight:800;color:#b45309;background:#fff7ed;border:1px solid #fed7aa;border-radius:6px;padding:1px 7px;">🚚 ${esc(x.transfer_ref)}</span>`:''}
+        <span style="margin-left:auto;font-size:10px;font-weight:800;padding:2px 10px;border-radius:20px;background:${bg[0]};color:#fff;">${bg[1]}</span>
+      </div>
+      <div style="font-size:11px;color:#64748b;margin-top:4px;">${L.slice(0,6).map(l=>esc(l.style)+' '+esc(l.color)+' '+esc(l.size)+' ×'+(Number(l.boxes)||0)).join('  ·  ')}${L.length>6?('  +'+(L.length-6)+' more'):''}</div>
+      <div style="font-size:10.5px;color:#94a3b8;margin-top:3px;">${ds}${x.created_by?' · '+esc(x.created_by):''}</div>
+    </div>`;
+  }).join('');
+}
+
+/* 대시보드 타일 숫자 — OPEN 인 요청 건수 */
+async function careqBadge(){
+  try{
+    const r=await sbFetch(CAREQ_URL+'?select=id&status=eq.OPEN&limit=200');
+    if(!r.ok) return;
+    const rows=await r.json();
+    window._careqOpen=Array.isArray(rows)?rows.length:0;
+    const el=document.getElementById('careq-kpi-n'); if(el) el.textContent=window._careqOpen;
+    const tile=document.getElementById('careq-kpi'); if(tile) tile.classList.toggle('breq-blink', window._careqOpen>0);
+  }catch(e){}
+}
+function careqPend(){ return Number(window._careqOpen)||0; }
+
+
 // ═══════════ 📦 Request a Box — pr_boxreq(anon) 저장, 매니저 처리 (v605) ═══════════
 const BOXREQ_URL = SB_URL + '/rest/v1/pr_boxreq';
 function _boxreqH(){ return {apikey:SB_KEY, Authorization:'Bearer '+SB_KEY, 'Content-Type':'application/json'}; }
@@ -26943,6 +27137,7 @@ function renderKpi(){
     ${actTile('🇭🇹','Haiti Receive','#0e7490','#ecfeff',"hiOpen()",'Upload Haiti invoice → review → assign locations on arrival')}
     ${(typeof pchkBoxreqPend==='function')?numTile('📦 SC Box Request', `<span id="boxreq-kpi-sc-n">${pchkBoxreqPend('SC')}</span>`, '#1d4ed8', '#eff6ff', "pchkReqMgrOpenWh('SC')", 'id="boxreq-kpi-sc"', pchkBoxreqPend('SC')>0?'breq-blink':''):EMPTY}
     ${(typeof pchkBoxreqPend==='function')?numTile('📦 CA Box Request', `<span id="boxreq-kpi-ca-n">${pchkBoxreqPend('CA')}</span>`, '#c2410c', '#fff7ed', "pchkReqMgrOpenWh('CA')", 'id="boxreq-kpi-ca"', pchkBoxreqPend('CA')>0?'breq-blink':''):EMPTY}
+    ${(typeof careqPend==='function')?numTile('📥 CA Stock Request', `<span id="careq-kpi-n">${careqPend()}</span>`, '#9a3412', '#fef3f2', "careqOpen()", 'id="careq-kpi"', careqPend()>0?'breq-blink':''):EMPTY}
     ${invCard('SC', '#1d4ed8', '#eff6ff', '#93c5fd')}
     ${invCard('CA', '#9a3412', '#fff7ed', '#fdba74')}
     ${actTile('＋','SC Box','#1d4ed8','#eff6ff',"bxAddBoxes({wh:'SC'})",'Receive boxes into the SC warehouse')}
