@@ -167,7 +167,7 @@ body.narrow main{max-width:1100px;}
   </span>
   <select id="lang-sel" onchange="setLang(this.value)" style="font-size:11px;padding:3px 6px;border-radius:5px;border:none;background:#1d3f66;color:#fff;"><option value="ko">한국어</option><option value="en">English</option><option value="es">Español</option></select>
   <button id="wide-btn" class="btn btn-sm" onclick="toggleWide()" title="화면 넓게 / 좁게 — 기본은 넓게 (이 브라우저에만 저장돼)" style="padding:2px 8px;font-size:10px;background:#1d3f66;color:#cfe0f2;border-color:#2b5384;">↔ Wide</button>
-  <span id="app-ver" style="font-size:10px;color:#9fb8d4;">v905</span>
+  <span id="app-ver" style="font-size:10px;color:#9fb8d4;">v906</span>
 </div>
 <script>
 // ↔ 넓게 보기 — 브라우저마다 따로 저장 (v793)
@@ -14857,6 +14857,31 @@ const _lnUSD = n => (n==null||n==='') ? '' : '$'+_lnNum(n,2);
 const _lnKRW = n => (n==null||n==='') ? '' : '₩'+Math.round(Number(n)||0).toLocaleString('en-US');
 const _lnFX  = n => (n==null||n==='') ? '' : _lnNum(n,4);
 const _lnPCT = n => (n==null||n==='') ? '' : _lnNum(n,4)+'%';
+/* 날짜는 그냥 09/20/2026 처럼 쳐도 되게 — 09/20/26 · 2026-09-20 · 20260920 도 받는다 */
+function _lnFmtDate(iso){
+  const t=String(iso||'').slice(0,10);
+  if(!/^\d{4}-\d{2}-\d{2}$/.test(t)) return '';
+  const p=t.split('-'); return p[1]+'/'+p[2]+'/'+p[0];
+}
+function _lnParseDate(v){
+  const t=String(v||'').trim();
+  if(!t) return null;
+  let m=t.match(/^(\d{4})-(\d{1,2})-(\d{1,2})$/);                       // 2026-09-20
+  if(!m) m=t.match(/^(\d{4})\/(\d{1,2})\/(\d{1,2})$/);                  // 2026/09/20
+  if(m){ return _lnMk(m[1],m[2],m[3]); }
+  m=t.match(/^(\d{1,2})[\/\-.](\d{1,2})[\/\-.](\d{2}|\d{4})$/);         // 09/20/2026 · 9-20-26
+  if(m){ let y=m[3]; if(y.length===2) y=String(2000+Number(y)); return _lnMk(y,m[1],m[2]); }
+  m=t.match(/^(\d{4})(\d{2})(\d{2})$/);                                  // 20260920
+  if(m) return _lnMk(m[1],m[2],m[3]);
+  return undefined;                                                      // 못 읽음
+}
+function _lnMk(y,mo,d){
+  const Y=Number(y), M=Number(mo), D=Number(d);
+  if(!(Y>=1900&&Y<=2199) || !(M>=1&&M<=12) || !(D>=1&&D<=31)) return undefined;
+  const dt=new Date(Y,M-1,D);
+  if(dt.getFullYear()!==Y || dt.getMonth()!==M-1 || dt.getDate()!==D) return undefined;
+  return Y+'-'+String(M).padStart(2,'0')+'-'+String(D).padStart(2,'0');
+}
 /* 이자율은 글로 적을 수 있다 — "5.5%" 도 되고 "3M TERM SOFR +2.1%" 도 된다.
    숫자만 적힌 줄은 rate 에도 넣어 가중평균에 쓴다. */
 function _lnRateTxt(r){
@@ -14935,7 +14960,8 @@ function loanRender(){
         <option value=""${String(r.lender||'')===''?' selected':''}>— Unassigned</option>
         ${books.filter(b=>b).map(b=>`<option value="${esc(b)}"${String(r.lender||'')===b?' selected':''}>${esc(b)}</option>`).join('')}
       </select></td>`:''}
-    <td style="padding:2px 6px;border-top:1px solid #eef2f7;"><input type="date" value="${esc(String(r.loan_date||'').slice(0,10))}" onchange="loanSet(${r.id},'loan_date',this.value)" style="${CELL}"></td>
+    <td style="padding:2px 6px;border-top:1px solid #eef2f7;"><input value="${esc(_lnFmtDate(r.loan_date))}" placeholder="09/20/2026"
+        title="Type it however you like — 09/20/2026, 9/20/26, 2026-09-20" onchange="loanSet(${r.id},'loan_date',this.value)" style="${CELL}"></td>
     <td style="padding:2px 6px;border-top:1px solid #eef2f7;">${money(r.id,'usd',r.usd,_lnUSD(r.usd),'font-weight:800;color:#0f2a4a;')}</td>
     <td style="padding:2px 6px;border-top:1px solid #eef2f7;">${money(r.id,'fx',r.fx,_lnFX(r.fx),'color:#475569;')}</td>
     <td style="padding:2px 6px;border-top:1px solid #eef2f7;">${money(r.id,'krw',r.krw,_lnKRW(r.krw),'font-weight:700;color:#6b21a8;')}</td>
@@ -14943,7 +14969,8 @@ function loanRender(){
         title="Type a plain rate (5.5%) or a formula (3M TERM SOFR +2.1%). Plain rates are the ones counted in the average."
         onchange="loanSet(${r.id},'rate_txt',this.value)" style="${CELL}font-family:inherit;font-weight:700;color:#166534;text-align:left;"></td>
     <td style="padding:2px 6px;border-top:1px solid #eef2f7;white-space:nowrap;">
-      <input type="date" value="${esc(String(r.due_date||'').slice(0,10))}" onchange="loanSet(${r.id},'due_date',this.value)" style="${CELL}width:130px;display:inline-block;">
+      <input value="${esc(_lnFmtDate(r.due_date))}" placeholder="09/20/2026"
+        title="Type it however you like — 09/20/2026, 9/20/26, 2026-09-20" onchange="loanSet(${r.id},'due_date',this.value)" style="${CELL}width:118px;display:inline-block;">
       ${_lnDue(r.due_date)}</td>
     <td style="padding:2px 6px;border-top:1px solid #eef2f7;"><input value="${esc(r.note||'')}" placeholder="—" onchange="loanSet(${r.id},'note',this.value)" style="${CELL}font-family:inherit;color:#475569;text-align:left;"></td>
     <td style="padding:2px 6px;border-top:1px solid #eef2f7;text-align:center;"><button onclick="loanDel(${r.id})" title="Delete this line" style="border:1px solid #fecaca;background:#fef2f2;color:#b91c1c;border-radius:6px;padding:3px 8px;font-size:11px;font-weight:800;cursor:pointer;">✕</button></td>
@@ -15010,7 +15037,9 @@ async function loanSet(id, field, val){
       if(u && f){ const k=Math.round(u*f); body.krw=k; row.krw=k; }
     }
   } else if(field==='loan_date' || field==='due_date'){
-    body[field] = String(val).trim() || null; row[field]=body[field];
+    const d=_lnParseDate(val);
+    if(d===undefined){ showToast('⚠ Date not understood — try 09/20/2026'); loanRender(); return; }
+    body[field]=d; row[field]=d;
   } else if(field==='lender'){
     body.lender = String(val).trim() || null; row.lender=body.lender;
   } else if(field==='rate_txt'){
