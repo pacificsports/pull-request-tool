@@ -167,7 +167,7 @@ body.narrow main{max-width:1100px;}
   </span>
   <select id="lang-sel" onchange="setLang(this.value)" style="font-size:11px;padding:3px 6px;border-radius:5px;border:none;background:#1d3f66;color:#fff;"><option value="ko">한국어</option><option value="en">English</option><option value="es">Español</option></select>
   <button id="wide-btn" class="btn btn-sm" onclick="toggleWide()" title="화면 넓게 / 좁게 — 기본은 넓게 (이 브라우저에만 저장돼)" style="padding:2px 8px;font-size:10px;background:#1d3f66;color:#cfe0f2;border-color:#2b5384;">↔ Wide</button>
-  <span id="app-ver" style="font-size:10px;color:#9fb8d4;">v912</span>
+  <span id="app-ver" style="font-size:10px;color:#9fb8d4;">v913</span>
 </div>
 <script>
 // ↔ 넓게 보기 — 브라우저마다 따로 저장 (v793)
@@ -17172,78 +17172,135 @@ async function bxInsert(rows){
    오더가 있어야만 뽑을 수 있으면 불편하다 — QR 없는 옛날 박스는 재고에 그냥 쌓여 있고,
    시간 날 때 한 번에 붙이는 게 맞다. 사이즈와 장수를 골라 바로 뽑는다. */
 let _bxQrStyle = '';
+let _bxQrColor = '';
+let _bxQrSizes = [];
+let _bxQrSeq   = 0;
+/* v913: 한 사이즈 뽑고 창이 닫혀서 또 열어야 했다 —
+   줄을 여러 개 쌓아 한 번에 뽑고, Print 를 눌러도 창은 열어둔다. 닫는 건 ✕ 뿐. */
+function bxQrRowHtml(){
+  const i = ++_bxQrSeq;
+  const IN = 'class="fi" style="width:100%;font-size:12.5px;padding:5px;text-align:center;font-weight:800;"';
+  return '<tr data-qr="' + i + '">'
+    + '<td style="padding:3px 4px;"><select id="bxqr-size-' + i + '" class="fi" style="width:100%;font-size:12.5px;padding:5px;" onchange="bxQrPpbPaint(' + i + ')">'
+    +   _bxQrSizes.map(z=>'<option value="' + esc(z) + '">' + esc(z) + '</option>').join('') + '</select></td>'
+    + '<td style="padding:3px 4px;width:86px;"><input id="bxqr-n-' + i + '" type="number" min="1" max="200" value="1" ' + IN + ' oninput="bxQrSum()"></td>'
+    + '<td style="padding:3px 4px;width:92px;"><input id="bxqr-ppb-' + i + '" type="number" min="1" max="999" ' + IN + '></td>'
+    + '<td style="padding:3px 2px;width:34px;text-align:center;">'
+    +   '<button onclick="bxQrDelRow(' + i + ')" title="Remove this line" style="border:1px solid #fecaca;background:#fef2f2;color:#b91c1c;border-radius:5px;padding:3px 7px;font-size:11px;font-weight:800;cursor:pointer;">✕</button></td>'
+    + '</tr>';
+}
+function bxQrAddRow(){
+  const tb = document.getElementById('bxqr-rows'); if(!tb) return;
+  tb.insertAdjacentHTML('beforeend', bxQrRowHtml());
+  bxQrPpbPaint(_bxQrSeq);
+}
+function bxQrDelRow(i){
+  const tb = document.getElementById('bxqr-rows'); if(!tb) return;
+  if(tb.querySelectorAll('tr[data-qr]').length <= 1){ bxQrSum(); return; }   /* 마지막 한 줄은 남긴다 */
+  const tr = tb.querySelector('tr[data-qr="' + i + '"]'); if(tr) tr.remove();
+  bxQrSum();
+}
+function bxQrPpbPaint(i){
+  const sz = (document.getElementById('bxqr-size-' + i)||{}).value || '';
+  const el = document.getElementById('bxqr-ppb-' + i); if(!el) return;
+  let n = 0;
+  try{ n = autoPpb({ style:_bxQrStyle, size:sz }) || 0; }catch(e){}
+  el.value = n || 72;
+  bxQrSum();
+}
+function bxQrJobs(){
+  const out = [];
+  document.querySelectorAll('#bxqr-rows tr[data-qr]').forEach(tr=>{
+    const i   = tr.getAttribute('data-qr');
+    const sz  = String((document.getElementById('bxqr-size-' + i)||{}).value || '').trim();
+    let   n   = parseInt((document.getElementById('bxqr-n-' + i)||{}).value, 10) || 0;
+    const ppb = parseInt((document.getElementById('bxqr-ppb-' + i)||{}).value, 10) || 0;
+    if(!sz) return;
+    if(n < 1) n = 1; if(n > 200) n = 200;
+    out.push({ sz:sz, n:n, ppb:ppb });
+  });
+  return out;
+}
+function bxQrSum(){
+  const el = document.getElementById('bxqr-sum'); if(!el) return;
+  const j = bxQrJobs();
+  const t = j.reduce((a,x)=>a+x.n, 0);
+  el.textContent = j.length ? (t + ' sticker' + (t===1?'':'s') + ' · ' + j.length + ' line' + (j.length===1?'':'s')) : '';
+}
 async function bxQrOpen(style, color){
   _bxQrStyle = style;
+  _bxQrColor = String(color);
   const sizes = (typeof pcSizesFor==='function' ? (pcSizesFor(style)||[]) : []);
-  const list = sizes.length ? sizes : ['S','M','L','XL','2XL','3XL'];
+  _bxQrSizes = sizes.length ? sizes : ['S','M','L','XL','2XL','3XL'];
+  _bxQrSeq = 0;
   const ex = document.getElementById('modal-bxqr'); if(ex) ex.remove();
   const m = document.createElement('div');
   m.id = 'modal-bxqr';
   m.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,.5);z-index:999999;display:flex;align-items:center;justify-content:center;';
-  m.innerHTML = '<div style="background:#fff;border-radius:12px;width:400px;max-width:94vw;overflow:hidden;box-shadow:0 20px 60px rgba(0,0,0,.3);">'
-    + '<div style="background:#4c1d95;padding:13px 18px;display:flex;align-items:center;gap:10px;">'
-    +   '<span style="color:#fff;font-weight:800;font-size:14px;">\u2B1B Full Box QR stickers</span>'
-    +   '<button onclick="document.getElementById(\'modal-bxqr\').remove()" style="margin-left:auto;background:none;border:none;color:#fff;font-size:18px;cursor:pointer;">\u2715</button></div>'
-    + '<div style="padding:14px 18px;">'
-    +   '<div style="font-size:13px;font-weight:800;color:#0f2a4a;margin-bottom:2px;">' + esc(style) + ' \u00B7 ' + esc(String(color).toUpperCase()) + '</div>'
-    +   '<div style="font-size:11px;color:#64748b;line-height:1.5;margin-bottom:12px;">For older cartons with no QR. The sticker carries the same code as a factory carton \u2014 no customer, no PO#.</div>'
-    +   '<div style="display:flex;gap:10px;align-items:flex-end;flex-wrap:wrap;">'
-    +     '<label style="flex:1;min-width:110px;"><div style="font-size:10.5px;font-weight:800;color:#475569;margin-bottom:3px;">SIZE</div>'
-    +       '<select id="bxqr-size" class="fi" style="width:100%;font-size:13px;padding:6px;" onchange="bxQrPpbPaint()">'
-    +       list.map(z=>'<option value="' + esc(z) + '">' + esc(z) + '</option>').join('') + '</select></label>'
-    +     '<label style="width:88px;"><div style="font-size:10.5px;font-weight:800;color:#475569;margin-bottom:3px;">STICKERS</div>'
-    +       '<input id="bxqr-n" type="number" min="1" max="200" value="1" class="fi" style="width:100%;font-size:13px;padding:6px;text-align:center;font-weight:800;"></label>'
-    +     '<label style="width:96px;"><div style="font-size:10.5px;font-weight:800;color:#475569;margin-bottom:3px;">PCS / BOX</div>'
-    +       '<input id="bxqr-ppb" type="number" min="1" max="999" class="fi" style="width:100%;font-size:13px;padding:6px;text-align:center;font-weight:800;"></label>'
-    +   '</div>'
-    +   '<div style="margin-top:12px;font-size:11px;display:flex;align-items:center;gap:6px;flex-wrap:wrap;">\uD83D\uDDA8 <b>Printer</b>'
-    +     '<select id="bl-printer" class="fi" style="font-size:11.5px;flex:1;padding:3px 6px;" onchange="try{localStorage.setItem(blPrinterKey(), this.value)}catch(e){}; blDpiSync().then(blDpiPaint)"><option value="">Loading printers\u2026</option></select></div>'
+  const TH = 'font-size:10.5px;font-weight:800;color:#475569;text-align:center;padding:0 4px 4px;';
+  m.innerHTML = '<div style="background:#fff;border-radius:12px;width:470px;max-width:94vw;max-height:90vh;display:flex;flex-direction:column;overflow:hidden;box-shadow:0 20px 60px rgba(0,0,0,.3);">'
+    + '<div style="background:#4c1d95;padding:13px 18px;display:flex;align-items:center;gap:10px;flex:none;">'
+    +   '<span style="color:#fff;font-weight:800;font-size:14px;">⬛ Full Box QR stickers</span>'
+    +   '<button onclick="document.getElementById(\'modal-bxqr\').remove()" style="margin-left:auto;background:none;border:none;color:#fff;font-size:18px;cursor:pointer;">✕</button></div>'
+    + '<div style="padding:14px 18px;overflow-y:auto;">'
+    +   '<div style="font-size:13px;font-weight:800;color:#0f2a4a;margin-bottom:2px;">' + esc(style) + ' · ' + esc(String(color).toUpperCase()) + '</div>'
+    +   '<div style="font-size:11px;color:#64748b;line-height:1.5;margin-bottom:10px;">For older cartons with no QR. The sticker carries the same code as a factory carton — no customer, no PO#.</div>'
+    +   '<table style="width:100%;border-collapse:collapse;">'
+    +     '<thead><tr><th style="' + TH + 'text-align:left;">SIZE</th><th style="' + TH + '">STICKERS</th><th style="' + TH + '">PCS / BOX</th><th></th></tr></thead>'
+    +     '<tbody id="bxqr-rows"></tbody></table>'
+    +   '<div style="display:flex;align-items:center;gap:10px;margin-top:8px;">'
+    +     '<button class="btn btn-sm" onclick="bxQrAddRow()">＋ Add size</button>'
+    +     '<span id="bxqr-sum" style="font-size:11px;color:#6d28d9;font-weight:800;"></span></div>'
+    +   '<div style="margin-top:12px;font-size:11px;display:flex;align-items:center;gap:6px;flex-wrap:wrap;">🖨 <b>Printer</b>'
+    +     '<select id="bl-printer" class="fi" style="font-size:11.5px;flex:1;padding:3px 6px;" onchange="try{localStorage.setItem(blPrinterKey(), this.value)}catch(e){}; blDpiSync().then(blDpiPaint)"><option value="">Loading printers…</option></select></div>'
     +   '<div style="margin-top:8px;font-size:10.5px;color:#6d28d9;font-weight:800;display:flex;align-items:center;gap:8px;flex-wrap:wrap;">'
-    +     '<span id="bxqr-next">\u267E numbers never run out</span>'
-    +     '<span style="color:#94a3b8;font-weight:600;">\u26A0 Load 2\" x 2\" label stock</span></div>'
+    +     '<span id="bxqr-next">♾ numbers never run out</span>'
+    +     '<span style="color:#94a3b8;font-weight:600;">⚠ Load 2\" x 2\" label stock</span></div>'
+    +   '<div id="bxqr-done" style="display:none;margin-top:10px;padding-top:9px;border-top:1px dashed #e5e7eb;font-size:11px;color:#166534;font-weight:700;"></div>'
     + '</div>'
-    + '<div style="padding:12px 16px;border-top:1px solid #e5e7eb;display:flex;justify-content:flex-end;gap:8px;">'
-    +   '<button class="btn btn-sm" onclick="document.getElementById(\'modal-bxqr\').remove()">Cancel</button>'
-    +   '<button id="bxqr-go" onclick="bxQrPrint(\'' + esc(style) + '\',\'' + esc(String(color)) + '\')" style="padding:7px 16px;background:#6d28d9;color:#fff;border:none;border-radius:6px;font-weight:800;cursor:pointer;">\u2B1B Print</button>'
+    + '<div style="padding:12px 16px;border-top:1px solid #e5e7eb;display:flex;align-items:center;gap:8px;flex:none;">'
+    +   '<span style="font-size:10.5px;color:#94a3b8;">Stays open — close with ✕</span>'
+    +   '<button class="btn btn-sm" style="margin-left:auto;" onclick="document.getElementById(\'modal-bxqr\').remove()">Close</button>'
+    +   '<button id="bxqr-go" onclick="bxQrPrint()" style="padding:7px 16px;background:#6d28d9;color:#fff;border:none;border-radius:6px;font-weight:800;cursor:pointer;">⬛ Print</button>'
     + '</div></div>';
   document.body.appendChild(m);
   /* v843: Full Box · Customer+PO# · QR 스티커가 전부 2×2 라 프린터도 같이 쓴다 —
      한 작업 안에서 섞여 나가도 라벨지를 갈아끼울 일이 없다. */
   window._blMode = 'full';
   try{ blFillPrinterSel(); }catch(e){}
-  bxQrPpbPaint();
+  bxQrAddRow();
   const el = document.getElementById('bxqr-next');
-  if(el) el.textContent = '\u267E ' + ctnDate() + '-\u2026  (numbers never run out)';
+  if(el) el.textContent = '♾ ' + ctnDate() + '-…  (numbers never run out)';
 }
-function bxQrPpbPaint(){
-  const sz = (document.getElementById('bxqr-size')||{}).value || '';
-  const el = document.getElementById('bxqr-ppb'); if(!el) return;
-  let n = 0;
-  try{ n = autoPpb({ style:_bxQrStyle, size:sz }) || 0; }catch(e){}
-  el.value = n || 72;
-}
-async function bxQrPrint(style, color){
-  const sz = String((document.getElementById('bxqr-size')||{}).value || '').trim();
-  let n  = parseInt((document.getElementById('bxqr-n')||{}).value, 10) || 0;
-  const ppb = parseInt((document.getElementById('bxqr-ppb')||{}).value, 10) || 0;
-  if(n < 1) n = 1; if(n > 200) n = 200;
-  if(!sz){ showToast('⚠ Pick a size'); return; }
-  if(ppb < 1){ showToast('⚠ Enter pcs per box'); return; }
+async function bxQrPrint(){
+  const jobs = bxQrJobs();
+  if(!jobs.length){ showToast('⚠ Pick a size'); return; }
+  const bad = jobs.find(j=>j.ppb < 1);
+  if(bad){ showToast('⚠ ' + bad.sz + ' — enter pcs per box'); return; }
   await blDpiSync();                  // (v850)
   const go = document.getElementById('bxqr-go');
   if(go){ go.disabled = true; go.textContent = 'Printing…'; }
   /* v842: 서버에서 번호를 받아오지 않는다. 번호를 여기서 만들고, 겹치지 않는 건
      날짜+랜덤이 보장한다 — 인터넷이 끊겨도 스티커가 나온다. */
-  const parts = [], made = [];
-  for(let i=0;i<n;i++){
-    const ctn = ctnNew(); made.push(ctn);
-    parts.push(buildBoxQr2x2Zpl({ styleNum:style, color:color, size:sz, qty:ppb }, ctn));
+  const parts = []; let total = 0;
+  jobs.forEach(j=>{
+    for(let k=0;k<j.n;k++){
+      parts.push(buildBoxQr2x2Zpl({ styleNum:_bxQrStyle, color:_bxQrColor, size:j.sz, qty:j.ppb }, ctnNew()));
+      total++;
+    }
+  });
+  const ok = await sendToZebraBrowserPrint(parts.filter(Boolean).join('\n'), total);
+  if(go){ go.disabled = false; go.textContent = '⬛ Print'; }
+  if(!ok) return;
+  const line = jobs.map(j=>j.sz + '×' + j.n).join(', ');
+  showToast('⬛ ' + total + ' QR sticker(s) — ' + line);
+  /* 창을 닫지 않으니 뭘 뽑았는지는 여기 남긴다 */
+  const done = document.getElementById('bxqr-done');
+  if(done){
+    done.style.display = '';
+    done.insertAdjacentHTML('afterbegin',
+      '<div style="padding:2px 0;">✓ ' + esc(new Date().toTimeString().slice(0,5)) + '  ' + esc(line) + '  (' + total + ')</div>');
   }
-  const ok = await sendToZebraBrowserPrint(parts.filter(Boolean).join('\n'), n);
-  if(ok){
-    showToast('⬛ ' + n + ' QR sticker(s) — ' + made[0] + (n>1 ? (' … +' + (n-1)) : ''));
-    const m = document.getElementById('modal-bxqr'); if(m) m.remove();
-  } else if(go){ go.disabled = false; go.textContent = '⬛ Print'; }
 }
 function bxAddBoxes(pre){
   window._bxAddLoc = (pre&&pre.loc) ? String(pre.loc) : '';   // ⏳ sticky location for new rows
