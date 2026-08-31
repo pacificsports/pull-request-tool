@@ -167,7 +167,7 @@ body.narrow main{max-width:1100px;}
   </span>
   <select id="lang-sel" onchange="setLang(this.value)" style="font-size:11px;padding:3px 6px;border-radius:5px;border:none;background:#1d3f66;color:#fff;"><option value="ko">한국어</option><option value="en">English</option><option value="es">Español</option></select>
   <button id="wide-btn" class="btn btn-sm" onclick="toggleWide()" title="화면 넓게 / 좁게 — 기본은 넓게 (이 브라우저에만 저장돼)" style="padding:2px 8px;font-size:10px;background:#1d3f66;color:#cfe0f2;border-color:#2b5384;">↔ Wide</button>
-  <span id="app-ver" style="font-size:10px;color:#9fb8d4;">v901</span>
+  <span id="app-ver" style="font-size:10px;color:#9fb8d4;">v902</span>
 </div>
 <script>
 // ↔ 넓게 보기 — 브라우저마다 따로 저장 (v793)
@@ -14827,23 +14827,27 @@ function loanNavSync(){
   const b=document.getElementById('nav-loan'); if(b) b.style.display = loanAllowed() ? '' : 'none';
   if(!loanAllowed()){ const v=document.getElementById('loan-view'); if(v) v.style.display='none'; }
 }
-const _lnUSD = n => '$'+(Math.round((Number(n)||0)*100)/100).toLocaleString('en-US',{minimumFractionDigits:2,maximumFractionDigits:2});
-const _lnKRW = n => '₩'+Math.round(Number(n)||0).toLocaleString('en-US');
-const _lnFX  = n => (Number(n)||0) ? (Math.round((Number(n))*10000)/10000).toLocaleString('en-US',{minimumFractionDigits:2,maximumFractionDigits:4}) : '';
-
-async function loanLoad(){
-  if(!loanAllowed()){ const el=document.getElementById('loan-body'); if(el) el.innerHTML='<div class="muted" style="padding:20px;">Not available on this account.</div>'; return; }
-  const el=document.getElementById('loan-body'); if(el && !_loanRows.length) el.innerHTML='<div class="muted" style="padding:20px;">Loading…</div>';
-  try{
-    const r=await sbFetch(LOAN_URL+'?select=*&order=loan_date.asc,id.asc&limit=500');
-    if(!r.ok) throw new Error('HTTP '+r.status);
-    const rows=await r.json();
-    _loanRows=Array.isArray(rows)?rows:[];
-  }catch(e){
-    if(el) el.innerHTML='<div style="padding:20px;color:#b91c1c;font-size:12.5px;">Could not load — is the pr_loans table set up? ('+esc(e.message||e)+')</div>';
-    return;
-  }
-  loanRender();
+/* 숫자 보기 좋게 — 정수면 소수점 없이, 아니면 필요한 자리까지만 */
+function _lnNum(n, maxDec){
+  const v=Number(n); if(!isFinite(v)) return '';
+  const d=(Math.round(v)===v)?0:(maxDec==null?2:maxDec);
+  return v.toLocaleString('en-US',{minimumFractionDigits:0, maximumFractionDigits:d});
+}
+const _lnUSD = n => (n==null||n==='') ? '' : '$'+_lnNum(n,2);
+const _lnKRW = n => (n==null||n==='') ? '' : '₩'+Math.round(Number(n)||0).toLocaleString('en-US');
+const _lnFX  = n => (n==null||n==='') ? '' : _lnNum(n,4);
+const _lnPCT = n => (n==null||n==='') ? '' : _lnNum(n,4)+'%';
+const _lnDate = d => { const s=String(d||'').slice(0,10); if(!/^\d{4}-\d{2}-\d{2}$/.test(s)) return ''; const p=s.split('-'); return p[1]+'/'+p[2]+'/'+p[0]; };
+/* 상환일까지 남은 날 — 지났으면 빨강 */
+function _lnDue(d){
+  const s=String(d||'').slice(0,10); if(!/^\d{4}-\d{2}-\d{2}$/.test(s)) return '';
+  const t=new Date(); const today=new Date(t.getFullYear(),t.getMonth(),t.getDate());
+  const p=s.split('-').map(Number); const due=new Date(p[0],p[1]-1,p[2]);
+  const n=Math.round((due-today)/86400000);
+  if(n<0)   return `<span style="font-size:10px;font-weight:800;color:#b91c1c;background:#fef2f2;border:1px solid #fecaca;border-radius:5px;padding:0 5px;white-space:nowrap;">${-n}d over</span>`;
+  if(n===0) return `<span style="font-size:10px;font-weight:800;color:#b45309;background:#fff7ed;border:1px solid #fed7aa;border-radius:5px;padding:0 5px;white-space:nowrap;">today</span>`;
+  if(n<=30) return `<span style="font-size:10px;font-weight:800;color:#b45309;background:#fff7ed;border:1px solid #fed7aa;border-radius:5px;padding:0 5px;white-space:nowrap;">D-${n}</span>`;
+  return `<span style="font-size:10px;font-weight:700;color:#94a3b8;white-space:nowrap;">D-${n}</span>`;
 }
 
 function loanRender(){
@@ -14851,41 +14855,59 @@ function loanRender(){
   const tUsd=_loanRows.reduce((a,r)=>a+(Number(r.usd)||0),0);
   const tKrw=_loanRows.reduce((a,r)=>a+(Number(r.krw)||0),0);
   const avg = tUsd ? (tKrw/tUsd) : 0;
-  const IN='width:100%;box-sizing:border-box;font-family:Consolas,monospace;font-size:12.5px;padding:6px 8px;border:1px solid transparent;border-radius:6px;background:transparent;';
-  const INn=IN+'text-align:right;';
+  /* 가중평균 이자율 — 금액이 큰 건에 더 무게 */
+  const rBase=_loanRows.filter(r=>r.rate!=null && Number(r.usd)>0);
+  const rSum=rBase.reduce((a,r)=>a+Number(r.usd),0);
+  const avgR = rSum ? rBase.reduce((a,r)=>a+Number(r.usd)*Number(r.rate),0)/rSum : null;
+
+  const CELL='width:100%;box-sizing:border-box;font-family:Consolas,monospace;font-size:12.5px;padding:6px 8px;border:1px solid transparent;border-radius:6px;background:transparent;';
+  const R=CELL+'text-align:right;';
+  /* 평소엔 $ · , 를 붙여 보여주고, 칸을 누르면 숫자만 나오게 바꾼다 */
+  const money=(id,field,raw,fmt,extra)=>`<input type="text" inputmode="decimal" value="${esc(fmt)}" data-raw="${esc(raw==null?'':String(raw))}" data-fmt="${esc(fmt)}"
+      onfocus="this.value=this.dataset.raw;this.select();" onchange="this._ch=1;loanSet(${id},'${field}',this.value)"
+      onblur="if(!this._ch)this.value=this.dataset.fmt;this._ch=0;" style="${R}${extra||''}">`;
+
   const rows=_loanRows.map(r=>`<tr>
-    <td style="padding:2px 6px;border-top:1px solid #eef2f7;"><input type="date" value="${esc(r.loan_date||'')}" onchange="loanSet(${r.id},'loan_date',this.value)" style="${IN}"></td>
-    <td style="padding:2px 6px;border-top:1px solid #eef2f7;"><input type="number" step="0.01" value="${Number(r.usd)||0}" onchange="loanSet(${r.id},'usd',this.value)" style="${INn}font-weight:800;color:#0f2a4a;"></td>
-    <td style="padding:2px 6px;border-top:1px solid #eef2f7;"><input type="number" step="0.0001" value="${r.fx==null?'':Number(r.fx)}" onchange="loanSet(${r.id},'fx',this.value)" style="${INn}"></td>
-    <td style="padding:2px 6px;border-top:1px solid #eef2f7;"><input type="number" step="1" value="${r.krw==null?'':Number(r.krw)}" onchange="loanSet(${r.id},'krw',this.value)" style="${INn}font-weight:700;color:#6b21a8;"></td>
-    <td style="padding:2px 6px;border-top:1px solid #eef2f7;"><input value="${esc(r.note||'')}" placeholder="—" onchange="loanSet(${r.id},'note',this.value)" style="${IN}font-family:inherit;color:#475569;"></td>
+    <td style="padding:2px 6px;border-top:1px solid #eef2f7;"><input type="date" value="${esc(String(r.loan_date||'').slice(0,10))}" onchange="loanSet(${r.id},'loan_date',this.value)" style="${CELL}"></td>
+    <td style="padding:2px 6px;border-top:1px solid #eef2f7;">${money(r.id,'usd',r.usd,_lnUSD(r.usd),'font-weight:800;color:#0f2a4a;')}</td>
+    <td style="padding:2px 6px;border-top:1px solid #eef2f7;">${money(r.id,'fx',r.fx,_lnFX(r.fx),'color:#475569;')}</td>
+    <td style="padding:2px 6px;border-top:1px solid #eef2f7;">${money(r.id,'krw',r.krw,_lnKRW(r.krw),'font-weight:700;color:#6b21a8;')}</td>
+    <td style="padding:2px 6px;border-top:1px solid #eef2f7;">${money(r.id,'rate',r.rate,_lnPCT(r.rate),'font-weight:700;color:#166534;')}</td>
+    <td style="padding:2px 6px;border-top:1px solid #eef2f7;white-space:nowrap;">
+      <input type="date" value="${esc(String(r.due_date||'').slice(0,10))}" onchange="loanSet(${r.id},'due_date',this.value)" style="${CELL}width:132px;display:inline-block;">
+      ${_lnDue(r.due_date)}</td>
+    <td style="padding:2px 6px;border-top:1px solid #eef2f7;"><input value="${esc(r.note||'')}" placeholder="—" onchange="loanSet(${r.id},'note',this.value)" style="${CELL}font-family:inherit;color:#475569;text-align:left;"></td>
     <td style="padding:2px 6px;border-top:1px solid #eef2f7;text-align:center;"><button onclick="loanDel(${r.id})" title="Delete this line" style="border:1px solid #fecaca;background:#fef2f2;color:#b91c1c;border-radius:6px;padding:3px 8px;font-size:11px;font-weight:800;cursor:pointer;">✕</button></td>
   </tr>`).join('');
 
-  el.innerHTML=`<div style="background:#fff;border:1px solid #e2e8f0;border-radius:12px;overflow:hidden;">
-    <table style="width:100%;border-collapse:collapse;font-size:12.5px;">
+  const TH='padding:8px 9px;font-size:10.5px;letter-spacing:.3px;color:#475569;';
+  el.innerHTML=`<div style="background:#fff;border:1px solid #e2e8f0;border-radius:12px;overflow:auto;">
+    <table style="width:100%;border-collapse:collapse;font-size:12.5px;min-width:940px;">
       <thead><tr style="background:#f1f5f9;">
-        <th style="padding:8px 9px;text-align:left;font-size:10.5px;letter-spacing:.3px;color:#475569;width:150px;">단기대여일 · DATE</th>
-        <th style="padding:8px 9px;text-align:right;font-size:10.5px;letter-spacing:.3px;color:#475569;width:150px;">금액 · USD</th>
-        <th style="padding:8px 9px;text-align:right;font-size:10.5px;letter-spacing:.3px;color:#475569;width:120px;">환율 · FX</th>
-        <th style="padding:8px 9px;text-align:right;font-size:10.5px;letter-spacing:.3px;color:#475569;width:180px;">원화금액 · KRW</th>
-        <th style="padding:8px 9px;text-align:left;font-size:10.5px;letter-spacing:.3px;color:#475569;">메모 · NOTE</th>
+        <th style="${TH}text-align:left;width:150px;">단기대여일 · DATE</th>
+        <th style="${TH}text-align:right;width:140px;">금액 · USD</th>
+        <th style="${TH}text-align:right;width:110px;">환율 · FX</th>
+        <th style="${TH}text-align:right;width:170px;">원화금액 · KRW</th>
+        <th style="${TH}text-align:right;width:100px;">이자율 · RATE</th>
+        <th style="${TH}text-align:left;width:200px;">상환일 · DUE</th>
+        <th style="${TH}text-align:left;">메모 · NOTE</th>
         <th style="width:48px;"></th>
       </tr></thead>
-      <tbody>${rows || '<tr><td colspan="6" style="padding:24px;text-align:center;color:#94a3b8;font-size:12.5px;">No lines yet — press ＋ Add line.</td></tr>'}</tbody>
+      <tbody>${rows || '<tr><td colspan="8" style="padding:24px;text-align:center;color:#94a3b8;font-size:12.5px;">No lines yet — press ＋ Add line.</td></tr>'}</tbody>
       <tfoot><tr style="background:#0f2a4a;color:#fff;">
         <td style="padding:10px 11px;font-weight:800;font-size:12.5px;">합 계 · TOTAL <span style="opacity:.7;font-weight:500;">(${_loanRows.length})</span></td>
         <td style="padding:10px 11px;text-align:right;font-family:Consolas,monospace;font-weight:900;font-size:14px;">${_lnUSD(tUsd)}</td>
-        <td style="padding:10px 11px;text-align:right;font-family:Consolas,monospace;font-size:11.5px;opacity:.75;" title="Weighted average rate">${avg?('~'+_lnFX(avg)):''}</td>
+        <td style="padding:10px 11px;text-align:right;font-family:Consolas,monospace;font-size:11.5px;opacity:.75;" title="Weighted average rate">${avg?('~'+_lnFX(Math.round(avg*100)/100)):''}</td>
         <td style="padding:10px 11px;text-align:right;font-family:Consolas,monospace;font-weight:900;font-size:14px;">${_lnKRW(tKrw)}</td>
-        <td colspan="2"></td>
+        <td style="padding:10px 11px;text-align:right;font-family:Consolas,monospace;font-size:11.5px;opacity:.85;" title="Weighted average interest rate">${avgR!=null?('~'+_lnPCT(Math.round(avgR*10000)/10000)):''}</td>
+        <td colspan="3"></td>
       </tr></tfoot>
     </table>
     <div style="display:flex;align-items:center;gap:9px;padding:11px 13px;background:#f8fafc;border-top:1px solid #e2e8f0;">
-      <button onclick="loanAdd()" style="background:#16a34a;color:#fff;border:none;border-radius:9px;padding:9px 18px;font-size:13px;font-weight:800;cursor:pointer;">＋ Add line</button>
-      <span style="flex:1;min-width:0;font-size:11px;color:#64748b;">Type in any cell and it saves. USD × FX fills KRW automatically — overwrite it if the bank figure differs.</span>
-      <button onclick="loanCsv()" style="background:#fff;border:1px solid #cbd5e1;color:#475569;border-radius:9px;padding:8px 14px;font-size:12.5px;font-weight:700;cursor:pointer;">⬇ CSV</button>
-      <button onclick="loanPrint()" style="background:#fff;border:1px solid #cbd5e1;color:#475569;border-radius:9px;padding:8px 14px;font-size:12.5px;font-weight:700;cursor:pointer;">🖨 Print</button>
+      <button onclick="loanAdd()" style="flex:none;background:#16a34a;color:#fff;border:none;border-radius:9px;padding:9px 18px;font-size:13px;font-weight:800;cursor:pointer;">＋ Add line</button>
+      <span style="flex:1;min-width:0;font-size:11px;color:#64748b;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">Click a cell to edit — it saves on its own. USD × FX fills KRW; overwrite it if the bank figure differs.</span>
+      <button onclick="loanCsv()" style="flex:none;background:#fff;border:1px solid #cbd5e1;color:#475569;border-radius:9px;padding:8px 14px;font-size:12.5px;font-weight:700;cursor:pointer;">⬇ CSV</button>
+      <button onclick="loanPrint()" style="flex:none;background:#fff;border:1px solid #cbd5e1;color:#475569;border-radius:9px;padding:8px 14px;font-size:12.5px;font-weight:700;cursor:pointer;">🖨 Print</button>
     </div>
   </div>`;
   const asof=document.getElementById('loan-asof');
@@ -14896,16 +14918,18 @@ function loanRender(){
 async function loanSet(id, field, val){
   const row=_loanRows.find(x=>x.id===id); if(!row) return;
   const body={};
-  if(field==='usd' || field==='fx' || field==='krw'){
-    const n = String(val).trim()==='' ? null : Number(val);
+  if(field==='usd' || field==='fx' || field==='krw' || field==='rate'){
+    /* $ , ₩ % 공백은 지우고 숫자만 본다 */
+    const raw=String(val).replace(/[$,₩%\s]/g,'').trim();
+    const n = raw==='' ? null : Number(raw);
     if(n!=null && !isFinite(n)){ showToast('⚠ Numbers only'); loanRender(); return; }
     body[field]=n; row[field]=n;
     if(field==='usd' || field==='fx'){
       const u=Number(row.usd)||0, f=Number(row.fx)||0;
       if(u && f){ const k=Math.round(u*f); body.krw=k; row.krw=k; }
     }
-  } else if(field==='loan_date'){
-    body.loan_date = String(val).trim() || null; row.loan_date=body.loan_date;
+  } else if(field==='loan_date' || field==='due_date'){
+    body[field] = String(val).trim() || null; row[field]=body[field];
   } else {
     body.note = String(val); row.note=body.note;
   }
@@ -14941,10 +14965,11 @@ async function loanDel(id){
 }
 
 function loanCsv(){
-  const head='Date,USD,FX,KRW,Note\n';
-  const body=_loanRows.map(r=>[r.loan_date||'', Number(r.usd)||0, r.fx==null?'':Number(r.fx), r.krw==null?'':Number(r.krw), '"'+String(r.note||'').replace(/"/g,'""')+'"'].join(',')).join('\n');
+  const head='Date,USD,FX,KRW,Rate%,Due,Note\n';
+  const body=_loanRows.map(r=>[String(r.loan_date||'').slice(0,10), Number(r.usd)||0, r.fx==null?'':Number(r.fx), r.krw==null?'':Number(r.krw),
+    r.rate==null?'':Number(r.rate), String(r.due_date||'').slice(0,10), '"'+String(r.note||'').replace(/"/g,'""')+'"'].join(',')).join('\n');
   const tU=_loanRows.reduce((a,r)=>a+(Number(r.usd)||0),0), tK=_loanRows.reduce((a,r)=>a+(Number(r.krw)||0),0);
-  const csv='﻿'+head+body+'\nTOTAL,'+tU+',,'+tK+',';
+  const csv='﻿'+head+body+'\nTOTAL,'+tU+',,'+tK+',,,';
   const a=document.createElement('a');
   a.href=URL.createObjectURL(new Blob([csv],{type:'text/csv;charset=utf-8'}));
   a.download='PEACE-loan-'+new Date().toISOString().slice(0,10)+'.csv';
@@ -14962,12 +14987,14 @@ function loanPrint(){
     +'td.n{text-align:right;font-family:Consolas,monospace;} tfoot td{background:#0f2a4a;color:#fff;font-weight:800;}'
     +'</style></head><body>'
     +'<h1>PEACE 단기대여금 현황</h1><div class="sub">['+new Date().toISOString().slice(0,10)+' 잔액기준]</div>'
-    +'<table><thead><tr><th>단기대여일</th><th>금액(US$)</th><th>환율</th><th>원화금액(₩)</th><th>메모</th></tr></thead><tbody>'
-    + _loanRows.map(r=>'<tr><td>'+esc(r.loan_date||'')+'</td><td class="n">'+(Number(r.usd)||0).toLocaleString('en-US')
+    +'<table><thead><tr><th>단기대여일</th><th>금액(US$)</th><th>환율</th><th>원화금액(₩)</th><th>이자율</th><th>상환일</th><th>메모</th></tr></thead><tbody>'
+    + _loanRows.map(r=>'<tr><td>'+esc(String(r.loan_date||'').slice(0,10))+'</td><td class="n">'+(Number(r.usd)||0).toLocaleString('en-US')
       +'</td><td class="n">'+(r.fx==null?'':Number(r.fx).toLocaleString('en-US'))
       +'</td><td class="n">'+(r.krw==null?'':Math.round(Number(r.krw)).toLocaleString('en-US'))
+      +'</td><td class="n">'+(r.rate==null?'':Number(r.rate)+'%')
+      +'</td><td>'+esc(String(r.due_date||'').slice(0,10))
       +'</td><td>'+esc(r.note||'')+'</td></tr>').join('')
-    +'</tbody><tfoot><tr><td>합 계</td><td class="n">'+tU.toLocaleString('en-US')+'</td><td></td><td class="n">'+tK.toLocaleString('en-US')+'</td><td></td></tr></tfoot></table>'
+    +'</tbody><tfoot><tr><td>합 계</td><td class="n">'+tU.toLocaleString('en-US')+'</td><td></td><td class="n">'+tK.toLocaleString('en-US')+'</td><td colspan="3"></td></tr></tfoot></table>'
     +'<script>window.onload=function(){window.print();};<\/script></body></html>');
   w.document.close();
 }
