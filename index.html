@@ -172,7 +172,7 @@ tr.pc-short>td:first-child{box-shadow:inset 3px 0 0 #dc2626;}
   </span>
   <select id="lang-sel" onchange="setLang(this.value)" style="font-size:11px;padding:3px 6px;border-radius:5px;border:none;background:#1d3f66;color:#fff;"><option value="ko">한국어</option><option value="en">English</option><option value="es">Español</option></select>
   <button id="wide-btn" class="btn btn-sm" onclick="toggleWide()" title="화면 넓게 / 좁게 — 기본은 넓게 (이 브라우저에만 저장돼)" style="padding:2px 8px;font-size:10px;background:#1d3f66;color:#cfe0f2;border-color:#2b5384;">↔ Wide</button>
-  <span id="app-ver" style="font-size:10px;color:#9fb8d4;">v915</span>
+  <span id="app-ver" style="font-size:10px;color:#9fb8d4;">v916</span>
 </div>
 <script>
 // ↔ 넓게 보기 — 브라우저마다 따로 저장 (v793)
@@ -6256,6 +6256,9 @@ async function sendBatchPLEmail(recs, wh, toEmail){
     })
   });
   if(!r.ok){ const e = await r.json().catch(()=>({})); throw new Error(e.error || e.message || ('HTTP '+r.status)); }
+  /* 묶음 발송도 개별 발송(sendPLEmailFor)과 똑같이 오더마다 기록을 남긴다.
+     안 남기면 History 에는 아무것도 안 보여서 "이멜 안 나갔다"로 오해된다. (v916) */
+  recs.forEach(rec=>{ try{ logHist(rec.base, 'Packing List emailed — ' + wh + ' (batch of ' + recs.length + ' POs, one email) → ' + toEmail); }catch(_){} });
 }
 async function unshipPL(){
   const rec = savedCache.find(s=>s.base===plBase); if(!rec) return;
@@ -27401,9 +27404,19 @@ async function batchPrintPRandPL(){
   showToast('🖨📦 '+prDocs.length+' pull request(s) [1st page] + '+plDocs.length+' packing list(s) sent to printer'+(fromLines?' · '+fromLines+' PL from order lines':''));
 }
 function openBatchShip(wh){
-  const bases = [...document.querySelectorAll('.bship-cb:checked')].filter(c=>c.dataset.wh===wh).map(c=>c.dataset.base)
-    .filter(b=>{ const r = savedCache.find(s=>s.base===b); return !(r && r.pl && r.pl[wh] && r.pl[wh].savedAt); });
-  if(!bases.length) return;
+  /* 체크는 했지만 "이미 Packing List 가 있는" 오더는 배치에서 빠진다.
+     예전엔 아무 말 없이 사라져서, 다 골랐는데 한 개만 나가는 일이 생겼다. 이제는 눈에 보이게 알려준다. (v916) */
+  const picked = [...document.querySelectorAll('.bship-cb:checked')].filter(c=>c.dataset.wh===wh).map(c=>c.dataset.base);
+  const skipped = picked.filter(b=>{ const r = savedCache.find(s=>s.base===b); return (r && r.pl && r.pl[wh] && r.pl[wh].savedAt); });
+  const bases = picked.filter(b=>skipped.indexOf(b) < 0);
+  if(!bases.length){
+    if(picked.length) alert('🚛 ' + wh + ' Batch Ship\n\nAll ' + picked.length + ' checked ' + wh + ' order(s) already have a Packing List, so there is nothing left to ship.\nUse 📦 Packing List on the order to reprint or resend.');
+    else alert('🚛 ' + wh + ' Batch Ship\n\nNo ' + wh + ' order is checked. Tick the checkbox on the ' + wh + ' line of each order (the ' + wh + ' line, not another warehouse).');
+    return;
+  }
+  const skipMsg = skipped.length
+    ? skipped.map(b=>{ const r = savedCache.find(s=>s.base===b)||{}; return ((r.meta&&r.meta.po)||b) + ' (' + (((r.pl||{})[wh]||{}).serial||'PL') + ')'; }).join(', ')
+    : '';
   window._bship = { wh, bases };
   const ex = document.getElementById('modal-batch-ship'); if(ex) ex.remove();
   const rows = bases.map((b,i)=>{
@@ -27421,7 +27434,8 @@ function openBatchShip(wh){
   div.id = 'modal-batch-ship';
   div.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,.55);z-index:120;display:flex;align-items:center;justify-content:center;';
   div.innerHTML = `<div style="background:#fff;border-radius:12px;width:640px;max-width:94vw;max-height:86vh;display:flex;flex-direction:column;box-shadow:0 20px 60px rgba(0,0,0,.35);">
-    <div style="background:${wh==='SC'?'#1d4ed8':'#c2410c'};color:#fff;border-radius:12px 12px 0 0;padding:12px 18px;font-weight:800;">🚛 ${wh} Batch Shipping — ${bases.length} order(s)</div>
+    <div style="background:${wh==='SC'?'#1d4ed8':'#c2410c'};color:#fff;border-radius:12px 12px 0 0;padding:12px 18px;font-weight:800;">🚛 ${wh} Batch Shipping — ${bases.length} order(s)<span style="font-weight:600;font-size:11px;opacity:.85;"> &nbsp;·&nbsp; ${picked.length} checked</span></div>
+    ${skipped.length ? `<div style="background:#fffbeb;border-bottom:1px solid #fde68a;color:#92400e;padding:8px 18px;font-size:11.5px;font-weight:700;">⚠ ${skipped.length} checked order(s) left out — they already have a ${wh} Packing List: ${esc(skipMsg)}</div>` : ''}
     <div style="padding:14px 18px 4px;display:grid;grid-template-columns:1fr 1.3fr 1fr;gap:10px;">
       <div class="ff"><label>Via (shared)</label><div style="display:flex;gap:8px;align-items:center;min-height:34px;flex-wrap:wrap;">
         ${['UPS','FEDEX','LTL'].map(v=>`<label style="display:flex;align-items:center;gap:3px;font-size:11.5px;font-weight:700;cursor:pointer;"><input type="checkbox" class="bsv-cb" value="${v}" onchange="bshipViaChange(this)" style="width:13px;height:13px;accent-color:var(--primary);cursor:pointer;">${v}</label>`).join('')}
@@ -27532,25 +27546,34 @@ async function submitBatchShip(){
   renderSaved();
   showToast('🚛 ' + okCnt + ' order(s) shipped' + (fails.length ? ' · ' + fails.length + ' failed' : ''));
   if(typeof shipDraftAfterShip==='function' && shipped.length) shipDraftAfterShip(shipped);   // 출고된 오더는 batch ship draft에서 제거 (전부 나가면 draft 삭제)
-  if(wantSend && okCnt>0 && sendQueue.length<okCnt){ showToast('⚠ '+(okCnt-sendQueue.length)+' shipped order(s) had NO customer email — Packing List not emailed for those. Add the email and use per-order Resend.'); }
+  if(wantSend && okCnt>0 && sendQueue.length<okCnt){ alert('⚠ ' + (okCnt-sendQueue.length) + ' shipped order(s) had NO customer email, so no Packing List was emailed for those.\n\nOpen 📦 Packing List on each, enter the email, and press Resend.'); }
   if(wantSend && sendQueue.length){
     const _emList = [...new Set(sendQueue.map(q=>q.em))].join('\n→ ');
-    if(!confirm('📧 Packing Lists will be emailed to customers.\n→ ' + _emList + '\n\nContinue? (Cancel ships without emailing)')) { return; }
+    if(!confirm('📧 Packing Lists will be emailed to customers.\n→ ' + _emList + '\n\nContinue? (Cancel ships without emailing)')) { alert('📧 No email was sent. The orders are shipped — use Resend on each Packing List when you are ready.'); return; }
     // 같은 이멜(거래처)로 가는 오더는 한 통으로 묶음 — 개별 PL + 합본 PDF 첨부
     const byEm = {};
     sendQueue.forEach(({rec, em})=>{ (byEm[em] = byEm[em] || []).push(rec); });
     const ems = Object.keys(byEm);
-    let emOk = 0, emFail = 0, idx = 0;
+    let emOk = 0, emFail = 0, idx = 0; const failLines = []; let poSent = 0;
     for(const em of ems){
       idx++;
       showToast('📧 Sending Packing Lists... (' + idx + '/' + ems.length + ')');
       try{
         if(byEm[em].length === 1) await sendPLEmailFor(byEm[em][0], bs.wh, em);
         else await sendBatchPLEmail(byEm[em], bs.wh, em);
-        emOk++;
-      }catch(e){ emFail++; console.warn('batch PL email fail', em, e); }
+        emOk++; poSent += byEm[em].length;
+      }catch(e){
+        emFail++;
+        const pos = byEm[em].map(r=>(r.meta&&r.meta.po)||r.base).join(', ');
+        failLines.push('• ' + pos + '  →  ' + em + '   (' + (e && e.message ? e.message : 'send failed') + ')');
+        byEm[em].forEach(r=>{ try{ logHist(r.base, '⚠ Packing List email FAILED — ' + bs.wh + ' → ' + em + ' (' + ((e&&e.message)||'error') + ')'); }catch(_){} });
+        console.warn('batch PL email fail', em, e);
+      }
     }
-    showToast('📧 ' + emOk + ' email(s) sent' + (emFail ? ' · ' + emFail + ' failed' : ''));
+    /* 몇 통이 아니라 "PO 몇 개가 나갔는지"를 알려준다 — 같은 이메일이면 여러 PO가 한 통으로 묶여 나가니까
+       통 수만 보면 "한 개만 나갔다"고 오해하게 된다. (v916) */
+    if(emFail) alert('📧 ' + poSent + ' of ' + sendQueue.length + ' PO(s) emailed in ' + emOk + ' message(s).\n\n⚠ FAILED — these were NOT emailed:\n' + failLines.join('\n') + '\n\nThe orders ARE shipped. Use Resend on each Packing List.');
+    else showToast('📧 ' + poSent + ' PO(s) emailed in ' + emOk + ' message(s)' + (emOk < poSent ? ' (same address = one combined email)' : ''));
   }
 }
 let savedQuery = '';
