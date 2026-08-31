@@ -167,7 +167,7 @@ body.narrow main{max-width:1100px;}
   </span>
   <select id="lang-sel" onchange="setLang(this.value)" style="font-size:11px;padding:3px 6px;border-radius:5px;border:none;background:#1d3f66;color:#fff;"><option value="ko">한국어</option><option value="en">English</option><option value="es">Español</option></select>
   <button id="wide-btn" class="btn btn-sm" onclick="toggleWide()" title="화면 넓게 / 좁게 — 기본은 넓게 (이 브라우저에만 저장돼)" style="padding:2px 8px;font-size:10px;background:#1d3f66;color:#cfe0f2;border-color:#2b5384;">↔ Wide</button>
-  <span id="app-ver" style="font-size:10px;color:#9fb8d4;">v902</span>
+  <span id="app-ver" style="font-size:10px;color:#9fb8d4;">v904</span>
 </div>
 <script>
 // ↔ 넓게 보기 — 브라우저마다 따로 저장 (v793)
@@ -425,7 +425,7 @@ try{ applyWide(localStorage.getItem('psx_wide') !== '0'); }catch(e){ applyWide(t
 </div>
 <div id="loan-view" style="display:none;">
   <div class="card">
-    <div class="card-title"><span>💰 PEACE 단기대여금</span>
+    <div class="card-title"><span>💰 Loan Statement</span>
       <span id="loan-asof" class="muted" style="font-weight:400;font-size:11px;"></span>
       <span style="margin-left:auto;font-size:10.5px;font-weight:800;color:#7c2d12;background:#fff7ed;border:1px solid #fed7aa;border-radius:20px;padding:2px 11px;" title="Only this account can read or write these rows — the database enforces it, not just the screen.">🔒 Private to you</span>
     </div>
@@ -14828,6 +14828,26 @@ function loanNavSync(){
   if(!loanAllowed()){ const v=document.getElementById('loan-view'); if(v) v.style.display='none'; }
 }
 /* 숫자 보기 좋게 — 정수면 소수점 없이, 아니면 필요한 자리까지만 */
+/* 우리가 갖고 있는 은행 loan 들 + PEACE 단기대여금. 장부마다 따로 추가/삭제한다. */
+const LOAN_BOOKS = [
+  'PEACE 단기대여금',
+  'Daekyung Loan',
+  'Shinhan Bank NY Loan',
+  'Shinhan Bank Hong Kong Loan',
+  'KEB Hana Bank NY Agency',
+  'KEB Hana NY Financial Corp'
+];
+let _loanBook = null;                        // null = All
+function _loanAllBooks(){
+  const seen=LOAN_BOOKS.slice();
+  (_loanRows||[]).forEach(r=>{ const L=String(r.lender||'').trim(); if(L && seen.indexOf(L)<0) seen.push(L); });
+  if((_loanRows||[]).some(r=>!String(r.lender||'').trim())) seen.push('');
+  return seen;
+}
+function _loanIn(book){ return (_loanRows||[]).filter(r=>String(r.lender||'').trim()===book); }
+function loanBook(b){ _loanBook = (b===null || b===undefined) ? null : String(b); loanRender(); }
+
+/* 숫자 보기 좋게 — 정수면 소수점 없이, 아니면 필요한 자리까지만 */
 function _lnNum(n, maxDec){
   const v=Number(n); if(!isFinite(v)) return '';
   const d=(Math.round(v)===v)?0:(maxDec==null?2:maxDec);
@@ -14837,7 +14857,6 @@ const _lnUSD = n => (n==null||n==='') ? '' : '$'+_lnNum(n,2);
 const _lnKRW = n => (n==null||n==='') ? '' : '₩'+Math.round(Number(n)||0).toLocaleString('en-US');
 const _lnFX  = n => (n==null||n==='') ? '' : _lnNum(n,4);
 const _lnPCT = n => (n==null||n==='') ? '' : _lnNum(n,4)+'%';
-const _lnDate = d => { const s=String(d||'').slice(0,10); if(!/^\d{4}-\d{2}-\d{2}$/.test(s)) return ''; const p=s.split('-'); return p[1]+'/'+p[2]+'/'+p[0]; };
 /* 상환일까지 남은 날 — 지났으면 빨강 */
 function _lnDue(d){
   const s=String(d||'').slice(0,10); if(!/^\d{4}-\d{2}-\d{2}$/.test(s)) return '';
@@ -14850,68 +14869,116 @@ function _lnDue(d){
   return `<span style="font-size:10px;font-weight:700;color:#94a3b8;white-space:nowrap;">D-${n}</span>`;
 }
 
+async function loanLoad(){
+  if(!loanAllowed()){ const el=document.getElementById('loan-body'); if(el) el.innerHTML='<div class="muted" style="padding:20px;">Not available on this account.</div>'; return; }
+  const el=document.getElementById('loan-body');
+  if(el && !_loanRows.length) el.innerHTML='<div class="muted" style="padding:20px;">Loading…</div>';
+  try{
+    const r=await sbFetch(LOAN_URL+'?select=*&order=loan_date.asc,id.asc&limit=1000');
+    if(!r.ok) throw new Error('HTTP '+r.status);
+    const rows=await r.json();
+    _loanRows=Array.isArray(rows)?rows:[];
+  }catch(e){
+    if(el) el.innerHTML='<div style="padding:20px;color:#b91c1c;font-size:12.5px;">Could not load — '+esc(e.message||String(e))+'</div>';
+    return;
+  }
+  loanRender();
+}
+
 function loanRender(){
   const el=document.getElementById('loan-body'); if(!el) return;
-  const tUsd=_loanRows.reduce((a,r)=>a+(Number(r.usd)||0),0);
-  const tKrw=_loanRows.reduce((a,r)=>a+(Number(r.krw)||0),0);
+  const books=_loanAllBooks();
+  if(_loanBook!==null && books.indexOf(_loanBook)<0) _loanBook=null;
+  const view = _loanBook===null ? (_loanRows||[]) : _loanIn(_loanBook);
+
+  const sum=list=>list.reduce((a,r)=>a+(Number(r.usd)||0),0);
+  const tUsd=sum(view), tKrw=view.reduce((a,r)=>a+(Number(r.krw)||0),0);
   const avg = tUsd ? (tKrw/tUsd) : 0;
-  /* 가중평균 이자율 — 금액이 큰 건에 더 무게 */
-  const rBase=_loanRows.filter(r=>r.rate!=null && Number(r.usd)>0);
+  const rBase=view.filter(r=>r.rate!=null && Number(r.usd)>0);
   const rSum=rBase.reduce((a,r)=>a+Number(r.usd),0);
   const avgR = rSum ? rBase.reduce((a,r)=>a+Number(r.usd)*Number(r.rate),0)/rSum : null;
 
+  /* ── 장부 고르기 ────────────────────────────────────────────── */
+  const chip=(label,key,n,amt,on)=>`<button onclick="loanBook(${key===null?'null':("'"+String(key).replace(/'/g,"\\'")+"'")})"
+      style="flex:none;text-align:left;border:1.5px solid ${on?'#0f2a4a':'#e2e8f0'};background:${on?'#0f2a4a':'#fff'};color:${on?'#fff':'#334155'};border-radius:10px;padding:7px 13px;cursor:pointer;line-height:1.35;">
+      <div style="font-size:11.5px;font-weight:800;white-space:nowrap;">${esc(label)}</div>
+      <div style="font-size:11px;font-family:Consolas,monospace;opacity:${on?'.9':'.65'};white-space:nowrap;">${amt?_lnUSD(amt):'—'} <span style="opacity:.7;">· ${n}</span></div>
+    </button>`;
+  const bar=`<div style="display:flex;gap:7px;flex-wrap:wrap;margin-bottom:11px;align-items:stretch;">
+      ${chip('All books', null, (_loanRows||[]).length, sum(_loanRows||[]), _loanBook===null)}
+      ${books.map(b=>{ const g=_loanIn(b); return chip(b||'— Unassigned', b, g.length, sum(g), _loanBook===b); }).join('')}
+      <button onclick="loanNewBook()" title="Add another lender" style="flex:none;border:1.5px dashed #cbd5e1;background:#fff;color:#94a3b8;border-radius:10px;padding:7px 13px;font-size:11.5px;font-weight:800;cursor:pointer;">＋ Lender</button>
+    </div>`;
+
   const CELL='width:100%;box-sizing:border-box;font-family:Consolas,monospace;font-size:12.5px;padding:6px 8px;border:1px solid transparent;border-radius:6px;background:transparent;';
   const R=CELL+'text-align:right;';
-  /* 평소엔 $ · , 를 붙여 보여주고, 칸을 누르면 숫자만 나오게 바꾼다 */
   const money=(id,field,raw,fmt,extra)=>`<input type="text" inputmode="decimal" value="${esc(fmt)}" data-raw="${esc(raw==null?'':String(raw))}" data-fmt="${esc(fmt)}"
       onfocus="this.value=this.dataset.raw;this.select();" onchange="this._ch=1;loanSet(${id},'${field}',this.value)"
       onblur="if(!this._ch)this.value=this.dataset.fmt;this._ch=0;" style="${R}${extra||''}">`;
+  const showLender = (_loanBook===null);
 
-  const rows=_loanRows.map(r=>`<tr>
+  const rows=view.map(r=>`<tr>
+    ${showLender?`<td style="padding:2px 6px;border-top:1px solid #eef2f7;">
+      <select onchange="loanSet(${r.id},'lender',this.value)" style="${CELL}font-family:inherit;font-weight:700;color:#0f2a4a;">
+        <option value=""${String(r.lender||'')===''?' selected':''}>— Unassigned</option>
+        ${books.filter(b=>b).map(b=>`<option value="${esc(b)}"${String(r.lender||'')===b?' selected':''}>${esc(b)}</option>`).join('')}
+      </select></td>`:''}
     <td style="padding:2px 6px;border-top:1px solid #eef2f7;"><input type="date" value="${esc(String(r.loan_date||'').slice(0,10))}" onchange="loanSet(${r.id},'loan_date',this.value)" style="${CELL}"></td>
     <td style="padding:2px 6px;border-top:1px solid #eef2f7;">${money(r.id,'usd',r.usd,_lnUSD(r.usd),'font-weight:800;color:#0f2a4a;')}</td>
     <td style="padding:2px 6px;border-top:1px solid #eef2f7;">${money(r.id,'fx',r.fx,_lnFX(r.fx),'color:#475569;')}</td>
     <td style="padding:2px 6px;border-top:1px solid #eef2f7;">${money(r.id,'krw',r.krw,_lnKRW(r.krw),'font-weight:700;color:#6b21a8;')}</td>
     <td style="padding:2px 6px;border-top:1px solid #eef2f7;">${money(r.id,'rate',r.rate,_lnPCT(r.rate),'font-weight:700;color:#166534;')}</td>
     <td style="padding:2px 6px;border-top:1px solid #eef2f7;white-space:nowrap;">
-      <input type="date" value="${esc(String(r.due_date||'').slice(0,10))}" onchange="loanSet(${r.id},'due_date',this.value)" style="${CELL}width:132px;display:inline-block;">
+      <input type="date" value="${esc(String(r.due_date||'').slice(0,10))}" onchange="loanSet(${r.id},'due_date',this.value)" style="${CELL}width:130px;display:inline-block;">
       ${_lnDue(r.due_date)}</td>
     <td style="padding:2px 6px;border-top:1px solid #eef2f7;"><input value="${esc(r.note||'')}" placeholder="—" onchange="loanSet(${r.id},'note',this.value)" style="${CELL}font-family:inherit;color:#475569;text-align:left;"></td>
     <td style="padding:2px 6px;border-top:1px solid #eef2f7;text-align:center;"><button onclick="loanDel(${r.id})" title="Delete this line" style="border:1px solid #fecaca;background:#fef2f2;color:#b91c1c;border-radius:6px;padding:3px 8px;font-size:11px;font-weight:800;cursor:pointer;">✕</button></td>
   </tr>`).join('');
 
   const TH='padding:8px 9px;font-size:10.5px;letter-spacing:.3px;color:#475569;';
-  el.innerHTML=`<div style="background:#fff;border:1px solid #e2e8f0;border-radius:12px;overflow:auto;">
-    <table style="width:100%;border-collapse:collapse;font-size:12.5px;min-width:940px;">
+  const empty = _loanBook===null ? 'No lines yet.' : ('No lines under '+(_loanBook||'— Unassigned')+' yet — press ＋ Add line.');
+  el.innerHTML = bar + `<div style="background:#fff;border:1px solid #e2e8f0;border-radius:12px;overflow:auto;">
+    <table style="width:100%;border-collapse:collapse;font-size:12.5px;min-width:${showLender?1150:940}px;">
       <thead><tr style="background:#f1f5f9;">
-        <th style="${TH}text-align:left;width:150px;">단기대여일 · DATE</th>
+        ${showLender?`<th style="${TH}text-align:left;width:210px;">대여처 · LENDER</th>`:''}
+        <th style="${TH}text-align:left;width:150px;">일자 · DATE</th>
         <th style="${TH}text-align:right;width:140px;">금액 · USD</th>
-        <th style="${TH}text-align:right;width:110px;">환율 · FX</th>
-        <th style="${TH}text-align:right;width:170px;">원화금액 · KRW</th>
-        <th style="${TH}text-align:right;width:100px;">이자율 · RATE</th>
-        <th style="${TH}text-align:left;width:200px;">상환일 · DUE</th>
+        <th style="${TH}text-align:right;width:105px;">환율 · FX</th>
+        <th style="${TH}text-align:right;width:165px;">원화금액 · KRW</th>
+        <th style="${TH}text-align:right;width:95px;">이자율 · RATE</th>
+        <th style="${TH}text-align:left;width:195px;">상환일 · DUE</th>
         <th style="${TH}text-align:left;">메모 · NOTE</th>
         <th style="width:48px;"></th>
       </tr></thead>
-      <tbody>${rows || '<tr><td colspan="8" style="padding:24px;text-align:center;color:#94a3b8;font-size:12.5px;">No lines yet — press ＋ Add line.</td></tr>'}</tbody>
+      <tbody>${rows || `<tr><td colspan="${showLender?9:8}" style="padding:24px;text-align:center;color:#94a3b8;font-size:12.5px;">${esc(empty)}</td></tr>`}</tbody>
       <tfoot><tr style="background:#0f2a4a;color:#fff;">
-        <td style="padding:10px 11px;font-weight:800;font-size:12.5px;">합 계 · TOTAL <span style="opacity:.7;font-weight:500;">(${_loanRows.length})</span></td>
+        ${showLender?'<td></td>':''}
+        <td style="padding:10px 11px;font-weight:800;font-size:12.5px;">합 계 <span style="opacity:.7;font-weight:500;">(${view.length})</span></td>
         <td style="padding:10px 11px;text-align:right;font-family:Consolas,monospace;font-weight:900;font-size:14px;">${_lnUSD(tUsd)}</td>
-        <td style="padding:10px 11px;text-align:right;font-family:Consolas,monospace;font-size:11.5px;opacity:.75;" title="Weighted average rate">${avg?('~'+_lnFX(Math.round(avg*100)/100)):''}</td>
+        <td style="padding:10px 11px;text-align:right;font-family:Consolas,monospace;font-size:11.5px;opacity:.75;" title="Weighted average FX">${avg?('~'+_lnFX(Math.round(avg*100)/100)):''}</td>
         <td style="padding:10px 11px;text-align:right;font-family:Consolas,monospace;font-weight:900;font-size:14px;">${_lnKRW(tKrw)}</td>
         <td style="padding:10px 11px;text-align:right;font-family:Consolas,monospace;font-size:11.5px;opacity:.85;" title="Weighted average interest rate">${avgR!=null?('~'+_lnPCT(Math.round(avgR*10000)/10000)):''}</td>
         <td colspan="3"></td>
       </tr></tfoot>
     </table>
     <div style="display:flex;align-items:center;gap:9px;padding:11px 13px;background:#f8fafc;border-top:1px solid #e2e8f0;">
-      <button onclick="loanAdd()" style="flex:none;background:#16a34a;color:#fff;border:none;border-radius:9px;padding:9px 18px;font-size:13px;font-weight:800;cursor:pointer;">＋ Add line</button>
+      <button onclick="loanAdd()" style="flex:none;background:#16a34a;color:#fff;border:none;border-radius:9px;padding:9px 18px;font-size:13px;font-weight:800;cursor:pointer;">＋ Add line${_loanBook?(' · '+esc(_loanBook)):''}</button>
       <span style="flex:1;min-width:0;font-size:11px;color:#64748b;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">Click a cell to edit — it saves on its own. USD × FX fills KRW; overwrite it if the bank figure differs.</span>
       <button onclick="loanCsv()" style="flex:none;background:#fff;border:1px solid #cbd5e1;color:#475569;border-radius:9px;padding:8px 14px;font-size:12.5px;font-weight:700;cursor:pointer;">⬇ CSV</button>
       <button onclick="loanPrint()" style="flex:none;background:#fff;border:1px solid #cbd5e1;color:#475569;border-radius:9px;padding:8px 14px;font-size:12.5px;font-weight:700;cursor:pointer;">🖨 Print</button>
     </div>
   </div>`;
   const asof=document.getElementById('loan-asof');
-  if(asof) asof.textContent='['+new Date().toISOString().slice(0,10)+' 잔액기준] · '+_loanRows.length+' line(s)';
+  if(asof) asof.textContent='['+new Date().toISOString().slice(0,10)+' 잔액기준] · '+(_loanBook===null?'all books':_loanBook||'unassigned')+' · '+view.length+' line(s)';
+}
+
+/* 새 대여처 — 이름만 받아두면 그 장부로 줄을 넣을 수 있다 */
+function loanNewBook(){
+  const n=window.prompt('New lender name');
+  if(n===null) return;
+  const name=String(n).trim(); if(!name) return;
+  if(LOAN_BOOKS.indexOf(name)<0) LOAN_BOOKS.push(name);
+  _loanBook=name; loanRender();
 }
 
 /* 한 칸 고치면 바로 저장. USD·FX 를 바꾸면 KRW 를 다시 계산한다 (직접 적은 KRW 는 그대로 둔다) */
@@ -14930,6 +14997,8 @@ async function loanSet(id, field, val){
     }
   } else if(field==='loan_date' || field==='due_date'){
     body[field] = String(val).trim() || null; row[field]=body[field];
+  } else if(field==='lender'){
+    body.lender = String(val).trim() || null; row.lender=body.lender;
   } else {
     body.note = String(val); row.note=body.note;
   }
@@ -14937,13 +15006,15 @@ async function loanSet(id, field, val){
     const r=await sbFetch(LOAN_URL+'?id=eq.'+id, {method:'PATCH', headers:{Prefer:'return=minimal'}, body:JSON.stringify(body)});
     if(!r.ok) throw new Error('HTTP '+r.status);
   }catch(e){ showToast('⚠ Could not save: '+(e.message||e)); }
-  if(field==='loan_date'){ await loanLoad(); return; }   // 날짜가 바뀌면 순서가 바뀐다
+  if(field==='loan_date' || field==='lender'){ await loanLoad(); return; }   // 순서·장부가 바뀐다
   loanRender();
 }
 
 async function loanAdd(){
-  const last=_loanRows[_loanRows.length-1];
-  const row={ loan_date:new Date().toISOString().slice(0,10), usd:0, fx:(last&&last.fx)?Number(last.fx):null, krw:null };
+  const book = (_loanBook===null) ? '' : _loanBook;
+  const inBook = book ? _loanIn(book) : (_loanRows||[]);
+  const last=inBook[inBook.length-1];
+  const row={ lender: book || null, loan_date:new Date().toISOString().slice(0,10), usd:0, fx:(last&&last.fx)?Number(last.fx):null, krw:null, rate:(last&&last.rate!=null)?Number(last.rate):null };
   try{
     const r=await sbFetch(LOAN_URL, {method:'POST', headers:{Prefer:'return=representation'}, body:JSON.stringify([row])});
     if(!r.ok){ const t=await r.text(); throw new Error('HTTP '+r.status+' '+t.slice(0,120)); }
@@ -14965,19 +15036,21 @@ async function loanDel(id){
 }
 
 function loanCsv(){
-  const head='Date,USD,FX,KRW,Rate%,Due,Note\n';
-  const body=_loanRows.map(r=>[String(r.loan_date||'').slice(0,10), Number(r.usd)||0, r.fx==null?'':Number(r.fx), r.krw==null?'':Number(r.krw),
+  const view = (_loanBook===null) ? (_loanRows||[]) : _loanIn(_loanBook);
+  const head='Lender,Date,USD,FX,KRW,Rate%,Due,Note\n';
+  const body=view.map(r=>['"'+String(r.lender||'').replace(/"/g,'""')+'"', String(r.loan_date||'').slice(0,10), Number(r.usd)||0, r.fx==null?'':Number(r.fx), r.krw==null?'':Number(r.krw),
     r.rate==null?'':Number(r.rate), String(r.due_date||'').slice(0,10), '"'+String(r.note||'').replace(/"/g,'""')+'"'].join(',')).join('\n');
-  const tU=_loanRows.reduce((a,r)=>a+(Number(r.usd)||0),0), tK=_loanRows.reduce((a,r)=>a+(Number(r.krw)||0),0);
-  const csv='﻿'+head+body+'\nTOTAL,'+tU+',,'+tK+',,,';
+  const tU=view.reduce((a,r)=>a+(Number(r.usd)||0),0), tK=view.reduce((a,r)=>a+(Number(r.krw)||0),0);
+  const csv='﻿'+head+body+'\nTOTAL,,'+tU+',,'+tK+',,,';
   const a=document.createElement('a');
   a.href=URL.createObjectURL(new Blob([csv],{type:'text/csv;charset=utf-8'}));
-  a.download='PEACE-loan-'+new Date().toISOString().slice(0,10)+'.csv';
+  a.download='loan-'+(_loanBook?String(_loanBook).replace(/[^\w가-힣]+/g,'-'):'all')+'-'+new Date().toISOString().slice(0,10)+'.csv';
   document.body.appendChild(a); a.click(); setTimeout(()=>{ URL.revokeObjectURL(a.href); a.remove(); },500);
 }
 
 function loanPrint(){
-  const tU=_loanRows.reduce((a,r)=>a+(Number(r.usd)||0),0), tK=_loanRows.reduce((a,r)=>a+(Number(r.krw)||0),0);
+  const view = (_loanBook===null) ? (_loanRows||[]) : _loanIn(_loanBook);
+  const tU=view.reduce((a,r)=>a+(Number(r.usd)||0),0), tK=view.reduce((a,r)=>a+(Number(r.krw)||0),0);
   const w=window.open('','_blank','width=900,height=1000'); if(!w) return;
   w.document.write('<html><head><meta charset="utf-8"><title>PEACE 단기대여금</title><style>'
     +'body{font-family:system-ui,-apple-system,"Malgun Gothic",sans-serif;padding:26px;color:#0f2a4a;}'
@@ -14986,9 +15059,9 @@ function loanPrint(){
     +'th,td{border:1px solid #cbd5e1;padding:6px 9px;} th{background:#f1f5f9;font-size:11px;letter-spacing:.3px;}'
     +'td.n{text-align:right;font-family:Consolas,monospace;} tfoot td{background:#0f2a4a;color:#fff;font-weight:800;}'
     +'</style></head><body>'
-    +'<h1>PEACE 단기대여금 현황</h1><div class="sub">['+new Date().toISOString().slice(0,10)+' 잔액기준]</div>'
+    +'<h1>Loan Statement \u2014 '+esc(_loanBook===null?'All books':(_loanBook||'Unassigned'))+'</h1><div class="sub">['+new Date().toISOString().slice(0,10)+' 잔액기준]</div>'
     +'<table><thead><tr><th>단기대여일</th><th>금액(US$)</th><th>환율</th><th>원화금액(₩)</th><th>이자율</th><th>상환일</th><th>메모</th></tr></thead><tbody>'
-    + _loanRows.map(r=>'<tr><td>'+esc(String(r.loan_date||'').slice(0,10))+'</td><td class="n">'+(Number(r.usd)||0).toLocaleString('en-US')
+    + view.map(r=>'<tr><td>'+esc(String(r.loan_date||'').slice(0,10))+'</td><td class="n">'+(Number(r.usd)||0).toLocaleString('en-US')
       +'</td><td class="n">'+(r.fx==null?'':Number(r.fx).toLocaleString('en-US'))
       +'</td><td class="n">'+(r.krw==null?'':Math.round(Number(r.krw)).toLocaleString('en-US'))
       +'</td><td class="n">'+(r.rate==null?'':Number(r.rate)+'%')
