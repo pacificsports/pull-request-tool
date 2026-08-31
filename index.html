@@ -167,7 +167,7 @@ body.narrow main{max-width:1100px;}
   </span>
   <select id="lang-sel" onchange="setLang(this.value)" style="font-size:11px;padding:3px 6px;border-radius:5px;border:none;background:#1d3f66;color:#fff;"><option value="ko">한국어</option><option value="en">English</option><option value="es">Español</option></select>
   <button id="wide-btn" class="btn btn-sm" onclick="toggleWide()" title="화면 넓게 / 좁게 — 기본은 넓게 (이 브라우저에만 저장돼)" style="padding:2px 8px;font-size:10px;background:#1d3f66;color:#cfe0f2;border-color:#2b5384;">↔ Wide</button>
-  <span id="app-ver" style="font-size:10px;color:#9fb8d4;">v908</span>
+  <span id="app-ver" style="font-size:10px;color:#9fb8d4;">v909</span>
 </div>
 <script>
 // ↔ 넓게 보기 — 브라우저마다 따로 저장 (v793)
@@ -14870,7 +14870,8 @@ function loanKey(ev, el){
   ev.preventDefault();
   window._loanFocus={ id: next.getAttribute('data-id'), col: idx };
   el.blur();                                              // 고친 값이 있으면 여기서 저장된다
-  setTimeout(loanFocusApply, 0);
+  /* 저장이 걸렸으면 표를 다시 그린 뒤에 옮긴다 — 안 그러면 옮겨놨다가 다시 그려지며 튕긴다 */
+  setTimeout(()=>{ if(!window._loanSaving) loanFocusApply(); }, 0);
 }
 function loanFocusApply(){
   const f=window._loanFocus; if(!f) return;
@@ -15044,6 +15045,7 @@ function loanRender(){
   const asof=document.getElementById('loan-asof');
   if(asof) asof.textContent='['+new Date().toISOString().slice(0,10)+' 잔액기준] · '+(_loanBook===null?'all books':_loanBook||'unassigned')+' · '+view.length+' line(s)';
   if(window._loanFocus) setTimeout(loanFocusApply, 0);   // 저장하며 다시 그려도 커서는 이어진다
+  if(window._loanFocus) setTimeout(loanFocusApply, 60);  // 느린 저장 대비 한 번 더
 }
 
 /* 새 대여처 — 이름만 받아두면 그 장부로 줄을 넣을 수 있다 */
@@ -15058,6 +15060,8 @@ function loanNewBook(){
 /* 한 칸 고치면 바로 저장. USD·FX 를 바꾸면 KRW 를 다시 계산한다 (직접 적은 KRW 는 그대로 둔다) */
 async function loanSet(id, field, val){
   const row=_loanRows.find(x=>x.id===id); if(!row) return;
+  window._loanSaving=(window._loanSaving||0)+1;
+  try{
   const body={};
   if(field==='usd' || field==='fx' || field==='krw' || field==='rate'){
     /* $ , ₩ % 공백은 지우고 숫자만 본다 */
@@ -15071,7 +15075,7 @@ async function loanSet(id, field, val){
     }
   } else if(field==='loan_date' || field==='due_date'){
     const d=_lnParseDate(val);
-    if(d===undefined){ showToast('⚠ Date not understood — try 09/20/2026'); loanRender(); return; }
+    if(d===undefined){ showToast('⚠ Date not understood — try 09/20/2026'); window._loanFocus=null; loanRender(); return; }
     body[field]=d; row[field]=d;
   } else if(field==='lender'){
     body.lender = String(val).trim() || null; row.lender=body.lender;
@@ -15086,8 +15090,9 @@ async function loanSet(id, field, val){
     const r=await sbFetch(LOAN_URL+'?id=eq.'+id, {method:'PATCH', headers:{Prefer:'return=minimal'}, body:JSON.stringify(body)});
     if(!r.ok) throw new Error('HTTP '+r.status);
   }catch(e){ showToast('⚠ Could not save: '+(e.message||e)); }
-  if(field==='loan_date' || field==='lender'){ await loanLoad(); return; }   // 순서·장부가 바뀐다
-  loanRender();
+  if(field==='loan_date' || field==='lender'){ await loanLoad(); }   // 순서·장부가 바뀐다
+  else loanRender();
+  }finally{ window._loanSaving=Math.max(0,(window._loanSaving||1)-1); }
 }
 
 async function loanAdd(){
