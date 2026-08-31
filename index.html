@@ -167,7 +167,7 @@ body.narrow main{max-width:1100px;}
   </span>
   <select id="lang-sel" onchange="setLang(this.value)" style="font-size:11px;padding:3px 6px;border-radius:5px;border:none;background:#1d3f66;color:#fff;"><option value="ko">한국어</option><option value="en">English</option><option value="es">Español</option></select>
   <button id="wide-btn" class="btn btn-sm" onclick="toggleWide()" title="화면 넓게 / 좁게 — 기본은 넓게 (이 브라우저에만 저장돼)" style="padding:2px 8px;font-size:10px;background:#1d3f66;color:#cfe0f2;border-color:#2b5384;">↔ Wide</button>
-  <span id="app-ver" style="font-size:10px;color:#9fb8d4;">v900</span>
+  <span id="app-ver" style="font-size:10px;color:#9fb8d4;">v901</span>
 </div>
 <script>
 // ↔ 넓게 보기 — 브라우저마다 따로 저장 (v793)
@@ -225,6 +225,7 @@ try{ applyWide(localStorage.getItem('psx_wide') !== '0'); }catch(e){ applyWide(t
   <button id="nav-cust" class="nav-btn" onclick="showView('cust')">👥 Customers</button>
   <button id="nav-tx" class="nav-btn" onclick="showView('tx')">💳 Transactions</button>
   <button id="nav-act" class="nav-btn" onclick="showView('act')">📜 Activity</button>
+  <button id="nav-loan" class="nav-btn" onclick="showView('loan')" style="display:none;">💰 Loan</button>
 </div>
 <button id="stkpk-btn" onclick="stockPeekToggle()" title="Peek at stock while entering the order (split view · Esc to close)" style="display:none;position:fixed;right:16px;bottom:18px;z-index:70;background:#0f2a4a;color:#fff;border:none;border-radius:24px;padding:10px 16px;font-weight:800;font-size:13px;box-shadow:0 4px 14px rgba(15,42,74,.35);cursor:pointer;">📦 Stock</button>
 <div id="orders-view">
@@ -420,6 +421,15 @@ try{ applyWide(localStorage.getItem('psx_wide') !== '0'); }catch(e){ applyWide(t
       <button class="btn btn-sm" onclick="pcExport()">⬇ Excel</button>
     </div>
     <div id="pc-body"><div class="muted">Loading...</div></div>
+  </div>
+</div>
+<div id="loan-view" style="display:none;">
+  <div class="card">
+    <div class="card-title"><span>💰 PEACE 단기대여금</span>
+      <span id="loan-asof" class="muted" style="font-weight:400;font-size:11px;"></span>
+      <span style="margin-left:auto;font-size:10.5px;font-weight:800;color:#7c2d12;background:#fff7ed;border:1px solid #fed7aa;border-radius:20px;padding:2px 11px;" title="Only this account can read or write these rows — the database enforces it, not just the screen.">🔒 Private to you</span>
+    </div>
+    <div id="loan-body" style="margin-top:10px;"></div>
   </div>
 </div>
 <div id="act-view" style="display:none;">
@@ -2894,6 +2904,7 @@ async function enterApp(){
   $('user-info').style.display = 'inline-flex';
   $('user-email').textContent = SESS.email || '';
   try{ const cb=document.getElementById('bx-costbtn'); if(cb) cb.style.display = canSeeCost() ? '' : 'none'; }catch(e){}
+  try{ if(typeof loanNavSync==='function') loanNavSync(); }catch(e){}
   try{ const lb=document.getElementById('act-logins'); if(lb) lb.style.display = isOwner() ? '' : 'none'; }catch(e){}
   try{ const sb=document.getElementById('stkpk-btn'); if(sb) sb.style.display='block'; }catch(e){}   // 기본 화면(Orders)에서 Stock peek 버튼 표시
   await migrateLocal();
@@ -14805,10 +14816,169 @@ function bxJumpStyle(style){
   const b = $('bx-body'); if(b) b.scrollIntoView({behavior:'smooth', block:'start'});
 }
 function pcSearchDeb(){ clearTimeout(_pcSearchT); _pcSearchT = setTimeout(renderPcRoom, 250); }
+/* ═══════════ 💰 Loan — PEACE 단기대여금 (개인 전용) (v901) ═══════════
+   탭은 소유자에게만 보이고, 표 자체도 DB(RLS) 에서 owner_id = auth.uid() 로 막혀 있다.
+   다른 직원이 로그인해서 직접 호출해도 빈 결과만 나온다. */
+const LOAN_URL='/rest/v1/pr_loans';
+const LOAN_OWNERS=['hjbae@peacepacificsports.com'];
+let _loanRows=[];
+function loanAllowed(){ try{ return !!(SESS && LOAN_OWNERS.indexOf(String(SESS.email||'').trim().toLowerCase())>=0); }catch(e){ return false; } }
+function loanNavSync(){
+  const b=document.getElementById('nav-loan'); if(b) b.style.display = loanAllowed() ? '' : 'none';
+  if(!loanAllowed()){ const v=document.getElementById('loan-view'); if(v) v.style.display='none'; }
+}
+const _lnUSD = n => '$'+(Math.round((Number(n)||0)*100)/100).toLocaleString('en-US',{minimumFractionDigits:2,maximumFractionDigits:2});
+const _lnKRW = n => '₩'+Math.round(Number(n)||0).toLocaleString('en-US');
+const _lnFX  = n => (Number(n)||0) ? (Math.round((Number(n))*10000)/10000).toLocaleString('en-US',{minimumFractionDigits:2,maximumFractionDigits:4}) : '';
+
+async function loanLoad(){
+  if(!loanAllowed()){ const el=document.getElementById('loan-body'); if(el) el.innerHTML='<div class="muted" style="padding:20px;">Not available on this account.</div>'; return; }
+  const el=document.getElementById('loan-body'); if(el && !_loanRows.length) el.innerHTML='<div class="muted" style="padding:20px;">Loading…</div>';
+  try{
+    const r=await sbFetch(LOAN_URL+'?select=*&order=loan_date.asc,id.asc&limit=500');
+    if(!r.ok) throw new Error('HTTP '+r.status);
+    const rows=await r.json();
+    _loanRows=Array.isArray(rows)?rows:[];
+  }catch(e){
+    if(el) el.innerHTML='<div style="padding:20px;color:#b91c1c;font-size:12.5px;">Could not load — is the pr_loans table set up? ('+esc(e.message||e)+')</div>';
+    return;
+  }
+  loanRender();
+}
+
+function loanRender(){
+  const el=document.getElementById('loan-body'); if(!el) return;
+  const tUsd=_loanRows.reduce((a,r)=>a+(Number(r.usd)||0),0);
+  const tKrw=_loanRows.reduce((a,r)=>a+(Number(r.krw)||0),0);
+  const avg = tUsd ? (tKrw/tUsd) : 0;
+  const IN='width:100%;box-sizing:border-box;font-family:Consolas,monospace;font-size:12.5px;padding:6px 8px;border:1px solid transparent;border-radius:6px;background:transparent;';
+  const INn=IN+'text-align:right;';
+  const rows=_loanRows.map(r=>`<tr>
+    <td style="padding:2px 6px;border-top:1px solid #eef2f7;"><input type="date" value="${esc(r.loan_date||'')}" onchange="loanSet(${r.id},'loan_date',this.value)" style="${IN}"></td>
+    <td style="padding:2px 6px;border-top:1px solid #eef2f7;"><input type="number" step="0.01" value="${Number(r.usd)||0}" onchange="loanSet(${r.id},'usd',this.value)" style="${INn}font-weight:800;color:#0f2a4a;"></td>
+    <td style="padding:2px 6px;border-top:1px solid #eef2f7;"><input type="number" step="0.0001" value="${r.fx==null?'':Number(r.fx)}" onchange="loanSet(${r.id},'fx',this.value)" style="${INn}"></td>
+    <td style="padding:2px 6px;border-top:1px solid #eef2f7;"><input type="number" step="1" value="${r.krw==null?'':Number(r.krw)}" onchange="loanSet(${r.id},'krw',this.value)" style="${INn}font-weight:700;color:#6b21a8;"></td>
+    <td style="padding:2px 6px;border-top:1px solid #eef2f7;"><input value="${esc(r.note||'')}" placeholder="—" onchange="loanSet(${r.id},'note',this.value)" style="${IN}font-family:inherit;color:#475569;"></td>
+    <td style="padding:2px 6px;border-top:1px solid #eef2f7;text-align:center;"><button onclick="loanDel(${r.id})" title="Delete this line" style="border:1px solid #fecaca;background:#fef2f2;color:#b91c1c;border-radius:6px;padding:3px 8px;font-size:11px;font-weight:800;cursor:pointer;">✕</button></td>
+  </tr>`).join('');
+
+  el.innerHTML=`<div style="background:#fff;border:1px solid #e2e8f0;border-radius:12px;overflow:hidden;">
+    <table style="width:100%;border-collapse:collapse;font-size:12.5px;">
+      <thead><tr style="background:#f1f5f9;">
+        <th style="padding:8px 9px;text-align:left;font-size:10.5px;letter-spacing:.3px;color:#475569;width:150px;">단기대여일 · DATE</th>
+        <th style="padding:8px 9px;text-align:right;font-size:10.5px;letter-spacing:.3px;color:#475569;width:150px;">금액 · USD</th>
+        <th style="padding:8px 9px;text-align:right;font-size:10.5px;letter-spacing:.3px;color:#475569;width:120px;">환율 · FX</th>
+        <th style="padding:8px 9px;text-align:right;font-size:10.5px;letter-spacing:.3px;color:#475569;width:180px;">원화금액 · KRW</th>
+        <th style="padding:8px 9px;text-align:left;font-size:10.5px;letter-spacing:.3px;color:#475569;">메모 · NOTE</th>
+        <th style="width:48px;"></th>
+      </tr></thead>
+      <tbody>${rows || '<tr><td colspan="6" style="padding:24px;text-align:center;color:#94a3b8;font-size:12.5px;">No lines yet — press ＋ Add line.</td></tr>'}</tbody>
+      <tfoot><tr style="background:#0f2a4a;color:#fff;">
+        <td style="padding:10px 11px;font-weight:800;font-size:12.5px;">합 계 · TOTAL <span style="opacity:.7;font-weight:500;">(${_loanRows.length})</span></td>
+        <td style="padding:10px 11px;text-align:right;font-family:Consolas,monospace;font-weight:900;font-size:14px;">${_lnUSD(tUsd)}</td>
+        <td style="padding:10px 11px;text-align:right;font-family:Consolas,monospace;font-size:11.5px;opacity:.75;" title="Weighted average rate">${avg?('~'+_lnFX(avg)):''}</td>
+        <td style="padding:10px 11px;text-align:right;font-family:Consolas,monospace;font-weight:900;font-size:14px;">${_lnKRW(tKrw)}</td>
+        <td colspan="2"></td>
+      </tr></tfoot>
+    </table>
+    <div style="display:flex;align-items:center;gap:9px;padding:11px 13px;background:#f8fafc;border-top:1px solid #e2e8f0;">
+      <button onclick="loanAdd()" style="background:#16a34a;color:#fff;border:none;border-radius:9px;padding:9px 18px;font-size:13px;font-weight:800;cursor:pointer;">＋ Add line</button>
+      <span style="flex:1;min-width:0;font-size:11px;color:#64748b;">Type in any cell and it saves. USD × FX fills KRW automatically — overwrite it if the bank figure differs.</span>
+      <button onclick="loanCsv()" style="background:#fff;border:1px solid #cbd5e1;color:#475569;border-radius:9px;padding:8px 14px;font-size:12.5px;font-weight:700;cursor:pointer;">⬇ CSV</button>
+      <button onclick="loanPrint()" style="background:#fff;border:1px solid #cbd5e1;color:#475569;border-radius:9px;padding:8px 14px;font-size:12.5px;font-weight:700;cursor:pointer;">🖨 Print</button>
+    </div>
+  </div>`;
+  const asof=document.getElementById('loan-asof');
+  if(asof) asof.textContent='['+new Date().toISOString().slice(0,10)+' 잔액기준] · '+_loanRows.length+' line(s)';
+}
+
+/* 한 칸 고치면 바로 저장. USD·FX 를 바꾸면 KRW 를 다시 계산한다 (직접 적은 KRW 는 그대로 둔다) */
+async function loanSet(id, field, val){
+  const row=_loanRows.find(x=>x.id===id); if(!row) return;
+  const body={};
+  if(field==='usd' || field==='fx' || field==='krw'){
+    const n = String(val).trim()==='' ? null : Number(val);
+    if(n!=null && !isFinite(n)){ showToast('⚠ Numbers only'); loanRender(); return; }
+    body[field]=n; row[field]=n;
+    if(field==='usd' || field==='fx'){
+      const u=Number(row.usd)||0, f=Number(row.fx)||0;
+      if(u && f){ const k=Math.round(u*f); body.krw=k; row.krw=k; }
+    }
+  } else if(field==='loan_date'){
+    body.loan_date = String(val).trim() || null; row.loan_date=body.loan_date;
+  } else {
+    body.note = String(val); row.note=body.note;
+  }
+  try{
+    const r=await sbFetch(LOAN_URL+'?id=eq.'+id, {method:'PATCH', headers:{Prefer:'return=minimal'}, body:JSON.stringify(body)});
+    if(!r.ok) throw new Error('HTTP '+r.status);
+  }catch(e){ showToast('⚠ Could not save: '+(e.message||e)); }
+  if(field==='loan_date'){ await loanLoad(); return; }   // 날짜가 바뀌면 순서가 바뀐다
+  loanRender();
+}
+
+async function loanAdd(){
+  const last=_loanRows[_loanRows.length-1];
+  const row={ loan_date:new Date().toISOString().slice(0,10), usd:0, fx:(last&&last.fx)?Number(last.fx):null, krw:null };
+  try{
+    const r=await sbFetch(LOAN_URL, {method:'POST', headers:{Prefer:'return=representation'}, body:JSON.stringify([row])});
+    if(!r.ok){ const t=await r.text(); throw new Error('HTTP '+r.status+' '+t.slice(0,120)); }
+    showToast('＋ Line added');
+  }catch(e){ showToast('⚠ Could not add: '+(e.message||e)); }
+  await loanLoad();
+  const b=document.getElementById('loan-body'); if(b){ const ins=b.querySelectorAll('tbody tr'); const lastTr=ins[ins.length-1]; if(lastTr){ const inp=lastTr.querySelectorAll('input')[1]; if(inp) inp.focus(); } }
+}
+
+async function loanDel(id){
+  const r0=_loanRows.find(x=>x.id===id);
+  if(r0 && !confirm('Delete this line?\n\n'+(r0.loan_date||'')+'   '+_lnUSD(r0.usd)+'   '+_lnKRW(r0.krw))) return;
+  try{
+    const r=await sbFetch(LOAN_URL+'?id=eq.'+id, {method:'DELETE', headers:{Prefer:'return=minimal'}});
+    if(!r.ok) throw new Error('HTTP '+r.status);
+    showToast('🗑 Deleted');
+  }catch(e){ showToast('⚠ Could not delete'); }
+  await loanLoad();
+}
+
+function loanCsv(){
+  const head='Date,USD,FX,KRW,Note\n';
+  const body=_loanRows.map(r=>[r.loan_date||'', Number(r.usd)||0, r.fx==null?'':Number(r.fx), r.krw==null?'':Number(r.krw), '"'+String(r.note||'').replace(/"/g,'""')+'"'].join(',')).join('\n');
+  const tU=_loanRows.reduce((a,r)=>a+(Number(r.usd)||0),0), tK=_loanRows.reduce((a,r)=>a+(Number(r.krw)||0),0);
+  const csv='﻿'+head+body+'\nTOTAL,'+tU+',,'+tK+',';
+  const a=document.createElement('a');
+  a.href=URL.createObjectURL(new Blob([csv],{type:'text/csv;charset=utf-8'}));
+  a.download='PEACE-loan-'+new Date().toISOString().slice(0,10)+'.csv';
+  document.body.appendChild(a); a.click(); setTimeout(()=>{ URL.revokeObjectURL(a.href); a.remove(); },500);
+}
+
+function loanPrint(){
+  const tU=_loanRows.reduce((a,r)=>a+(Number(r.usd)||0),0), tK=_loanRows.reduce((a,r)=>a+(Number(r.krw)||0),0);
+  const w=window.open('','_blank','width=900,height=1000'); if(!w) return;
+  w.document.write('<html><head><meta charset="utf-8"><title>PEACE 단기대여금</title><style>'
+    +'body{font-family:system-ui,-apple-system,"Malgun Gothic",sans-serif;padding:26px;color:#0f2a4a;}'
+    +'h1{font-size:17px;margin:0 0 4px;} .sub{font-size:12px;color:#64748b;margin-bottom:14px;}'
+    +'table{width:100%;border-collapse:collapse;font-size:12.5px;}'
+    +'th,td{border:1px solid #cbd5e1;padding:6px 9px;} th{background:#f1f5f9;font-size:11px;letter-spacing:.3px;}'
+    +'td.n{text-align:right;font-family:Consolas,monospace;} tfoot td{background:#0f2a4a;color:#fff;font-weight:800;}'
+    +'</style></head><body>'
+    +'<h1>PEACE 단기대여금 현황</h1><div class="sub">['+new Date().toISOString().slice(0,10)+' 잔액기준]</div>'
+    +'<table><thead><tr><th>단기대여일</th><th>금액(US$)</th><th>환율</th><th>원화금액(₩)</th><th>메모</th></tr></thead><tbody>'
+    + _loanRows.map(r=>'<tr><td>'+esc(r.loan_date||'')+'</td><td class="n">'+(Number(r.usd)||0).toLocaleString('en-US')
+      +'</td><td class="n">'+(r.fx==null?'':Number(r.fx).toLocaleString('en-US'))
+      +'</td><td class="n">'+(r.krw==null?'':Math.round(Number(r.krw)).toLocaleString('en-US'))
+      +'</td><td>'+esc(r.note||'')+'</td></tr>').join('')
+    +'</tbody><tfoot><tr><td>합 계</td><td class="n">'+tU.toLocaleString('en-US')+'</td><td></td><td class="n">'+tK.toLocaleString('en-US')+'</td><td></td></tr></tfoot></table>'
+    +'<script>window.onload=function(){window.print();};<\/script></body></html>');
+  w.document.close();
+}
 function showView(v){
   try{ localStorage.setItem('pr_view', v); }catch(e){}
   const ov = $('orders-view'), dv = $('dash-view'), cv = $('cust-view'), pv = $('pc-view'), tv = $('tx-view'), bv = $('box-view'), av = $('act-view');
   if(!ov || !dv) return;
+  if(typeof loanNavSync==='function') loanNavSync();
+  if(v==='loan' && typeof loanAllowed==='function' && !loanAllowed()) v='orders';   // 소유자 아니면 못 연다
+  const lv = $('loan-view'); if(lv) lv.style.display = v==='loan' ? 'block' : 'none';
+  const nl = $('nav-loan'); if(nl) nl.classList.toggle('nav-active', v==='loan');
   ov.style.display = v==='orders' ? 'block' : 'none';
   dv.style.display = v==='dash' ? 'block' : 'none';
   if(cv) cv.style.display = v==='cust' ? 'block' : 'none';
@@ -14832,6 +15002,7 @@ function showView(v){
   if(v==='box'){ loadBoxRoom(); if(typeof pchkReviewBadge==='function') pchkReviewBadge(); if(typeof pchkBoxreqBadge==='function') pchkBoxreqBadge(); if(typeof wqLoad==='function') wqLoad(); if(typeof renderKpi==='function') renderKpi(); }
   if(v==='tx') renderTx();
   if(v==='act'){ if(!window._actAt || Date.now()-window._actAt > 60000) actLoad(); else actRender(); }
+  if(v==='loan') loanLoad();
 }
 // ═══ 📜 Activity Log — 모든 트랜잭션/메모 통합 타임라인 (v394) ═══
 const ACT_KINDS = {
