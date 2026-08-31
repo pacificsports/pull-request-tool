@@ -167,7 +167,7 @@ body.narrow main{max-width:1100px;}
   </span>
   <select id="lang-sel" onchange="setLang(this.value)" style="font-size:11px;padding:3px 6px;border-radius:5px;border:none;background:#1d3f66;color:#fff;"><option value="ko">한국어</option><option value="en">English</option><option value="es">Español</option></select>
   <button id="wide-btn" class="btn btn-sm" onclick="toggleWide()" title="화면 넓게 / 좁게 — 기본은 넓게 (이 브라우저에만 저장돼)" style="padding:2px 8px;font-size:10px;background:#1d3f66;color:#cfe0f2;border-color:#2b5384;">↔ Wide</button>
-  <span id="app-ver" style="font-size:10px;color:#9fb8d4;">v913</span>
+  <span id="app-ver" style="font-size:10px;color:#9fb8d4;">v914</span>
 </div>
 <script>
 // ↔ 넓게 보기 — 브라우저마다 따로 저장 (v793)
@@ -2109,13 +2109,50 @@ function priceCellHtml(l, i){
   s += '>';
   return s;
 }
+/* ═══════════ ↕ 오더 라인 순서 바꾸기 (v914) ═══════════
+   PO 에서 넘어온 순서가 우리가 일하는 순서랑 다를 때가 많다 —
+   왼쪽 ⠿ 를 잡고 원하는 자리에 놓으면 된다. transfer 팔렛 옮기듯이. */
+let _poDrag = null;
+function poDragClear(){
+  document.querySelectorAll('#lines-body tr').forEach(tr=>{ tr.style.opacity=''; tr.style.boxShadow=''; });
+}
+function poDragStart(ev, i){
+  _poDrag = i;
+  try{ ev.dataTransfer.effectAllowed='move'; ev.dataTransfer.setData('text/plain', String(i)); }catch(e){}
+  const tr = document.getElementById('row-'+i); if(tr) tr.style.opacity='.45';
+}
+function poDragEnd(){ _poDrag = null; poDragClear(); }
+function poDragOver(ev, i){
+  if(_poDrag === null || _poDrag === i) return;
+  ev.preventDefault();
+  try{ ev.dataTransfer.dropEffect='move'; }catch(e){}
+  const tr = document.getElementById('row-'+i); if(!tr) return;
+  const r = tr.getBoundingClientRect();
+  tr.style.boxShadow = ((ev.clientY - r.top) < r.height/2) ? 'inset 0 3px 0 #7c3aed' : 'inset 0 -3px 0 #7c3aed';
+}
+function poDragLeave(i){ const tr = document.getElementById('row-'+i); if(tr) tr.style.boxShadow=''; }
+function poDrop(ev, i){
+  ev.preventDefault();
+  const from = _poDrag;
+  const tr = document.getElementById('row-'+i);
+  let to = i;
+  if(tr){ const r = tr.getBoundingClientRect(); if((ev.clientY - r.top) >= r.height/2) to = i + 1; }
+  poDragEnd();
+  if(from === null || from === undefined) return;
+  if(to === from || to === from + 1) return;          /* 제자리 */
+  const [row] = poLines.splice(from, 1);
+  if(from < to) to--;
+  poLines.splice(to, 0, row);
+  renderTable(); renderDocs(); saveDraft();
+  showToast('↕ Line ' + (from+1) + ' → ' + (to+1));
+}
 function renderTable(){
   const tb = $('lines-body');
   _lineAvailCache = {};   // 재고 캐시 초기화 — 이번 렌더 동안만 재사용 (v442)
   tb.innerHTML = poLines.map((l,i)=>{
     const b = boxCalc(l);
-    return `<tr id="row-${i}" style="${l.wh==='BO'?'background:#fef2f2;':''}">
-      <td class="muted" style="white-space:nowrap;"><button class="btn btn-sm" style="color:#7c3aed;border:none;padding:2px 4px;" onclick="openSplitLine(${i})" title="Split this line's qty across SC/CA/BO/NA">✂</button>${l.wh==='BO'?`<button class="btn btn-sm" style="color:#dc2626;border:none;padding:2px 4px;font-weight:800;" onclick="openAltPicker(${i})" title="Choose an in-stock alternative (size / color / style)">⇄</button>`:''}${i+1}${l._altFrom?`<div style="font-size:8.5px;color:#dc2626;font-weight:800;line-height:1;margin-top:1px;" title="Alternative for ${esc(l._altFrom.style)} ${esc(String(l._altFrom.color).toUpperCase())} ${esc(String(l._altFrom.size).toUpperCase())} (BO ${(Number(l._altFrom.qty)||0).toLocaleString()})">⇄alt</div>`:''}</td>
+    return `<tr id="row-${i}" ondragover="poDragOver(event,${i})" ondragleave="poDragLeave(${i})" ondrop="poDrop(event,${i})" style="${l.wh==='BO'?'background:#fef2f2;':''}">
+      <td class="muted" style="white-space:nowrap;"><span draggable="true" ondragstart="poDragStart(event,${i})" ondragend="poDragEnd()" title="Drag to move this line up or down" style="cursor:grab;color:#94a3b8;font-weight:900;padding:0 2px;user-select:none;">\u283F</span><button class="btn btn-sm" style="color:#7c3aed;border:none;padding:2px 4px;" onclick="openSplitLine(${i})" title="Split this line's qty across SC/CA/BO/NA">✂</button>${l.wh==='BO'?`<button class="btn btn-sm" style="color:#dc2626;border:none;padding:2px 4px;font-weight:800;" onclick="openAltPicker(${i})" title="Choose an in-stock alternative (size / color / style)">⇄</button>`:''}${i+1}${l._altFrom?`<div style="font-size:8.5px;color:#dc2626;font-weight:800;line-height:1;margin-top:1px;" title="Alternative for ${esc(l._altFrom.style)} ${esc(String(l._altFrom.color).toUpperCase())} ${esc(String(l._altFrom.size).toUpperCase())} (BO ${(Number(l._altFrom.qty)||0).toLocaleString()})">⇄alt</div>`:''}</td>
       <td><input id="st-${i}" value="${esc(l.style)}" onchange="updLine(${i},'style',this.value)" placeholder="?" style="min-width:60px;max-width:80px;font-weight:700;${l.style?'':'background:#fef9c3;border-color:#facc15;'}"></td>
       <td class="tl"><input id="de-${i}" class="tl" value="${esc(l.desc||'')}" onchange="updLine(${i},'desc',this.value)" placeholder="(PO description)" title="${esc(l.desc||'')}${l.rawDesc?('\n\nFrom the PO: '+esc(l.rawDesc)):''}" style="width:100%;min-width:240px;color:#6b7280;font-size:11px;"></td>
       <td class="tl"><input class="tl" value="${esc(l.color)}" onchange="updLine(${i},'color',this.value)" style="min-width:110px;"><div id="vchip-${i}" style="margin-top:2px;">${varChip(l)}</div></td>
