@@ -180,7 +180,7 @@ body.po-dragging{user-select:none;}
   </span>
   <select id="lang-sel" onchange="setLang(this.value)" style="font-size:11px;padding:3px 6px;border-radius:5px;border:none;background:#1d3f66;color:#fff;"><option value="ko">한국어</option><option value="en">English</option><option value="es">Español</option></select>
   <button id="wide-btn" class="btn btn-sm" onclick="toggleWide()" title="화면 넓게 / 좁게 — 기본은 넓게 (이 브라우저에만 저장돼)" style="padding:2px 8px;font-size:10px;background:#1d3f66;color:#cfe0f2;border-color:#2b5384;">↔ Wide</button>
-  <span id="app-ver" style="font-size:10px;color:#9fb8d4;">v937</span>
+  <span id="app-ver" style="font-size:10px;color:#9fb8d4;">v938</span>
 </div>
 <script>
 // ↔ 넓게 보기 — 브라우저마다 따로 저장 (v793)
@@ -2015,6 +2015,7 @@ function allocSplit(i, targetWh){
 function openSplitLine(i){
   const l = poLines[i]; if(!l) return;
   const ex = document.getElementById('modal-split'); if(ex) ex.remove();
+  _lineAvailCache = {};                     // 지금 있는 재고로 다시 잰다 (v938)
   const tot = Number(l.qty)||0;
   const div = document.createElement('div');
   div.id = 'modal-split';
@@ -2023,8 +2024,8 @@ function openSplitLine(i){
   div.innerHTML = `<div style="background:#fff;border-radius:12px;width:430px;max-width:92vw;overflow:hidden;box-shadow:0 20px 60px rgba(0,0,0,.35);">
     <div style="background:#0f2a4a;color:#fff;padding:11px 16px;font-weight:800;">✂ Split Qty — ${esc(l.style||'?')} ${esc(l.color||'')} ${esc(l.size||'')} (total ${tot.toLocaleString()} pcs)</div>
     <div style="padding:14px 16px;display:grid;grid-template-columns:1fr 1fr;gap:10px;">
-      ${['SC','CA','BO','NA'].map(w=>`<label style="display:flex;align-items:center;gap:8px;font-size:13px;font-weight:800;color:${whColor[w]};">${w}
-        <input class="fi num" id="sp-${w}" value="${l.wh===w?tot:''}" placeholder="0" oninput="splitSum()" style="width:100%;text-align:center;font-family:Consolas,monospace;font-weight:700;"></label>`).join('')}
+      ${['SC','CA','BO','NA'].map(w=>`<div><label style="display:flex;align-items:center;gap:8px;font-size:13px;font-weight:800;color:${whColor[w]};">${w}
+        <input class="fi num" id="sp-${w}" value="${l.wh===w?tot:''}" placeholder="0" oninput="splitSum()" style="width:100%;text-align:center;font-family:Consolas,monospace;font-weight:700;"></label>${(w==='SC'||w==='CA')?`<div id="sp-av-${w}" onclick="splitFill('${w}')" title="Click to put as much as ${w} can cover" style="margin-top:3px;font-size:10px;font-weight:800;line-height:1.35;border-radius:5px;padding:1px 4px;cursor:pointer;white-space:nowrap;"></div>`:''}</div>`).join('')}
     </div>
     <div id="sp-sum" style="padding:0 16px 4px;font-size:12px;font-weight:700;color:var(--text2);"></div>
     <div style="padding:10px 16px 14px;display:flex;gap:8px;justify-content:flex-end;">
@@ -2034,6 +2035,43 @@ function openSplitLine(i){
   </div>`;
   document.body.appendChild(div);
   initModalDrag(div);
+  /* ═══ 어느 창고에 얼마나 넣을지 정하려면 그 창고에 뭐가 있는지 보여야 한다 (v938) ═══
+     풀박스 장수 + PC Room 낱장 = 그 창고가 지금 낼 수 있는 장수.
+     숫자를 누르면 그 창고가 감당할 만큼 자동으로 채워 넣는다. */
+  window.splitAvPaint = () => {
+    ['SC','CA'].forEach(w=>{
+      const el = document.getElementById('sp-av-'+w); if(!el) return;
+      const a = lineAvailPcs(l, w);
+      if(!a.loaded){ el.textContent = 'stock loading\u2026'; el.style.color = '#94a3b8'; el.style.background = 'transparent'; return; }
+      const want = parseInt((document.getElementById('sp-'+w)||{}).value)||0;
+      const over = want > a.total;
+      el.style.color = over ? '#b91c1c' : (a.total > 0 ? '#166534' : '#94a3b8');
+      el.style.background = over ? '#fef2f2' : (a.total > 0 ? '#f0fdf4' : 'transparent');
+      el.title = w + ' available: full box ' + a.boxPcs.toLocaleString() + ' + loose ' + Math.max(0,a.loose).toLocaleString()
+               + ' = ' + a.total.toLocaleString() + ' pcs \u2014 click to fill what ' + w + ' can cover';
+      el.innerHTML = '\u{1F4E6}' + a.boxPcs.toLocaleString() + ' + \u{1F9FA}' + Math.max(0,a.loose).toLocaleString()
+        + ' = <b>' + a.total.toLocaleString() + '</b> pcs'
+        + (over ? (' \u00B7 \u26A0 short ' + (want - a.total).toLocaleString()) : '');
+    });
+  };
+  window.splitFill = (w) => {
+    const a = lineAvailPcs(l, w); if(!a.loaded) return;
+    const others = ['SC','CA','BO','NA'].filter(x=>x!==w)
+      .reduce((s2,x)=>s2 + (parseInt((document.getElementById('sp-'+x)||{}).value)||0), 0);
+    const room = Math.max(0, tot - others);
+    const put = Math.min(room, a.total);
+    const el = document.getElementById('sp-'+w); if(el) el.value = put || '';
+    splitSum();
+  };
+  /* 재고가 아직 안 읽혔으면 지금 읽어서 다시 그린다 — 열자마자 0 으로 보이면 안 된다 */
+  (async ()=>{
+    try{
+      if(typeof bxLoaded!=='undefined' && !bxLoaded && typeof bxFetchStore==='function') await bxFetchStore();
+      if(typeof pcLoaded!=='undefined' && !pcLoaded && typeof loadPcRoom==='function') await loadPcRoom();
+      _lineAvailCache = {};
+      if(document.getElementById('modal-split')) splitAvPaint();
+    }catch(e){}
+  })();
   window.splitSum = () => {
     const s = ['SC','CA','BO','NA'].reduce((a,w)=>a+(parseInt(($('sp-'+w)||{}).value)||0),0);
     const rem = tot - s;
@@ -2043,6 +2081,7 @@ function openSplitLine(i){
       else if(s < tot) el.innerHTML = `<span style="color:#b91c1c;">⚠ Total ${s.toLocaleString()} / ${tot.toLocaleString()} — <b>${rem.toLocaleString()} left to allocate</b></span>`;
       else el.innerHTML = `<span style="color:#b91c1c;">⚠ Total ${s.toLocaleString()} / ${tot.toLocaleString()} — <b>${(-rem).toLocaleString()} over</b> the line qty</span>`;
     }
+    try{ splitAvPaint(); }catch(e){}
   };
   splitSum();
 }
