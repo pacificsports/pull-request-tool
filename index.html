@@ -134,6 +134,12 @@ body.narrow main{max-width:1100px;}
 tr.pc-short{animation:pcShortPulse 1.7s ease-in-out infinite;}
 tr.pc-short>td:first-child{box-shadow:inset 3px 0 0 #dc2626;}
 @media (prefers-reduced-motion: reduce){tr.pc-short{animation:none;background:#fee2e2;}}
+/* ↕ 오더 라인 — 줄 아무 데나 잡아서 끈다. 입력칸 위에서는 평소 커서 그대로여야 타이핑에 방해가 안 된다 (v917) */
+#lines-body tr>td{cursor:grab;}
+#lines-body tr>td input,#lines-body tr>td select,#lines-body tr>td textarea{cursor:auto;}
+#lines-body tr>td button,#lines-body tr>td label,#lines-body tr>td input[type=checkbox]{cursor:pointer;}
+body.po-dragging #lines-body tr>td{cursor:grabbing;}
+body.po-dragging{user-select:none;}
 @keyframes overdue-pulse{0%,100%{opacity:1;}50%{opacity:0.55;}}
 .date-hdr{display:flex;align-items:center;gap:8px;margin:14px 0 6px;font-size:12px;font-weight:800;color:var(--text2);}
 .date-hdr::after{content:'';flex:1;height:1px;background:var(--border);}
@@ -172,7 +178,7 @@ tr.pc-short>td:first-child{box-shadow:inset 3px 0 0 #dc2626;}
   </span>
   <select id="lang-sel" onchange="setLang(this.value)" style="font-size:11px;padding:3px 6px;border-radius:5px;border:none;background:#1d3f66;color:#fff;"><option value="ko">한국어</option><option value="en">English</option><option value="es">Español</option></select>
   <button id="wide-btn" class="btn btn-sm" onclick="toggleWide()" title="화면 넓게 / 좁게 — 기본은 넓게 (이 브라우저에만 저장돼)" style="padding:2px 8px;font-size:10px;background:#1d3f66;color:#cfe0f2;border-color:#2b5384;">↔ Wide</button>
-  <span id="app-ver" style="font-size:10px;color:#9fb8d4;">v916</span>
+  <span id="app-ver" style="font-size:10px;color:#9fb8d4;">v917</span>
 </div>
 <script>
 // ↔ 넓게 보기 — 브라우저마다 따로 저장 (v793)
@@ -2115,19 +2121,29 @@ function priceCellHtml(l, i){
   s += '>';
   return s;
 }
-/* ═══════════ ↕ 오더 라인 순서 바꾸기 (v914) ═══════════
+/* ═══════════ ↕ 오더 라인 순서 바꾸기 (v914 · v917) ═══════════
    PO 에서 넘어온 순서가 우리가 일하는 순서랑 다를 때가 많다 —
-   왼쪽 ⠿ 를 잡고 원하는 자리에 놓으면 된다. transfer 팔렛 옮기듯이. */
+   줄 아무 데나 잡아서 원하는 자리에 놓으면 된다. transfer 팔렛 옮기듯이.
+   단 입력칸·체크박스·버튼 위에서 시작한 마우스는 드래그로 안 쓴다 (글자 선택과 클릭이 먼저다).
+   그래서 줄은 평소엔 draggable=false 로 두고, 마우스를 누른 자리를 보고 그때그때 켜준다. */
 let _poDrag = null;
+const PO_DRAG_SKIP = 'input,select,textarea,button,a,label,option,[contenteditable="true"]';
+function poDragArm(ev, i){
+  const tr = document.getElementById('row-'+i); if(!tr) return;
+  let inter = false;
+  try{ inter = !!(ev.target && ev.target.closest && ev.target.closest(PO_DRAG_SKIP)); }catch(e){}
+  tr.draggable = !inter;
+}
 function poDragClear(){
-  document.querySelectorAll('#lines-body tr').forEach(tr=>{ tr.style.opacity=''; tr.style.boxShadow=''; });
+  document.querySelectorAll('#lines-body tr').forEach(tr=>{ tr.style.opacity=''; tr.style.boxShadow=''; tr.draggable=false; });
 }
 function poDragStart(ev, i){
   _poDrag = i;
-  try{ ev.dataTransfer.effectAllowed='move'; ev.dataTransfer.setData('text/plain', String(i)); }catch(e){}
+  try{ ev.dataTransfer.effectAllowed='move'; ev.dataTransfer.setData('text/plain', 'po-line-'+i); }catch(e){}
   const tr = document.getElementById('row-'+i); if(tr) tr.style.opacity='.45';
+  document.body.classList.add('po-dragging');
 }
-function poDragEnd(){ _poDrag = null; poDragClear(); }
+function poDragEnd(){ _poDrag = null; document.body.classList.remove('po-dragging'); poDragClear(); }
 function poDragOver(ev, i){
   if(_poDrag === null || _poDrag === i) return;
   ev.preventDefault();
@@ -2172,8 +2188,8 @@ function renderTable(){
   _lineAvailCache = {};   // 재고 캐시 초기화 — 이번 렌더 동안만 재사용 (v442)
   tb.innerHTML = poLines.map((l,i)=>{
     const b = boxCalc(l);
-    return `<tr id="row-${i}" ondragover="poDragOver(event,${i})" ondragleave="poDragLeave(${i})" ondrop="poDrop(event,${i})" style="${l.wh==='BO'?'background:#fef2f2;':''}">
-      <td class="muted" style="white-space:nowrap;"><span draggable="true" ondragstart="poDragStart(event,${i})" ondragend="poDragEnd()" title="Drag to move this line up or down" style="cursor:grab;color:#94a3b8;font-weight:900;padding:0 2px;user-select:none;">\u283F</span><button class="btn btn-sm" style="color:#7c3aed;border:none;padding:2px 4px;" onclick="openSplitLine(${i})" title="Split this line's qty across SC/CA/BO/NA">✂</button>${l.wh==='BO'?`<button class="btn btn-sm" style="color:#dc2626;border:none;padding:2px 4px;font-weight:800;" onclick="openAltPicker(${i})" title="Choose an in-stock alternative (size / color / style)">⇄</button>`:''}${i+1}${l._altFrom?`<div style="font-size:8.5px;color:#dc2626;font-weight:800;line-height:1;margin-top:1px;" title="Alternative for ${esc(l._altFrom.style)} ${esc(String(l._altFrom.color).toUpperCase())} ${esc(String(l._altFrom.size).toUpperCase())} (BO ${(Number(l._altFrom.qty)||0).toLocaleString()})">⇄alt</div>`:''}</td>
+    return `<tr id="row-${i}" draggable="false" onmousedown="poDragArm(event,${i})" ondragstart="poDragStart(event,${i})" ondragend="poDragEnd()" ondragover="poDragOver(event,${i})" ondragleave="poDragLeave(${i})" ondrop="poDrop(event,${i})" title="Grab anywhere on this line (not on a box you type in) and drag it up or down" style="${l.wh==='BO'?'background:#fef2f2;':''}">
+      <td class="muted" style="white-space:nowrap;"><span title="Drag to move this line up or down" style="cursor:grab;color:#94a3b8;font-weight:900;padding:0 2px;user-select:none;">\u283F</span><button class="btn btn-sm" style="color:#7c3aed;border:none;padding:2px 4px;" onclick="openSplitLine(${i})" title="Split this line's qty across SC/CA/BO/NA">✂</button>${l.wh==='BO'?`<button class="btn btn-sm" style="color:#dc2626;border:none;padding:2px 4px;font-weight:800;" onclick="openAltPicker(${i})" title="Choose an in-stock alternative (size / color / style)">⇄</button>`:''}${i+1}${l._altFrom?`<div style="font-size:8.5px;color:#dc2626;font-weight:800;line-height:1;margin-top:1px;" title="Alternative for ${esc(l._altFrom.style)} ${esc(String(l._altFrom.color).toUpperCase())} ${esc(String(l._altFrom.size).toUpperCase())} (BO ${(Number(l._altFrom.qty)||0).toLocaleString()})">⇄alt</div>`:''}</td>
       <td><input id="st-${i}" value="${esc(l.style)}" onchange="updLine(${i},'style',this.value)" placeholder="?" style="min-width:60px;max-width:80px;font-weight:700;${l.style?'':'background:#fef9c3;border-color:#facc15;'}"></td>
       <td class="tl"><input id="de-${i}" class="tl" value="${esc(l.desc||'')}" onchange="updLine(${i},'desc',this.value)" placeholder="(PO description)" title="${esc(l.desc||'')}${l.rawDesc?('\n\nFrom the PO: '+esc(l.rawDesc)):''}" style="width:100%;min-width:240px;color:#6b7280;font-size:11px;"></td>
       <td class="tl"><input class="tl" value="${esc(l.color)}" onchange="updLine(${i},'color',this.value)" style="min-width:110px;"><div id="vchip-${i}" style="margin-top:2px;">${varChip(l)}</div></td>
