@@ -180,7 +180,7 @@ body.po-dragging{user-select:none;}
   </span>
   <select id="lang-sel" onchange="setLang(this.value)" style="font-size:11px;padding:3px 6px;border-radius:5px;border:none;background:#1d3f66;color:#fff;"><option value="ko">한국어</option><option value="en">English</option><option value="es">Español</option></select>
   <button id="wide-btn" class="btn btn-sm" onclick="toggleWide()" title="화면 넓게 / 좁게 — 기본은 넓게 (이 브라우저에만 저장돼)" style="padding:2px 8px;font-size:10px;background:#1d3f66;color:#cfe0f2;border-color:#2b5384;">↔ Wide</button>
-  <span id="app-ver" style="font-size:10px;color:#9fb8d4;">v922</span>
+  <span id="app-ver" style="font-size:10px;color:#9fb8d4;">v923</span>
 </div>
 <script>
 // ↔ 넓게 보기 — 브라우저마다 따로 저장 (v793)
@@ -10768,6 +10768,19 @@ const SCAN_ST = {
   over:   {t:'\u2716 over',           c:'#b45309', bg:'#fff7ed'},
   extra:  {t:'\u2716 not on this order', c:'#7c3aed', bg:'#f5f3ff'}
 };
+/* /pic 은 로그인 없이 도는 창고 화면이다. 그래서 여기서는 sbFetch(로그인 토큰) 를 쓰면 안 된다 —
+   토큰이 없으면 그냥 예외가 나고, 위에서 잡아먹혀서 "No incoming shipment waiting." 처럼 보였다.
+   실제로는 PSH26-012 가 pr_inbound 에 PENDING 으로 멀쩡히 있었다. (2026-09-01)
+   pr_inbound / pr_transfers 를 익명에게 통째로 열지 않고, 대기 중인 건과 필요한 칸만 돌려주는
+   함수 두 개(pic_scan_list · pic_scan_one)를 만들어 그것만 anon 에 열었다.
+   Pending Orders 화면이 이미 쓰는 방식(pack_orders · pack_lines)과 같다. */
+async function scanRpc(fn, body){
+  return fetch(SB_URL+'/rest/v1/rpc/'+fn, {
+    method:'POST',
+    headers:{ apikey:SB_KEY, Authorization:'Bearer '+SB_KEY, 'Content-Type':'application/json' },
+    body: JSON.stringify(body||{})
+  });
+}
 // ═══ 화면 1: Receive / Transfer 고르기 ═══
 async function scanOpen(){
   pchkWhoLoad();
@@ -10791,13 +10804,15 @@ async function scanPick(mode){
     b.style.background = on?'#0e7490':'#fff'; b.style.color = on?'#fff':'#64748b'; b.style.borderColor = on?'#0e7490':'#cbd5e1'; });
   const el = document.getElementById('scan-list'); if(!el) return;
   el.innerHTML = '<div style="color:#94a3b8;font-size:12px;padding:6px;">Loading…</div>';
-  let rows = [];
+  let rows = [], failed = false;
   try{
-    const url = (M==='IN')
-      ? '/rest/v1/pr_inbound?select=id,ref,status,lines,created_at&status=eq.PENDING&order=created_at.desc&limit=30'
-      : '/rest/v1/pr_transfers?select=id,ref,status,lines,meta,created_at&status=in.(LOADING,TRANSIT)&order=created_at.desc&limit=30';
-    const r = await sbFetch(url); if(r.ok) rows = await r.json();
-  }catch(e){}
+    const r = await scanRpc('pic_scan_list', {p_kind:M});
+    if(r.ok) rows = await r.json(); else failed = true;
+  }catch(e){ failed = true; }
+  if(failed){
+    el.innerHTML = `<div style="background:#fff;border-radius:12px;padding:22px;text-align:center;color:#b91c1c;font-size:13px;">Could not reach the server. Check the phone's signal and tap the tab again.</div>`;
+    return;
+  }
   if(!Array.isArray(rows) || !rows.length){
     el.innerHTML = `<div style="background:#fff;border-radius:12px;padding:22px;text-align:center;color:#94a3b8;font-size:13px;">${M==='IN'?'No incoming shipment waiting.':'No transfer in transit.'}</div>`;
     return;
@@ -10819,9 +10834,8 @@ async function scanPick(mode){
 async function scanStart(mode, id){
   let rec = null;
   try{
-    const tbl = (mode==='TR') ? 'pr_transfers' : 'pr_inbound';
-    const r = await sbFetch('/rest/v1/'+tbl+'?id=eq.'+encodeURIComponent(id)+'&select=*');
-    if(r.ok) rec = (await r.json())[0];
+    const r = await scanRpc('pic_scan_one', {p_kind:(mode==='TR')?'TR':'IN', p_id:String(id)});
+    if(r.ok) rec = await r.json();
   }catch(e){}
   if(!rec){ showToast('⚠ Not found'); return; }
   _scan = { mode, id, ref: rec.ref||'', title: (mode==='TR'?'🚚 Transfer ':'🇭🇹 Receive ')+(rec.ref||''),
