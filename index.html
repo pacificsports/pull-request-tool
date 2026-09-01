@@ -180,7 +180,7 @@ body.po-dragging{user-select:none;}
   </span>
   <select id="lang-sel" onchange="setLang(this.value)" style="font-size:11px;padding:3px 6px;border-radius:5px;border:none;background:#1d3f66;color:#fff;"><option value="ko">한국어</option><option value="en">English</option><option value="es">Español</option></select>
   <button id="wide-btn" class="btn btn-sm" onclick="toggleWide()" title="화면 넓게 / 좁게 — 기본은 넓게 (이 브라우저에만 저장돼)" style="padding:2px 8px;font-size:10px;background:#1d3f66;color:#cfe0f2;border-color:#2b5384;">↔ Wide</button>
-  <span id="app-ver" style="font-size:10px;color:#9fb8d4;">v921</span>
+  <span id="app-ver" style="font-size:10px;color:#9fb8d4;">v922</span>
 </div>
 <script>
 // ↔ 넓게 보기 — 브라우저마다 따로 저장 (v793)
@@ -1097,19 +1097,14 @@ function autoPpb(l){
 }
 // 재고 박스에서 스타일(+사이즈)별 가장 흔한 박스입수(pcs) 반환 — 마스터 미등록 스타일 ppb 자동 보정 (v496)
 function bxCommonPpb(style, size){
+  /* 예전엔 부를 때마다 박스 12만 개를 처음부터 훑었다(1회 14ms). Full Box 헤더가 스타일마다 이걸 부르니
+     194개 스타일 = 2.7초가 헤더 배지 하나에 들어가고 있었다. 재고가 바뀔 때만 만드는 표를 본다. (v921) */
   try{
     if(typeof bxStore==='undefined' || typeof bxLoaded==='undefined' || !bxLoaded) return null;
     const st = String(style||'').trim(); if(!st) return null;
     const sz = String(size||'').trim().toUpperCase();
-    const bySize = {}, byStyle = {};
-    for(let i=0;i<bxStore.length;i++){ const b = bxStore[i];
-      if(String(b.style).trim() !== st) continue;
-      const p = Number(b.pcs)||0; if(p <= 0) continue;
-      byStyle[p] = (byStyle[p]||0) + 1;
-      if(sz && String(b.size||'').toUpperCase() === sz) bySize[p] = (bySize[p]||0) + 1;
-    }
-    const mode = o => { let k=null,n=0; for(const p in o){ if(o[p] > n){ n = o[p]; k = Number(p); } } return k; };
-    return mode(bySize) || mode(byStyle) || null;
+    const t = _bxPpbTable();
+    return (sz ? t.sz[st+'|'+sz] : null) || t.st[st] || null;
   }catch(e){ return null; }
 }
 // 지정된 스타일·사이즈 ppb를 현재 오더 라인에 재적용 (override 있는 라인만) (v496)
@@ -18500,6 +18495,9 @@ function _bxPpbTable(){
   if(window._bxPpbTbl && window._bxPpbTblRev === rev) return window._bxPpbTbl;
   const bySz = {}, bySt = {};
   const store = (typeof bxStore!=='undefined' && Array.isArray(bxStore)) ? bxStore : [];
+  /* 아직 재고가 안 들어왔을 때 빈 표를 캐시해 버리면 로딩 후에도 계속 빈 표를 본다.
+     _bxRev 는 재고를 고칠 때만 오르므로, 비어 있는 동안은 캐시하지 않는다. */
+  const cacheable = store.length > 0;
   for(let i=0;i<store.length;i++){
     const b = store[i]; const p = Number(b.pcs)||0; if(p<=0) continue;
     const st = String(b.style||'').trim(); if(!st) continue;
@@ -18512,7 +18510,7 @@ function _bxPpbTable(){
   const out = {sz:{}, st:{}};
   for(const k in bySz) out.sz[k] = mode(bySz[k]);
   for(const k in bySt) out.st[k] = mode(bySt[k]);
-  window._bxPpbTbl = out; window._bxPpbTblRev = rev;
+  if(cacheable){ window._bxPpbTbl = out; window._bxPpbTblRev = rev; }
   return out;
 }
 function bxPpbAt(sty, sz){
@@ -18523,8 +18521,9 @@ function bxPpbAt(sty, sz){
   let v = 0;
   try{ v = (typeof ppbForStyleSize==='function') ? (ppbForStyleSize(st, z)||0) : 0; }catch(e){}
   if(!v){ const t=_bxPpbTable(); v = t.sz[ck] || t.st[st] || 0; }
-  if(!v) v = (typeof DEFAULT_PPB!=='undefined' && DEFAULT_PPB) ? DEFAULT_PPB : 72;
-  window._bxPpbMemo[ck] = v;
+  let fallback = false;
+  if(!v){ v = (typeof DEFAULT_PPB!=='undefined' && DEFAULT_PPB) ? DEFAULT_PPB : 72; fallback = true; }
+  if(!fallback) window._bxPpbMemo[ck] = v;   // 기본값으로 때운 건 캐시하지 않는다 (재고 들어오면 다시 본다)
   return v;
 }
 function bxTogglePcs(){
