@@ -180,7 +180,7 @@ body.po-dragging{user-select:none;}
   </span>
   <select id="lang-sel" onchange="setLang(this.value)" style="font-size:11px;padding:3px 6px;border-radius:5px;border:none;background:#1d3f66;color:#fff;"><option value="ko">한국어</option><option value="en">English</option><option value="es">Español</option></select>
   <button id="wide-btn" class="btn btn-sm" onclick="toggleWide()" title="화면 넓게 / 좁게 — 기본은 넓게 (이 브라우저에만 저장돼)" style="padding:2px 8px;font-size:10px;background:#1d3f66;color:#cfe0f2;border-color:#2b5384;">↔ Wide</button>
-  <span id="app-ver" style="font-size:10px;color:#9fb8d4;">v919</span>
+  <span id="app-ver" style="font-size:10px;color:#9fb8d4;">v920</span>
 </div>
 <script>
 // ↔ 넓게 보기 — 브라우저마다 따로 저장 (v793)
@@ -474,6 +474,7 @@ try{ applyWide(localStorage.getItem('psx_wide') !== '0'); }catch(e){ applyWide(t
       <button class="btn btn-sm" onclick="detToggleAll('bx-body',true)" title="Expand all styles">▾ Expand</button>
       <button class="btn btn-sm" onclick="detToggleAll('bx-body',false)" title="Collapse all styles">▸ Collapse</button>
       <button class="btn btn-sm" id="bx-viewbtn" onclick="bxToggleView()" title="Toggle grid (size columns) ↔ detail (location chips)">📍 Detail view</button>
+      <button class="btn btn-sm" id="bx-pcs-btn" onclick="bxTogglePcs()" title="Showing boxes. Click to see the same table in pieces.">📦 Boxes</button>
       <button class="btn btn-sm" id="bx-locbtn" onclick="bxToggleLocView()" title="Group inventory by location bin — H* bins are 3rd party (Hodge)">🗺 By Location</button>
       <button class="btn btn-sm" id="bx-usbtn" onclick="bxToggleUS()" title="Show only US-thread boxes">🇺🇸 US only</button>
       <button class="btn btn-sm" id="bx-sobtn" onclick="soListOpen()" title="Ship out requests — staff pull the boxes first, then Confirm here to deduct stock">🚚 Ship outs</button>
@@ -18395,6 +18396,7 @@ function detToggleAll(bodyId, open){
   document.querySelectorAll('#'+bodyId+' details').forEach(d=>{ if(open) d.setAttribute('open',''); else d.removeAttribute('open'); });
 }
 function bxToggleView(){
+  bxPcsBtnPaint();
   window._bxView = (window._bxView==='detail') ? 'grid' : 'detail';
   const b = $('bx-viewbtn'); if(b) b.textContent = window._bxView==='detail' ? '▦ Grid view' : '📍 Detail view';
   const w = $('bx-showall-wrap'); if(w) w.style.display = window._bxView==='detail' ? 'inline-flex' : 'none';
@@ -18480,6 +18482,40 @@ function bxVarCell(style, fullColor, size, wh){
   document.body.appendChild(div);
 }
 // ▦ 그리드 뷰: 칼라마다 SC / CA / Total 3줄 · 사이즈는 열 · 칸 클릭 → location (PC Room과 같은 구조)
+/* ═══ 📦 박스 ↔ 🔢 장수(pcs) 보기 전환 (v920) ═══
+   창고 사람은 박스로 세고, 오더/견적은 장수로 센다. 같은 표를 두 눈으로 보게 한다.
+   실제 박스에서 온 숫자는 박스마다 담긴 pcs 를 그대로 더하고(정확),
+   Incoming·Reserved·Available 처럼 박스수만 있는 줄은 그 스타일·사이즈의 pcs/box 로 환산한다(근사). */
+function _bxPcsOn(){ return !!window._bxPcs; }
+function bxNum(boxes, pcs){
+  if(!_bxPcsOn()) return boxes;
+  return (Number(pcs)||0).toLocaleString();
+}
+function bxPpbAt(sty, sz){
+  try{
+    const a = (typeof ppbForStyleSize==='function') ? ppbForStyleSize(sty, sz) : null; if(a) return a;
+    const b = (typeof bxCommonPpb==='function') ? bxCommonPpb(sty, sz) : null; if(b) return b;
+  }catch(e){}
+  return (typeof DEFAULT_PPB!=='undefined' && DEFAULT_PPB) ? DEFAULT_PPB : 72;
+}
+function bxTogglePcs(){
+  window._bxPcs = !window._bxPcs;
+  try{ localStorage.setItem('pr_bx_pcs', window._bxPcs?'1':''); }catch(e){}
+  bxPcsBtnPaint();
+  if(typeof renderBoxRoom==='function') renderBoxRoom();
+  showToast(window._bxPcs ? '🔢 Showing pieces' : '📦 Showing boxes');
+}
+function bxPcsBtnPaint(){
+  const b=document.getElementById('bx-pcs-btn'); if(!b) return;
+  b.textContent = window._bxPcs ? '🔢 Pcs' : '📦 Boxes';
+  b.style.background = window._bxPcs ? '#0d9488' : '';
+  b.style.color      = window._bxPcs ? '#fff' : '';
+  b.style.borderColor= window._bxPcs ? '#0d9488' : '';
+  b.title = window._bxPcs
+    ? 'Showing pieces. Numbers from real boxes add up each box\u2019s own count; Incoming / Reserved / Available are boxes \u00D7 pcs-per-box, so they are close but not exact. Click for boxes.'
+    : 'Showing boxes. Click to see the same table in pieces.';
+}
+try{ window._bxPcs = !!localStorage.getItem('pr_bx_pcs'); }catch(e){ window._bxPcs=false; }
 function bxGridStyle(sty, colGroups){
   // v361: 요약 줄은 항상 · 무거운 표는 펼칠 때만 (PC Room 과 같은 지연 방식)
   const baseGroups = {};
@@ -18536,14 +18572,15 @@ function bxGridInner(sty, colGroups){
   const colors = Object.keys(baseGroups).sort();
   const all = colors.reduce((a,c)=>a.concat(baseGroups[c]),[]);
   const scN = all.filter(b=>bxWh(b)==='SC').length, caN = all.filter(b=>bxWh(b)==='CA').length;
-  const cellCnt = {};
-  all.forEach(b=>{ const k = bxBaseColor(b.color)+'|'+bxWh(b)+'|'+String(b.size).toUpperCase(); cellCnt[k] = (cellCnt[k]||0)+1; });
-  const varCnt = {};   // 변형 풀칼라|창고|사이즈 → 박스수
-  all.forEach(b=>{ const k = String(b.color).toUpperCase()+'|'+bxWh(b)+'|'+String(b.size).toUpperCase(); varCnt[k] = (varCnt[k]||0)+1; });
+  const cellCnt = {}, cellPcs = {};
+  all.forEach(b=>{ const k = bxBaseColor(b.color)+'|'+bxWh(b)+'|'+String(b.size).toUpperCase(); cellCnt[k] = (cellCnt[k]||0)+1; cellPcs[k] = (cellPcs[k]||0)+(Number(b.pcs)||0); });
+  const varCnt = {}, varPcs = {};   // 변형 풀칼라|창고|사이즈 → 박스수 / 장수
+  all.forEach(b=>{ const k = String(b.color).toUpperCase()+'|'+bxWh(b)+'|'+String(b.size).toUpperCase(); varCnt[k] = (varCnt[k]||0)+1; varPcs[k] = (varPcs[k]||0)+(Number(b.pcs)||0); });
   // 특수 bin 분리: SC = H* (3rd Party/Hodge) · CA = SPECIAL* (거래처 창고 locker)
-  const specCnt = {}, ownCnt = {};
-  all.forEach(b=>{ const w = bxWh(b); const k = bxBaseColor(b.color)+'|'+w+'|'+String(b.size).toUpperCase();
-    if(bxSpecLoc(b.loc, w)) specCnt[k] = (specCnt[k]||0)+1; else ownCnt[k] = (ownCnt[k]||0)+1; });
+  const specCnt = {}, ownCnt = {}, specPcs = {}, ownPcs = {};
+  all.forEach(b=>{ const w = bxWh(b); const k = bxBaseColor(b.color)+'|'+w+'|'+String(b.size).toUpperCase(); const pc = Number(b.pcs)||0;
+    if(bxSpecLoc(b.loc, w)){ specCnt[k] = (specCnt[k]||0)+1; specPcs[k] = (specPcs[k]||0)+pc; }
+    else { ownCnt[k] = (ownCnt[k]||0)+1; ownPcs[k] = (ownPcs[k]||0)+pc; } });
   const spTotSC = all.filter(b=>bxWh(b)==='SC' && bxSpecLoc(b.loc,'SC')).length;
   const spTotCA = all.filter(b=>bxWh(b)==='CA' && bxSpecLoc(b.loc,'CA')).length;
   if(!window._bxExp) window._bxExp = new Set();
@@ -18572,34 +18609,37 @@ function bxGridInner(sty, colGroups){
       const sp = spN(w);
       const expandable = vs.length > 1 || sp > 0;
       const isExp = expandable && window._bxExp.has(expKey(w));
-      let rowTot = 0;
+      let rowTot = 0, rowPcs = 0;
       const cells = sizes.map(sz=>{
         const n = cellCnt[c+'|'+w+'|'+sz]||0; rowTot += n;
+        const pc = cellPcs[c+'|'+w+'|'+sz]||0; rowPcs += pc;
+        const shown = bxNum(n, pc);
         return `<td style="text-align:center;padding:3px 3px;">${n
-          ? `<span onclick="bxCellModal('${esc(sty)}','${esc(c)}','${esc(sz)}','${w}')" style="display:inline-block;width:42px;padding:5px 0;border:1px solid #cbd5e1;border-radius:7px;background:#fff;text-align:center;font-family:inherit;font-weight:700;font-size:12.5px;color:#0f172a;cursor:pointer;" title="[${w}] ${n} box(es) — click to view/edit locations">${n}</span>`
-          : `<span onclick="bxCellModal('${esc(sty)}','${esc(c)}','${esc(sz)}','${w}')" style="display:inline-block;width:42px;padding:5px 0;border:1px solid #e5eaf1;border-radius:7px;background:#f8fafc;cursor:pointer;" title="No stock — click to add boxes">&nbsp;</span>`}</td>`;
+          ? `<span onclick="bxCellModal('${esc(sty)}','${esc(c)}','${esc(sz)}','${w}')" style="display:inline-block;width:${_bxPcsOn()?54:42}px;padding:5px 0;border:1px solid #cbd5e1;border-radius:7px;background:#fff;text-align:center;font-family:inherit;font-weight:700;font-size:12.5px;color:#0f172a;cursor:pointer;" title="[${w}] ${n} box(es) · ${pc.toLocaleString()} pcs — click to view/edit locations">${shown}</span>`
+          : `<span onclick="bxCellModal('${esc(sty)}','${esc(c)}','${esc(sz)}','${w}')" style="display:inline-block;width:${_bxPcsOn()?54:42}px;padding:5px 0;border:1px solid #e5eaf1;border-radius:7px;background:#f8fafc;cursor:pointer;" title="No stock — click to add boxes">&nbsp;</span>`}</td>`;
       }).join('');
       const spm  = sp ? bxSpecMeta(spKind(w)) : null;
       const spBdg = sp ? ` <span style="font-size:8.5px;font-weight:800;color:${spm.color};background:${spm.bg};border:1px solid ${spm.bd};padding:0 4px;border-radius:8px;white-space:nowrap;" title="${esc(spm.name)} — ${sp} of the ${rowTot} box(es) sit in a ${w==='CA'?'SPECIAL*':'H*'} bin. Click ${w} to split it out.">${spm.icon} ${sp}</span>` : '';
       const lbl = expandable
         ? `<span onclick="bxToggleVar('${esc(sty)}','${esc(c)}','${w}')" style="cursor:pointer;user-select:none;" title="Click to expand/collapse${vs.length>1?' by variant (Tubular/Side Seam/US)':''}${sp?(vs.length>1?' and by bin type':' — split out '+(w==='CA'?'SPECIAL* (3rd party warehouse)':'H* (3rd Party/Hodge)')+' stock'):''}">${isExp?'▾':'▸'} ${w}</span>${spBdg}`
         : w;
-      return `<td style="font-weight:800;font-size:11px;color:${whCol};white-space:nowrap;text-align:left;padding-left:12px;"><input type="checkbox" data-bxr="${encodeURIComponent(bxRptKey(sty,c,w))}" ${window._bxRptSel[bxRptKey(sty,c,w)]?'checked':''} onchange="bxRptTgl('${esc(sty)}','${esc(c)}','${w}',this.checked)" style="width:13px;height:13px;accent-color:#0d9488;vertical-align:-2px;margin-right:5px;cursor:pointer;" title="Add to customer stock report">${lbl}</td>${cells}<td style="font-family:Consolas,monospace;font-weight:800;color:#0f172a;text-align:center;">${rowTot||''}</td>`;
+      return `<td style="font-weight:800;font-size:11px;color:${whCol};white-space:nowrap;text-align:left;padding-left:12px;"><input type="checkbox" data-bxr="${encodeURIComponent(bxRptKey(sty,c,w))}" ${window._bxRptSel[bxRptKey(sty,c,w)]?'checked':''} onchange="bxRptTgl('${esc(sty)}','${esc(c)}','${w}',this.checked)" style="width:13px;height:13px;accent-color:#0d9488;vertical-align:-2px;margin-right:5px;cursor:pointer;" title="Add to customer stock report">${lbl}</td>${cells}<td style="font-family:Consolas,monospace;font-weight:800;color:#0f172a;text-align:center;" title="${rowTot} box(es) · ${rowPcs.toLocaleString()} pcs">${bxNum(rowTot,rowPcs)||''}</td>`;
     };
     // 펼쳐진 특수 bin 서브줄 — SC: 자체 bin vs H*(Hodge) · CA: 자체 bin vs SPECIAL*(거래처 창고)
     const specRows = (w)=>{
       if(!spN(w) || !window._bxExp.has(expKey(w))) return '';
       const m = bxSpecMeta(spKind(w));
-      const line = (map, icon, name, col, bg, bd, ttl)=>{
-        let t = 0;
+      const line = (map, pmap, icon, name, col, bg, bd, ttl)=>{
+        let t = 0, tp = 0;
         const cells = sizes.map(sz=>{
           const n = map[c+'|'+w+'|'+sz]||0; t += n;
-          return `<td style="text-align:center;padding:1px 3px;">${n?`<span style="display:inline-block;min-width:34px;padding:1px 6px;border-radius:6px;background:${bg};border:1px solid ${bd};font-size:11px;font-weight:800;color:${col};" title="${esc(ttl)} — ${n} box(es)">${n}</span>`:`<span style="color:#e8ecf3;">·</span>`}</td>`;
+          const pc = (pmap||{})[c+'|'+w+'|'+sz]||0; tp += pc;
+          return `<td style="text-align:center;padding:1px 3px;">${n?`<span style="display:inline-block;min-width:34px;padding:1px 6px;border-radius:6px;background:${bg};border:1px solid ${bd};font-size:11px;font-weight:800;color:${col};" title="${esc(ttl)} — ${n} box(es) · ${pc.toLocaleString()} pcs">${bxNum(n,pc)}</span>`:`<span style="color:#e8ecf3;">·</span>`}</td>`;
         }).join('');
-        return `<tr style="background:${bg};"><td style="font-size:9.5px;font-weight:800;color:${col};white-space:nowrap;text-align:left;padding-left:24px;" title="${esc(ttl)}">↳ ${icon} ${esc(name)}</td>${cells}<td style="font-family:Consolas,monospace;font-weight:800;color:${col};text-align:center;font-size:11px;">${t||''}</td><td></td></tr>`;
+        return `<tr style="background:${bg};"><td style="font-size:9.5px;font-weight:800;color:${col};white-space:nowrap;text-align:left;padding-left:24px;" title="${esc(ttl)}">↳ ${icon} ${esc(name)}</td>${cells}<td style="font-family:Consolas,monospace;font-weight:800;color:${col};text-align:center;font-size:11px;" title="${t} box(es) · ${tp.toLocaleString()} pcs">${bxNum(t,tp)||''}</td><td></td></tr>`;
       };
-      return line(ownCnt, '📍', w==='CA'?'Our CA bins':'Our SC bins', '#0f2a4a', '#f8fafc', '#dbe4f0', 'Stock in our own '+w+' bins — ready to pick')
-           + line(specCnt, m.icon, w==='CA'?'SPECIAL* (3rd Party WH)':'H* (3rd Party/Hodge)', m.color, m.bg, m.bd, m.note);
+      return line(ownCnt, ownPcs, '📍', w==='CA'?'Our CA bins':'Our SC bins', '#0f2a4a', '#f8fafc', '#dbe4f0', 'Stock in our own '+w+' bins — ready to pick')
+           + line(specCnt, specPcs, m.icon, w==='CA'?'SPECIAL* (3rd Party WH)':'H* (3rd Party/Hodge)', m.color, m.bg, m.bd, m.note);
     };
     // 펼쳐진 변형 서브줄
     const varRows = (w)=>{
@@ -18608,19 +18648,22 @@ function bxGridInner(sty, colGroups){
       return vs.map(fc=>{
         const vl = bxVariantLabel(fc, sty) || bxDefaultVariant(sty);
         const vc = vl==='Tubular' ? '#64748b' : (/US/.test(vl) ? '#c2410c' : '#7c3aed');
-        let vt = 0;
+        let vt = 0, vp = 0;
         const cells = sizes.map(sz=>{
           const n = varCnt[fc+'|'+w+'|'+sz]||0; vt += n;
-          return `<td style="text-align:center;padding:1px 3px;">${n?`<span onclick="bxVarCell('${esc(sty)}','${esc(fc)}','${esc(sz)}','${w}')" style="display:inline-block;min-width:34px;padding:1px 6px;border-radius:6px;background:#fff;border:1px dashed ${vc};font-size:11px;font-weight:700;color:${vc};cursor:pointer;" title="${esc(vl)} ${n} box(es) — click for locations">${n}</span>`:`<span style="color:#e8ecf3;">·</span>`}</td>`;
+          const pc = varPcs[fc+'|'+w+'|'+sz]||0; vp += pc;
+          return `<td style="text-align:center;padding:1px 3px;">${n?`<span onclick="bxVarCell('${esc(sty)}','${esc(fc)}','${esc(sz)}','${w}')" style="display:inline-block;min-width:34px;padding:1px 6px;border-radius:6px;background:#fff;border:1px dashed ${vc};font-size:11px;font-weight:700;color:${vc};cursor:pointer;" title="${esc(vl)} ${n} box(es) · ${pc.toLocaleString()} pcs — click for locations">${bxNum(n,pc)}</span>`:`<span style="color:#e8ecf3;">·</span>`}</td>`;
         }).join('');
-        return `<tr style="background:#fcfcfe;"><td style="font-size:9.5px;font-weight:800;color:${vc};white-space:nowrap;text-align:left;padding-left:24px;">↳ ${esc(vl)}</td>${cells}<td style="font-family:Consolas,monospace;font-weight:800;color:${vc};text-align:center;font-size:11px;">${vt||''}</td><td></td></tr>`;
+        return `<tr style="background:#fcfcfe;"><td style="font-size:9.5px;font-weight:800;color:${vc};white-space:nowrap;text-align:left;padding-left:24px;">↳ ${esc(vl)}</td>${cells}<td style="font-family:Consolas,monospace;font-weight:800;color:${vc};text-align:center;font-size:11px;" title="${vt} box(es) · ${vp.toLocaleString()} pcs">${bxNum(vt,vp)||''}</td><td></td></tr>`;
       }).join('');
     };
     const totCells = sizes.map(sz=>{
       const n = (cellCnt[c+'|SC|'+sz]||0) + (cellCnt[c+'|CA|'+sz]||0);
-      return `<td style="text-align:center;font-family:Consolas,monospace;font-weight:800;color:#0f2a4a;background:#f1f5f9;">${n||'<span style="color:#cbd5e1;">·</span>'}</td>`;
+      const pc = (cellPcs[c+'|SC|'+sz]||0) + (cellPcs[c+'|CA|'+sz]||0);
+      return `<td style="text-align:center;font-family:Consolas,monospace;font-weight:800;color:#0f2a4a;background:#f1f5f9;" title="${n} box(es) · ${pc.toLocaleString()} pcs">${n?bxNum(n,pc):'<span style="color:#cbd5e1;">·</span>'}</td>`;
     }).join('');
     const colTot = baseGroups[c].length;
+    const colPcs = baseGroups[c].reduce((a,b)=>a+(Number(b.pcs)||0),0);
     const expN = (w)=>{ if(!window._bxExp.has(expKey(w))) return 0; return (whVars(w).length>1 ? whVars(w).length : 0) + (spN(w) ? 2 : 0); };
     const expSC = expN('SC'), expCA = expN('CA');
     // 🚢 Incoming — 컨테이너(ref)별로 한 줄씩 (여러 컨테이너 들어올 때 수량 비교용, v474)
@@ -18629,40 +18672,43 @@ function bxGridInner(sty, colGroups){
     const _incRefs = Object.keys(_byRef).filter(rf => sizes.some(sz => (_byRef[rf][_skk(sz)]||0) > 0)).sort();
     const incRow = _incRefs.map(rf=>{
       let _t = 0;
-      const _cells = sizes.map(sz=>{ const n=_byRef[rf][_skk(sz)]||0; _t+=n; return `<td style="text-align:center;padding:1px 3px;">${n?`<span style="display:inline-block;min-width:34px;padding:1px 6px;border-radius:6px;background:#ecfeff;border:1px solid #67e8f9;font-size:11px;font-weight:800;color:#0e7490;" title="${esc(rf)} — ${n} box(es) on the way from Haiti">${n}</span>`:`<span style="color:#e8ecf3;">·</span>`}</td>`; }).join('');
+      let _tp = 0;
+      const _cells = sizes.map(sz=>{ const n=_byRef[rf][_skk(sz)]||0; _t+=n; const pc=n*bxPpbAt(sty,sz); _tp+=pc; return `<td style="text-align:center;padding:1px 3px;">${n?`<span style="display:inline-block;min-width:34px;padding:1px 6px;border-radius:6px;background:#ecfeff;border:1px solid #67e8f9;font-size:11px;font-weight:800;color:#0e7490;" title="${esc(rf)} — ${n} box(es) · about ${pc.toLocaleString()} pcs on the way from Haiti">${bxNum(n,pc)}</span>`:`<span style="color:#e8ecf3;">·</span>`}</td>`; }).join('');
       /* v848: 들어오는 물량만 골라서 리포트를 만들 수 있어야 한다 —
          「지금 재고는 없지만 이건 오는 중」을 거래처에 보내는 경우가 실제로 있다.
          체크는 창고 'INC' 로 잡는다: 재고 박스는 하나도 안 걸리고 incoming 만 채워진다. */
       const _incKey = bxRptKey(sty, c, 'INC');
       return `<tr style="background:#ecfeff;"><td style="font-size:9.5px;font-weight:800;color:#0e7490;white-space:nowrap;text-align:left;padding-left:12px;">`
         + `<input type="checkbox" data-bxr="${encodeURIComponent(_incKey)}" ${window._bxRptSel[_incKey]?'checked':''} onclick="event.stopPropagation();" onchange="bxRptTgl('${esc(sty)}','${esc(c)}','INC',this.checked)" style="width:13px;height:13px;accent-color:#0e7490;vertical-align:-2px;margin-right:5px;cursor:pointer;" title="Add the INCOMING quantities to the customer stock report (no on-hand stock)">`
-        + `<span style="cursor:pointer;" onclick="hiOpen()" title="Haiti invoice ${esc(rf)} — click to review / receive · becomes SC stock when bins are assigned on arrival">🚢 ${esc(rf)}</span></td>${_cells}<td style="font-family:Consolas,monospace;font-weight:800;color:#0e7490;text-align:center;font-size:11px;">${_t}</td><td></td></tr>`;
+        + `<span style="cursor:pointer;" onclick="hiOpen()" title="Haiti invoice ${esc(rf)} — click to review / receive · becomes SC stock when bins are assigned on arrival">🚢 ${esc(rf)}</span></td>${_cells}<td style="font-family:Consolas,monospace;font-weight:800;color:#0e7490;text-align:center;font-size:11px;" title="${_t} box(es) · about ${_tp.toLocaleString()} pcs">${bxNum(_t,_tp)}</td><td></td></tr>`;
     }).join('');
     const rsvRow = (()=>{
-      let any=false, tot=0; const custs=new Set(); let note='';
+      let any=false, tot=0, totp=0; const custs=new Set(); let note='';
       const cells = sizes.map(sz=>{
         const nsc=reservedBoxes(sty,c,sz,'SC'), nca=reservedBoxes(sty,c,sz,'CA'); const n=nsc+nca;
-        if(n>0){ any=true; tot+=n; }
+        const pc=n*bxPpbAt(sty,sz);
+        if(n>0){ any=true; tot+=n; totp+=pc; }
         const rf = Math.max(0, nsc-(cellCnt[c+'|SC|'+sz]||0)) + Math.max(0, nca-(cellCnt[c+'|CA|'+sz]||0));
-        return `<td style="text-align:center;padding:2px 3px;">${n?`<span style="display:inline-block;min-width:30px;padding:1px 5px;border-radius:6px;background:#f5f3ff;border:1px solid #c4b5fd;font-size:11px;font-weight:800;color:#7c3aed;" title="Reserved ${n}${rf?(' · refill '+rf):''}">${n}${rf?`<span style="color:#dc2626;font-size:8px;font-weight:800;"> ⚠${rf}</span>`:''}</span>`:`<span style="color:#e8ecf3;">·</span>`}</td>`;
+        return `<td style="text-align:center;padding:2px 3px;">${n?`<span style="display:inline-block;min-width:30px;padding:1px 5px;border-radius:6px;background:#f5f3ff;border:1px solid #c4b5fd;font-size:11px;font-weight:800;color:#7c3aed;" title="Reserved ${n} box(es) · about ${pc.toLocaleString()} pcs${rf?(' · refill '+rf):''}">${bxNum(n,pc)}${rf?`<span style="color:#dc2626;font-size:8px;font-weight:800;"> ⚠${rf}</span>`:''}</span>`:`<span style="color:#e8ecf3;">·</span>`}</td>`;
       }).join('');
       if(!any) return '';
       ['SC','CA'].forEach(w=>sizes.forEach(sz=>{ rsvListAt(sty,c,sz,w).forEach(e=>{ if(e.cust) custs.add(e.cust); if(e.note&&!note) note=e.note; }); }));
       const custArr=[...custs];
       const custChips=custArr.length?custArr.map(cn=>`<span onclick="event.stopPropagation();openReserveEditor('${esc(sty)}','${esc(c)}','${esc(cn)}')" style="cursor:pointer;text-decoration:underline;" title="Edit ${esc(cn)}'s reserve">${esc(cn)}</span>`).join(', '):'';
       const lbl='🔒 Reserved'+(custChips?' · '+custChips:'')+(note?' <span style="font-weight:600;color:#9333ea;">('+esc(note)+')</span>':'')+` <span onclick="event.stopPropagation();openReserveEditor('${esc(sty)}','${esc(c)}')" style="cursor:pointer;color:#7c3aed;" title="Add a reserve for another customer">＋</span>`;
-      return `<tr style="background:#faf5ff;"><td style="font-size:9.5px;font-weight:800;color:#7c3aed;white-space:nowrap;text-align:left;padding-left:12px;">${lbl}</td>${cells}<td style="font-family:Consolas,monospace;font-weight:800;color:#7c3aed;text-align:center;">${tot||''}</td><td></td></tr>`;
+      return `<tr style="background:#faf5ff;"><td style="font-size:9.5px;font-weight:800;color:#7c3aed;white-space:nowrap;text-align:left;padding-left:12px;">${lbl}</td>${cells}<td style="font-family:Consolas,monospace;font-weight:800;color:#7c3aed;text-align:center;" title="${tot} box(es) · about ${totp.toLocaleString()} pcs">${bxNum(tot,totp)||''}</td><td></td></tr>`;
     })();
     // ✅ Available = 재고(Total) − Reserved · reserve 있는 색상에서만 표시 (오더에 실제로 쓸 수 있는 수량)
     const availRow = rsvRow ? (()=>{
-      let tot=0;
+      let tot=0, totp=0;
       const cells = sizes.map(sz=>{
         const phys=(cellCnt[c+'|SC|'+sz]||0)+(cellCnt[c+'|CA|'+sz]||0);
         const rsv=reservedBoxes(sty,c,sz,'SC')+reservedBoxes(sty,c,sz,'CA');
         const av=Math.max(0, phys-rsv); tot+=av;
-        return `<td style="text-align:center;padding:2px 3px;">${av?`<span style="display:inline-block;min-width:30px;padding:1px 5px;border-radius:6px;background:#ecfdf5;border:1px solid #6ee7b7;font-size:11px;font-weight:800;color:#059669;" title="Available ${av} = ${phys} on hand − ${rsv} reserved">${av}</span>`:`<span style="color:#e8ecf3;" title="0 available — ${phys} on hand − ${rsv} reserved">·</span>`}</td>`;
+        const pc=av*bxPpbAt(sty,sz); totp+=pc;
+        return `<td style="text-align:center;padding:2px 3px;">${av?`<span style="display:inline-block;min-width:30px;padding:1px 5px;border-radius:6px;background:#ecfdf5;border:1px solid #6ee7b7;font-size:11px;font-weight:800;color:#059669;" title="Available ${av} box(es) · about ${pc.toLocaleString()} pcs = ${phys} on hand − ${rsv} reserved">${bxNum(av,pc)}</span>`:`<span style="color:#e8ecf3;" title="0 available — ${phys} on hand − ${rsv} reserved">·</span>`}</td>`;
       }).join('');
-      return `<tr style="background:#ecfdf5;"><td style="font-size:9.5px;font-weight:800;color:#059669;white-space:nowrap;text-align:left;padding-left:12px;" title="On hand − Reserved = free to sell">✅ Available</td>${cells}<td style="font-family:Consolas,monospace;font-weight:800;color:#059669;text-align:center;">${tot||''}</td><td></td></tr>`;
+      return `<tr style="background:#ecfdf5;"><td style="font-size:9.5px;font-weight:800;color:#059669;white-space:nowrap;text-align:left;padding-left:12px;" title="On hand − Reserved = free to sell">✅ Available</td>${cells}<td style="font-family:Consolas,monospace;font-weight:800;color:#059669;text-align:center;" title="${tot} box(es) · about ${totp.toLocaleString()} pcs">${bxNum(tot,totp)||''}</td><td></td></tr>`;
     })() : '';
     const rSpan = 3 + expSC + expCA + (incRow?1:0) + (rsvRow?1:0) + (availRow?1:0);
     return `<tbody style="border-top:2px solid #dbe4f0;">
@@ -18680,7 +18726,7 @@ function bxGridInner(sty, colGroups){
       <tr style="background:#f1f5f9;">
         <td style="font-weight:800;font-size:10px;color:#0f2a4a;white-space:nowrap;text-align:left;padding-left:12px;"><input type="checkbox" data-bxr="${encodeURIComponent(bxRptKey(sty,c,'TOTAL'))}" ${window._bxRptSel[bxRptKey(sty,c,'TOTAL')]?'checked':''} onchange="bxRptTgl('${esc(sty)}','${esc(c)}','TOTAL',this.checked)" style="width:13px;height:13px;accent-color:#0d9488;vertical-align:-2px;margin-right:5px;cursor:pointer;" title="Add to customer stock report">Total</td>
         ${totCells}
-        <td style="font-family:Consolas,monospace;font-weight:800;color:#fff;background:#0f2a4a;text-align:center;">${colTot||''}</td>
+        <td style="font-family:Consolas,monospace;font-weight:800;color:#fff;background:#0f2a4a;text-align:center;" title="${colTot} box(es) · ${colPcs.toLocaleString()} pcs">${bxNum(colTot,colPcs)||''}</td>
         <td></td>
       </tr>
       ${incRow}
@@ -20433,6 +20479,7 @@ function palletLabelPrint(){
   showToast('🏷️ '+qty+' label(s) sent to print');
 }
 function renderBoxRoom(){
+  try{ bxPcsBtnPaint(); }catch(e){}
   const el = $('bx-body'); if(!el) return;
   if(el.offsetParent === null){ window._bxDirty = true; return; }   // 숨겨진 탭 — 돌아올 때 그림
   window._bxDirty = false;
