@@ -180,7 +180,7 @@ body.po-dragging{user-select:none;}
   </span>
   <select id="lang-sel" onchange="setLang(this.value)" style="font-size:11px;padding:3px 6px;border-radius:5px;border:none;background:#1d3f66;color:#fff;"><option value="ko">한국어</option><option value="en">English</option><option value="es">Español</option></select>
   <button id="wide-btn" class="btn btn-sm" onclick="toggleWide()" title="화면 넓게 / 좁게 — 기본은 넓게 (이 브라우저에만 저장돼)" style="padding:2px 8px;font-size:10px;background:#1d3f66;color:#cfe0f2;border-color:#2b5384;">↔ Wide</button>
-  <span id="app-ver" style="font-size:10px;color:#9fb8d4;">v927</span>
+  <span id="app-ver" style="font-size:10px;color:#9fb8d4;">v928</span>
 </div>
 <script>
 // ↔ 넓게 보기 — 브라우저마다 따로 저장 (v793)
@@ -11003,6 +11003,7 @@ async function scanStartSelected(){
     bases: bases.map(b=>{ const row=(window._ltlRows||[]).find(x=>String(x.base)===String(b))||{};
       return { base:b, po:row.po||(info[b]||{}).po||'', cust:row.cust||(info[b]||{}).cust||'' }; }),
     unit:'pcs', exp:Object.values(m), seen:new Map(), manual:{}, pbox:new Map() };
+  window._scanPoOpen = {};
   pfindCarryInto(bases, wh);
   scanSession();
 }
@@ -11015,8 +11016,10 @@ async function scanStartSelected(){
 function scanUnits(){
   const u = [];
   try{ _scan.seen.forEach(v=>u.push({ po:String(v.po||'').trim(), boxes:1,
+        label:'CTN ' + (String(v.ctn||'').trim() || '\u2014'),
         items:[{k:scanKeyOf(v.style,v.color,v.size), qty:Number(v.qty)||0}] })); }catch(e){}
   try{ (_scan.pbox||new Map()).forEach(b=>u.push({ po:String(b.po||'').trim(), boxes:1,
+        label:(b.wh?('['+b.wh+'] '):'') + 'BOX ' + String(b.box||'\u2014'),
         items:(b.items||[]).map(i=>({k:scanKeyOf(i.style,i.color,i.size), qty:Number(i.qty)||0})) })); }catch(e){}
   return u;
 }
@@ -11026,7 +11029,7 @@ function scanPerPo(){
   const res = bases.map(b=>{
     const want = {};
     scanExpOrder(b.base, wh).forEach(e=>{ want[scanKeyOf(e.style,e.color,e.size)] = Number(e.qty)||0; });
-    return { base:b.base, po:String(b.po||''), cust:String(b.cust||''), want, got:{}, boxes:0 };
+    return { base:b.base, po:String(b.po||''), cust:String(b.cust||''), want, got:{}, boxes:0, units:[] };
   });
   const byPo = {}; res.forEach(r=>{ if(r.po) byPo[r.po.toUpperCase()] = r; });
   const need = (r,k)=> Math.max(0, (r.want[k]||0) - (r.got[k]||0));
@@ -11038,7 +11041,7 @@ function scanPerPo(){
   units.forEach(u=>{
     const r = u.po ? byPo[u.po.toUpperCase()] : null;
     if(!r){ later.push(u); return; }
-    r.boxes += u.boxes;
+    r.boxes += u.boxes; r.units.push(u);
     u.items.forEach(i=>put(r, i.k, i.qty));
   });
   // ② 나머지는 아직 모자란 PO 부터
@@ -11046,12 +11049,12 @@ function scanPerPo(){
     let placed = false;
     for(const r of res){
       if(u.items.every(i=>need(r,i.k) >= i.qty)){
-        r.boxes += u.boxes; u.items.forEach(i=>put(r,i.k,i.qty)); placed = true; break;
+        r.boxes += u.boxes; r.units.push(u); u.items.forEach(i=>put(r,i.k,i.qty)); placed = true; break;
       }
     }
     if(!placed){
       const r = res.find(x=>u.items.some(i=>need(x,i.k) > 0));
-      if(r){ r.boxes += u.boxes; u.items.forEach(i=>put(r,i.k,i.qty)); }
+      if(r){ r.boxes += u.boxes; r.units.push(u); u.items.forEach(i=>put(r,i.k,i.qty)); }
       else orphan.push(u);
     }
   });
@@ -11074,20 +11077,43 @@ function scanPerPoHtml(){
       + '<span style="font-family:Consolas,monospace;font-weight:800;min-width:38px;">'+esc(p[0]||'')+'</span>'
       + '<span style="flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">'+esc(p[1]||'')+' <b>'+esc(p[2]||'')+'</b></span>'
       + '<span style="font-weight:800;">'+n+' pc</span></div>'; };
+  /* 박스 안에 뭐가 들었는지 한 줄 (v928) */
+  const bl = (k,n)=>{ const p=String(k).split('|');
+    return '<div style="display:flex;gap:6px;font-size:11.5px;padding:1px 0;">'
+      + '<span style="font-family:Consolas,monospace;font-weight:800;min-width:38px;color:#111;">'+esc(p[0]||'')+'</span>'
+      + '<span style="flex:1;min-width:0;color:#334155;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">'+esc(p[1]||'')+' <b>'+esc(p[2]||'')+'</b></span>'
+      + '<span style="flex:none;font-weight:800;color:#0369a1;">'+n+' pc</span></div>'; };
+  const openMap = window._scanPoOpen = window._scanPoOpen || {};
   let h = '<div style="background:#fff;border-radius:12px;overflow:hidden;border:1px solid #e5e7eb;margin-bottom:10px;">'
     + '<div style="padding:9px 12px;background:#eef2ff;border-bottom:1px solid #e5e7eb;font-size:12.5px;font-weight:800;color:#3730a3;">'
-    + 'Per order &mdash; every box was matched to the PO it belongs to</div>';
-  res.forEach(r=>{
-    h += '<div style="padding:10px 12px;border-bottom:1px solid #f1f5f9;background:'+(r.ok?'#f0fdf4':'#fff7ed')+';">'
-      + '<div style="display:flex;align-items:center;gap:8px;">'
+    + 'Per order &mdash; tap an order to see the boxes</div>';
+  res.forEach((r,ix)=>{
+    /* 안 맞는 오더는 처음부터 펼쳐 둔다. 맞는 오더는 접어 두고, 눌러서 펼친다.
+       한 번 손으로 펼치고/접은 것은 스캔이 이어져도 그대로 둔다. */
+    const key = String(r.base);
+    const open = (openMap[key] === undefined) ? !r.ok : !!openMap[key];
+    const pcsIn = r.units.reduce((a,u)=>a+u.items.reduce((x,i)=>x+(Number(i.qty)||0),0),0);
+    const detail =
+        (r.short.length ? '<div style="margin-top:2px;">'+r.short.map(x=>kl(x.k,'\u2212'+x.n,'#b91c1c')).join('')+'</div>' : '')
+      + (r.extra.length ? '<div style="margin-top:2px;">'+r.extra.map(x=>kl(x.k,'+'+x.n,'#7c3aed')).join('')+'</div>' : '')
+      + (r.units.length
+          ? '<div style="margin-top:7px;border-top:1px dashed #e2e8f0;padding-top:6px;">'
+            + '<div style="font-size:10.5px;font-weight:800;color:#9d174d;letter-spacing:.03em;margin-bottom:3px;">\uD83E\uDDFA BOXES SCANNED \u2014 '+r.units.length+' box'+(r.units.length>1?'es':'')+' \u00B7 '+pcsIn.toLocaleString()+' pcs</div>'
+            + r.units.map(u=>'<div style="margin-bottom:5px;">'
+                + '<div style="font-size:10.5px;font-weight:800;color:#9d174d;">'+esc(u.label||'BOX')+'</div>'
+                + u.items.map(i=>bl(i.k, Number(i.qty)||0)).join('') + '</div>').join('')
+            + '</div>'
+          : '<div style="margin-top:6px;font-size:11.5px;color:#94a3b8;">No box has been scanned for this order yet.</div>');
+    h += '<div style="border-bottom:1px solid #f1f5f9;background:'+(r.ok?'#f0fdf4':'#fff7ed')+';">'
+      + '<div onclick="scanPoTog(\''+esc(key)+'\')" style="padding:10px 12px;display:flex;align-items:center;gap:8px;cursor:pointer;-webkit-tap-highlight-color:rgba(0,0,0,.06);">'
+      +   '<span id="spoc-'+esc(key)+'" style="font-size:12px;color:#94a3b8;width:11px;flex:none;">'+(open?'\u25BE':'\u25B8')+'</span>'
       +   '<span style="font-size:15px;font-weight:900;color:'+(r.ok?'#15803d':'#b45309')+';">'+(r.ok?'\u2714':'\u26A0')+'</span>'
       +   '<div style="flex:1;min-width:0;"><div style="font-size:13.5px;font-weight:800;color:#0f2a4a;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">'+esc(r.cust||'\u2014')+'</div>'
       +   '<div style="font-size:11px;color:#64748b;">PO '+esc(r.po||'\u2014')+'</div></div>'
       +   '<div style="text-align:right;"><div style="font-size:14px;font-weight:900;color:'+(r.ok?'#15803d':'#b45309')+';">'+r.boxes+' box</div>'
       +   '<div style="font-size:11px;color:#64748b;">'+r.gotTot.toLocaleString()+' / '+r.wantTot.toLocaleString()+' pc</div></div>'
       + '</div>'
-      + (r.short.length ? '<div style="margin-top:5px;">'+r.short.map(x=>kl(x.k,'\u2212'+x.n,'#b91c1c')).join('')+'</div>' : '')
-      + (r.extra.length ? '<div style="margin-top:5px;">'+r.extra.map(x=>kl(x.k,'+'+x.n,'#7c3aed')).join('')+'</div>' : '')
+      + '<div id="spo-'+esc(key)+'" style="padding:0 12px 10px 31px;'+(open?'':'display:none;')+'">'+detail+'</div>'
       + '</div>';
   });
   if(orphan.length){
@@ -11098,6 +11124,15 @@ function scanPerPoHtml(){
       + '<div style="font-size:11px;color:#7c3aed;margin-top:4px;line-height:1.5;">Wrong pallet, or a PO that is not in this batch.</div></div>';
   }
   return h + '</div>';
+}
+/* 오더 한 줄 펼치기 / 접기 (v928) — 스캔이 이어져 다시 그려져도 상태가 남는다 */
+function scanPoTog(key){
+  const d = document.getElementById('spo-'+key); if(!d) return;
+  const open = (d.style.display === 'none');
+  d.style.display = open ? '' : 'none';
+  const c = document.getElementById('spoc-'+key); if(c) c.textContent = open ? '\u25BE' : '\u25B8';
+  window._scanPoOpen = window._scanPoOpen || {};
+  window._scanPoOpen[key] = open;
 }
 /* 스캔한 대로 PO 별 박스 수를 채워 넣고 배치 화면으로 돌아간다 */
 function scanApplyPerPo(){
@@ -11174,7 +11209,9 @@ function scanRender(){
   const n = document.getElementById('scan-n'); if(n) n.textContent = got.toLocaleString();
   const bad = rows.filter(r=>r.st!=='match').length;
   const phoUnread = (_spInfo && Number(_spInfo.unread)) || 0;   // 📸 안 읽힌 박스가 있으면 '다 맞음' 이라고 못 한다 (v796)
-  el.innerHTML = spBannerHtml() + scanPerPoHtml() + pboxPanelHtml() + `<div style="background:#fff;border-radius:12px;overflow:hidden;border:1px solid #e5e7eb;">
+  /* 오더별 표 안에 박스 내용이 다 들어갔으면, 아래 긴 PC Room 목록은 또 보여주지 않는다 (v928) */
+  const perPoHtml = scanPerPoHtml();
+  el.innerHTML = spBannerHtml() + perPoHtml + (perPoHtml ? '' : pboxPanelHtml()) + `<div style="background:#fff;border-radius:12px;overflow:hidden;border:1px solid #e5e7eb;">
     <div style="padding:9px 12px;background:${bad?'#fef2f2':(phoUnread?'#fffbeb':'#f0fdf4')};border-bottom:1px solid #e5e7eb;font-size:12.5px;font-weight:800;color:${bad?'#b91c1c':(phoUnread?'#b45309':'#166534')};">${bad? bad+' line(s) do not match' : (phoUnread ? '⚠ Lines match, but '+phoUnread+' box in the photos could not be identified' : '✓ Everything matches')}</div>
     <div style="max-height:52vh;overflow-y:auto;">
     <table style="width:100%;border-collapse:collapse;font-size:12px;">
@@ -12408,6 +12445,30 @@ function scanTorch(){
 }
 // hits = [{text,x,y,w,h}] 또는 문자열 배열. 반환: {added, dup, bad, state}
 //   state[text] = 'new' | 'dup' | 'bad'  → 화면 체크 표시 색을 정하는 데 쓴다
+/* ═══ 스캔한 색을 서류의 정식 표기로 되돌린다 (v928) ═══
+   라벨 QR 은 '영숫자 모드'(0-9 A-Z 공백 $%*+-./:)로 만들어야 코드가 작아진다. 그런데
+   '/' 는 주소 구분자라서 QR 에 담을 때 공백으로 바꿔 넣는다 — 종이 라벨에는
+   1543 WHITE/DARK NAVY 인데 QR 에서 읽으면 WHITE DARK NAVY 로 나온다.
+   그래서 같은 색인데 서로 다른 줄로 갈라져 -6/+6 처럼 보였다.
+   글자·숫자만 남겨 비교해서 같으면, 서류에 있는 표기로 바꿔 앉힌다. */
+function scanCanonColor(style, color, size){
+  try{
+    const hit = spExpMap()[spSquash(scanKeyOf(style, color, size))];
+    if(hit){ const p = String(hit).split('|'); if(p.length>=3) return p[1]; }
+  }catch(e){}
+  return color;
+}
+function scanFixColors(b){
+  try{
+    if(b.items && b.items.length){
+      b.items.forEach(i=>{ i.color = scanCanonColor(i.style, i.color, i.size); });
+      b.color = b.items[0].color;
+    } else {
+      b.color = scanCanonColor(b.style, b.color, b.size);
+    }
+  }catch(e){}
+  return b;
+}
 function scanAccept(hits){
   if(!_scan) return null;
   let added = 0, dup = 0, bad = 0; const state = {};
@@ -12415,6 +12476,7 @@ function scanAccept(hits){
     const t = (typeof hit === 'string') ? hit : hit.text;
     const b = scanParseQr(t);
     if(!b){ bad++; state[t]='bad'; return; }
+    scanFixColors(b);
     if(b.kind === 'pbox'){                                  // 🧺 우리가 싼 PC Room 박스 (v817)
       _scan.pbox = _scan.pbox || new Map();
       if(_scan.pbox.has(b.sscc)){ dup++; state[t]='dup'; return; }
