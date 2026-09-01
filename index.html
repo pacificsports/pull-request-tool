@@ -180,7 +180,7 @@ body.po-dragging{user-select:none;}
   </span>
   <select id="lang-sel" onchange="setLang(this.value)" style="font-size:11px;padding:3px 6px;border-radius:5px;border:none;background:#1d3f66;color:#fff;"><option value="ko">한국어</option><option value="en">English</option><option value="es">Español</option></select>
   <button id="wide-btn" class="btn btn-sm" onclick="toggleWide()" title="화면 넓게 / 좁게 — 기본은 넓게 (이 브라우저에만 저장돼)" style="padding:2px 8px;font-size:10px;background:#1d3f66;color:#cfe0f2;border-color:#2b5384;">↔ Wide</button>
-  <span id="app-ver" style="font-size:10px;color:#9fb8d4;">v923</span>
+  <span id="app-ver" style="font-size:10px;color:#9fb8d4;">v924</span>
 </div>
 <script>
 // ↔ 넓게 보기 — 브라우저마다 따로 저장 (v793)
@@ -10781,6 +10781,95 @@ async function scanRpc(fn, body){
     body: JSON.stringify(body||{})
   });
 }
+
+/* ═══ 창고 → 사무실 대조 보고 (v924) ═══
+   직원은 "받았음" 처리를 하지 않는다. 맞게 들어왔는지 세어보고 그 결과만 넘긴다.
+   전에는 그 결과가 화면을 나가는 순간 사라져서, 매니저는 결국 전화로 물어봐야 했다.
+   이제 pr_inbound.meta.scan / pr_transfers.meta.scan 에 남고, 매니저 입고 화면 맨 위에 뜬다.
+   받았음 버튼은 그대로 매니저 손에 있다 — 뭘 보고 누르는지 알게 될 뿐이다. */
+const SCAN_BAD_MAX = 80;   // 안 맞는 줄이 이보다 많으면 앞에서부터 잘라 담는다 (payload 크기 제한)
+function scanResultPayload(){
+  const rows = scanReconcile();
+  const bad  = rows.filter(r=>r.st!=='match');
+  return {
+    at: new Date().toISOString(),
+    by: String(_pchkWho||'').trim(),
+    wh: String(_pchkWh||''),
+    exp: rows.reduce((a,r)=>a+(Number(r.exp)||0),0),
+    got: rows.reduce((a,r)=>a+(Number(r.got)||0),0),
+    lines: rows.length,
+    ok: bad.length===0,
+    badCount: bad.length,
+    bad: bad.slice(0, SCAN_BAD_MAX).map(r=>({
+      style:String(r.style||''), color:String(r.color||''), size:String(r.size||''),
+      exp:Number(r.exp)||0, got:Number(r.got)||0, st:String(r.st||'')
+    }))
+  };
+}
+async function scanSendReport(){
+  if(!_scan) return;
+  const nameEl = document.getElementById('scan-who');
+  const who = String((nameEl&&nameEl.value)||'').trim();
+  if(!who){ showToast('⚠ Put your name first'); if(nameEl) nameEl.focus(); return; }
+  _pchkWho = who; try{ localStorage.setItem(pchkWhoKey(), who); }catch(e){}
+  const btn = document.getElementById('scan-send-btn');
+  const msg = document.getElementById('scan-send-msg');
+  if(btn){ btn.disabled = true; btn.style.opacity = '.6'; btn.textContent = 'Sending…'; }
+  let ok = false, err = '';
+  try{
+    const r = await scanRpc('pic_scan_save', {p_kind:(_scan.mode==='TR')?'TR':'IN', p_id:String(_scan.id), p_result:scanResultPayload()});
+    if(r.ok) ok = (await r.json()) === true; else err = 'HTTP '+r.status;
+  }catch(e){ err = String(e && e.message || e); }
+  if(btn){ btn.disabled = false; btn.style.opacity = '1'; }
+  if(ok){
+    window._scanSent = Date.now();
+    if(msg) msg.innerHTML = '<span style="color:#166534;font-weight:800;">✓ Sent to the office.</span> The manager sees your count on the receiving screen.';
+    if(btn) btn.textContent = 'Send again';
+    showToast('✓ Sent to the office');
+  }else{
+    if(msg) msg.innerHTML = '<span style="color:#b91c1c;font-weight:800;">Could not send'+(err?' ('+esc(err)+')':'')+'.</span> Check the signal and press again — nothing was lost.';
+    if(btn) btn.textContent = 'Send to the office ▸';
+  }
+}
+/* 매니저 화면 맨 위에 붙는 창고 대조 결과. 입고(hiReceive)·이송(trRecvOpen) 둘 다 같은 걸 쓴다.
+   여기 뜬다고 재고가 움직이는 건 아니다 — 매니저가 Receive 를 누를 때 움직인다. */
+function scanReportBannerHtml(scan, opts){
+  if(!scan || typeof scan!=='object') return '';
+  const o = opts||{};
+  const ok = !!scan.ok, bad = Array.isArray(scan.bad)?scan.bad:[];
+  const hidden = Math.max(0, (Number(scan.badCount)||bad.length) - bad.length);
+  const when = (function(){ try{ return new Date(scan.at).toLocaleString(); }catch(e){ return String(scan.at||''); } })();
+  const who = String(scan.by||'').trim();
+  const LBL = {
+    short:  r=>'<b>'+(r.exp-r.got)+'</b> short',
+    missing:r=>'<b>none</b> arrived',
+    over:   r=>'<b>'+(r.got-r.exp)+'</b> extra',
+    extra:  r=>'<b>not on the list</b> — '+r.got+' arrived'
+  };
+  const COL = { short:'#b91c1c', missing:'#b91c1c', over:'#b45309', extra:'#7c3aed' };
+  const head = ok ? '#f0fdf4' : '#fef2f2', line = ok ? '#86efac' : '#fca5a5', ink = ok ? '#166534' : '#b91c1c';
+  return `<div style="margin-bottom:10px;background:${head};border:1px solid ${line};border-radius:9px;padding:10px 13px;font-size:12px;">
+    <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap;">
+      <span style="font-weight:800;color:${ink};">${ok?'✔ Warehouse counted it — everything matches':'⚠ Warehouse counted it — '+(Number(scan.badCount)||bad.length)+' line(s) do not match'}</span>
+      <span style="color:#64748b;">${who?esc(who)+' · ':''}${esc(when)}</span>
+      <span style="margin-left:auto;background:#fff;border:1px solid ${line};border-radius:10px;padding:2px 9px;font-size:11px;">
+        list <b>${(Number(scan.exp)||0).toLocaleString()}</b> · counted <b>${(Number(scan.got)||0).toLocaleString()}</b> box</span>
+    </div>
+    ${bad.length?`<div style="margin-top:8px;background:#fff;border:1px solid #e5e7eb;border-radius:7px;max-height:190px;overflow-y:auto;">
+      <table style="width:100%;border-collapse:collapse;font-size:11.5px;">
+        <tbody>${bad.map(r=>`<tr style="border-bottom:1px solid #f1f5f9;">
+          <td style="padding:4px 8px;font-weight:800;white-space:nowrap;">${esc(String(r.style||''))}</td>
+          <td style="padding:4px 8px;">${esc(String(r.color||''))}</td>
+          <td style="padding:4px 8px;font-weight:700;text-align:center;">${esc(String(r.size||''))}</td>
+          <td style="padding:4px 8px;text-align:right;color:#64748b;font-family:Consolas,monospace;">${r.exp||0} → ${r.got||0}</td>
+          <td style="padding:4px 8px;color:${COL[r.st]||'#334155'};white-space:nowrap;">${(LBL[r.st]||(x=>esc(String(r.st||''))))(r)}</td>
+        </tr>`).join('')}</tbody></table>
+      ${hidden?`<div style="padding:5px 8px;color:#94a3b8;font-size:11px;">… +${hidden} more not listed</div>`:''}
+    </div>`:''}
+    ${o.fill?`<div style="margin-top:8px;"><button class="btn btn-sm" style="background:#0e7490;color:#fff;border-color:#0e7490;font-weight:800;" onclick="${esc(o.fill)}" title="Copy the warehouse's counts into the Arrived column below. Nothing is received until you press Receive.">↧ Use these counts for Arrived</button>
+      <span class="muted" style="font-size:10.5px;margin-left:6px;">fills the column only — you still choose what to receive</span></div>`:''}
+  </div>`;
+}
 // ═══ 화면 1: Receive / Transfer 고르기 ═══
 async function scanOpen(){
   pchkWhoLoad();
@@ -10838,6 +10927,7 @@ async function scanStart(mode, id){
     if(r.ok) rec = await r.json();
   }catch(e){}
   if(!rec){ showToast('⚠ Not found'); return; }
+  window._scanSent = 0;   // 새 건을 열면 "보냄" 표시는 초기화 (v924)
   _scan = { mode, id, ref: rec.ref||'', title: (mode==='TR'?'🚚 Transfer ':'🇭🇹 Receive ')+(rec.ref||''),
     exp: (mode==='TR') ? scanExpTransfer(rec) : scanExpInbound(rec), seen: new Map(), manual: {} };
   scanSession();
@@ -11078,6 +11168,38 @@ function scanRender(){
       </tbody></table></div></div>`;
   /* 대조가 끝났으면 여기서 바로 포장 정보로 넘어간다 — 오더를 다시 찾아 들어갈 이유가 없다 (v860) */
   const done = document.getElementById('scan-done');
+  /* 입고(HT)·이송(TR): 받았음은 매니저가 누른다. 직원은 센 결과만 사무실로 넘긴다. (v924) */
+  if(done && _scan && (_scan.mode==='IN' || _scan.mode==='TR')){
+    const btnTxt = bad ? ('⚠ '+bad+' line(s) off — send to the office ▸') : '✔ All matched — send to the office ▸';
+    const btnBg  = bad ? '#b45309' : '#16a34a';
+    /* 한 박스 찍을 때마다 이 블록이 다시 그려진다. 통째로 다시 만들면 이름 칸에서 포커스가
+       튕겨나가서 글자를 못 친다. 그래서 처음 한 번만 만들고, 그 뒤엔 버튼 문구만 갈아끼운다. */
+    const cur = document.getElementById('scan-who');
+    if(cur) _pchkWho = cur.value;
+    if(done.dataset.built === 'inout'){
+      const b = document.getElementById('scan-send-btn');
+      if(b && !b.disabled){ b.textContent = btnTxt; b.style.background = btnBg; }
+      return;
+    }
+    done.dataset.built = 'inout';
+    const sent = window._scanSent;
+    done.innerHTML = `<div style="margin-top:12px;background:#fff;border:1px solid #e5e7eb;border-radius:12px;padding:14px;">
+      <div style="font-size:12.5px;color:#334155;line-height:1.55;margin-bottom:10px;">
+        You do <b>not</b> receive this shipment — the office does. Send them what you counted, and they will see it on the receiving screen.
+      </div>
+      <div style="display:flex;gap:8px;align-items:center;margin-bottom:10px;">
+        <span style="font-size:11.5px;font-weight:800;color:#64748b;white-space:nowrap;">Your name</span>
+        <input id="scan-who" value="${esc(String(_pchkWho||''))}" placeholder="e.g. Robert" autocomplete="off"
+          style="flex:1;min-width:0;padding:9px 11px;border:2px solid #cbd5e1;border-radius:9px;font-size:15px;font-weight:700;box-sizing:border-box;">
+      </div>
+      <button id="scan-send-btn" onclick="scanSendReport()" style="width:100%;border:none;border-radius:12px;padding:16px;font-size:16px;font-weight:800;color:#fff;background:${btnBg};">${btnTxt}</button>
+      <div id="scan-send-msg" style="font-size:11.5px;color:#64748b;text-align:center;margin-top:8px;line-height:1.5;">
+        ${sent ? '<span style="color:#166534;font-weight:800;">✓ Sent to the office.</span> Scan more and press again to update it.'
+               : (bad ? 'Check the pallet once more first. If the pallet is right and the list is wrong, send it — that is exactly what the office needs to know.'
+                      : 'Everything on the pallet matches the list.')}
+      </div></div>`;
+    return;
+  }
   if(done && _scan && _scan.back==='BATCH'){
     const per = window._scanPerPo || [];
     const bad2 = per.filter(r=>!r.ok).length;
@@ -23866,6 +23988,7 @@ async function trRecvOpen(id){
     <div style="background:#0f766e;color:#fff;padding:10px 16px;font-weight:800;">📦 ${trIsSpecKind(_rvDest)?('3rd Party Arrival — assign '+(_rvDest==='LK'?'SPECIAL':'H')+' bin'):(trIsSpecKind(_rvSrc)?(_rvDest+' Arrival — recall from 3rd Party'):(_rvDest+' Arrival'))}${_rvRoute!=='SC2CA'?' · '+TR_ROUTES[_rvRoute].label:''}
       <button class="btn btn-sm" style="float:right;background:transparent;color:#99f6e4;border-color:#2dd4bf;" onclick="document.getElementById('modal-trr').remove();">✕</button></div>
     <div style="padding:12px 16px;overflow-y:auto;flex:1;">
+      ${scanReportBannerHtml(M.scan)}
       <div style="margin-bottom:10px;padding:10px 14px;background:#ecfdf5;border-radius:8px;font-size:12px;display:flex;gap:16px;flex-wrap:wrap;align-items:center;">
         <div><b>Shipment:</b> ${esc(rec.ref||'')}</div>
         <div><b>Ship Date:</b> ${esc(M.ship_date||'—')}</div>
@@ -24368,7 +24491,7 @@ async function hiOpen(){
   const ex = document.getElementById('modal-hi'); if(ex) ex.remove();
   let rows = [];
   try{
-    const r = await sbFetch('/rest/v1/pr_inbound?select=id,ref,status,lines,created_at,created_by,received_at&order=created_at.desc&limit=30');
+    const r = await sbFetch('/rest/v1/pr_inbound?select=id,ref,status,lines,created_at,created_by,received_at,meta&order=created_at.desc&limit=30');
     if(r.ok) rows = await r.json();
   }catch(e){}
   const pend = rows.filter(x=>x.status==='PENDING');
@@ -24380,9 +24503,13 @@ async function hiOpen(){
   const row = x=>{
     const nb = (x.lines||[]).reduce((a,l)=>a+(Number(l.boxes)||0),0);
     const np = (x.lines||[]).reduce((a,l)=>a+(Number(l.boxes)||0)*(Number(l.pcs)||0),0);
+    /* 창고가 세어 보냈으면 목록에서 바로 보이게 — 열어보기 전에 안다 (v924) */
+    const sc = x.meta && x.meta.scan;
+    const scChip = sc ? `<span style="padding:2px 9px;border-radius:20px;font-size:10.5px;font-weight:800;background:${sc.ok?'#f0fdf4':'#fef2f2'};color:${sc.ok?'#166534':'#b91c1c'};white-space:nowrap;" title="Counted by ${esc(String(sc.by||'warehouse'))} — list ${(Number(sc.exp)||0).toLocaleString()} vs counted ${(Number(sc.got)||0).toLocaleString()} box">${sc.ok?'✔ counted — matches':'⚠ counted — '+(Number(sc.badCount)||(sc.bad||[]).length)+' off'}</span>` : '';
     return `<div style="display:flex;align-items:center;gap:10px;padding:8px 10px;border-bottom:1px solid var(--border);font-size:12px;">
       <span style="font-weight:800;min-width:110px;">${esc(x.ref||'')}</span>
       <span class="muted">${String(x.created_at||'').slice(0,10)} · ${(x.lines||[]).length} line(s) · ${nb.toLocaleString()} box(es) · ${np.toLocaleString()} pcs</span>
+      ${scChip}
       <span style="margin-left:auto;display:flex;gap:6px;">
       ${x.status==='PENDING'
         ? `<button class="btn btn-sm btn-primary" onclick="hiReceive('${x.id}')">📦 Arrived — Receive</button><button class="btn btn-sm" style="color:#b91c1c;" onclick="hiDelete('${x.id}')">✕</button>`
@@ -25077,10 +25204,11 @@ function hiPalletSheet(){
 async function hiReceive(id){
   let rec = null;
   try{
-    const r = await sbFetch('/rest/v1/pr_inbound?id=eq.'+id+'&select=id,ref,lines,status');
+    const r = await sbFetch('/rest/v1/pr_inbound?id=eq.'+id+'&select=id,ref,lines,status,meta');
     if(r.ok) rec = (await r.json())[0];
   }catch(e){}
   if(!rec){ showToast('⚠ Load failed'); return; }
+  window._hircvScan = (rec.meta && rec.meta.scan) || null;   // 창고가 세어 보낸 결과 (v924)
   // 📧 discrepancy report 용 — 원래 예상(패킹리스트) 라인 스냅샷 저장 (v720)
   window._hircvRef = rec.ref||'';
   // 원래 패킹리스트 기준(discrepancy 비교용) — 직원이 ➕추가한 라인(added)은 리스트에 없던 것이므로 제외해서 EXTRA 로 계속 잡히게 함 (v733)
@@ -25096,7 +25224,8 @@ async function hiReceive(id){
     <div style="background:#166534;color:#fff;padding:10px 16px;font-weight:800;">📦 Arrival Receiving · ${esc(rec.ref||'')}
       <div style="font-weight:400;font-size:11px;opacity:.85;">Verify against the goods — <b>Receive all</b> takes in everything, or ☑️ tick lines and <b>Receive selected</b> for a partial receive. Qty (📥 Recv now) is editable; unreceived boxes stay in Incoming as pending.</div></div>
     <div style="overflow-y:auto;padding:0 16px 10px;flex:1;">
-      <div style="display:flex;align-items:center;gap:8px;margin-bottom:6px;flex-wrap:wrap;padding-top:10px;">
+      <div style="padding-top:10px;">${scanReportBannerHtml(window._hircvScan, {fill:'hiRcvFillFromScan()'})}</div>
+      <div style="display:flex;align-items:center;gap:8px;margin-bottom:6px;flex-wrap:wrap;">
         <span class="muted" style="font-size:10.5px;">☑️ Tick lines · set 📥 Recv now for a partial · use the actions at the bottom to add items, report discrepancies, or save a draft</span>
         <span style="margin-left:auto;display:inline-flex;gap:6px;align-items:center;background:#ecfeff;border:1px solid #a5f3fc;border-radius:8px;padding:4px 8px;">
           <span style="font-size:10.5px;font-weight:800;color:#0e7490;">📍 Bulk bin:</span>
@@ -25155,6 +25284,38 @@ function hiCollectReceive(){
 // 전체 선택 / 해제
 function hiRecvSelAll(on){
   [...document.querySelectorAll('#hircv-rows tr .hr-sel')].forEach(c=>{ c.checked = !!on; });
+}
+/* ↧ 창고가 센 숫자를 Arrived 칸에 옮겨 담는다 (v924).
+   화면만 채운다 — 재고는 매니저가 Receive 를 눌러야 움직인다.
+   창고 보고에는 '안 맞는 줄'만 들어 있다. 맞는 줄은 리스트 숫자가 곧 실제라 건드릴 게 없다.
+   리스트에 아예 없던 물건(extra)은 자동으로 못 넣는다 — ➕ Add item 으로 넣어야 해서 따로 알려준다. */
+function hiRcvFillFromScan(){
+  const scan = window._hircvScan;
+  const bad = (scan && Array.isArray(scan.bad)) ? scan.bad : [];
+  if(!bad.length){ showToast('Nothing to change — the warehouse count matched the list'); return; }
+  const want = {};
+  let extra = [];
+  bad.forEach(r=>{
+    if(r.st==='extra'){ extra.push(String(r.style||'')+' '+String(r.color||'')+' '+String(r.size||'')); return; }
+    want[scanKeyOf(r.style, r.color, r.size)] = Number(r.got)||0;
+  });
+  let hit = 0;
+  [...document.querySelectorAll('#hircv-rows tr')].forEach(tr=>{
+    const st=tr.querySelector('.hr-style'), co=tr.querySelector('.hr-color'), sz=tr.querySelector('.hr-size');
+    const bx=tr.querySelector('.hr-boxes'), rc=tr.querySelector('.hr-recv');
+    if(!st||!co||!sz||!bx) return;
+    const k = scanKeyOf(st.value, co.value, sz.value);
+    if(!(k in want)) return;
+    const n = want[k];
+    bx.value = n; if(rc) rc.value = n;
+    tr.style.background = '#fff7ed';
+    const sel = tr.querySelector('.hr-sel'); if(sel) sel.checked = true;
+    hit++;
+  });
+  const miss = Object.keys(want).length - hit;
+  showToast('↧ ' + hit + ' line(s) filled from the warehouse count'
+    + (miss?' · '+miss+' not found on this list':'')
+    + (extra.length?' · '+extra.length+' extra item(s) — add with ➕ Add item: '+extra.slice(0,3).join(', ')+(extra.length>3?'…':''):''));
 }
 // 📍 선택한 행들의 Location 을 한 bin 으로 일괄 채움 (v718)
 function hiRcvApplyBin(){
