@@ -180,7 +180,7 @@ body.po-dragging{user-select:none;}
   </span>
   <select id="lang-sel" onchange="setLang(this.value)" style="font-size:11px;padding:3px 6px;border-radius:5px;border:none;background:#1d3f66;color:#fff;"><option value="ko">한국어</option><option value="en">English</option><option value="es">Español</option></select>
   <button id="wide-btn" class="btn btn-sm" onclick="toggleWide()" title="화면 넓게 / 좁게 — 기본은 넓게 (이 브라우저에만 저장돼)" style="padding:2px 8px;font-size:10px;background:#1d3f66;color:#cfe0f2;border-color:#2b5384;">↔ Wide</button>
-  <span id="app-ver" style="font-size:10px;color:#9fb8d4;">v924</span>
+  <span id="app-ver" style="font-size:10px;color:#9fb8d4;">v925</span>
 </div>
 <script>
 // ↔ 넓게 보기 — 브라우저마다 따로 저장 (v793)
@@ -24918,7 +24918,7 @@ function hiSuggest(silent){
   rows.forEach(tr=>{ const st=((tr.querySelector('.hr-style')||{}).value||'').trim(); if(!st) return;
     const co=bxBaseColor(((tr.querySelector('.hr-color')||{}).value||'').trim().toUpperCase());
     const sz=((tr.querySelector('.hr-size')||{}).value||'').trim().toUpperCase();
-    const nb=parseInt((tr.querySelector('.hr-boxes')||{}).value,10)||0;
+    const nb=parseInt(((tr.querySelector('.hr-got')||tr.querySelector('.hr-boxes')||{}).value),10)||0;   // v925: Arrived → Counted
     lines.push({st,co,sz,nb}); inps.push(tr.querySelector('.hr-loc')); });
   const res=hiSuggestCompute(lines);
   res.sugg.forEach((s,i)=>{ const locInp=inps[i]; if(!locInp) return;
@@ -25209,6 +25209,7 @@ async function hiReceive(id){
   }catch(e){}
   if(!rec){ showToast('⚠ Load failed'); return; }
   window._hircvScan = (rec.meta && rec.meta.scan) || null;   // 창고가 세어 보낸 결과 (v924)
+  window._hircvSnap = null;                                   // 지난 입고의 스냅샷은 버린다 (v925)
   // 📧 discrepancy report 용 — 원래 예상(패킹리스트) 라인 스냅샷 저장 (v720)
   window._hircvRef = rec.ref||'';
   // 원래 패킹리스트 기준(discrepancy 비교용) — 직원이 ➕추가한 라인(added)은 리스트에 없던 것이므로 제외해서 EXTRA 로 계속 잡히게 함 (v733)
@@ -25217,51 +25218,179 @@ async function hiReceive(id){
   const ex2 = document.getElementById('modal-hircv'); if(ex2) ex2.remove();
   if(!bxLoaded) await bxFetchStore();
   const dlLoc = [...new Set(bxStore.filter(b=>bxWh(b)==='SC').map(b=>String(b.loc||'').toUpperCase()).filter(Boolean))].sort();
+  /* ═══ 컨테이너 대조 화면 (v925 전면 개편) ═══
+     예전 화면은 Arrived 와 '📥 Recv now' 두 칸이 나란히 있었다. 실제로 컨테이너를 받아보니
+     그 두 칸이 헷갈렸다 — 지금 몇 장을 받겠다는 뜻인지, 몇 장이 왔다는 뜻인지 구분이 안 갔다.
+     이제 두 숫자만 본다: 📋 서류(고정) vs 📦 실제 내린 수량(입력). 같으면 ✔, 다르면 ✘ 이고
+     ✘ 인 줄은 매니저가 한 번 눌러 확인해야 입고 버튼이 열린다.
+     부분입고는 없앴다 — 컨테이너는 한 번 내리면 끝이다. 모자란 건 모자란 대로 받고
+     차이는 📧 Discrepancy report 로 Haiti 에 보낸다 (2026-09-01 결정). */
+  const scan = window._hircvScan;
+  /* 창고가 /pic 에서 세어 보낸 숫자를 '실제 내린 수량' 에 미리 채워둔다.
+     보고에는 '안 맞는 줄' 만 들어 있다 — 맞는 줄은 서류 숫자가 곧 실제라 그대로 둔다. */
+  const scanGot = {}, scanExtra = [];
+  if(scan && Array.isArray(scan.bad)){
+    scan.bad.forEach(b=>{
+      const k = hiRcvKey(b.style, b.color, b.size);
+      if(b.st==='extra') scanExtra.push({style:b.style, color:b.color, size:b.size, got:Number(b.got)||0});
+      else scanGot[k] = Number(b.got)||0;
+    });
+  }
+  const baseRows = (rec.lines||[]).map(l=>{
+    const list = l.added ? 0 : Number(l.pboxes!=null ? l.pboxes : l.boxes)||0;
+    let got = Number(l.boxes)||0;                      // 이어서 하는 draft 면 여기 이미 실제 수량이 들어 있다
+    let fromScan = false;
+    const k = hiRcvKey(l.style, l.color, l.size);
+    if(l.recvDone==null && scanGot[k]!=null){ got = scanGot[k]; fromScan = true; }
+    return { style:l.style, color:l.color, size:l.size, list, got, pcs:l.pcs, loc:l.loc||'',
+             added:!!l.added, conf:!!l.conf, fromScan };
+  });
+  scanExtra.forEach(x=>{
+    const k = hiRcvKey(x.style, x.color, x.size);
+    if(baseRows.some(r=>hiRcvKey(r.style,r.color,r.size)===k)) return;
+    baseRows.push({ style:x.style, color:x.color, size:x.size, list:0, got:x.got, pcs:0, loc:'',
+                    added:true, conf:false, fromScan:true });
+  });
   const div = document.createElement('div');
   div.id = 'modal-hircv';
   div.style.cssText = 'position:fixed;inset:0;background:rgba(15,23,42,.55);z-index:99;display:flex;align-items:center;justify-content:center;padding:14px;';
-  div.innerHTML = `<div style="background:#fff;border-radius:12px;max-width:880px;width:100%;max-height:90vh;display:flex;flex-direction:column;overflow:hidden;">
+  div.innerHTML = `<div style="background:#fff;border-radius:12px;max-width:1000px;width:100%;max-height:92vh;display:flex;flex-direction:column;overflow:hidden;">
     <div style="background:#166534;color:#fff;padding:10px 16px;font-weight:800;">📦 Arrival Receiving · ${esc(rec.ref||'')}
-      <div style="font-weight:400;font-size:11px;opacity:.85;">Verify against the goods — <b>Receive all</b> takes in everything, or ☑️ tick lines and <b>Receive selected</b> for a partial receive. Qty (📥 Recv now) is editable; unreceived boxes stay in Incoming as pending.</div></div>
+      <div style="font-weight:400;font-size:11px;opacity:.85;">Count the container and type what actually came off in <b>📦 Counted</b>. Lines that match the packing list turn ✔. Lines that do not turn ✘ — press <b>Confirm</b> on each to say the count is right. Then assign bins and receive.</div></div>
     <div style="overflow-y:auto;padding:0 16px 10px;flex:1;">
-      <div style="padding-top:10px;">${scanReportBannerHtml(window._hircvScan, {fill:'hiRcvFillFromScan()'})}</div>
-      <div style="display:flex;align-items:center;gap:8px;margin-bottom:6px;flex-wrap:wrap;">
-        <span class="muted" style="font-size:10.5px;">☑️ Tick lines · set 📥 Recv now for a partial · use the actions at the bottom to add items, report discrepancies, or save a draft</span>
-        <span style="margin-left:auto;display:inline-flex;gap:6px;align-items:center;background:#ecfeff;border:1px solid #a5f3fc;border-radius:8px;padding:4px 8px;">
-          <span style="font-size:10.5px;font-weight:800;color:#0e7490;">📍 Bulk bin:</span>
-          <input id="hircv-bulkbin" class="fi" list="hi-dl-loc" placeholder="e.g. 1C-1" style="width:96px;text-transform:uppercase;font-weight:700;font-size:11.5px;padding:3px 6px;" onkeydown="if(event.key==='Enter'){event.preventDefault();hiRcvApplyBin();}">
-          <button class="btn btn-sm" style="background:#0e7490;color:#fff;border-color:#0e7490;font-weight:800;" onclick="hiRcvApplyBin()" title="Fill the 📍 Location of every ticked row with this bin">Apply to selected</button>
+      <div style="padding-top:10px;">${scanReportBannerHtml(scan)}</div>
+      <div style="display:flex;align-items:center;gap:8px;margin-bottom:8px;flex-wrap:wrap;">
+        <button class="btn btn-sm" style="background:#b45309;color:#fff;border-color:#b45309;font-weight:800;" onclick="hiRcvTempAll()" title="No bins decided yet? Put every line in TEMPORARY — assign the real bins later in the Box Room.">⏳ All bins → TEMPORARY</button>
+        <span style="display:inline-flex;gap:6px;align-items:center;background:#ecfeff;border:1px solid #a5f3fc;border-radius:8px;padding:4px 8px;">
+          <span style="font-size:10.5px;font-weight:800;color:#0e7490;">📍 Bin:</span>
+          <input id="hircv-bulkbin" class="fi" list="hi-dl-loc" placeholder="e.g. 1C-1" style="width:96px;text-transform:uppercase;font-weight:700;font-size:11.5px;padding:3px 6px;" onkeydown="if(event.key==='Enter'){event.preventDefault();hiRcvApplyBin('empty');}">
+          <button class="btn btn-sm" style="background:#0e7490;color:#fff;border-color:#0e7490;font-weight:800;" onclick="hiRcvApplyBin('empty')" title="Fill only the lines whose 📍 Location is still blank">Fill blanks</button>
+          <button class="btn btn-sm" onclick="hiRcvApplyBin('all')" title="Overwrite the 📍 Location on every line">All lines</button>
         </span>
+        <span id="hircv-conf-bar" style="margin-left:auto;"></span>
       </div>
       <table class="etbl" style="font-size:12px;">
-        <thead><tr><th style="width:26px;"><input type="checkbox" id="hircv-selall" title="Select / deselect all" onclick="hiRecvSelAll(this.checked)"></th><th>Style</th><th class="tl">Color</th><th>Size</th><th title="How many boxes arrived (correct if wrong)">Arrived</th><th style="background:#ecfdf5;color:#065f46;" title="How many boxes to receive into SC stock (defaults to arrived; lower for a partial)">📥 Recv now</th><th>Pcs/Box</th><th>📍 Location</th><th></th></tr></thead>
-        <tbody id="hircv-rows">${(rec.lines||[]).map((l,i)=>`<tr${l.added?' style="background:#fefce8;" title="Added item — not on the original packing list (shows as EXTRA in the discrepancy report)"':''}>
-          <td style="text-align:center;"><input type="checkbox" class="hr-sel" data-i="${i}" title="Tick to include in Receive selected"></td>
-          <td><input class="fi hr-style" data-i="${i}" value="${esc(l.style)}" style="width:70px;font-weight:700;"></td>
-          <td><input class="fi hr-color" data-i="${i}" value="${esc(l.color)}" style="width:150px;text-transform:uppercase;"></td>
-          <td><input class="fi hr-size" data-i="${i}" value="${esc(l.size)}" style="width:52px;text-transform:uppercase;"></td>
-          <td><input class="fi num hr-boxes" data-i="${i}" type="number" min="0" value="${l.boxes}" style="width:56px;font-weight:800;" oninput="var r=this.closest('tr').querySelector('.hr-recv'); if(r){ if((+r.value||0)>(+this.value||0)&&(+this.value||0)>0) r.value=this.value; }">${(l.pboxes!=null && l.pboxes!==l.boxes)?`<div style="font-size:9px;color:#ea580c;font-weight:800;margin-top:2px;white-space:nowrap;" title="Original packing-list quantity — reported to Haiti as the discrepancy">📋 list ${l.pboxes}</div>`:''}</td>
-          <td style="background:#ecfdf5;"><input class="fi num hr-recv" data-i="${i}" type="number" min="0" value="${l.recv!=null?l.recv:l.boxes}" style="width:56px;font-weight:800;color:#065f46;" title="How many boxes to receive into SC stock. If MORE arrived than the list says, type the higher number here — Arrived will match it." oninput="var b=this.closest('tr').querySelector('.hr-boxes'); if(b && (+this.value||0)>(+b.value||0)) b.value=this.value;" onfocus="var c=this.closest('tr').querySelector('.hr-sel'); if(c) c.checked=true;"></td>
-          <td><input class="fi num hr-pcs" data-i="${i}" type="number" min="1" value="${l.pcs}" style="width:56px;"></td>
-          <td><input class="fi hr-loc" data-i="${i}" list="hi-dl-loc" value="${esc(l.loc||'')}" placeholder="e.g. 1C-1" style="width:92px;text-transform:uppercase;"></td>
-          <td><button class="btn btn-sm" style="border:none;color:#b91c1c;" onclick="this.closest('tr').remove()">✕</button></td>
-        </tr>`).join('')}</tbody>
+        <thead><tr>
+          <th>Style</th><th class="tl">Color</th><th>Size</th>
+          <th style="background:#f1f5f9;color:#475569;" title="What the Haiti packing list says was shipped. This never changes.">📋 List</th>
+          <th style="background:#eff6ff;color:#1d4ed8;" title="How many boxes actually came off the container. Type the real number.">📦 Counted</th>
+          <th style="min-width:150px;">Match</th>
+          <th>Pcs/Box</th><th>📍 Location</th><th></th></tr></thead>
+        <tbody id="hircv-rows">${baseRows.map(r=>hiRcvRowHtml(r)).join('')}</tbody>
       </table>
       <datalist id="hi-dl-loc">${dlLoc.map(s=>'<option value="'+esc(s)+'">').join('')}</datalist>
-      <div class="muted" style="font-size:10.5px;margin-top:8px;">Locations autocomplete from existing SC bins · leave blank to assign later · <b>Receive all</b> = the whole arrival · <b>Receive selected</b> = only ticked lines (at their Recv-now qty), the rest stays pending in Incoming</div>
+      <div class="muted" style="font-size:10.5px;margin-top:8px;">Short lines are received short — the shortfall is <b>not</b> kept pending. Send the difference to Haiti with 📧 Discrepancy report. Bins autocomplete from existing SC bins; blank bins are allowed and can be assigned later in the Box Room.</div>
     </div>
     <div style="padding:10px 16px;border-top:1px solid var(--border);display:flex;gap:8px;align-items:center;flex-wrap:wrap;">
-      <button class="btn btn-sm" style="background:#eef2ff;border-color:#a5b4fc;color:#4338ca;font-weight:800;" onclick="hiRcvAddRow()" title="Goods arrived that aren't on the list (wrong / extra items)? Add a row and receive it too">➕ Add item</button>
-      <button class="btn btn-sm" style="background:#fef2f2;border-color:#fca5a5;color:#b91c1c;font-weight:800;" onclick="hiDiscrepancyReport()" title="Compare what arrived vs the packing list → build an email to send Haiti (short / extra / qty mismatch)">📧 Discrepancy report</button>
-      <button id="hircv-save-btn" class="btn btn-sm" style="background:#fffbeb;border-color:#fcd34d;color:#92400e;font-weight:800;" onclick="hiRcvSaveDraft('${rec.id}','${esc(rec.ref||'')}')" title="Save your progress (arrived qty, recv now, locations, added items) without receiving into stock — you can come back later">💾 Save draft</button>
+      <button class="btn btn-sm" style="background:#eef2ff;border-color:#a5b4fc;color:#4338ca;font-weight:800;" onclick="hiRcvAddRow()" title="Something came off the container that is not on the packing list? Add it here and receive it too.">➕ Add item</button>
+      <button class="btn btn-sm" style="background:#fef2f2;border-color:#fca5a5;color:#b91c1c;font-weight:800;" onclick="hiDiscrepancyReport()" title="Compare 📦 Counted against the packing list → build the email to send Haiti (short / over / missing / extra)">📧 Discrepancy report</button>
+      <button id="hircv-save-btn" class="btn btn-sm" style="background:#fffbeb;border-color:#fcd34d;color:#92400e;font-weight:800;" onclick="hiRcvSaveDraft('${rec.id}','${esc(rec.ref||'')}')" title="Save the counts, confirmations and bins without receiving into stock — you can come back later">💾 Save draft</button>
       <button class="btn" style="margin-left:auto;" onclick="document.getElementById('modal-hircv').remove();hiOpen();" title="Close this window — any saved draft stays saved">✖ Close</button>
-      <button class="btn" style="background:#0e7490;border-color:#0e7490;color:#fff;font-weight:800;" onclick="hiConfirm('${rec.id}','${esc(rec.ref||'')}','selected')" title="Receive only the ticked lines (at their Recv-now qty) — the rest stays pending in Incoming">☑️ Receive selected</button>
-      <button class="btn btn-primary" style="background:#166534;border-color:#166534;font-weight:800;" onclick="hiConfirm('${rec.id}','${esc(rec.ref||'')}','all')" title="Receive the whole arrival into SC stock">✅ Receive all</button>
+      <button id="hircv-recv-btn" class="btn btn-primary" style="background:#166534;border-color:#166534;font-weight:800;" onclick="hiConfirm('${rec.id}','${esc(rec.ref||'')}')" title="Receive every counted box into SC stock and close this arrival">✅ Receive into stock</button>
     </div></div>`;
   document.body.appendChild(div);
+  hiRcvSync();
   // Receive 모듈은 원래대로 깔끔하게 — AI suggestion 은 Incoming 패널의 🤖 Plan 버튼에서만 표시 (v708)
 }
+/* 줄을 짝짓는 열쇠 — 스캔 보고·서류·화면이 같은 규칙을 써야 숫자가 제자리에 들어간다 */
+function hiRcvKey(st, co, sz){
+  return String(st||'').trim().toUpperCase()+'|'+bxFixColor(String(co||'')).toUpperCase()+'|'+String(sz||'').trim().toUpperCase();
+}
+function hiRcvRowHtml(r){
+  const added = !!r.added;
+  return `<tr class="hr-row"${added?' data-added="1"':''}${r.conf?' data-conf="1"':''}>
+    <td><input class="fi hr-style" value="${esc(r.style||'')}" style="width:70px;font-weight:700;" oninput="hiRcvSync()"></td>
+    <td><input class="fi hr-color" value="${esc(r.color||'')}" style="width:150px;text-transform:uppercase;" oninput="hiRcvSync()"></td>
+    <td><input class="fi hr-size" value="${esc(r.size||'')}" style="width:52px;text-transform:uppercase;" oninput="hiRcvSync()"></td>
+    <td class="hr-list" data-list="${Number(r.list)||0}" style="text-align:center;background:#f8fafc;font-weight:800;color:#475569;font-family:Consolas,monospace;">${added?'<span style="color:#a78bfa;font-size:10px;font-weight:800;">not on list</span>':(Number(r.list)||0)}</td>
+    <td style="background:#eff6ff;"><input class="fi num hr-got" type="number" min="0" value="${Number(r.got)||0}" style="width:62px;font-weight:800;color:#1d4ed8;font-size:13px;" title="Boxes actually taken off the container" oninput="hiRcvSync()">${r.fromScan?'<div style="font-size:9px;color:#0e7490;font-weight:800;margin-top:2px;white-space:nowrap;" title="Pre-filled from the warehouse count sent from /pic — correct it if it is wrong">from warehouse</div>':''}</td>
+    <td class="hr-status" style="white-space:nowrap;"></td>
+    <td><input class="fi num hr-pcs" type="number" min="1" value="${r.pcs?Number(r.pcs):''}" placeholder="auto" style="width:56px;"></td>
+    <td><input class="fi hr-loc" list="hi-dl-loc" value="${esc(r.loc||'')}" placeholder="e.g. 1C-1" style="width:92px;text-transform:uppercase;"></td>
+    <td><button class="btn btn-sm" style="border:none;color:#b91c1c;" onclick="this.closest('tr').remove();hiRcvSync();" title="Remove this line">✕</button></td>
+  </tr>`;
+}
+/* 한 줄 확인 토글 — ✘ 인 줄을 매니저가 "이 숫자 맞다" 하고 눌러 잠근다 */
+function hiRcvConfirm(btn){
+  const tr = btn.closest('tr'); if(!tr) return;
+  tr.dataset.conf = (tr.dataset.conf==='1') ? '' : '1';
+  hiRcvSync();
+}
+function hiRcvConfirmAll(){
+  let n = 0;
+  [...document.querySelectorAll('#hircv-rows tr')].forEach(tr=>{
+    if(tr.dataset.needconf==='1' && tr.dataset.conf!=='1'){ tr.dataset.conf='1'; n++; }
+  });
+  hiRcvSync();
+  showToast(n? ('✔ '+n+' line(s) confirmed') : 'Nothing left to confirm');
+}
+/* 화면 상태를 한 번에 다시 계산한다 — Match 칸, 확인 개수, 입고 버튼 잠금 */
+function hiRcvSync(){
+  const trs = [...document.querySelectorAll('#hircv-rows tr')];
+  let need = 0, done = 0, tot = 0, lines = 0;
+  trs.forEach(tr=>{
+    const listEl = tr.querySelector('.hr-list'), gotEl = tr.querySelector('.hr-got');
+    const st = tr.querySelector('.hr-style'), stv = st ? String(st.value||'').trim() : '';
+    if(!listEl || !gotEl) return;
+    const added = tr.dataset.added==='1';
+    const list = added ? 0 : (Number(listEl.dataset.list)||0);
+    const got = Math.max(0, parseInt(gotEl.value)||0);
+    const cell = tr.querySelector('.hr-status'); if(!cell) return;
+    tot += got; if(got>0 && stv) lines++;
+    const conf = tr.dataset.conf==='1';
+    let bad = added || got!==list;
+    tr.dataset.needconf = bad ? '1' : '';
+    if(!stv){ cell.innerHTML=''; tr.style.background=''; return; }
+    if(!bad){
+      cell.innerHTML = '<span style="color:#15803d;font-weight:800;font-size:13px;">✔ matches</span>';
+      tr.style.background = '';
+      return;
+    }
+    need++;
+    let label, col;
+    if(added){ label='not on the list'; col='#7c3aed'; }
+    else if(got===0){ label='none arrived'; col='#b91c1c'; }
+    else if(got<list){ label='short '+(list-got); col='#b91c1c'; }
+    else { label='over '+(got-list); col='#b45309'; }
+    if(conf){
+      done++;
+      tr.style.background = '#f0fdf4';
+      cell.innerHTML = '<span style="color:#15803d;font-weight:800;font-size:13px;">✔</span> '
+        + '<span style="color:'+col+';font-weight:700;font-size:11px;">'+esc(label)+'</span> '
+        + '<button class="btn btn-sm" style="padding:1px 7px;font-size:10px;font-weight:700;" onclick="hiRcvConfirm(this)" title="Undo — this line goes back to needing a check">undo</button>';
+    }else{
+      tr.style.background = added ? '#faf5ff' : '#fef2f2';
+      cell.innerHTML = '<span style="color:#b91c1c;font-weight:800;font-size:13px;">✘</span> '
+        + '<span style="color:'+col+';font-weight:800;font-size:11px;">'+esc(label)+'</span> '
+        + '<button class="btn btn-sm" style="background:#166534;color:#fff;border-color:#166534;padding:2px 9px;font-size:10.5px;font-weight:800;" onclick="hiRcvConfirm(this)" title="The count is right — lock this line in">Confirm</button>';
+    }
+  });
+  const left = need - done;
+  const bar = document.getElementById('hircv-conf-bar');
+  if(bar){
+    bar.innerHTML = left
+      ? '<span style="background:#fef2f2;border:1px solid #fca5a5;color:#b91c1c;border-radius:8px;padding:5px 11px;font-size:11.5px;font-weight:800;">✘ '+left+' line(s) need confirming</span> '
+        + '<button class="btn btn-sm" style="background:#166534;color:#fff;border-color:#166534;font-weight:800;" onclick="hiRcvConfirmAll()" title="Confirm every line that does not match, in one go">✔ Confirm all</button>'
+      : '<span style="background:#f0fdf4;border:1px solid #86efac;color:#166534;border-radius:8px;padding:5px 11px;font-size:11.5px;font-weight:800;">✔ all '+trs.length+' line(s) checked · '+tot.toLocaleString()+' box to receive</span>';
+  }
+  const btn = document.getElementById('hircv-recv-btn');
+  if(btn){
+    const block = left>0 || lines===0;
+    btn.disabled = block;
+    btn.style.opacity = block ? '.5' : '1';
+    btn.title = left>0 ? (left+' line(s) still need confirming before you can receive')
+              : (lines===0 ? 'Nothing counted yet' : 'Receive every counted box into SC stock and close this arrival');
+  }
+}
+/* ⏳ 자리를 아직 안 정했을 때 — 전부 TEMPORARY 로 (진짜 자리는 Box Room 에서) */
+function hiRcvTempAll(){
+  const els = [...document.querySelectorAll('#hircv-rows .hr-loc')];
+  els.forEach(el=>{ el.value='TEMPORARY'; el.style.background='#fff7ed'; });
+  showToast('⏳ '+els.length+' line(s) → TEMPORARY · assign the real bins later in the Box Room');
+}
 // 📥 입고 행 수집 — Arrived(총량) + Recv now(지금 받을 수량) + 선택(체크박스) (v710)
+/* 📥 입고 행 수집 (v925) — 이제 두 숫자만 본다: list(서류) 와 got(실제 내린 수량).
+   boxes 는 got 의 다른 이름이다 — discrepancy report 가 그 이름을 쓰고 있어서 같이 남긴다. */
 function hiCollectReceive(){
   const trs = [...document.querySelectorAll('#hircv-rows tr')];
   const out = [];
@@ -25269,68 +25398,35 @@ function hiCollectReceive(){
     const v = cl=>{ const el = tr.querySelector(cl); return el ? String(el.value||'').trim() : ''; };
     const style = v('.hr-style'), size = v('.hr-size').toUpperCase();
     const color = bxFixColor(v('.hr-color'));
-    let boxes = parseInt(v('.hr-boxes'))||0;           // arrived total (corrected)
-    let recv = parseInt(v('.hr-recv')); if(isNaN(recv)) recv = 0;   // receive now
+    if(!style || !color || !size) return;
+    const added = tr.dataset.added==='1';
+    const listEl = tr.querySelector('.hr-list');
+    const list = added ? 0 : (Number(listEl && listEl.dataset.list)||0);
+    const got = Math.max(0, parseInt(v('.hr-got'))||0);
     const pcs = parseInt(v('.hr-pcs'))||0;
     const loc = v('.hr-loc').toUpperCase();
-    const selEl = tr.querySelector('.hr-sel'); const sel = !!(selEl && selEl.checked);
-    if(!style || !color || !size) return;
-    recv = Math.max(0, recv);
-    if(recv > boxes) boxes = recv;   // 받은 게 리스트보다 많으면 Arrived 를 받은 수량으로 올림 (예: 리스트 24, 실제 30 → 둘 다 30, discrepancy 는 pboxes 로 비교) (v731)
-    out.push({style, color, size, boxes, recv, sel, pcs: pcs||autoPpb({style,size}), loc});
+    out.push({style, color, size, list, got, boxes:got, added, conf: tr.dataset.conf==='1',
+              pcs: pcs||autoPpb({style,size}), loc});
   });
   return out;
 }
-// 전체 선택 / 해제
-function hiRecvSelAll(on){
-  [...document.querySelectorAll('#hircv-rows tr .hr-sel')].forEach(c=>{ c.checked = !!on; });
-}
-/* ↧ 창고가 센 숫자를 Arrived 칸에 옮겨 담는다 (v924).
-   화면만 채운다 — 재고는 매니저가 Receive 를 눌러야 움직인다.
-   창고 보고에는 '안 맞는 줄'만 들어 있다. 맞는 줄은 리스트 숫자가 곧 실제라 건드릴 게 없다.
-   리스트에 아예 없던 물건(extra)은 자동으로 못 넣는다 — ➕ Add item 으로 넣어야 해서 따로 알려준다. */
-function hiRcvFillFromScan(){
-  const scan = window._hircvScan;
-  const bad = (scan && Array.isArray(scan.bad)) ? scan.bad : [];
-  if(!bad.length){ showToast('Nothing to change — the warehouse count matched the list'); return; }
-  const want = {};
-  let extra = [];
-  bad.forEach(r=>{
-    if(r.st==='extra'){ extra.push(String(r.style||'')+' '+String(r.color||'')+' '+String(r.size||'')); return; }
-    want[scanKeyOf(r.style, r.color, r.size)] = Number(r.got)||0;
-  });
-  let hit = 0;
-  [...document.querySelectorAll('#hircv-rows tr')].forEach(tr=>{
-    const st=tr.querySelector('.hr-style'), co=tr.querySelector('.hr-color'), sz=tr.querySelector('.hr-size');
-    const bx=tr.querySelector('.hr-boxes'), rc=tr.querySelector('.hr-recv');
-    if(!st||!co||!sz||!bx) return;
-    const k = scanKeyOf(st.value, co.value, sz.value);
-    if(!(k in want)) return;
-    const n = want[k];
-    bx.value = n; if(rc) rc.value = n;
-    tr.style.background = '#fff7ed';
-    const sel = tr.querySelector('.hr-sel'); if(sel) sel.checked = true;
-    hit++;
-  });
-  const miss = Object.keys(want).length - hit;
-  showToast('↧ ' + hit + ' line(s) filled from the warehouse count'
-    + (miss?' · '+miss+' not found on this list':'')
-    + (extra.length?' · '+extra.length+' extra item(s) — add with ➕ Add item: '+extra.slice(0,3).join(', ')+(extra.length>3?'…':''):''));
-}
-// 📍 선택한 행들의 Location 을 한 bin 으로 일괄 채움 (v718)
-function hiRcvApplyBin(){
+/* 📍 bin 일괄 채우기 (v925) — 체크박스를 없앴으니 '빈 칸만' / '전부' 두 가지로 나눈다.
+   컨테이너는 보통 한두 자리에 몰아 넣으니 '빈 칸만' 이 기본이다. */
+function hiRcvApplyBin(mode){
   const bin = String((document.getElementById('hircv-bulkbin')||{}).value||'').trim().toUpperCase();
   if(!bin){ showToast('⚠ Type a location bin first'); return; }
-  const rows = [...document.querySelectorAll('#hircv-rows tr')].filter(tr=>{ const c=tr.querySelector('.hr-sel'); return c && c.checked; });
-  if(!rows.length){ showToast('⚠ Tick the rows you want first'); return; }
-  rows.forEach(tr=>{ const loc=tr.querySelector('.hr-loc'); if(loc){ loc.value=bin; loc.style.background='#e0f2fe'; } });
-  showToast('📍 '+bin+' → '+rows.length+' item(s)');
+  const els = [...document.querySelectorAll('#hircv-rows .hr-loc')]
+    .filter(el=> mode==='all' ? true : !String(el.value||'').trim());
+  if(!els.length){ showToast(mode==='all' ? '⚠ No lines' : 'Every line already has a bin — use "All lines" to overwrite'); return; }
+  els.forEach(el=>{ el.value=bin; el.style.background='#e0f2fe'; });
+  showToast('📍 '+bin+' → '+els.length+' line(s)');
 }
 // 📧 Haiti Discrepancy Report — 지금 입력한 Arrived vs 원래 패킹리스트 비교 → Haiti 보낼 이메일 초안 (v720)
 function hiDiscrepancyReport(){
   const ref = window._hircvRef||'';
   const exp = window._hircvExp||[];
-  const cur = (typeof hiCollectReceive==='function') ? hiCollectReceive() : [];
+  /* 입고를 끝낸 직후엔 표가 이미 사라졌다 — 그때는 저장해둔 스냅샷으로 만든다 (v925) */
+  const cur = window._hircvSnap || ((typeof hiCollectReceive==='function') ? hiCollectReceive() : []);
   const norm = (st,co,sz)=> String(st||'').trim().toUpperCase()+'|'+bxFixColor(String(co||'')).toUpperCase()+'|'+String(sz||'').trim().toUpperCase();
   const expMap={}, curMap={};
   exp.forEach(e=>{ expMap[norm(e.style,e.color,e.size)]=e; });
@@ -25371,7 +25467,7 @@ function hiDiscrepancyReport(){
     </div>
     <div style="padding:12px 18px;overflow-y:auto;flex:1;">
       <textarea id="hidisc-text" readonly style="width:100%;height:300px;font-family:Consolas,monospace;font-size:12px;line-height:1.6;border:1px solid #e5e7eb;border-radius:8px;padding:10px;resize:vertical;">${esc(text)}</textarea>
-      <div class="muted" style="font-size:10.5px;margin-top:6px;">Copy this and paste into your email to Haiti, or open your mail app pre-filled. This is based on the <b>Arrived</b> column vs the original packing list — edit Arrived above first if needed, then reopen this.</div>
+      <div class="muted" style="font-size:10.5px;margin-top:6px;">Copy this and paste into your email to Haiti, or open your mail app pre-filled. It compares the <b>📦 Counted</b> column against the original packing list — fix a count above first if needed, then reopen this.</div>
     </div>
     <div style="padding:10px 16px;border-top:1px solid #eee;display:flex;gap:8px;justify-content:flex-end;flex-wrap:wrap;">
       <button class="btn" onclick="document.getElementById('modal-hidisc').remove()">Close</button>
@@ -25380,22 +25476,15 @@ function hiDiscrepancyReport(){
     </div></div>`;
   document.body.appendChild(div);
 }
-// ➕ 수동 아이템 추가 — 리스트에 없던 물건이 잘못/추가로 들어왔을 때 (v713)
+/* ➕ 서류에 없던 물건이 내려왔을 때 — 줄을 하나 만든다 (v925).
+   list 는 0 이라 Match 칸이 곧바로 ✘ "not on the list" 가 되고, Confirm 을 눌러야 입고가 열린다. */
 function hiRcvAddRow(){
   const tb = document.getElementById('hircv-rows'); if(!tb) return;
-  const tr = document.createElement('tr');
-  tr.style.background = '#fefce8';   // 수동 추가 행은 노란색으로 눈에 띄게
-  tr.innerHTML = `
-    <td style="text-align:center;"><input type="checkbox" class="hr-sel" checked title="Included in Receive selected"></td>
-    <td><input class="fi hr-style" value="" placeholder="style" style="width:70px;font-weight:700;"></td>
-    <td><input class="fi hr-color" value="" placeholder="color" style="width:150px;text-transform:uppercase;"></td>
-    <td><input class="fi hr-size" value="" placeholder="size" style="width:52px;text-transform:uppercase;"></td>
-    <td><input class="fi num hr-boxes" type="number" min="0" value="1" style="width:56px;font-weight:800;" oninput="var r=this.closest('tr').querySelector('.hr-recv'); if(r){ r.max=this.value; if((+r.value||0)>(+this.value||0)) r.value=this.value; }"></td>
-    <td style="background:#ecfdf5;"><input class="fi num hr-recv" type="number" min="0" value="1" style="width:56px;font-weight:800;color:#065f46;" oninput="var b=this.closest('tr').querySelector('.hr-boxes'); if(b && (+this.value||0)>(+b.value||0)) b.value=this.value;" onfocus="var c=this.closest('tr').querySelector('.hr-sel'); if(c) c.checked=true;"></td>
-    <td><input class="fi num hr-pcs" type="number" min="1" value="" placeholder="auto" style="width:56px;"></td>
-    <td><input class="fi hr-loc" list="hi-dl-loc" value="" placeholder="e.g. 1C-1" style="width:92px;text-transform:uppercase;"></td>
-    <td><button class="btn btn-sm" style="border:none;color:#b91c1c;" onclick="this.closest('tr').remove()">✕</button></td>`;
+  const wrap = document.createElement('tbody');
+  wrap.innerHTML = hiRcvRowHtml({style:'', color:'', size:'', list:0, got:1, pcs:0, loc:'', added:true, conf:false});
+  const tr = wrap.firstElementChild;
   tb.appendChild(tr);
+  hiRcvSync();
   const st = tr.querySelector('.hr-style'); if(st) st.focus();
 }
 // 💾 Draft 저장 — 지금까지 입력한 Arrived / Recv now / Location / 추가한 행을 입고 없이 저장 (나중에 이어서) (v728)
@@ -25404,14 +25493,13 @@ function hiRcvAddRow(){
 async function hiRcvSaveDraft(id, ref){
   const rows = hiCollectReceive();
   if(!rows.length){ showToast('⚠ Nothing to save — add at least one line'); return; }
-  const exp = window._hircvExp||[];
-  const norm = (st,co,sz)=> String(st||'').trim().toUpperCase()+'|'+bxFixColor(String(co||'')).toUpperCase()+'|'+String(sz||'').trim().toUpperCase();
-  const expMap={}; exp.forEach(e=>{ expMap[norm(e.style,e.color,e.size)]=e; });
+  /* boxes = 지금까지 센 실제 수량 · pboxes = 서류 수량(절대 안 바뀜) · conf = 확인 누른 줄
+     recvDone 표시를 남겨서, 다시 열 때 창고 스캔 숫자로 덮어쓰지 않게 한다 (v925) */
   const lines = rows.map(r=>{
-    const e = expMap[norm(r.style,r.color,r.size)];
-    const base = { style:r.style, color:r.color, size:r.size, boxes:r.boxes, pcs:r.pcs, loc:r.loc, recv:r.recv };
-    if(e) base.pboxes = e.boxes;   // 리스트에 있던 라인 → 원래 선적수량 보존 (discrepancy 기준)
-    else base.added = true;        // 리스트에 없던 추가 아이템 → EXTRA 로 계속 잡히게 표시 (v733)
+    const base = { style:r.style, color:r.color, size:r.size, boxes:r.got, pcs:r.pcs, loc:r.loc, recvDone:1 };
+    if(r.added) base.added = true;   // 리스트에 없던 물건 → EXTRA 로 계속 잡히게
+    else base.pboxes = r.list;       // 서류 수량 보존 (discrepancy 기준)
+    if(r.conf) base.conf = true;
     return base;
   });
   const btn = document.getElementById('hircv-save-btn');
@@ -25423,41 +25511,61 @@ async function hiRcvSaveDraft(id, ref){
   }catch(e){ showToast('⚠ Save failed: '+(e.message||e)); }
   if(btn){ btn.disabled=false; btn.textContent='💾 Save draft'; }
 }
-// mode: 'all' = 전체 입고 · 'selected' = 체크한 라인만 입고 (나머지는 pending 유지)
-async function hiConfirm(id, ref, mode){
-  mode = mode || 'all';
+/* ✅ 재고로 넣기 (v925) — 부분입고 없음. 센 만큼 들어가고 이 입고건은 닫힌다.
+   모자란 건 모자란 대로 받는다: 컨테이너는 한 번 내리면 끝이고, 차이는
+   📧 Discrepancy report 로 Haiti 에 보낸다. 그래서 잔량을 Incoming 에 남기지 않는다. */
+async function hiConfirm(id, ref){
   const rows = hiCollectReceive();
   if(!rows.length){ alert('⚠ No lines to receive.'); return; }
-  const isActive = r => (mode==='all') || r.sel;
-  if(mode==='selected' && !rows.some(r=>r.sel)){ alert('☑️ Tick at least one line to receive, or use "Receive all".'); return; }
-  const recvRows = rows.filter(r=>isActive(r) && r.recv>0);
-  if(!recvRows.length){ alert('⚠ Nothing to receive — set 📥 Recv now above 0 on the line(s) you want.'); return; }
-  const totRecv = recvRows.reduce((a,l)=>a+l.recv,0);
-  // 남는 수량: 활성 라인은 Arrived−Recv, 비활성(미선택) 라인은 전량 pending 유지
-  const remain = rows.map(r=>{ const took = isActive(r) ? r.recv : 0; return {style:r.style, color:r.color, size:r.size, boxes:r.boxes-took, pcs:r.pcs, loc:r.loc}; }).filter(r=>r.boxes>0);
-  const totRemain = remain.reduce((a,l)=>a+l.boxes,0);
-  const partial = totRemain>0;
-  const msg = (mode==='selected'? '☑️ ':'✅ ')+ref+' — receive '+totRecv.toLocaleString()+' box(es) into SC stock now?'
-    + (partial ? '\n\n📦 '+totRemain.toLocaleString()+' box(es) will stay in Incoming as pending.' : '\n\nThis receives everything — the arrival will be closed.');
+  const unconf = rows.filter(r=>(r.added || r.got!==r.list) && !r.conf);
+  if(unconf.length){
+    alert('✘ '+unconf.length+' line(s) do not match the packing list and are not confirmed yet.\n\n'
+      + unconf.slice(0,6).map(r=>'  • '+r.style+' '+r.color+' '+r.size+' — list '+(r.added?'(not on list)':r.list)+', counted '+r.got).join('\n')
+      + (unconf.length>6 ? '\n  … +'+(unconf.length-6)+' more' : '')
+      + '\n\nPress Confirm on each line (or ✔ Confirm all) once you are sure the count is right.');
+    return;
+  }
+  const recvRows = rows.filter(r=>r.got>0);
+  if(!recvRows.length){ alert('⚠ Nothing counted — every line is 0.'); return; }
+  const totRecv = recvRows.reduce((a,l)=>a+l.got,0);
+  const short   = rows.filter(r=>!r.added && r.got<r.list);
+  const shortBx = short.reduce((a,r)=>a+(r.list-r.got),0);
+  const over    = rows.filter(r=>!r.added && r.got>r.list).length;
+  const extra   = rows.filter(r=>r.added && r.got>0).length;
+  const noBin   = recvRows.filter(r=>!r.loc).length;
+  const msg = '✅ '+ref+' — receive '+totRecv.toLocaleString()+' box(es) into SC stock and close this arrival?'
+    + (short.length ? '\n\n📉 '+short.length+' line(s) short by '+shortBx.toLocaleString()+' box — received short, NOT kept pending.\n   Send 📧 Discrepancy report to Haiti after this.' : '')
+    + (over ? '\n📈 '+over+' line(s) over the list.' : '')
+    + (extra ? '\n➕ '+extra+' item(s) not on the packing list.' : '')
+    + (noBin ? '\n📍 '+noBin+' line(s) have no bin — they go in with a blank location.' : '');
   if(!confirm(msg)) return;
   if(!skuLoaded) await skuFetch();
-  if(!(await skuConfirmRegister(skuGateRows(recvRows.map(r=>({style:r.style,color:r.color,size:r.size,boxes:r.recv,pcs:r.pcs,loc:r.loc})))))) return;
+  if(!(await skuConfirmRegister(skuGateRows(recvRows.map(r=>({style:r.style,color:r.color,size:r.size,boxes:r.got,pcs:r.pcs,loc:r.loc})))))) return;
   const by = (SESS&&SESS.email)||'';
   const stock = [];
-  recvRows.forEach(l=>{ for(let j=0;j<l.recv;j++) stock.push({style:l.style, color:l.color, size:l.size, pcs:l.pcs, loc:l.loc||'', wh:'SC', status:'IN', in_by:by, note:'haiti '+ref}); });
+  recvRows.forEach(l=>{ for(let j=0;j<l.got;j++) stock.push({style:l.style, color:l.color, size:l.size, pcs:l.pcs, loc:l.loc||'', wh:'SC', status:'IN', in_by:by, note:'haiti '+ref}); });
   try{
     await bxInsert(stock);
-    const patch = partial
-      ? { status:'PENDING', lines: remain }
-      : { status:'RECEIVED', lines: recvRows.map(r=>({style:r.style,color:r.color,size:r.size,boxes:r.recv,pcs:r.pcs,loc:r.loc})), received_at:new Date().toISOString(), received_by:by };
+    /* 받은 기록은 실제 수량(boxes)과 서류 수량(pboxes)을 나란히 남긴다 —
+       나중에 이 입고건을 열어보면 무엇이 얼마나 모자랐는지 그대로 보인다. */
+    const patch = { status:'RECEIVED',
+      lines: rows.map(r=>({style:r.style, color:r.color, size:r.size, boxes:r.got, pcs:r.pcs, loc:r.loc,
+                           ...(r.added ? {added:true} : {pboxes:r.list})})),
+      received_at:new Date().toISOString(), received_by:by };
     await sbFetch('/rest/v1/pr_inbound?id=eq.'+id, {method:'PATCH', headers:{Prefer:'return=minimal'}, body:JSON.stringify(patch)});
   }catch(e){ alert('⚠ Receive failed: '+e.message); return; }
   const m = document.getElementById('modal-hircv'); if(m) m.remove();
-  showToast(partial ? '✅ '+ref+' — '+totRecv.toLocaleString()+' box received · '+totRemain.toLocaleString()+' still pending' : '✅ '+ref+' received — '+totRecv.toLocaleString()+' box(es)');
+  showToast('✅ '+ref+' received — '+totRecv.toLocaleString()+' box(es)'+(short.length?' · '+shortBx.toLocaleString()+' short → send the discrepancy report':''));
   await bxRefetch();               // 입고분 + Incoming 즉시 반영 (v371)
   window._bxAt = Date.now();
-  if(typeof hiBarUpd==='function') hiBarUpd();   // Incoming 패널 즉시 갱신 (부분 입고 잔량 반영)
+  if(typeof hiBarUpd==='function') hiBarUpd();
   if($('bx-body')) renderBoxRoom();
+  if(short.length || over || extra){
+    /* 차이가 있으면 그냥 닫지 않는다 — 바로 Haiti 메일 초안을 띄운다.
+       입고 후에는 표가 사라지니 스냅샷으로 리포트를 만든다. */
+    window._hircvSnap = rows;
+    setTimeout(()=>{ try{ hiDiscrepancyReport(); }catch(e){} }, 400);
+  }
 }
 async function bxTemplate(){
   await loadXlsxLib();
