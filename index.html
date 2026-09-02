@@ -180,7 +180,7 @@ body.po-dragging{user-select:none;}
   </span>
   <select id="lang-sel" onchange="setLang(this.value)" style="font-size:11px;padding:3px 6px;border-radius:5px;border:none;background:#1d3f66;color:#fff;"><option value="ko">한국어</option><option value="en">English</option><option value="es">Español</option></select>
   <button id="wide-btn" class="btn btn-sm" onclick="toggleWide()" title="화면 넓게 / 좁게 — 기본은 넓게 (이 브라우저에만 저장돼)" style="padding:2px 8px;font-size:10px;background:#1d3f66;color:#cfe0f2;border-color:#2b5384;">↔ Wide</button>
-  <span id="app-ver" style="font-size:10px;color:#9fb8d4;">v956</span>
+  <span id="app-ver" style="font-size:10px;color:#9fb8d4;">v957</span>
 </div>
 <script>
 // ↔ 넓게 보기 — 브라우저마다 따로 저장 (v793)
@@ -4595,7 +4595,7 @@ async function cxlScan(rec){
       /* 낱장은 PC Room 선반으로 돌아간다 — 사이즈별 bin 이 잡혀 있으면 그 자리,
          없으면 그냥 'PC ROOM'. '(no bin)' 이라고 적으면 직원이 어디로 가야 할지 모른다. */
       out.loose.push({ key, style:st, color:col, size:sz, wh, isB, pcs:v,
-                       loc: (row && row.locs && row.locs[String(sz||'').toUpperCase()]) || 'PC ROOM' });
+                       loc: (row ? (pcLocText(row, String(sz||'').toUpperCase()) || pcLoc(row, String(sz||'').toUpperCase())) : '') || 'PC ROOM' });
     });
   }
   return out;
@@ -5855,7 +5855,7 @@ async function _invSyncOnSaveInner(rec){
           if(nvB === 0) delete row.bqty[sz]; else row.bqty[sz] = nvB;
           await pcSaveRow(row);
           if(delta < 0) pb.loose.push({ style:st, color:col, size:sz, wh:whv, isB:true, pcs:-delta,
-            loc:((row.locs||{})[sz]) || 'PC ROOM' });
+            loc:(pcLocText(row, sz) || pcLoc(row, sz)) || 'PC ROOM' });
           pcLogMove(row, sz, 0, Number((row.qty||{})[sz])||0, '[B-grade ' + (delta>0?'-':'+') + Math.abs(delta) + ' → ' + nvB + '] ' + po + (delta>0 ? ' auto-deduct' : ' auto-deduct restore'));
         } else {
           row.qty = row.qty || {};
@@ -5864,7 +5864,7 @@ async function _invSyncOnSaveInner(rec){
           if(nv === 0) delete row.qty[sz]; else row.qty[sz] = nv;
           await pcSaveRow(row);
           if(delta < 0) pb.loose.push({ style:st, color:col, size:sz, wh:whv, isB:false, pcs:-delta,
-            loc:((row.locs||{})[sz]) || 'PC ROOM' });
+            loc:(pcLocText(row, sz) || pcLoc(row, sz)) || 'PC ROOM' });
           pcLogMove(row, sz, -delta, nv, po + (delta>0 ? ' auto-deduct' : ' auto-deduct adjusted (restored)'));
         }
         pcN++;
@@ -15996,12 +15996,79 @@ function pcMoveBadge(row, s2, id){
 // (US) 변형은 PC Room에서 base 칼라로 합침 — shade 이슈는 B로 관리 · (SIDE SEAM)은 다른 제품이라 별개 유지 (v431)
 function pcMergeColor(c){ return String(c||'').replace(/\s*\(\s*US\s*\)/gi,'').replace(/\s+/g,' ').trim(); }
 function pcKey(style, color, wh){ const base = (String(style).trim()+'|'+pcMergeColor(color)).toUpperCase(); return (String(wh||'SC').trim().toUpperCase()==='CA') ? base+'|CA' : base; }
-// ── 📍 사이즈별 location bin — "남은 장수가 어느 bin에 있나" (CA처럼 PC room 공간이 없는 창고용) ──
-function pcLoc(row, s2){ return ((row&&row.locs)||{})[s2] || ''; }
+/* ── 📍 낱장이 어느 bin 에 몇 장 있나 (v957) ──
+   CA 는 PC Room 자리가 없어서 깐 박스를 그 bin 에 그대로 둔다. 그 자리를 "핀" 이라 부른다.
+   예전에는 사이즈마다 bin 이름 문자열 하나였다 — "A-12" 나 심하면 "A-12, B-04".
+   장수가 없으니 "A 에 20, B 에 30" 을 적을 방법이 없었고, 오더 뽑는 직원은 어디로 갈지 몰랐다.
+   이제 [{loc, pcs}] 로 들고 다닌다. 옛 문자열도 그대로 읽는다 — 그때는 첫 bin 에 전량으로 본다. */
+function pcLocList(row, s2){
+  const raw = ((row&&row.locs)||{})[s2];
+  if(!raw) return [];
+  if(Array.isArray(raw)){
+    return raw.map(x=>({ loc:String((x&&x.loc)||'').toUpperCase().trim(), pcs:Math.max(0, Number(x&&x.pcs)||0) }))
+              .filter(x=>x.loc);
+  }
+  /* 옛 형식: "A-12" 또는 "A-12, B-04" — 장수를 모른다.
+     첫 자리에 그 사이즈 전량이 있는 것으로 보고, 나머지는 0 으로 남겨 눈에 띄게 한다. */
+  const names = String(raw).toUpperCase().split(',').map(x=>x.trim()).filter(Boolean);
+  const tot = Math.max(0, Number(((row&&row.qty)||{})[s2])||0);
+  return names.map((L,i)=>({ loc:L, pcs: i===0 ? tot : 0 }));
+}
+function pcLocSetList(row, s2, list){
+  row.locs = row.locs || {};
+  const clean = (list||[]).map(x=>({ loc:String(x.loc||'').toUpperCase().trim(), pcs:Math.max(0, Number(x.pcs)||0) }))
+                          .filter(x=>x.loc);
+  if(clean.length) row.locs[s2] = clean; else delete row.locs[s2];
+  return clean;
+}
+/* 핀에 적힌 합계 — PC Room 수량과 어긋나면 화면에서 알려준다 */
+function pcLocPinned(row, s2){ return pcLocList(row, s2).reduce((a,x)=>a+x.pcs, 0); }
+/* 한 줄 요약: "A-12 20 · B-04 42" (프린트·툴팁용) */
+function pcLocText(row, s2){
+  const L = pcLocList(row, s2);
+  if(!L.length) return '';
+  return L.map(x=>x.loc + (x.pcs ? ' ' + x.pcs : '')).join(' · ');
+}
+/* 박스를 깐 자리에 낱장을 더한다 — 남는 장수는 깐 자리에 그대로 (2026-09-02 결정) */
+function pcLocAdd(row, s2, loc, pcs){
+  const L = String(loc||'').toUpperCase().trim(); if(!L) return;
+  const list = pcLocList(row, s2);
+  const hit = list.find(x=>x.loc===L);
+  if(hit) hit.pcs += Math.max(0, Number(pcs)||0);
+  else list.push({ loc:L, pcs:Math.max(0, Number(pcs)||0) });
+  pcLocSetList(row, s2, list);
+}
+/* 낱장을 뽑았다 — 어느 bin 에서 몇 장을 뺄지 계산하고, 실제로 뺀다.
+   0 이 된 자리는 사라진다 (그 자리엔 이제 아무것도 없다). */
+function pcLocPlan(row, s2, need){
+  const list = pcLocList(row, s2);
+  let left = Math.max(0, Number(need)||0);
+  const out = [];
+  list.forEach(x=>{ if(left<=0) return; const t=Math.min(left, x.pcs); if(t>0){ out.push({loc:x.loc, pcs:t}); left-=t; } });
+  return { picks: out, short: left };   // short > 0 이면 핀에 없는 만큼 (박스를 까야 한다)
+}
+function pcLocTake(row, s2, need){
+  const plan = pcLocPlan(row, s2, need);
+  const list = pcLocList(row, s2);
+  plan.picks.forEach(p=>{ const hit=list.find(x=>x.loc===p.loc); if(hit) hit.pcs -= p.pcs; });
+  pcLocSetList(row, s2, list.filter(x=>x.pcs>0));
+  return plan;
+}
+// 옛 호출부 호환 — bin 이름만 한 줄로
+function pcLoc(row, s2){ return pcLocList(row, s2).map(x=>x.loc).join(', '); }
 function pcLocBadge(row, k, s2){
-  const L = pcLoc(row, s2);
+  const list = pcLocList(row, s2);
   const id = 'pcl-'+cssId(k)+'-'+cssId(s2);
-  if(L) return `<div id="${id}" onclick="pcSetLoc('${esc(k)}','${s2}')" title="Loose pieces are at this bin — click to change/remove" style="cursor:pointer;font-size:8.5px;line-height:1.25;font-weight:800;color:#0e7490;background:#ecfeff;border:1px solid #a5f3fc;border-radius:6px;padding:0 4px;white-space:nowrap;max-width:64px;overflow:hidden;text-overflow:ellipsis;">📍${esc(L)}</div>`;
+  if(list.length){
+    const qty = Math.max(0, Number(((row&&row.qty)||{})[s2])||0);
+    const pin = list.reduce((a,x)=>a+x.pcs,0);
+    const off = qty !== pin;      // 핀 합계와 PC Room 수량이 다르면 어디에 있는지 모르는 장수가 있다
+    const txt = list.map(x=>esc(x.loc)+(x.pcs?(' '+x.pcs):'')).join(' · ');
+    const tip = 'Loose pcs by bin: '+list.map(x=>x.loc+' = '+x.pcs).join(' · ')
+              + (off ? ('\nPC Room says '+qty+' pcs but the bins add up to '+pin+' — '+(qty>pin?(qty-pin)+' pcs are not placed yet':(pin-qty)+' pcs too many')) : '')
+              + '\nClick to edit';
+    return `<div id="${id}" onclick="pcSetLoc('${esc(k)}','${s2}')" title="${esc(tip)}" style="cursor:pointer;font-size:8.5px;line-height:1.25;font-weight:800;color:${off?'#b45309':'#0e7490'};background:${off?'#fffbeb':'#ecfeff'};border:1px solid ${off?'#fcd34d':'#a5f3fc'};border-radius:6px;padding:0 4px;white-space:nowrap;max-width:92px;overflow:hidden;text-overflow:ellipsis;">${off?'⚠':'📍'}${txt}</div>`;
+  }
   return `<div id="${id}" onclick="pcSetLoc('${esc(k)}','${s2}')" title="Set the bin where the opened box / loose pieces sit" style="cursor:pointer;font-size:8.5px;line-height:1.25;color:#dbe4f0;padding:0 2px;">📍</div>`;
 }
 function pcSetLoc(k, s2){
@@ -16032,20 +16099,84 @@ function pcSetLoc(k, s2){
       <div style="font-weight:400;font-size:10.5px;opacity:.9;">Bins with loose pcs (opened boxes) — pick from the list</div></div>
     ${lotSet.length>1 ? '<div style="background:#fef3c7;border-bottom:1px solid #fde68a;color:#92400e;padding:7px 12px;font-size:11px;line-height:1.4;"><b>⚠ 이 색은 LOT이 '+lotSet.length+'가지야</b> — 공장이 달라서 색이 미세하게 다를 수 있어. 한 오더는 되도록 <b>같은 LOT</b>에서 뽑아줘.</div>' : ''}
     <div style="overflow-y:auto;flex:1;padding:6px 12px;">
-      ${bins.length ? bins.map(([L,n,V])=>`<div onclick="pcLocSave('${esc(k)}','${s2}','${esc(L)}')" style="display:flex;align-items:center;gap:8px;padding:7px 6px;border-bottom:1px solid #f1f5f9;font-size:12.5px;cursor:pointer;${L===cur?'background:#ecfeff;':''}" onmouseover="this.style.background='#f0fdfa'" onmouseout="this.style.background='${L===cur?'#ecfeff':''}'">
+      ${bins.length ? bins.map(([L,n,V])=>`<div onclick="pcLocAddBin('${esc(k)}','${s2}','${esc(L)}')" style="display:flex;align-items:center;gap:8px;padding:7px 6px;border-bottom:1px solid #f1f5f9;font-size:12.5px;cursor:pointer;${L===cur?'background:#ecfeff;':''}" onmouseover="this.style.background='#f0fdfa'" onmouseout="this.style.background='${L===cur?'#ecfeff':''}'">
         <span style="font-family:Consolas,monospace;font-weight:800;color:#0e7490;">📍 ${esc(L)}</span>
         ${V ? '<span style="font-family:Consolas,monospace;font-size:10px;font-weight:800;color:#92400e;background:#fef3c7;border:1px solid #fde68a;border-radius:5px;padding:1px 5px;">LOT '+esc(V)+'</span>' : ''}
         <span class="muted" style="font-size:10.5px;">${n} box(es) here</span>
         ${L===cur?'<span style="margin-left:auto;font-size:10px;font-weight:800;color:#0e7490;">✓ current</span>':''}
-      </div>`).join('') : '<div class="muted" style="padding:14px;font-size:11.5px;">No boxes of this size in ['+wh+'] — enter a bin manually below</div>'}
+      </div>`).join('') : '<div class="muted" style="padding:14px;font-size:11.5px;">No boxes of this size in ['+wh+'] — type a bin below</div>'}
     </div>
+    <div id="pcloc-cur" style="border-top:1px solid var(--border);padding:8px 12px;background:#f8fafc;"></div>
     <div style="padding:10px 12px;border-top:1px solid var(--border);display:flex;gap:6px;align-items:center;">
-      <input class="fi" id="pcloc-manual" list="pcloc-bins" value="${esc(cur)}" placeholder="Enter bin" style="flex:1;font-family:Consolas,monospace;font-weight:700;text-transform:uppercase;font-size:12px;" onkeydown="if(event.key==='Enter')pcLocSave('${esc(k)}','${s2}',this.value)">
+      <input class="fi" id="pcloc-manual" list="pcloc-bins" placeholder="Add a bin" style="flex:1;font-family:Consolas,monospace;font-weight:700;text-transform:uppercase;font-size:12px;" onkeydown="if(event.key==='Enter')pcLocAddBin('${esc(k)}','${s2}',this.value)">
       <datalist id="pcloc-bins">${allBins.map(L=>'<option value="'+esc(L)+'">').join('')}</datalist>
-      <button class="btn btn-sm btn-primary" style="background:#0e7490;border-color:#0e7490;" onclick="pcLocSave('${esc(k)}','${s2}',document.getElementById('pcloc-manual').value)">Save</button>
-      ${cur?`<button class="btn btn-sm" style="background:#fee2e2;color:#b91c1c;border-color:#fecaca;" onclick="pcLocSave('${esc(k)}','${s2}','')">Remove</button>`:''}
+      <button class="btn btn-sm btn-primary" style="background:#0e7490;border-color:#0e7490;" onclick="pcLocAddBin('${esc(k)}','${s2}',document.getElementById('pcloc-manual').value)">＋ Add</button>
     </div></div>`;
   document.body.appendChild(div);
+  pcLocCurPaint(k, s2);
+}
+/* 지금 이 사이즈의 낱장이 어느 bin 에 몇 장 있는지 — 여기서 고친다 (v957) */
+function pcLocCurPaint(k, s2){
+  const host = document.getElementById('pcloc-cur'); if(!host) return;
+  const row = pcStore.find(r=>r.k===k);
+  const list = row ? pcLocList(row, s2) : [];
+  const qty = Math.max(0, Number(((row&&row.qty)||{})[s2])||0);
+  const pin = list.reduce((a,x)=>a+x.pcs,0);
+  const off = qty - pin;
+  host.innerHTML = `<div style="font-size:10.5px;font-weight:800;color:#64748b;margin-bottom:4px;">LOOSE PCS BY BIN — this is what the Pull Request will tell staff</div>`
+    + (list.length ? list.map((x,i)=>`<div style="display:flex;align-items:center;gap:6px;padding:3px 0;">
+        <span style="flex:1;font-family:Consolas,monospace;font-weight:800;color:#0e7490;font-size:12.5px;">📍 ${esc(x.loc)}</span>
+        <input type="number" min="0" value="${x.pcs}" onchange="pcLocQty('${esc(k)}','${s2}',${i},this.value)" style="width:66px;text-align:center;font-weight:800;font-size:12.5px;padding:2px 4px;border:1.5px solid #a5f3fc;border-radius:6px;">
+        <span style="font-size:10.5px;color:#94a3b8;font-weight:700;">pcs</span>
+        <span onclick="pcLocDel('${esc(k)}','${s2}',${i})" title="Remove this bin" style="cursor:pointer;color:#b91c1c;background:#fef2f2;border:1px solid #fecaca;border-radius:6px;padding:1px 7px;font-size:11px;font-weight:800;">✕</span>
+      </div>`).join('') : '<div style="font-size:11.5px;color:#94a3b8;padding:3px 0;">No bin set — pick one above.</div>')
+    + `<div style="margin-top:5px;font-size:11px;font-weight:800;color:${off===0?'#166534':'#b45309'};">
+        PC Room has <b>${qty}</b> pcs · bins add up to <b>${pin}</b>${off===0?' ✓':(off>0?(' — '+off+' pcs are not placed at a bin yet'):(' — '+(-off)+' pcs too many'))}</div>`;
+}
+async function pcLocRow(k, s2){
+  let row = await pcFetchRowFresh(k) || pcStore.find(r=>r.k===k);
+  if(!row){ const p=String(k).split('|'); row={ k, style:p[0], color:p[1], wh:(p[2]==='CA'?'CA':'SC'), qty:{}, sizes:pcSizesFor(p[0]) }; pcStore.push(row); }
+  else if(!pcStore.find(r=>r.k===k)) pcStore.push(row);
+  return row;
+}
+/* bin 을 더한다 — 아직 어느 bin 에도 안 놓인 장수가 있으면 그만큼 미리 채워 준다 */
+async function pcLocAddBin(k, s2, val){
+  const L = String(val||'').trim().toUpperCase(); if(!L) return;
+  const row = await pcLocRow(k, s2);
+  const list = pcLocList(row, s2);
+  if(list.some(x=>x.loc===L)){ showToast('📍 '+L+' is already on the list'); pcLocCurPaint(k, s2); return; }
+  const qty = Math.max(0, Number((row.qty||{})[s2])||0);
+  const placed = list.reduce((a,x)=>a+x.pcs,0);
+  list.push({ loc:L, pcs: Math.max(0, qty - placed) });
+  pcLocSetList(row, s2, list);
+  await pcSaveRow(row);
+  pcLocCurPaint(k, s2); pcLocBadgeRefresh(k, s2);
+  const el2 = document.getElementById('pcloc-manual'); if(el2) el2.value='';
+}
+async function pcLocQty(k, s2, i, val){
+  const row = await pcLocRow(k, s2);
+  const list = pcLocList(row, s2);
+  if(!list[i]) return;
+  list[i].pcs = Math.max(0, parseInt(val,10)||0);
+  pcLocSetList(row, s2, list);
+  await pcSaveRow(row);
+  pcLocCurPaint(k, s2); pcLocBadgeRefresh(k, s2);
+}
+async function pcLocDel(k, s2, i){
+  const row = await pcLocRow(k, s2);
+  const list = pcLocList(row, s2);
+  if(!list[i]) return;
+  const gone = list[i].loc;
+  list.splice(i,1);
+  pcLocSetList(row, s2, list);
+  await pcSaveRow(row);
+  pcLocCurPaint(k, s2); pcLocBadgeRefresh(k, s2);
+  showToast('📍 '+gone+' removed');
+}
+function pcLocBadgeRefresh(k, s2){
+  const row = pcStore.find(r=>r.k===k); if(!row) return;
+  const el = document.getElementById('pcl-'+cssId(k)+'-'+cssId(s2));
+  if(el){ const t=document.createElement('div'); t.innerHTML = pcLocBadge(row, k, s2); el.replaceWith(t.firstChild); }
 }
 async function pcLocSave(k, s2, val){
   const m = document.getElementById('modal-pcloc'); if(m) m.remove();
@@ -16053,8 +16184,8 @@ async function pcLocSave(k, s2, val){
   if(!row){ const p=String(k).split('|'); row={ k, style:p[0], color:p[1], wh:(p[2]==='CA'?'CA':'SC'), qty:{}, sizes:pcSizesFor(p[0]) }; pcStore.push(row); }
   const nv = String(val||'').trim().toUpperCase();
   const old = pcLoc(row, s2);
-  row.locs = row.locs || {};
-  if(nv) row.locs[s2] = nv; else delete row.locs[s2];
+  if(nv) pcLocSetList(row, s2, [{ loc:nv, pcs: Math.max(0, Number((row.qty||{})[s2])||0) }]);
+  else pcLocSetList(row, s2, []);
   const el = document.getElementById('pcl-'+cssId(k)+'-'+cssId(s2));
   if(el){ const t=document.createElement('div'); t.innerHTML = pcLocBadge(row, k, s2); el.replaceWith(t.firstChild); }
   if(nv !== old){
@@ -19031,9 +19162,9 @@ async function bxPcQuickGo(){
     if(!row){ row = { k, style:c.style, color:c.color, wh:c.pcWh, qty:{} }; pcStore.push(row); }
     row.qty = row.qty || {};
     row.qty[c.size] = (Number(row.qty[c.size])||0) + add;
-    if(($('bxpcq-pin')||{}).checked){                    // 📍 핀은 체크했을 때만 — 그 bin을 PC 뽑는 자리로 쓸 때
-      row.locs = row.locs || {};
-      row.locs[c.size] = String(c.loc).toUpperCase();
+    if(($('bxpcq-pin')||{}).checked){
+      /* 📍 깐 박스는 이 bin 에 그대로 — 장수까지 그 bin 에 붙인다 (v957) */
+      pcLocAdd(row, c.size, String(c.loc).toUpperCase(), add);
     }
     await pcSaveRow(row);
     pcLogMove(row, c.size, add, row.qty[c.size], '📦 Box move @'+c.loc);
@@ -19072,9 +19203,9 @@ async function bxLocToPc(){
     if(!row){ row = { k, style:c.style, color:c.color, wh:pcWh, qty:{} }; pcStore.push(row); }
     row.qty = row.qty || {};
     row.qty[c.size] = (Number(row.qty[c.size])||0) + add;
-    if(($('blm-pcpin')||{}).checked){                 // 📍 핀은 체크했을 때만 — 그 bin을 PC 뽑는 자리로 쓸 때
-      row.locs = row.locs || {};
-      row.locs[c.size] = String(c.loc).toUpperCase();
+    if(($('blm-pcpin')||{}).checked){
+      /* 📍 깐 박스는 이 bin 에 그대로 — 장수까지 그 bin 에 붙인다 (v957) */
+      pcLocAdd(row, c.size, String(c.loc).toUpperCase(), add);
     }
     await pcSaveRow(row);
     pcLogMove(row, c.size, add, row.qty[c.size], '📦 Box move @'+c.loc);
@@ -19426,10 +19557,11 @@ async function bxPullSave(){
         row.qty = row.qty || {};
         const old = Number(row.qty[sku.size]) || 0;
         row.qty[sku.size] = old + add;
-        if(pinBin){                                     // 📍 그 색 박스가 있던 bin을 낱장 위치로 기록 (v435)
-          const gLocs={}; grp.forEach(b=>{ const Lc=String(b.loc||'?').toUpperCase(); gLocs[Lc]=(gLocs[Lc]||0)+1; });
-          const gl = Object.keys(gLocs).sort((a,b)=>(gLocs[b]-gLocs[a])||a.localeCompare(b)).join(', ');
-          if(gl){ row.locs = row.locs||{}; row.locs[sku.size] = gl; }
+        if(pinBin){
+          /* 📍 깐 박스는 그 bin 에 그대로 둔다 — 그러니 그 장수도 그 bin 에 붙는다 (v957).
+             예전에는 bin 이름만 덮어썼다. 그래서 "A 에 20, B 에 30" 을 적을 수가 없었고,
+             오더 뽑는 직원은 어디로 가야 할지 알 방법이 없었다. */
+          grp.forEach(b2=>{ pcLocAdd(row, sku.size, String(b2.loc||'?').toUpperCase(), Number(b2.pcs)||0); });
         }
         await pcSaveRow(row);
         pcLogMove(row, sku.size, add, row.qty[sku.size], '📦 Box move @'+locLabel+(pinBin?' (📍 pinned)':''));
