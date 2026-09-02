@@ -180,7 +180,7 @@ body.po-dragging{user-select:none;}
   </span>
   <select id="lang-sel" onchange="setLang(this.value)" style="font-size:11px;padding:3px 6px;border-radius:5px;border:none;background:#1d3f66;color:#fff;"><option value="ko">한국어</option><option value="en">English</option><option value="es">Español</option></select>
   <button id="wide-btn" class="btn btn-sm" onclick="toggleWide()" title="화면 넓게 / 좁게 — 기본은 넓게 (이 브라우저에만 저장돼)" style="padding:2px 8px;font-size:10px;background:#1d3f66;color:#cfe0f2;border-color:#2b5384;">↔ Wide</button>
-  <span id="app-ver" style="font-size:10px;color:#9fb8d4;">v943</span>
+  <span id="app-ver" style="font-size:10px;color:#9fb8d4;">v944</span>
 </div>
 <script>
 // ↔ 넓게 보기 — 브라우저마다 따로 저장 (v793)
@@ -25353,12 +25353,13 @@ async function hiPlanOpen(id){
   window._hiPlanIsManual=!!_useSaved;
   const totBoxes=lines.reduce((a,l)=>a+(Number(l.nb)||0),0);
   div.innerHTML=`<div style="background:#fff;border-radius:14px;max-width:760px;width:100%;max-height:92vh;display:flex;flex-direction:column;overflow:hidden;">
-    <div style="background:#4c1d95;color:#fff;padding:12px 18px;display:flex;align-items:center;gap:10px;"><span style="font-weight:800;font-size:16px;">📦 Unload Plan · ${esc(rec.ref||'')}</span><span style="font-size:11.5px;color:#c4b5fd;">drag any item row to another pallet to rearrange</span><span id="hiplan-savest" style="font-size:11px;font-weight:800;color:#ddd6fe;margin-left:8px;white-space:nowrap;"></span>
+    <div style="background:#4c1d95;color:#fff;padding:12px 18px;display:flex;align-items:center;gap:10px;"><span style="font-weight:800;font-size:16px;">📦 Unload Plan · ${esc(rec.ref||'')}</span><span style="font-size:11.5px;color:#c4b5fd;">drag a row to another pallet \u00b7 drag the ⣿ bar to reorder pallets</span><span id="hiplan-savest" style="font-size:11px;font-weight:800;color:#ddd6fe;margin-left:8px;white-space:nowrap;"></span>
       <button onclick="document.getElementById('modal-hiplan').remove()" style="margin-left:auto;background:rgba(255,255,255,.2);color:#fff;border:none;border-radius:8px;padding:6px 12px;font-weight:800;">✕</button></div>
     <div id="hiplan-summary" style="background:#f5f3ff;color:#4c1d95;font-size:12.5px;font-weight:800;padding:8px 18px;border-bottom:1px solid #ede9fe;"></div>
     <div style="flex:1;overflow-y:auto;padding:12px 16px 14px;background:#fafafa;"><div id="hiplan-cards"></div><div style="font-size:10.5px;color:#94a3b8;padding:2px 4px;line-height:1.5;">✋ <b>Drag an item row onto another pallet</b> to move it — totals update live. Pallets split by <b>adult vs kids</b>, then <b>small XS–L (max 48 = 8×6) vs big XL–5XL (max 35 = 7×5)</b>, then grouped by <b>style &amp; color</b> (same style kept together). The bar shows how full each pallet is. <b>(N now)</b> = boxes already in that bin. (Kids treated as one size class — tell me if kids boxes stack differently.)</div></div>
     <div style="padding:10px 16px;border-top:1px solid #eee;display:flex;gap:8px;align-items:center;flex-wrap:wrap;">
       <button class="btn btn-sm" style="border-color:#cbd5e1;color:#475569;font-weight:700;" onclick="hiPlanReset()" title="Undo all manual moves and rebuild the automatic plan">↺ Reset auto-plan</button>
+      <button class="btn btn-sm" style="border-color:#c4b5fd;color:#5b21b6;font-weight:700;" onclick="hiPalGroup()" title="Put the same kind of pallet together — small boxes (42) first, then big boxes (30), then Kids">⇅ Group same type</button>
       <button class="btn" style="background:#7c3aed;color:#fff;border-color:#7c3aed;font-weight:800;" onclick="hiPalletSheet()" title="Print this plan (with your manual changes) to hand to staff">🖨 Print for staff</button>
       <button class="btn" style="margin-left:auto;" onclick="document.getElementById('modal-hiplan').remove()">Close</button>
       <button class="btn" style="background:#166534;color:#fff;border-color:#166534;font-weight:800;" onclick="document.getElementById('modal-hiplan').remove(); hiReceive('${esc(String(rec.id))}')">📦 Receive now</button>
@@ -25416,8 +25417,37 @@ function hiPlanRenderCards(){
 // 드래그 시작 — 어느 팔렛의 몇 번째 아이템인지 기억
 function hiPlanDragStart(ev, pi, ii){ window._hiDrag={pi, ii}; try{ ev.dataTransfer.effectAllowed='move'; ev.dataTransfer.setData('text/plain', pi+':'+ii); }catch(e){} }
 // 드롭 — 아이템을 대상 팔렛으로 이동 (targetPi = -1 이면 새 팔렛)
+/* 🧱 팔렛 통째로 옮기기 (v944) — 헤더 손잡이를 끌면 팔렛 순서가 바뀐다.
+   같은 종류(작은박스 42 / 큰박스 30 / Kids)끼리 모아 두면 컨테이너에서 내리기가 편하다. */
+function hiPalDragStart(ev, pi){ window._hiDragPal={pi}; window._hiDrag=null;
+  try{ ev.dataTransfer.effectAllowed='move'; ev.dataTransfer.setData('text/plain','pal:'+pi); }catch(e){} }
+function hiPalMove(from, to){
+  const p=window._hiPlanPallets||[];
+  if(from<0 || from>=p.length) return;
+  if(to<0) to=0; if(to>p.length-1) to=p.length-1;
+  if(from===to) return;
+  const m=p.splice(from,1)[0]; if(!m) return;
+  p.splice(to,0,m);
+  hiPlanRenderCards();
+  hiPlanSaveDebounced();
+  showToast('\uD83E\uDDF1 Pallet moved to position '+(to+1));
+}
+function hiPalBump(pi, d){ hiPalMove(pi, pi+d); }
+/* 같은 종류끼리 모아 준다 — 작은박스(42) → 큰박스(30) → Kids, 안에서는 원래 순서 그대로 */
+function hiPalGroup(){
+  const p=window._hiPlanPallets||[];
+  const rank=s=> s==='adult-small'?0 : (s==='adult-big'?1 : 2);
+  window._hiPlanPallets=p.map((x,i)=>({x,i})).sort((a,b)=>{
+    const r=rank(a.x.stream)-rank(b.x.stream); return r!==0?r:(a.i-b.i);
+  }).map(o=>o.x);
+  hiPlanRenderCards();
+  hiPlanSaveDebounced();
+  showToast('\u21C5 Pallets grouped \u2014 small (42) first, then big (30), then Kids');
+}
 function hiPlanDrop(ev, targetPi){
   ev.preventDefault();
+  const dp=window._hiDragPal; window._hiDragPal=null;
+  if(dp){ hiPalMove(dp.pi, targetPi===-1 ? (window._hiPlanPallets||[]).length-1 : targetPi); return; }
   const d=window._hiDrag; window._hiDrag=null;
   if(!d) return;
   const pallets=window._hiPlanPallets||[];
@@ -25468,9 +25498,22 @@ function hiRowSplit(pi, ii){
 /* 수량 입력 — 늘린 만큼은 같은 품목의 다른 줄에서 빼 오고, 줄인 만큼은 거기로 돌려준다 */
 function hiRowQty(pi, ii, val, elId){
   const p=(window._hiPlanPallets||[])[pi]; const it=p&&p.items[ii]; if(!it) return;
-  const sibs=hiRowSibs(pi, ii);
+  let sibs=hiRowSibs(pi, ii);
   const old=Number(it.boxes)||0;
   let n=parseInt(val,10); if(!(n>=0)) n=0;
+  /* 이 품목이 이 줄 하나뿐인데 수량을 줄이면 — 남는 만큼이 바로 아래에 새 줄로 떨어진다.
+     ✂ 를 누른 것과 같다. 그래서 모든 줄이 똑같이 생기고 똑같이 움직인다 (v944). */
+  if(!sibs.length && n<old){
+    const sg = it.sg || ('sg'+(++_hiSgSeq)+Date.now().toString(36));
+    it.sg = sg; it.boxes = n;
+    p.items.splice(ii+1, 0, Object.assign({}, it, {boxes: old-n, sg:sg}));
+    hiPlanRenderCards();
+    hiPlanSaveDebounced();
+    const id = elId||('hiqi-'+pi+'-'+ii);
+    const el = document.getElementById(id);
+    if(el){ try{ el.focus(); const v=el.value; el.value=''; el.value=v; }catch(e){} }
+    return;
+  }
   if(!sibs.length){ n=old; }
   else {
     const pool=sibs.reduce((a,o)=>a+(Number(o.x.boxes)||0),0);
@@ -25574,16 +25617,13 @@ function hiPalletCardsHtml(pallets){
   const cards = pallets.map((p,i)=>{
     const rows=p.items.map((it,ii)=>{
       const nb=Number(it.boxes)||0;
-      const shared = hiRowsOfKey(hiKeyOf(it)).length>1;   // 같은 품목이 여러 줄이면 수량을 바로 고칠 수 있다
-      const qtyCell = shared
-        ? `<span style="flex:none;display:flex;align-items:center;gap:3px;" ondragstart="event.stopPropagation();event.preventDefault();">
+      const qtyCell = `<span style="flex:none;display:flex;align-items:center;gap:3px;" ondragstart="event.stopPropagation();event.preventDefault();">
              <button type="button" draggable="false" onclick="event.stopPropagation();hiRowBump(${i},${ii},-1)" onblur="hiRowQtyDone()" title="One box less — it goes back to the other row of this item" style="flex:none;width:22px;height:24px;border:1px solid #e2e8f0;background:#f8fafc;border-radius:6px;font-weight:900;color:#475569;cursor:pointer;padding:0;line-height:1;">−</button>
              <input id="hiqi-${i}-${ii}" type="number" min="0" inputmode="numeric" draggable="false" value="${nb}" oninput="hiRowQty(${i},${ii},this.value,this.id)" onchange="hiRowQty(${i},${ii},this.value,this.id)" onblur="hiRowQtyDone()" onclick="event.stopPropagation()" title="Type how many boxes stay on this row — the rest goes to the other row of the same item" style="flex:none;width:46px;height:24px;box-sizing:border-box;text-align:center;font-weight:800;font-size:12.5px;color:#4c1d95;background:#fff;border:1.5px solid #a78bfa;border-radius:6px;">
              <button type="button" draggable="false" onclick="event.stopPropagation();hiRowBump(${i},${ii},1)" onblur="hiRowQtyDone()" title="One box more — taken from the other row of this item" style="flex:none;width:22px;height:24px;border:1px solid #e2e8f0;background:#f8fafc;border-radius:6px;font-weight:900;color:#475569;cursor:pointer;padding:0;line-height:1;">+</button>
              <span style="font-size:10.5px;font-weight:800;color:#94a3b8;">bx</span>
-           </span>`
-        : `<span style="flex:none;width:101px;box-sizing:border-box;font-weight:800;color:#5b21b6;background:#f5f3ff;border-radius:6px;padding:3px 0;text-align:center;">${nb} bx</span>`;
-      return `<div draggable="true" ondragstart="hiPlanDragStart(event,${i},${ii})" title="Drag to another pallet" style="display:flex;align-items:center;gap:7px;padding:4px 6px;border-top:1px solid #f1f5f9;font-size:13px;cursor:grab;border-radius:6px;${shared?'background:#fbfaff;':''}">
+           </span>`;
+      return `<div draggable="true" ondragstart="hiPlanDragStart(event,${i},${ii})" title="Drag to another pallet" style="display:flex;align-items:center;gap:7px;padding:4px 6px;border-top:1px solid #f1f5f9;font-size:13px;cursor:grab;border-radius:6px;">
       <span style="color:#c4b5fd;font-weight:800;">⠿</span>
       <span style="font-weight:800;color:#111;min-width:52px;">#${esc(it.st)}</span>
       <span style="flex:1;min-width:0;color:#334155;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${esc(bxBaseColor(it.co))}</span>
@@ -25605,11 +25645,13 @@ function hiPalletCardsHtml(pallets){
       : (p.full ? '<span id="hipg-'+i+'" style="background:#16a34a;color:#fff;border-radius:20px;padding:1px 9px;font-size:10px;font-weight:800;">FULL</span>' : '<span id="hipg-'+i+'" style="background:#fde68a;color:#92400e;border-radius:20px;padding:1px 9px;font-size:10px;font-weight:800;">partial</span>');
     const barColor = over ? '#dc2626' : (p.full ? '#16a34a' : '#c4b5fd');
     return `<div ondragover="event.preventDefault()" ondrop="hiPlanDrop(event,${i})" style="background:#fff;border:2px solid #c4b5fd;border-radius:12px;margin-bottom:12px;overflow:hidden;box-shadow:0 1px 3px rgba(76,29,149,.08);">
-      <div style="background:#4c1d95;color:#fff;padding:8px 14px;display:flex;align-items:center;justify-content:space-between;gap:8px;">
-        <span style="font-size:16px;font-weight:800;letter-spacing:.5px;">PALLET ${i+1} <span style="font-weight:700;color:#e9d5ff;font-size:13px;">· ${esc(p.colorLabel||'')} · ${esc(p.styleLabel||'')}</span>${catChip}</span>
+      <div draggable="true" ondragstart="hiPalDragStart(event,${i})" title="Drag this bar to move the whole pallet up or down the list" style="background:#4c1d95;color:#fff;padding:8px 14px;display:flex;align-items:center;justify-content:space-between;gap:8px;cursor:grab;">
+        <span style="font-size:16px;font-weight:800;letter-spacing:.5px;"><span style="color:#a78bfa;margin-right:7px;">⣿</span>PALLET ${i+1} <span style="font-weight:700;color:#e9d5ff;font-size:13px;">· ${esc(p.colorLabel||'')} · ${esc(p.styleLabel||'')}</span>${catChip}</span>
         <span style="display:flex;align-items:center;gap:7px;flex:none;">
+          <span draggable="false" onclick="event.stopPropagation();hiPalBump(${i},-1)" title="Move this pallet one place up" style="cursor:pointer;background:rgba(255,255,255,.18);border-radius:6px;padding:1px 7px;font-size:11px;font-weight:900;">▲</span>
+          <span draggable="false" onclick="event.stopPropagation();hiPalBump(${i},1)" title="Move this pallet one place down" style="cursor:pointer;background:rgba(255,255,255,.18);border-radius:6px;padding:1px 7px;font-size:11px;font-weight:900;">▼</span>
           <span id="hipt-${i}" style="font-size:13px;font-weight:800;background:rgba(255,255,255,.18);border-radius:20px;padding:2px 12px;white-space:nowrap;">${p.total} / ${p.cap} bx</span>
-          <button type="button" onclick="hiQrPrintPallet(${i})" title="Print a QR sticker for every box on this pallet (${p.total} sticker${p.total===1?'':'s'}) — stock QR, no customer / PO#" style="background:#fff;color:#4c1d95;border:none;border-radius:8px;padding:3px 10px;font-size:11.5px;font-weight:900;cursor:pointer;white-space:nowrap;">⬛ QR</button>
+          <button type="button" draggable="false" onclick="event.stopPropagation();hiQrPrintPallet(${i})" title="Print a QR sticker for every box on this pallet (${p.total} sticker${p.total===1?'':'s'}) — stock QR, no customer / PO#" style="background:#fff;color:#4c1d95;border:none;border-radius:8px;padding:3px 10px;font-size:11.5px;font-weight:900;cursor:pointer;white-space:nowrap;">⬛ QR</button>
         </span>
       </div>
       <div style="padding:5px 14px 2px;display:flex;align-items:center;gap:8px;">
