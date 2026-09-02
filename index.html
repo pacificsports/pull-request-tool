@@ -180,7 +180,7 @@ body.po-dragging{user-select:none;}
   </span>
   <select id="lang-sel" onchange="setLang(this.value)" style="font-size:11px;padding:3px 6px;border-radius:5px;border:none;background:#1d3f66;color:#fff;"><option value="ko">한국어</option><option value="en">English</option><option value="es">Español</option></select>
   <button id="wide-btn" class="btn btn-sm" onclick="toggleWide()" title="화면 넓게 / 좁게 — 기본은 넓게 (이 브라우저에만 저장돼)" style="padding:2px 8px;font-size:10px;background:#1d3f66;color:#cfe0f2;border-color:#2b5384;">↔ Wide</button>
-  <span id="app-ver" style="font-size:10px;color:#9fb8d4;">v958</span>
+  <span id="app-ver" style="font-size:10px;color:#9fb8d4;">v959</span>
 </div>
 <script>
 // ↔ 넓게 보기 — 브라우저마다 따로 저장 (v793)
@@ -1739,7 +1739,7 @@ function looseCellInner(l, b, i){
     + ((l.pcMove&&l.pcMove.length) ? (()=>{
         const mvWh = String(l.pcMoveWh||'').toUpperCase();
         const stale = mvWh && mvWh !== String(l.wh||'').toUpperCase();   // 다른 창고에서 뜯은 박스다
-        return `<div title="${stale?('These boxes were opened into the '+esc(mvWh)+' PC Room. This line ships from '+esc(String(l.wh||''))+' now — the pieces stay in '+esc(mvWh)+' as loose stock for another order.'):'Boxes opened into the PC Room for this line'}" style="font-size:9px;line-height:1.3;color:${stale?'#b45309':'#7c3aed'};font-weight:800;white-space:nowrap;${stale?'background:#fff7ed;border:1px solid #fed7aa;border-radius:5px;padding:0 4px;':''}">\u{1F9FA} ${stale?('['+esc(mvWh)+'] '):''}${l.pcMove.map(g=>esc(g.loc)+(g.n>1?' \u00D7'+g.n:'')).join(' \u00B7 ')}${(l.pcMoveData&&l.pcMoveData.length)?`<button class="btn btn-sm" style="border:none;padding:0 3px;font-size:10px;color:#b91c1c;" onclick="pcMoveUndo(${i})" title="Undo this box move — boxes back to full-box stock, PC Room minus">\u21A9</button>`:''}</div>`;
+        return `<div title="${stale?('These boxes were opened into the '+esc(mvWh)+' PC Room. This line ships from '+esc(String(l.wh||''))+' now — the pieces stay in '+esc(mvWh)+' as loose stock for another order.'):'Boxes opened into the PC Room for this line'}" style="font-size:9px;line-height:1.3;color:${stale?'#b45309':'#7c3aed'};font-weight:800;white-space:nowrap;${stale?'background:#fff7ed;border:1px solid #fed7aa;border-radius:5px;padding:0 4px;':''}">\u{1F9FA} ${stale?('['+esc(mvWh)+'] '):''}${l.pcMove.map(g=>(g.pin?'\u2702':'')+esc(g.loc)+(g.n>1?' \u00D7'+g.n:'')).join(' \u00B7 ')}${(l.pcMoveData&&l.pcMoveData.length)?`<button class="btn btn-sm" style="border:none;padding:0 3px;font-size:10px;color:#b91c1c;" onclick="pcMoveUndo(${i})" title="Undo this box move — boxes back to full-box stock, PC Room minus">\u21A9</button>`:''}</div>`;
       })() : '')
     + pcStockHint(l, b, i);
 }
@@ -2501,6 +2501,42 @@ async function boAltFromList(base){
 // ═══════════════ 문서 생성 ═══════════════
 function activeWhs(){ return WH_LIST.filter(w=>poLines.some(l=>l.wh===w && (l.qty||0)>0)); }
 
+/* ═══ 📍 낱장은 어느 자리에서 몇 장 (v959) ═══
+   CA 는 PC Room 자리가 없다. 깐 박스를 bin 에 그대로 두고 그 자리를 "핀" 이라 부른다.
+   오더 준비하는 직원은 Pull Request 1페이지만 본다 — 여기에 자리와 장수가 안 찍히면
+   낱장을 어디서 가져와야 하는지 알 방법이 없었다.
+   저장할 때 굳혀 둔 계획(l.loosePick)을 쓰고, 아직 저장 전이면 지금 핀에서 계산해 보여 준다. */
+function prLoosePicks(l){
+  const wh = String((l&&l.wh)||'').trim().toUpperCase();
+  if(wh!=='SC' && wh!=='CA') return [];
+  let list = Array.isArray(l&&l.loosePick) ? l.loosePick : null;
+  if(!list){
+    try{
+      const row = (typeof pcStore!=='undefined'?pcStore:[]).find(r=>r.k===pcKey(bxStyleFor(l), bxColorFor(l), wh));
+      if(!row) return [];
+      list = pcLocPlan(row, String(l.size||'').trim().toUpperCase(), boxCalc(l).loose).picks;
+    }catch(e){ return []; }
+  }
+  return (list||[]).map(x=>({ loc:String((x&&x.loc)||'').toUpperCase(), pcs:Math.max(0, Number(x&&x.pcs)||0) }))
+                   .filter(x=>x.loc && x.pcs>0);
+}
+/* 핀에 지금 남아 있는 장수 — "까고 나면 몇 장이 그 자리에 남는다" 를 사실대로 찍기 위해 */
+function prPinLeft(l, loc){
+  try{
+    const wh = String((l&&l.wh)||'').trim().toUpperCase();
+    const row = (typeof pcStore!=='undefined'?pcStore:[]).find(r=>r.k===pcKey(bxStyleFor(l), bxColorFor(l), wh));
+    if(!row) return null;
+    const hit = pcLocList(row, String(l.size||'').trim().toUpperCase()).find(x=>x.loc===String(loc||'').toUpperCase());
+    return hit ? hit.pcs : 0;
+  }catch(e){ return null; }
+}
+function prLooseBinsHtml(l){
+  const p = prLoosePicks(l);
+  if(!p.length) return '';
+  return `<div style="font-size:9.5px;line-height:1.4;font-weight:800;color:#0e7490;margin-top:3px;white-space:nowrap;">`
+    + p.map(x=>'\u{1F4CD} '+esc(x.loc)+' — '+x.pcs).join('<br>') + `</div>`;
+}
+
 function buildDocHtml(wh, opts){
   const _page1Only = !!(opts && opts.page1Only);
   const num = docNumber(wh);
@@ -2512,9 +2548,10 @@ function buildDocHtml(wh, opts){
     return `<tr><td style="font-weight:700;">${esc(l.style||'')}</td><td class="tl">${esc(l.desc||'')}</td><td class="tl">${esc(l.color)}</td><td>${esc(l.size)}</td>
       <td class="c-full">${b.full||''}</td>
       <td class="c-tot">${(l.qty||0).toLocaleString()}</td>
-      <td class="c-part">${b.loose||''}</td>
+      <td class="c-part">${b.loose||''}${b.loose?prLooseBinsHtml(l):''}</td>
       <td class="c-pbox">${b.loose&&l.pbox ? 'Box '+esc(l.pbox) : ''}</td></tr>`;
   }).join('');
+  const anyPin = lines.some(l=>boxCalc(l).loose>0 && prLoosePicks(l).length);
   const tot = lines.reduce((a,l)=>{const b=boxCalc(l);a.q+=l.qty||0;a.f+=b.full;a.l+=b.loose;return a;},{q:0,f:0,l:0});
   const _pboxSet = new Set();
   lines.forEach(l=>{ const b=boxCalc(l); if(b.loose>0 && l.pbox) _pboxSet.add(String(l.pbox).trim()); });
@@ -2535,23 +2572,44 @@ function buildDocHtml(wh, opts){
       let n = Number(g.n)||1;
       const d = Math.min(left, n); left -= d;
       const take = wantDone ? d : (n - d);
-      if(take > 0) out.push({ loc:g.loc, n:take });
+      if(take > 0) out.push({ loc:g.loc, n:take, pin:!!g.pin, pcs:Math.round((Number(g.pcs)||0) * take / n) });
     });
     return out;
   };
+  /* 📌 핀은 다르다 — 들고 오는 게 아니라 그 자리에서 까고 그대로 둔다 (v959) */
+  const _mvCarry = l => _mvSplit(l,false).filter(g=>!g.pin);
+  const _mvPin   = l => _mvSplit(l,false).filter(g=>g.pin);
   const moveLines  = lines.filter(l=>l.pcMove && l.pcMove.length && _mvTot(l) > _mvDone(l));
   const moveDone   = lines.filter(l=>l.pcMove && l.pcMove.length && _mvDone(l) > 0);
   const looseRows = looseLines.map(l=>{const b=boxCalc(l);return `<tr><td style="font-weight:700;">${esc(l.style||'')}</td><td class="tl">${esc(l.desc||'')}</td><td class="tl">${esc(l.color)}</td><td>${esc(l.size)}</td><td class="c-part" style="font-weight:800;">${b.loose}</td><td class="c-pbox">${l.pbox?'Box '+esc(l.pbox):''}</td></tr>`;}).join('');
   const totLoose = looseLines.reduce((a,l)=>a+boxCalc(l).loose,0);
   const fullRows = fullLines.map(l=>{const b=boxCalc(l);const locs=(l.pickLocs&&l.pickLocs.length)?[...new Set(l.pickLocs.map(g=>esc(g.loc)))].join(', '):'';return `<tr><td style="font-weight:700;">${esc(l.style||'')}</td><td class="tl">${esc(l.desc||'')}</td><td class="tl">${esc(l.color)}</td><td>${esc(l.size)}</td><td class="c-full" style="font-weight:800;">${b.full}</td><td class="tl">${locs||'<span style="color:#9ca3af;">—</span>'}</td></tr>`;}).join('');
   const totFull = fullLines.reduce((a,l)=>a+boxCalc(l).full,0);
-  const moveRows = moveLines.map(l=>{const gs=_mvSplit(l,false);const locs=gs.map(g=>esc(g.loc)+(g.n>1?' ×'+g.n:'')).join(', ');const n=gs.reduce((a,g)=>a+(g.n||1),0);return `<tr><td style="font-weight:700;">${esc(l.style||'')}</td><td class="tl">${esc(l.color)}</td><td>${esc(l.size)}</td><td style="text-align:center;font-weight:800;">${n}</td><td class="tl">${esc(locs)}</td></tr>`;}).join('');
+  const carryLines = moveLines.filter(l=>_mvCarry(l).length);
+  const pinLines   = moveLines.filter(l=>_mvPin(l).length);
+  const moveRows = carryLines.map(l=>{const gs=_mvCarry(l);const locs=gs.map(g=>esc(g.loc)+(g.n>1?' ×'+g.n:'')).join(', ');const n=gs.reduce((a,g)=>a+(g.n||1),0);return `<tr><td style="font-weight:700;">${esc(l.style||'')}</td><td class="tl">${esc(l.color)}</td><td>${esc(l.size)}</td><td style="text-align:center;font-weight:800;">${n}</td><td class="tl">${esc(locs)}</td></tr>`;}).join('');
+  /* ④ 핀: 박스를 그 자리에서 까고 남는 장수는 그 자리에 그대로 둔다 —
+     오더가 가져가는 장수와 남길 장수를 둘 다 찍어 준다 */
+  const pinRows = pinLines.map(l=>{
+    const picks = {}; prLoosePicks(l).forEach(x=>{ picks[x.loc] = (picks[x.loc]||0) + x.pcs; });
+    return _mvPin(l).map(g=>{
+      const opened = Number(g.pcs)||0;
+      const take   = Math.min(opened, picks[g.loc]||0);
+      const leftLive = prPinLeft(l, g.loc);
+      const left  = (leftLive==null) ? Math.max(0, opened-take) : leftLive;
+      return `<tr><td style="font-weight:700;">${esc(l.style||'')}</td><td class="tl">${esc(l.color)}</td><td>${esc(l.size)}</td>
+        <td style="text-align:center;font-weight:800;">${g.n}</td>
+        <td class="tl" style="font-weight:800;font-family:Consolas,monospace;">\u{1F4CD} ${esc(g.loc)}</td>
+        <td style="text-align:center;font-weight:800;">${take||''}</td>
+        <td style="text-align:center;font-weight:800;color:#0e7490;">${left}</td></tr>`;
+    }).join('');
+  }).join('');
   const _sig = labels=>`<div style="margin-top:24px;display:grid;grid-template-columns:repeat(${labels.length},1fr);gap:26px;page-break-inside:avoid;">${labels.map(lbl=>`<div><div style="border-bottom:1.5px solid #111;height:36px;"></div><div style="display:flex;justify-content:space-between;align-items:baseline;margin-top:5px;"><span style="font-size:11px;font-weight:700;color:#111;">${lbl}</span><span style="font-size:10px;color:#666;">Date: ____________</span></div></div>`).join('')}</div>`;
   const _sigC = lbl=>`<div style="margin-top:10px;max-width:360px;page-break-inside:avoid;"><div style="border-bottom:1.5px solid #111;height:30px;"></div><div style="display:flex;justify-content:space-between;align-items:baseline;margin-top:4px;"><span style="font-size:11px;font-weight:700;color:#111;">${lbl}</span><span style="font-size:10px;color:#666;">Date: ____________</span></div></div>`;
   // ── 2페이지: ② FULL BOX / ③ MOVE TO PC ROOM — 있는 것만, 둘 다 없으면 2페이지 자체를 안 만듦 (v499) ──
   const doneRows = moveDone.map(l=>{const gs=_mvSplit(l,true);const locs=gs.map(g=>esc(g.loc)+(g.n>1?' ×'+g.n:'')).join(', ');const n=gs.reduce((a,g)=>a+(g.n||1),0);
     return `<tr style="color:#6b7280;"><td style="font-weight:700;">${esc(l.style||'')}</td><td class="tl">${esc(l.color)}</td><td>${esc(l.size)}</td><td style="text-align:center;font-weight:800;">${n}</td><td class="tl">${esc(locs)}</td></tr>`;}).join('');
-  const hasFull = fullLines.length > 0, hasMove = moveLines.length > 0, hasDone = moveDone.length > 0;
+  const hasFull = fullLines.length > 0, hasMove = carryLines.length > 0, hasPin = pinLines.length > 0, hasDone = moveDone.length > 0;
   const p2Full = hasFull ? `<div style="background:#1d4ed8;color:#fff;padding:7px 20px;font-weight:800;letter-spacing:1px;font-size:14px;margin-bottom:6px;">② FULL BOX — pull whole boxes from bins</div>
     <table class="inv-tbl">
       <thead><tr><th>Style#</th><th class="tl">Item</th><th class="tl">Color</th><th>Size</th><th style="background:#1d4ed8;">📦 Full Boxes</th><th class="tl">Pull from (bin)</th></tr></thead>
@@ -2565,18 +2623,27 @@ function buildDocHtml(wh, opts){
       <tbody>${moveRows}</tbody>
     </table>
     ${_sigC('Move to PC Room by')}` : '';
-  const p2Done = hasDone ? `<div style="background:#e2e8f0;color:#334155;padding:6px 20px;font-weight:800;letter-spacing:.5px;font-size:12.5px;margin:${(hasFull||hasMove)?'26px':'0'} 0 5px;">\u2714 ALREADY CARRIED TO THE PC ROOM BEFORE THIS CHANGE \u2014 DO NOT MOVE AGAIN</div>
+  /* \u2463 \ud540 \u2014 \ub4e4\uace0 \uc624\uc9c0 \ub9c8\ub77c. \uadf8 \uc790\ub9ac\uc5d0\uc11c \uae4c\uace0, \ub0a8\ub294 \uc7a5\uc218\ub294 \uadf8 \uc790\ub9ac\uc5d0 \uadf8\ub300\ub85c \ub454\ub2e4.
+     CA \ucc98\ub7fc PC Room \uc790\ub9ac\uac00 \uc5c6\ub294 \ucc3d\uace0\ub97c \uc704\ud55c \ubc29\uc2dd\uc774\ub2e4. (v959) */
+  const p2Pin = hasPin ? `<div style="background:#0e7490;color:#fff;padding:7px 20px;font-weight:800;letter-spacing:1px;font-size:14px;margin:${(hasFull||hasMove)?'36px':'0'} 0 6px;">\u2702 OPEN AT THE BIN \u2014 DO NOT CARRY TO THE PC ROOM (\u{1F4CD} pinned)</div>
+    <table class="inv-tbl">
+      <thead><tr><th>Style#</th><th class="tl">Color</th><th>Size</th><th style="background:#0e7490;">\u{1F4E6} Boxes to open</th><th class="tl">At bin</th><th style="background:#c2410c;">Pcs this order takes</th><th style="background:#0e7490;">Pcs left AT the bin</th></tr></thead>
+      <tbody>${pinRows}</tbody>
+    </table>
+    <div style="margin-top:6px;padding:7px 12px;background:#ecfeff;border:1px solid #a5f3fc;border-radius:4px;font-size:11px;color:#0e7490;font-weight:700;">Open the box where it stands and leave the loose pieces at that same bin \u2014 that bin is the PC Room for this item. Do not carry anything to the PC Room.</div>
+    ${_sigC('Opened at the bin by')}` : '';
+  const p2Done = hasDone ? `<div style="background:#e2e8f0;color:#334155;padding:6px 20px;font-weight:800;letter-spacing:.5px;font-size:12.5px;margin:${(hasFull||hasMove||hasPin)?'26px':'0'} 0 5px;">\u2714 ALREADY CARRIED TO THE PC ROOM BEFORE THIS CHANGE \u2014 DO NOT MOVE AGAIN</div>
     <table class="inv-tbl" style="opacity:.75;">
       <thead><tr><th>Style#</th><th class="tl">Color</th><th>Size</th><th>\u{1F4E6}\u2192\u{1F9FA} Boxes</th><th class="tl">Came from (bin)</th></tr></thead>
       <tbody>${doneRows}</tbody>
     </table>` : '';
-  const page2 = _page1Only ? '' : (hasFull || hasMove || hasDone) ? `
+  const page2 = _page1Only ? '' : (hasFull || hasMove || hasPin || hasDone) ? `
     <div style="page-break-before:always;break-before:page;height:0;overflow:hidden;"></div>
     <div style="background:#0f2a4a;padding:9px 20px;display:flex;justify-content:space-between;align-items:center;margin-bottom:10px;">
       <div style="color:#fff;font-size:16px;font-weight:800;letter-spacing:1.5px;">PULL REQUEST · PAGE 2 — WAREHOUSE PULL DETAIL</div>
       <div style="color:#cbd5e1;font-size:11px;">${esc(num)} · ${esc($('m-cust').value||'')} · PO ${esc($('m-po').value||'')} · ${esc(WH_LABEL[wh])}</div>
     </div>
-    ${p2Full}${p2Move}${p2Done}` : '';
+    ${p2Full}${p2Move}${p2Pin}${p2Done}` : '';
   return `<div class="inv-doc">
     <div style="background:#0f2a4a;padding:12px 20px;display:flex;justify-content:space-between;align-items:center;">
       <img src="${LOGO_B64}" style="height:42px;width:auto;">
@@ -2612,6 +2679,7 @@ function buildDocHtml(wh, opts){
       <tr><td colspan="8" style="background:#0f2a4a;color:#fff;border-color:#0f2a4a;text-align:right;padding-right:14px;">
         📦 GRAND TOTAL BOXES&nbsp;&nbsp;<span style="font-size:16px;">${grandBoxes} ${grandBoxes===1?'BOX':'BOXES'}</span>&nbsp;&nbsp;<span style="font-weight:600;">(${tot.f} FULL BOX + ${partialBoxCnt} PARTIAL BOX)</span></td></tr></tfoot>
     </table>
+    ${anyPin ? `<div style="margin-top:10px;padding:7px 12px;background:#ecfeff;border:1px solid #a5f3fc;border-radius:4px;font-size:11px;color:#0e7490;font-weight:700;">\u{1F4CD} Partial (loose) pieces are NOT in the PC Room — they sit at the bins printed under each Partial Pcs number. Go to each bin and take exactly that many.</div>` : ''}
     ${_sig(['Partial Prepare by','Order Completed by','Quality Check by'])}
     ${page2}
     ` : `
@@ -3591,7 +3659,7 @@ function rpFbCellInner(l, b, i){
 function rpLsCellInner(l, b, i){
   return (b.loose||'')
     + (b.loose && (l.wh==='SC' || l.wh==='CA') ? `<button class="btn btn-sm" style="border:none;padding:0 3px;font-size:11px;" onclick="rpToPcFromEditor(${i})" title="If PC Room stock is short: move 1 full box (pick a location) into PC Room (deducts full box + receives to PC, immediate)">\u{1F4CD}</button>` : '')
-    + ((l.pcMove&&l.pcMove.length) ? `<div style="font-size:9px;line-height:1.3;color:#7c3aed;font-weight:800;white-space:nowrap;">\u{1F9FA} ${l.pcMove.map(g=>esc(g.loc)+(g.n>1?' ×'+g.n:'')).join(' · ')}${(l.pcMoveData&&l.pcMoveData.length)?`<button class="btn btn-sm" style="border:none;padding:0 3px;font-size:10px;color:#b91c1c;" onclick="rpMoveUndo(${i})" title="Undo this box move — boxes back to full-box stock, PC Room minus">↩</button>`:''}</div>` : '')
+    + ((l.pcMove&&l.pcMove.length) ? `<div style="font-size:9px;line-height:1.3;color:#7c3aed;font-weight:800;white-space:nowrap;">\u{1F9FA} ${l.pcMove.map(g=>(g.pin?'✂':'')+esc(g.loc)+(g.n>1?' ×'+g.n:'')).join(' · ')}${(l.pcMoveData&&l.pcMoveData.length)?`<button class="btn btn-sm" style="border:none;padding:0 3px;font-size:10px;color:#b91c1c;" onclick="rpMoveUndo(${i})" title="Undo this box move — boxes back to full-box stock, PC Room minus">↩</button>`:''}</div>` : '')
     + pcStockHint(l, b, null);
 }
 function rpFbUnlock(i){ const l=(window._rpLines||[])[i]; if(!l) return; l._fbForce=true; rpRerenderRow(i); showToast('🔓 Full box pick unlocked for this line — 📍 now active'); }
@@ -5831,6 +5899,19 @@ async function _invSyncOnSaveInner(rec){
     });
     const keys = new Set([].concat(Object.keys(prev), Object.keys(cur), [...moveKeys]));
     let pcN = 0;
+    /* 📍 핀 bin 에서 낱장을 뽑을 때, 어느 자리에서 몇 장인지 정해서 오더 줄에 적어 둔다 (v959).
+       CA 는 PC Room 자리가 없어 깐 박스가 bin 에 그대로 있다. 오더 준비하는 직원은
+       Pull Request 1페이지만 본다 — 거기에 "A-12 20장 / B-04 30장" 이 안 찍히면
+       어디로 가야 하는지 알 방법이 없었다.
+       계획은 여기서 한 번 굳혀 종이에 박는다. 나중에 PC Room 이 움직여도 종이와 안 어긋난다. */
+    const pickPlan = {};
+    const oldPick  = {};
+    (rec.lines||[]).forEach(L=>{
+      const whL = String(L.wh||'SC').trim().toUpperCase()||'SC';
+      if((whL!=='SC' && whL!=='CA') || !(L.loosePick||[]).length) return;
+      const key = bxStyleFor(L)+'|'+bxColorFor(L)+'|'+String(L.size||'').trim().toUpperCase() + (whL==='CA'?'|CA':'') + (L.useB?'|B':'');
+      (oldPick[key] = oldPick[key]||[]).push(...L.loosePick.map(x=>({loc:String(x.loc||'').toUpperCase(), pcs:Math.max(0,Number(x.pcs)||0)})));
+    });
     if(keys.size){
       if(!pcLoaded){
         const r3 = await sbFetch('/rest/v1/pr_pcroom?select=k,style,color,qty,bqty,bnote,sizes,wh,locs,updated_at,updated_by');
@@ -5862,6 +5943,17 @@ async function _invSyncOnSaveInner(rec){
           const old = Number(row.qty[sz]) || 0;
           const nv = old - delta;
           if(nv === 0) delete row.qty[sz]; else row.qty[sz] = nv;
+          /* 📍 핀이 있으면 그 자리에서 실제로 뺀다 — 어느 bin 에서 몇 장인지도 같이 남긴다 */
+          if(delta > 0){
+            const pl = pcLocTake(row, sz, delta);
+            if(pl.picks.length) pickPlan[key] = pl.picks;
+          }else if(delta < 0){
+            // 오더를 줄였다 — 뽑았던 자리로 도로 돌려놓는다 (뒤에 뽑은 자리부터)
+            let back = -delta;
+            const home = (oldPick[key]||[]).slice().reverse();
+            home.forEach(h=>{ if(back<=0) return; const t=Math.min(back,h.pcs); if(t>0){ pcLocAdd(row, sz, h.loc, t); back-=t; } });
+            if(back>0){ const first = pcLocList(row, sz)[0]; if(first) pcLocAdd(row, sz, first.loc, back); }
+          }
           await pcSaveRow(row);
           if(delta < 0) pb.loose.push({ style:st, color:col, size:sz, wh:whv, isB:false, pcs:-delta,
             loc:(pcLocText(row, sz) || pcLoc(row, sz)) || 'PC ROOM' });
@@ -5870,7 +5962,23 @@ async function _invSyncOnSaveInner(rec){
         pcN++;
       }
       rec.meta = { ...(rec.meta||{}), _pcAuto: { ...((rec.meta&&rec.meta._pcAuto)||{}), SC: { at: new Date().toISOString(), by }, lines: cur } };
-      try{ await sbFetch('/rest/v1/pr_orders?base=eq.'+encodeURIComponent(rec.base), {method:'PATCH', headers:{Prefer:'return=minimal'}, body:JSON.stringify({meta: rec.meta})}); }catch(e){}
+      /* 굳힌 계획을 오더 줄에 박아 저장한다 — 이게 종이에 찍히는 값이다 */
+      let planTouched = false;
+      if(Object.keys(pickPlan).length){
+        const pool = {};
+        Object.keys(pickPlan).forEach(k2=>{ pool[k2] = pickPlan[k2].map(x=>({loc:x.loc, pcs:x.pcs})); });
+        (rec.lines||[]).forEach(L=>{
+          const whL = String(L.wh||'SC').trim().toUpperCase()||'SC';
+          if(whL!=='SC' && whL!=='CA') return;
+          const loose = boxCalc(L).loose; if(!loose) return;
+          const key = bxStyleFor(L)+'|'+bxColorFor(L)+'|'+String(L.size||'').trim().toUpperCase() + (whL==='CA'?'|CA':'') + (L.useB?'|B':'');
+          const list = pool[key]; if(!list) return;
+          let need = loose; const mine = [];
+          list.forEach(x=>{ if(need<=0) return; const t=Math.min(need, x.pcs); if(t>0){ mine.push({loc:x.loc, pcs:t}); x.pcs-=t; need-=t; } });
+          if(mine.length){ L.loosePick = mine; planTouched = true; }
+        });
+      }
+      try{ await sbFetch('/rest/v1/pr_orders?base=eq.'+encodeURIComponent(rec.base), {method:'PATCH', headers:{Prefer:'return=minimal'}, body:JSON.stringify(planTouched ? {meta: rec.meta, lines: rec.lines} : {meta: rec.meta})}); }catch(e){}
     }
     const msg = [];
     if(outN) msg.push('full boxes −'+outN);
@@ -19573,7 +19681,12 @@ async function bxPullSave(){
     bxPullCtx = null;
     if($('bx-body')) renderBoxRoom();
     if(typeof renderTable === 'function' && $('lines-body')) renderTable();
-    if(cb2) cb2({ locs: Object.keys(locs2).map(l=>({loc:l, n:locs2[l]})), addPcs, moved: sel.map(bx=>({id:bx.id, pcs:Number(bx.pcs)||0, color:String(bx.color).toUpperCase(), size:sku.size, loc:String(bx.loc||'').toUpperCase(), wh:pcWh, style:sku.style})) });
+    /* 📌 핀이면 박스를 PC Room 으로 들고 가는 게 아니라 그 자리에서 까고 그대로 둔다.
+       그 차이를 오더 줄에 남겨야 Pull Request 2페이지가 "들고 가라" 와
+       "그 자리에서 까고 그대로 두라" 를 갈라서 찍을 수 있다. (v959) */
+    const locsPcs = {};
+    sel.forEach(b=>{ const Lc=String(b.loc||'?').toUpperCase(); locsPcs[Lc]=(locsPcs[Lc]||0)+(Number(b.pcs)||0); });
+    if(cb2) cb2({ locs: Object.keys(locs2).map(l=>({loc:l, n:locs2[l], pcs:locsPcs[l]||0, ...(pinBin?{pin:true}:{})})), addPcs, moved: sel.map(bx=>({id:bx.id, pcs:Number(bx.pcs)||0, color:String(bx.color).toUpperCase(), size:sku.size, loc:String(bx.loc||'').toUpperCase(), wh:pcWh, style:sku.style, ...(pinBin?{pin:true}:{})})) });
     return;
   }
   if(bxPullCtx.mode==='reserve'){
