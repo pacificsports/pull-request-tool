@@ -180,7 +180,7 @@ body.po-dragging{user-select:none;}
   </span>
   <select id="lang-sel" onchange="setLang(this.value)" style="font-size:11px;padding:3px 6px;border-radius:5px;border:none;background:#1d3f66;color:#fff;"><option value="ko">한국어</option><option value="en">English</option><option value="es">Español</option></select>
   <button id="wide-btn" class="btn btn-sm" onclick="toggleWide()" title="화면 넓게 / 좁게 — 기본은 넓게 (이 브라우저에만 저장돼)" style="padding:2px 8px;font-size:10px;background:#1d3f66;color:#cfe0f2;border-color:#2b5384;">↔ Wide</button>
-  <span id="app-ver" style="font-size:10px;color:#9fb8d4;">v951</span>
+  <span id="app-ver" style="font-size:10px;color:#9fb8d4;">v952</span>
 </div>
 <script>
 // ↔ 넓게 보기 — 브라우저마다 따로 저장 (v793)
@@ -17298,9 +17298,17 @@ function pmSizeRange(style){
   return [];
 }
 function pmSizesFor(style){
-  const have = [...new Set(itStore.filter(x=>String(x.style)===String(style)).map(x=>String(x.size).toUpperCase()))];
+  const st = String(style).trim();
+  const i = _pmIdx;
+  if(i){
+    if(i.sizes[st]) return i.sizes[st];
+    const set = i.styleHas[st];
+    const out = set && set.size ? [...set].sort((a,b)=>pmSzRank(a)-pmSzRank(b)) : pmSizeRange(st);
+    i.sizes[st] = out; return out;
+  }
+  const have = [...new Set(itStore.filter(x=>String(x.style).trim()===st).map(x=>String(x.size).toUpperCase()))];
   if(have.length) return have.sort((a,b)=>pmSzRank(a)-pmSzRank(b));
-  return pmSizeRange(style);
+  return pmSizeRange(st);
 }
 function pmSzRank(s){ const i=PM_LADDER.indexOf(String(s||'').toUpperCase()); return i<0?99:i; }
 
@@ -17317,14 +17325,20 @@ async function itFetch(force){
       const j = await r.json(); out.push(...j);
       if(j.length<1000) break; from += 1000;
     }
-    itStore = out; itLoaded = true;
-  }catch(e){ itStore=[]; }
+    itStore = out; itLoaded = true; _pmIdx = null;
+  }catch(e){ itStore=[]; _pmIdx = null; }
   return itStore;
 }
 function itKey(st,co,sz){ return String(st).trim()+'|'+String(co).trim().toUpperCase()+'|'+String(sz).trim().toUpperCase(); }
-function itFind(st,co,sz){ const k=itKey(st,co,sz); return itStore.find(x=>itKey(x.style,x.color,x.size)===k); }
-function itRowsFor(st,co){ const s=String(st).trim(), c=String(co).trim().toUpperCase();
-  return itStore.filter(x=>String(x.style).trim()===s && String(x.color).trim().toUpperCase()===c)
+function itFind(st,co,sz){
+  const k=itKey(st,co,sz);
+  if(_pmIdx && _pmIdx.itSz){ const a=_pmIdx.itSz[String(st).trim()+'|'+String(co).trim().toUpperCase()];
+    if(a) return a.find(x=>String(x.size).trim().toUpperCase()===String(sz).trim().toUpperCase()); }
+  return itStore.find(x=>itKey(x.style,x.color,x.size)===k);
+}
+function itRowsFor(st,co){ const k=String(st).trim()+'|'+String(co).trim().toUpperCase();
+  if(_pmIdx && _pmIdx.itSz) return _pmIdx.itSz[k] || [];
+  return itStore.filter(x=>(String(x.style).trim()+'|'+String(x.color).trim().toUpperCase())===k)
                 .sort((a,b)=>pmSzRank(a.size)-pmSzRank(b.size)); }
 async function itUpsert(rows){
   if(!rows || !rows.length) return false;
@@ -17339,6 +17353,7 @@ async function itUpsert(rows){
   }
   body.forEach(b=>{ const ex=itFind(b.style,b.color,b.size);
     if(ex){ ex.item_code=b.item_code; ex.in_mas=b.in_mas; } else itStore.push({style:b.style,color:b.color,size:b.size,item_code:b.item_code,in_mas:b.in_mas}); });
+  _pmIdx = null;                       // 표가 낡았다 — 다음에 그릴 때 다시 만든다
   return true;
 }
 /* 색 하나에 사이즈 줄을 통째로 만든다 — 이미 있는 줄은 건드리지 않는다 */
@@ -17368,7 +17383,7 @@ async function skuManager(){
       <button onclick="document.getElementById('modal-sku').remove()" style="margin-left:auto;background:rgba(255,255,255,.2);color:#fff;border:none;border-radius:8px;padding:5px 12px;font-weight:800;cursor:pointer;">✕</button>
     </div>
     <div style="padding:8px 16px;border-bottom:1px solid var(--border);display:flex;gap:8px;align-items:center;flex-wrap:wrap;background:#faf9ff;">
-      <input class="fi" id="sku-q" placeholder="🔍 style / color / item code" oninput="pmRender()" style="width:230px;font-size:12.5px;padding:6px 10px;">
+      <input class="fi" id="sku-q" placeholder="🔍 style / color / item code" oninput="pmSearch()" style="width:230px;font-size:12.5px;padding:6px 10px;">
       <label style="display:flex;align-items:center;gap:5px;font-size:11px;font-weight:700;color:#5b21b6;cursor:pointer;white-space:nowrap;"><input type="checkbox" id="pm-nomas" onchange="pmRender()" style="accent-color:#7c3aed;">not in MAS only</label>
       <button class="btn btn-sm" style="background:#7c3aed;color:#fff;border-color:#7c3aed;font-weight:800;" onclick="skuAddOpen('')">➕ Add colors</button>
       <button class="btn btn-sm" style="background:#0369a1;color:#fff;border-color:#0369a1;font-weight:800;" onclick="pmCreateAll()" title="Create the size rows and item codes for every color in the master">⚡ Build all item rows</button>
@@ -17386,12 +17401,38 @@ async function skuManager(){
   pmRender();
 }
 function pmQ(){ return (($('sku-q')||{}).value||'').trim(); }
-function pmBoxCount(st,co,sz){
-  try{ return bxStore.filter(b=>String(b.style)===String(st) && String(b.color).toUpperCase()===String(co).toUpperCase()
-    && (!sz || String(b.size).toUpperCase()===String(sz).toUpperCase()) && String(b.status||'IN')==='IN').length; }catch(e){ return 0; }
+/* 화면을 그릴 때마다 12만 박스를 색·사이즈마다 다시 세면 검색이 멈춘다.
+   한 번만 훑어서 표를 만들어 두고, 줄에서는 그 표만 본다 (v952). */
+let _pmIdx = null;
+function pmIndex(){
+  const box = Object.create(null), boxSz = Object.create(null),
+        it = Object.create(null), itSz = Object.create(null), styleHas = Object.create(null);
+  try{
+    (typeof bxStore!=='undefined'?bxStore:[]).forEach(b=>{
+      if(String(b.status||'IN')!=='IN') return;
+      const st=String(b.style).trim(), co=String(b.color).toUpperCase(), sz=String(b.size).toUpperCase();
+      const k=st+'|'+co; box[k]=(box[k]||0)+1; const k2=k+'|'+sz; boxSz[k2]=(boxSz[k2]||0)+1;
+    });
+  }catch(e){}
+  (itStore||[]).forEach(x=>{
+    const st=String(x.style).trim(), co=String(x.color).toUpperCase();
+    (it[st] = it[st] || []).push(x);
+    (itSz[st+'|'+co] = itSz[st+'|'+co] || []).push(x);
+    (styleHas[st] = styleHas[st] || new Set()).add(String(x.size).toUpperCase());
+  });
+  Object.keys(itSz).forEach(k=> itSz[k].sort((a,b)=>pmSzRank(a.size)-pmSzRank(b.size)));
+  _pmIdx = {box, boxSz, it, itSz, styleHas, sizes:Object.create(null)};
+  return _pmIdx;
 }
+function pmBoxCount(st,co,sz){
+  const i=_pmIdx||pmIndex(); const k=String(st).trim()+'|'+String(co).toUpperCase();
+  return (sz ? (i.boxSz[k+'|'+String(sz).toUpperCase()]||0) : (i.box[k]||0));
+}
+let _pmT=null;
+function pmSearch(){ clearTimeout(_pmT); _pmT=setTimeout(pmRender, 160); }   // 글자마다 다 그리지 않는다
 function pmRender(){
   const host = $('sku-list'); if(!host) return;
+  pmIndex();
   const q = pmQ(), onlyNo = !!(($('pm-nomas')||{}).checked);
   const stys = skuStyles();
   const nCode = itStore.filter(x=>x.item_code).length, nMas = itStore.filter(x=>x.in_mas).length;
@@ -17400,8 +17441,10 @@ function pmRender(){
   const shown = stys.filter(sty=>{
     if(!q) return true;
     if(sMatch(q, String(sty).toUpperCase())) return true;
-    return skuColors(sty).some(c=>sMatch(q, String(c).toUpperCase()))
-        || itStore.some(x=>String(x.style)===String(sty) && String(x.item_code||'').toUpperCase().indexOf(q.toUpperCase())>=0);
+    if(skuColors(sty).some(c=>sMatch(q, String(c).toUpperCase()))) return true;
+    const rows = (_pmIdx.it[String(sty).trim()]||[]);
+    const QU = q.toUpperCase();
+    return rows.some(x=>String(x.item_code||'').toUpperCase().indexOf(QU)>=0);
   });
   host.innerHTML = shown.length ? shown.map(sty=>{
     const open = !!_pmOpenSty[sty] || (!!q && shown.length<=6);
