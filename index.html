@@ -180,7 +180,7 @@ body.po-dragging{user-select:none;}
   </span>
   <select id="lang-sel" onchange="setLang(this.value)" style="font-size:11px;padding:3px 6px;border-radius:5px;border:none;background:#1d3f66;color:#fff;"><option value="ko">한국어</option><option value="en">English</option><option value="es">Español</option></select>
   <button id="wide-btn" class="btn btn-sm" onclick="toggleWide()" title="화면 넓게 / 좁게 — 기본은 넓게 (이 브라우저에만 저장돼)" style="padding:2px 8px;font-size:10px;background:#1d3f66;color:#cfe0f2;border-color:#2b5384;">↔ Wide</button>
-  <span id="app-ver" style="font-size:10px;color:#9fb8d4;">v941</span>
+  <span id="app-ver" style="font-size:10px;color:#9fb8d4;">v942</span>
 </div>
 <script>
 // ↔ 넓게 보기 — 브라우저마다 따로 저장 (v793)
@@ -25339,7 +25339,7 @@ async function hiPlanOpen(id){
   let rec=(window._hiPending||[]).find(x=>String(x.id)===String(id));
   if(!rec){ try{ const r=await sbFetch('/rest/v1/pr_inbound?id=eq.'+id+'&select=id,ref,lines'); if(r.ok) rec=(await r.json())[0]; }catch(e){} }
   if(!rec){ showToast('⚠ Load failed'); return; }
-  const lines=(rec.lines||[]).map(l=>({st:String(l.style||'').trim(), co:bxBaseColor(String(l.color||'').trim().toUpperCase()), sz:String(l.size||'').trim().toUpperCase(), nb:Number(l.boxes)||0})).filter(l=>l.st);
+  const lines=(rec.lines||[]).map(l=>({st:String(l.style||'').trim(), co:bxBaseColor(String(l.color||'').trim().toUpperCase()), sz:String(l.size||'').trim().toUpperCase(), nb:Number(l.boxes)||0, pc:Number(l.pcs)||0})).filter(l=>l.st);   // pc = pcs/box → QR 스티커용 (v942)
   window._hiPlanCtx={id:rec.id, ref:rec.ref||'', lines};   // 🖨 pallet build sheet 용 (v751)
   const ex=document.getElementById('modal-hiplan'); if(ex) ex.remove();
   const div=document.createElement('div'); div.id='modal-hiplan';
@@ -25435,6 +25435,198 @@ function hiPlanDrop(ev, targetPi){
   hiPlanRenderCards();
   hiPlanSaveDebounced();   // 💾 드래그 변경 저장 (v767)
 }
+// ✂ 수량 나누기 — 한 줄(예: 10박스)을 여러 팔렛으로 자유롭게 배분 (v942)
+//    안 적은 나머지는 원래 팔렛에 그대로 남는다. 5 / 2 / 3 처럼 몇 군데로든 쪼갤 수 있음.
+function hiSplitOpen(pi, ii){
+  const pallets=window._hiPlanPallets||[];
+  const p=pallets[pi]; if(!p) return;
+  const it=p.items[ii]; if(!it) return;
+  const tot=Number(it.boxes)||0;
+  if(tot<2){ showToast('Only 1 box — nothing to split'); return; }
+  window._hiSplit={pi, ii, tot, newRows:1, assign:{}, onlyFit:false};
+  const ex=document.getElementById('modal-hisplit'); if(ex) ex.remove();
+  const div=document.createElement('div'); div.id='modal-hisplit';
+  div.style.cssText='position:fixed;inset:0;background:rgba(15,23,42,.55);z-index:260;display:flex;align-items:flex-start;justify-content:center;padding:20px 12px;overflow-y:auto;';
+  div.onclick=e=>{ if(e.target===div) hiSplitClose(); };
+  div.innerHTML='<div style="background:#fff;border-radius:14px;max-width:560px;width:100%;max-height:92vh;display:flex;flex-direction:column;overflow:hidden;box-shadow:0 10px 40px rgba(15,23,42,.35);"><div id="hisp-body" style="display:flex;flex-direction:column;min-height:0;"></div></div>';
+  document.body.appendChild(div);
+  hiSplitRender();
+}
+function hiSplitClose(){ const e=document.getElementById('modal-hisplit'); if(e) e.remove(); window._hiSplit=null; }
+function hiSplitAssigned(){ const a=(window._hiSplit||{}).assign||{}; return Object.keys(a).reduce((x,k)=>x+(Number(a[k])||0),0); }
+function hiSplitKeyId(k){ return 'hisp-'+String(k).replace(':','-'); }
+// 입력값 반영 — 남은 수량을 넘기면 자동으로 깎는다
+function hiSplitSet(key, val){
+  const s=window._hiSplit; if(!s) return;
+  let n=parseInt(val,10); if(!(n>0)) n=0;
+  s.assign=s.assign||{};
+  const other=Object.keys(s.assign).filter(k=>k!==key).reduce((x,k)=>x+(Number(s.assign[k])||0),0);
+  if(other+n > s.tot) n=Math.max(0, s.tot-other);
+  s.assign[key]=n;
+  const el=document.getElementById(hiSplitKeyId(key)); if(el && String(el.value)!==String(n||'')) el.value = n||'';
+  hiSplitPaint();
+}
+function hiSplitBump(key, d){ const s=window._hiSplit; if(!s) return; hiSplitSet(key, (Number((s.assign||{})[key])||0)+d); }
+function hiSplitAddNew(){ const s=window._hiSplit; if(!s) return; s.newRows=(s.newRows||1)+1; hiSplitRender(); }
+function hiSplitClear(){ const s=window._hiSplit; if(!s) return; s.assign={}; hiSplitRender(); }
+function hiSplitToggleFit(){ const s=window._hiSplit; if(!s) return; s.onlyFit=!s.onlyFit; hiSplitRender(); }
+// 팔렛 한 줄 (목적지) HTML
+function hiSplitDestRow(key, title, sub, cur, after, cap){
+  const over=after>cap;
+  return `<div style="display:flex;align-items:center;gap:8px;padding:6px 4px;border-top:1px solid #f1f5f9;">
+    <div style="flex:1;min-width:0;">
+      <div style="font-weight:800;font-size:12.5px;color:#1e293b;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">${title}</div>
+      <div style="font-size:10.5px;color:#94a3b8;font-weight:700;">${sub}</div>
+    </div>
+    <div id="${hiSplitKeyId(key)}-af" style="flex:none;width:78px;text-align:right;font-size:11px;font-weight:800;color:${over?'#dc2626':'#64748b'};">${after} / ${cap}${over?' ⚠':''}</div>
+    <button type="button" onclick="hiSplitBump('${key}',-1)" style="flex:none;width:28px;height:28px;border:1px solid #e2e8f0;background:#f8fafc;border-radius:7px;font-weight:900;color:#475569;cursor:pointer;">−</button>
+    <input id="${hiSplitKeyId(key)}" type="number" inputmode="numeric" min="0" value="${cur||''}" placeholder="0" oninput="hiSplitSet('${key}',this.value)" style="flex:none;width:58px;height:28px;box-sizing:border-box;text-align:center;font-weight:800;font-size:13px;border:1.5px solid ${cur>0?'#7c3aed':'#e2e8f0'};border-radius:7px;color:#4c1d95;">
+    <button type="button" onclick="hiSplitBump('${key}',1)" style="flex:none;width:28px;height:28px;border:1px solid #e2e8f0;background:#f8fafc;border-radius:7px;font-weight:900;color:#475569;cursor:pointer;">+</button>
+  </div>`;
+}
+function hiSplitRender(){
+  const s=window._hiSplit; if(!s) return;
+  const host=document.getElementById('hisp-body'); if(!host) return;
+  const pallets=window._hiPlanPallets||[];
+  const src=pallets[s.pi]; const it=src&&src.items[s.ii]; if(!it){ hiSplitClose(); return; }
+  const a=s.assign||{};
+  const newCap=hiPalletCap(!it.kids && it.big);
+  const myStream = it.kids?'kids':(it.big?'adult-big':'adult-small');
+  let hidden=0;
+  const rows=pallets.map((p,k)=>({p,k})).filter(o=>o.k!==s.pi).filter(o=>{
+    if(!s.onlyFit) return true;
+    const ok = o.p.stream===myStream && (o.p.cap-o.p.total)>0;
+    if(!ok) hidden++;
+    return ok;
+  }).map(o=>{
+    const cur=Number(a['p:'+o.k])||0;
+    const free=Math.max(0, o.p.cap-o.p.total);
+    const mism = o.p.stream!==myStream;
+    const sub = (o.p.cat||'') + ' · ' + (free>0 ? ('room for '+free) : 'full') + (mism?' · <span style="color:#b45309;">different size class</span>':'');
+    return hiSplitDestRow('p:'+o.k, 'PALLET '+(o.k+1)+' <span style="font-weight:700;color:#7c3aed;">· '+esc(o.p.colorLabel||'')+' · '+esc(o.p.styleLabel||'')+'</span>', sub, cur, o.p.total+cur, o.p.cap);
+  }).join('');
+  const newRows=[];
+  for(let j=0;j<(s.newRows||1);j++){ const cur=Number(a['n:'+j])||0;
+    newRows.push(hiSplitDestRow('n:'+j, '🆕 NEW PALLET '+(j+1), HI_STREAM_CAT[myStream]||'', cur, cur, newCap)); }
+  const moved=hiSplitAssigned(), stays=s.tot-moved;
+  host.innerHTML=`
+    <div style="background:#4c1d95;color:#fff;padding:11px 16px;display:flex;align-items:center;gap:10px;">
+      <span style="font-weight:800;font-size:15px;">✂ Split quantity</span>
+      <span style="font-size:11.5px;color:#c4b5fd;">put part of this line on other pallets</span>
+      <button onclick="hiSplitClose()" style="margin-left:auto;background:rgba(255,255,255,.2);color:#fff;border:none;border-radius:8px;padding:5px 11px;font-weight:800;cursor:pointer;">✕</button>
+    </div>
+    <div style="background:#f5f3ff;padding:9px 16px;border-bottom:1px solid #ede9fe;display:flex;align-items:center;gap:10px;flex-wrap:wrap;">
+      <span style="font-weight:800;color:#1e293b;font-size:14px;">#${esc(it.st)} · ${esc(bxBaseColor(it.co))} · ${esc(it.sz)}</span>
+      <span style="font-weight:800;color:#5b21b6;background:#fff;border:1px solid #ddd6fe;border-radius:20px;padding:1px 11px;font-size:12px;">${s.tot} bx total</span>
+      <span style="margin-left:auto;font-size:11px;font-weight:800;color:#7c3aed;">now on PALLET ${s.pi+1}</span>
+    </div>
+    <div id="hisp-stay" style="padding:9px 16px;border-bottom:1px solid #eee;display:flex;align-items:center;gap:8px;background:#fff;"></div>
+    <div style="flex:1;overflow-y:auto;padding:4px 14px 10px;background:#fafafa;min-height:120px;max-height:46vh;">
+      <div style="font-size:10.5px;font-weight:800;color:#94a3b8;padding:8px 4px 2px;letter-spacing:.4px;">MOVE TO &mdash; type how many boxes go where</div>
+      ${rows || '<div style="color:#94a3b8;font-size:12px;padding:8px 4px;">No other pallet matches the filter.</div>'}
+      ${hidden ? `<div style="font-size:10.5px;color:#94a3b8;padding:6px 4px;">${hidden} pallet(s) hidden by the filter.</div>` : ''}
+      <div style="font-size:10.5px;font-weight:800;color:#94a3b8;padding:10px 4px 2px;letter-spacing:.4px;">OR START NEW PALLETS</div>
+      ${newRows.join('')}
+      <button type="button" onclick="hiSplitAddNew()" style="margin:8px 4px 2px;border:1.5px dashed #cbd5e1;background:#fff;border-radius:9px;padding:6px 12px;font-weight:800;font-size:11.5px;color:#64748b;cursor:pointer;">⊕ Add another new pallet</button>
+    </div>
+    <div style="padding:9px 16px;border-top:1px solid #eee;display:flex;gap:8px;align-items:center;flex-wrap:wrap;background:#fff;">
+      <label style="font-size:11px;font-weight:700;color:#64748b;display:flex;align-items:center;gap:5px;cursor:pointer;"><input type="checkbox" ${s.onlyFit?'checked':''} onchange="hiSplitToggleFit()"> only pallets with room &amp; same size class</label>
+      <button class="btn btn-sm" style="border-color:#cbd5e1;color:#475569;font-weight:700;" onclick="hiSplitClear()">Clear</button>
+      <button class="btn" style="margin-left:auto;" onclick="hiSplitClose()">Cancel</button>
+      <button id="hisp-go" class="btn" style="background:#7c3aed;color:#fff;border-color:#7c3aed;font-weight:800;" onclick="hiSplitApply()">✂ Split</button>
+    </div>`;
+  hiSplitPaint();
+}
+function hiSplitPaint(){
+  const s=window._hiSplit; if(!s) return;
+  const pallets=window._hiPlanPallets||[];
+  const src=pallets[s.pi]; const it=src&&src.items[s.ii]; if(!it) return;
+  const a=s.assign||{}, moved=hiSplitAssigned(), stays=s.tot-moved;
+  const stayEl=document.getElementById('hisp-stay');
+  if(stayEl){
+    const after=src.total - s.tot + stays;
+    const over=after>src.cap;
+    stayEl.innerHTML=`<span style="font-size:12px;font-weight:800;color:#334155;">Stays on PALLET ${s.pi+1}</span>
+      <span style="font-size:20px;font-weight:900;color:${stays>0?'#166534':'#94a3b8'};">${stays}</span>
+      <span style="font-size:11.5px;color:#64748b;font-weight:700;">bx &nbsp;·&nbsp; moving <b style="color:#7c3aed;">${moved}</b> of ${s.tot}</span>
+      <span style="margin-left:auto;font-size:11px;font-weight:800;color:${over?'#dc2626':'#64748b'};">pallet ${after} / ${src.cap}${over?' ⚠':''}</span>`;
+  }
+  pallets.forEach((p,k)=>{ if(k===s.pi) return; const el=document.getElementById('hisp-p-'+k+'-af'); if(!el) return;
+    const cur=Number(a['p:'+k])||0, after=p.total+cur, over=after>p.cap;
+    el.textContent=after+' / '+p.cap+(over?' ⚠':''); el.style.color=over?'#dc2626':(cur>0?'#5b21b6':'#64748b'); });
+  for(let j=0;j<(s.newRows||1);j++){ const el=document.getElementById('hisp-n-'+j+'-af'); if(!el) continue;
+    const cur=Number(a['n:'+j])||0, cap=hiPalletCap(!it.kids && it.big), over=cur>cap;
+    el.textContent=cur+' / '+cap+(over?' ⚠':''); el.style.color=over?'#dc2626':(cur>0?'#5b21b6':'#64748b'); }
+  Object.keys(a).forEach(k=>{ const el=document.getElementById(hiSplitKeyId(k)); if(el) el.style.borderColor=(Number(a[k])||0)>0?'#7c3aed':'#e2e8f0'; });
+  const go=document.getElementById('hisp-go');
+  if(go){ const ok=moved>0; go.disabled=!ok; go.style.opacity=ok?'1':'.45'; go.style.cursor=ok?'pointer':'not-allowed';
+    go.textContent = ok ? ('✂ Split — move '+moved+' bx') : '✂ Split'; }
+}
+function hiSplitApply(){
+  const s=window._hiSplit; if(!s) return;
+  const pallets=window._hiPlanPallets||[];
+  const src=pallets[s.pi]; const it=src&&src.items[s.ii]; if(!it) return;
+  const a=s.assign||{}, moved=hiSplitAssigned();
+  if(moved<=0){ showToast('⚠ Type how many boxes to move first'); return; }
+  if(moved>s.tot){ showToast('⚠ That is more than '+s.tot+' boxes'); return; }
+  const touched=[src], parts=[];
+  Object.keys(a).forEach(k=>{
+    const n=Number(a[k])||0; if(n<=0) return;
+    let tgt, lbl;
+    if(k.charAt(0)==='n'){ tgt={items:[], stream: it.kids?'kids':(it.big?'adult-big':'adult-small'), cap:hiPalletCap(!it.kids && it.big)}; pallets.push(tgt); lbl='new pallet'; }
+    else { const idx=parseInt(k.slice(2),10); tgt=pallets[idx]; lbl='P'+(idx+1); }
+    if(!tgt) return;
+    const ex=tgt.items.find(x=>x.st===it.st && x.co===it.co && x.sz===it.sz);
+    if(ex) ex.boxes+=n; else tgt.items.push(Object.assign({}, it, {boxes:n}));
+    touched.push(tgt); parts.push(n+'→'+lbl);
+  });
+  it.boxes = s.tot - moved;
+  if(it.boxes<=0) src.items.splice(s.ii,1); else parts.unshift(it.boxes+' stays');
+  touched.forEach(hiPalletRecompute);
+  hiSplitClose();
+  hiPlanRenderCards();
+  hiPlanSaveDebounced();
+  showToast('✂ '+s.tot+' bx split · '+parts.join(' · '));
+}
+// ⬛ Unload Plan 에서 바로 QR 스티커 뽑기 (v942)
+//    재고용 QR 이다 — 거래처 이름·PO# 는 안 찍는다. 이 물건은 아직 누구 것도 아니다.
+//    박스당 한 장, 번호(carton)는 장마다 새로 만든다.
+function hiPlanPcs(st, co, sz){
+  const lines=((window._hiPlanCtx||{}).lines)||[];
+  const norm=(a,b,c)=>String(a||'').trim()+'|'+bxBaseColor(String(b||'').trim().toUpperCase())+'|'+String(c||'').trim().toUpperCase();
+  const want=norm(st,co,sz);
+  const hit=lines.find(l=>norm(l.st,l.co,l.sz)===want);
+  return hit ? (Number(hit.pc)||0) : 0;
+}
+function hiQrZplFor(items){
+  const parts=[]; let n=0;
+  (items||[]).forEach(it=>{
+    const nb=Number(it.boxes)||0; if(nb<=0) return;
+    const o={styleNum:it.st, color:bxBaseColor(it.co), size:it.sz, qty:hiPlanPcs(it.st,it.co,it.sz)};
+    for(let j=0;j<nb;j++){ const z=buildBoxQr2x2Zpl(o, ctnNew(), null); if(z){ parts.push(z); n++; } }
+  });
+  return {zpl:parts.join('\n'), n};
+}
+async function hiQrPrint(items, label){
+  const list=(items||[]).filter(x=>(Number(x.boxes)||0)>0);
+  const tot=list.reduce((a,x)=>a+(Number(x.boxes)||0),0);
+  if(!tot){ showToast('⚠ Nothing to print'); return; }
+  const noPcs=list.filter(x=>!hiPlanPcs(x.st,x.co,x.sz));
+  const msg='⬛ Print '+tot+' QR sticker'+(tot>1?'s':'')+' for '+label+'?\n\n'
+    + list.slice(0,12).map(x=>'  • #'+x.st+' '+bxBaseColor(x.co)+' '+x.sz+' × '+x.boxes+' bx').join('\n')
+    + (list.length>12 ? ('\n  … +'+(list.length-12)+' more item(s)') : '')
+    + '\n\nOne sticker per box · stock QR (no customer / PO#).'
+    + (noPcs.length ? ('\n\n⚠ '+noPcs.length+' item(s) have no pcs-per-box on the packing list — their QR would say 0 pcs.') : '');
+  if(!confirm(msg)) return;
+  try{ await blDpiSync(); }catch(e){}
+  const built=hiQrZplFor(list);
+  if(!built.n){ showToast('⚠ Could not build the labels'); return; }
+  await sendToZebraBrowserPrint(built.zpl, built.n);
+}
+function hiQrPrintItem(pi, ii){ const p=(window._hiPlanPallets||[])[pi]; const it=p&&p.items[ii]; if(!it) return;
+  hiQrPrint([it], '#'+it.st+' '+bxBaseColor(it.co)+' '+it.sz); }
+function hiQrPrintPallet(pi){ const p=(window._hiPlanPallets||[])[pi]; if(!p||!p.items||!p.items.length) return;
+  hiQrPrint(p.items, 'PALLET '+(pi+1)); }
 // 🧱 Pallet 카드 HTML (모달 표시용) — 팔렛별 아이템 목록을 크고 직관적으로 (v751)
 function hiPalletCardsHtml(pallets){
   if(!pallets || !pallets.length) return '<div style="color:#94a3b8;font-size:12.5px;padding:16px;text-align:center;">No lines to plan.</div>';
@@ -25444,7 +25636,8 @@ function hiPalletCardsHtml(pallets){
       <span style="font-weight:800;color:#111;min-width:52px;">#${esc(it.st)}</span>
       <span style="flex:1;min-width:0;color:#334155;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${esc(bxBaseColor(it.co))}</span>
       <span style="flex:none;width:46px;font-weight:700;color:#475569;text-align:center;">${esc(it.sz)}</span>
-      <span style="flex:none;width:56px;box-sizing:border-box;font-weight:800;color:#5b21b6;background:#f5f3ff;border-radius:6px;padding:1px 0;text-align:center;">${it.boxes} bx</span>
+      <span draggable="false" onclick="event.stopPropagation();hiQrPrintItem(${i},${ii})" title="Print ${it.boxes} QR sticker(s) for this item — one per box" style="flex:none;width:30px;box-sizing:border-box;text-align:center;font-size:11px;font-weight:900;color:#4c1d95;background:#ede9fe;border:1px solid #ddd6fe;border-radius:6px;padding:1px 0;cursor:pointer;">⬛</span>
+      <span onclick="event.stopPropagation();hiSplitOpen(${i},${ii})" title="${(Number(it.boxes)||0)>1?'Click to split this quantity onto another pallet':'Only 1 box — nothing to split'}" style="flex:none;width:70px;box-sizing:border-box;font-weight:800;color:#5b21b6;background:#f5f3ff;border:1px solid ${(Number(it.boxes)||0)>1?'#ddd6fe':'#f5f3ff'};border-radius:6px;padding:1px 0;text-align:center;cursor:${(Number(it.boxes)||0)>1?'pointer':'default'};">${it.boxes} bx${(Number(it.boxes)||0)>1?' <span style="color:#a78bfa;font-weight:900;">✂</span>':''}</span>
     </div>`).join('');
     const isNew = !(p.bins && p.bins.length);
     const binTxt = b=>esc(b.loc)+' <span style="color:#94a3b8;font-weight:600;">('+b.now+' now)</span>';
@@ -25460,7 +25653,10 @@ function hiPalletCardsHtml(pallets){
     return `<div ondragover="event.preventDefault()" ondrop="hiPlanDrop(event,${i})" style="background:#fff;border:2px solid #c4b5fd;border-radius:12px;margin-bottom:12px;overflow:hidden;box-shadow:0 1px 3px rgba(76,29,149,.08);">
       <div style="background:#4c1d95;color:#fff;padding:8px 14px;display:flex;align-items:center;justify-content:space-between;gap:8px;">
         <span style="font-size:16px;font-weight:800;letter-spacing:.5px;">PALLET ${i+1} <span style="font-weight:700;color:#e9d5ff;font-size:13px;">· ${esc(p.colorLabel||'')} · ${esc(p.styleLabel||'')}</span>${catChip}</span>
-        <span style="font-size:13px;font-weight:800;background:rgba(255,255,255,.18);border-radius:20px;padding:2px 12px;white-space:nowrap;">${p.total} / ${p.cap} bx</span>
+        <span style="display:flex;align-items:center;gap:7px;flex:none;">
+          <span style="font-size:13px;font-weight:800;background:rgba(255,255,255,.18);border-radius:20px;padding:2px 12px;white-space:nowrap;">${p.total} / ${p.cap} bx</span>
+          <button type="button" onclick="hiQrPrintPallet(${i})" title="Print a QR sticker for every box on this pallet (${p.total} sticker${p.total===1?'':'s'}) — stock QR, no customer / PO#" style="background:#fff;color:#4c1d95;border:none;border-radius:8px;padding:3px 10px;font-size:11.5px;font-weight:900;cursor:pointer;white-space:nowrap;">⬛ QR</button>
+        </span>
       </div>
       <div style="padding:5px 14px 2px;display:flex;align-items:center;gap:8px;">
         <div style="flex:1;height:7px;background:#eee;border-radius:20px;overflow:hidden;"><div style="width:${Math.min(100,p.fillPct||0)}%;height:100%;background:${barColor};"></div></div>
