@@ -180,7 +180,7 @@ body.po-dragging{user-select:none;}
   </span>
   <select id="lang-sel" onchange="setLang(this.value)" style="font-size:11px;padding:3px 6px;border-radius:5px;border:none;background:#1d3f66;color:#fff;"><option value="ko">한국어</option><option value="en">English</option><option value="es">Español</option></select>
   <button id="wide-btn" class="btn btn-sm" onclick="toggleWide()" title="화면 넓게 / 좁게 — 기본은 넓게 (이 브라우저에만 저장돼)" style="padding:2px 8px;font-size:10px;background:#1d3f66;color:#cfe0f2;border-color:#2b5384;">↔ Wide</button>
-  <span id="app-ver" style="font-size:10px;color:#9fb8d4;">v960</span>
+  <span id="app-ver" style="font-size:10px;color:#9fb8d4;">v961</span>
 </div>
 <script>
 // ↔ 넓게 보기 — 브라우저마다 따로 저장 (v793)
@@ -8804,6 +8804,25 @@ const UPS_PACKAGING = [
   { code:'03', name:'UPS Tube',                 dims:false },
   { code:'30', name:'Pallet',                   dims:true  }
 ];
+/* UPS 가 실제로 받아 주는 조합 — 2026-09-02 에 UPS 서버로 하나씩 다 찍어 봤다.
+   우리가 막는 게 아니라 UPS 가 거부한다. 그래서 고르는 건 안 막고 미리 알려만 준다.
+   빈 배열 = 우리 계정/국내 배송에서는 UPS 가 아예 안 받는다. */
+const UPS_PACK_SVC = {
+  '02': ['03','12','02','01'],          // 우리 박스 — 전 서비스 가능
+  '01': ['02','01'], '04': ['02','01'], '03': ['02','01'],
+  '2a': ['02','01'], '2b': ['02','01'], '2c': ['02','01'], '21': ['02','01'],
+  '25': [], '24': [], '30': []
+};
+function upsPackOkFor(code, svc){
+  const a = UPS_PACK_SVC[String(code||'02')];
+  return !a ? true : a.indexOf(String(svc||'03')) >= 0;
+}
+function upsPackNote(code){
+  const a = UPS_PACK_SVC[String(code||'02')];
+  if(!a) return '';
+  if(!a.length) return ' — UPS declines';
+  return a.length < 4 ? ' — Air only' : '';
+}
 function upsPackDims(code){ const h = UPS_PACKAGING.find(x=>x.code===String(code||'02')); return h ? h.dims : true; }
 function upsPackName(code){ const h = UPS_PACKAGING.find(x=>x.code===String(code||'02')); return h ? h.name : 'Our own box'; }
 function lblPkgChange(i, v){ lblSyncBoxes(); if(_lblBoxes[i]) _lblBoxes[i].pkg = String(v||'02'); lblRender(); lblAutoEst(); }
@@ -9012,12 +9031,16 @@ function lblRender(){
   const boxRows = _lblBoxes.map((b,i)=>{
     /* UPS 규격 포장이면 치수는 UPS 가 정해 놓았다 — 그 줄의 크기 칸은 잠근다 (v960) */
     const _pk = String(b.pkg||'02'), _own = upsPackDims(_pk);
+    const _svc = window._lblService||'03';
+    const _svcName = (UPS_SERVICES.find(x=>x.code===_svc)||{}).name||_svc;
+    const _bad = !upsPackOkFor(_pk, _svc);
     const _lock = _own ? '' : ' disabled style="opacity:.35;"';
     const _dim = (cls, val, ph, w) => `<input class="fi ${cls}" data-i="${i}" value="${esc(val)}" placeholder="${ph}" oninput="lblAutoEst()" style="width:${w}px;font-size:11px;padding:4px;text-align:center;${_own?'':'opacity:.35;'}"${_own?'':' disabled'}>`;
     return `<div style="display:flex;gap:5px;align-items:center;margin-bottom:6px;">
     <span style="font-family:Consolas,monospace;font-size:11px;color:#64748b;min-width:20px;">#${i+1}</span>
     ${(isCombine&&b.src)?`<span style="font-size:9px;font-weight:800;color:#fff;background:${b.src==='SC'?'#1d4ed8':'#c2410c'};border-radius:5px;padding:1px 5px;">${esc(b.src)}</span>`:''}
-    <select class="fi lbl-pkg" data-i="${i}" onchange="lblPkgChange(${i},this.value)" title="UPS packaging — UPS-supplied packaging has fixed dimensions, so the size boxes are locked" style="font-size:11px;padding:4px;width:150px;${_own?'':'background:#ecfeff;font-weight:700;color:#0e7490;'}">${UPS_PACKAGING.map(p=>`<option value="${p.code}"${_pk===p.code?' selected':''}>${esc(p.name)}</option>`).join('')}</select>
+    <select class="fi lbl-pkg" data-i="${i}" onchange="lblPkgChange(${i},this.value)" title="UPS packaging — UPS-supplied packaging has fixed dimensions, so the size boxes are locked" style="font-size:11px;padding:4px;width:186px;${_own?'':'background:#ecfeff;font-weight:700;color:#0e7490;'}">${UPS_PACKAGING.map(p=>`<option value="${p.code}"${_pk===p.code?' selected':''}>${esc(p.name+upsPackNote(p.code))}</option>`).join('')}</select>
+    ${_bad?`<span title="UPS refuses this packaging with the service selected above. Switch the service to 2nd Day Air or Next Day Air, or use our own box." style="font-size:9.5px;font-weight:800;color:#b45309;background:#fffbeb;border:1px solid #fcd34d;border-radius:5px;padding:1px 5px;white-space:nowrap;">⚠ not with ${esc(_svcName)}</span>`:''}
     <select class="fi lbl-preset" data-i="${i}" onchange="lblPreset(${i},this.value)" style="font-size:11px;padding:4px;width:120px;${_own?'':'opacity:.35;'}"${_lock}><option value="">✏️ Use your own size</option>${BOX_PRESETS.map((p,pi)=>`<option value="${pi}"${b.name===p.n?' selected':''}>${esc(p.n)}</option>`).join('')}</select>
     ${_dim('lbl-l', b.l, 'L', 46)}${_dim('lbl-w', b.w, 'W', 46)}${_dim('lbl-h', b.h, 'H', 46)}
     <input class="fi lbl-wt" data-i="${i}" value="${esc(b.wt)}" placeholder="lbs" oninput="lblAutoEst()" style="width:52px;font-size:11px;padding:4px;text-align:center;">
@@ -9080,7 +9103,7 @@ function lblRender(){
       </div>
       <div style="display:flex;gap:10px;align-items:flex-end;">
         <div style="flex:1;"><div style="font-size:11px;font-weight:800;color:#0f2a4a;margin-bottom:5px;">SERVICE</div>
-          <select class="fi" id="lbl-service" onchange="window._lblService=this.value;lblAutoEst()" style="font-size:12px;">${svcOpts}</select></div>
+          <select class="fi" id="lbl-service" onchange="window._lblService=this.value;lblSyncBoxes();lblRender();lblAutoEst()" style="font-size:12px;">${svcOpts}</select></div>
         <label style="display:flex;align-items:center;gap:6px;font-size:11px;font-weight:700;color:#b45309;white-space:nowrap;padding-bottom:8px;cursor:pointer;" title="Test mode uses UPS CIE (test) — labels are NOT billable/shippable. Website rates are unaffected.">
           <input type="checkbox" id="lbl-test" ${window._lblTest?'checked':''} onchange="window._lblTest=this.checked" style="width:15px;height:15px;accent-color:#b45309;">🧪 Test</label>
       </div>
@@ -9088,7 +9111,7 @@ function lblRender(){
       ${apprBox}
       <div>
         <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px;">
-          <span style="font-size:11px;font-weight:800;color:#0f2a4a;">BOXES — packaging · size (L × W × H in) · weight lbs <span style="font-weight:600;color:#64748b;">— UPS packaging has fixed sizes, so those rows lock the size boxes</span></span>
+          <span style="font-size:11px;font-weight:800;color:#0f2a4a;">BOXES — packaging · size (L × W × H in) · weight lbs <span style="font-weight:600;color:#64748b;">— UPS-supplied packaging has fixed sizes (size boxes lock). UPS only accepts Letter / Pak / Express Box on Air services, not Ground.</span></span>
           <button class="btn btn-sm" onclick="lblAddBox()" style="font-size:11px;padding:3px 10px;">＋ Add box</button>
         </div>
         ${boxRows}
