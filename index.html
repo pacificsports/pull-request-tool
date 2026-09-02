@@ -59,6 +59,12 @@ body.narrow main{max-width:1100px;}
 .etbl th{background:var(--header);color:#fff;font-size:10px;text-transform:uppercase;letter-spacing:.5px;padding:6px 8px;text-align:center;white-space:nowrap;}
 .etbl th.tl{text-align:left;}
 .etbl thead th{position:sticky;top:0;z-index:5;}
+/* 원가 화면: 스티키 헤더 뒤로 줄이 비쳐 보이던 것 (v964).
+   머리칸은 배경이 불투명해야 하고, 줄의 스티키 첫 칸(z-index:1)보다 반드시 위여야 한다.
+   왼쪽 위 모서리 칸은 가로·세로 양쪽으로 붙으니 제일 위로 올린다. */
+#cost-body table.etbl thead th{z-index:6;box-shadow:0 2px 4px rgba(15,42,74,.28);}
+#cost-body table.etbl thead th:first-child{z-index:7;}
+#cost-body table.etbl tbody td:first-child{z-index:1;}
 /* Full Box 그리드: 래퍼가 세로 스크롤 컨테이너가 아니어야 헤더가 페이지 스크롤 기준으로 sticky 됨 (v439) */
 .bxgrid-wrap table.etbl thead th{position:sticky;top:0;z-index:6;box-shadow:0 2px 4px rgba(15,42,74,.25);}
 .etbl td{border-bottom:1px solid #eef1f5;padding:4px 6px;font-size:12px;text-align:center;}
@@ -180,7 +186,7 @@ body.po-dragging{user-select:none;}
   </span>
   <select id="lang-sel" onchange="setLang(this.value)" style="font-size:11px;padding:3px 6px;border-radius:5px;border:none;background:#1d3f66;color:#fff;"><option value="ko">한국어</option><option value="en">English</option><option value="es">Español</option></select>
   <button id="wide-btn" class="btn btn-sm" onclick="toggleWide()" title="화면 넓게 / 좁게 — 기본은 넓게 (이 브라우저에만 저장돼)" style="padding:2px 8px;font-size:10px;background:#1d3f66;color:#cfe0f2;border-color:#2b5384;">↔ Wide</button>
-  <span id="app-ver" style="font-size:10px;color:#9fb8d4;">v963</span>
+  <span id="app-ver" style="font-size:10px;color:#9fb8d4;">v964</span>
 </div>
 <script>
 // ↔ 넓게 보기 — 브라우저마다 따로 저장 (v793)
@@ -22600,7 +22606,7 @@ async function costOpen(){
     <div style="background:#065f46;color:#fff;padding:11px 16px;font-weight:800;font-size:13.5px;display:flex;align-items:center;gap:10px;">💲 Cost &amp; Margin <span style="font-size:11px;font-weight:600;color:#a7f3d0;">Per style / size cost + min margin — owner &amp; accounting only</span>
       <input id="cost-search" placeholder="🔍 style / desc" oninput="costRender(this.value)" style="margin-left:auto;font-size:12px;padding:5px 10px;border-radius:7px;border:1px solid #34d399;width:170px;">
       <button class="btn btn-sm" id="cost-save" onclick="costSave()" style="background:#f59e0b;color:#fff;border-color:#f59e0b;font-weight:800;" disabled>💾 Save changes</button>
-      <button class="btn btn-sm" style="background:transparent;color:#a7f3d0;border-color:#34d399;" onclick="document.getElementById('modal-cost').remove()">✕</button>
+      <button class="btn btn-sm" id="cost-close" style="background:transparent;color:#a7f3d0;border-color:#34d399;" onclick="costCloseSave()" title="Save any changes and close">✕</button>
     </div>
     <div id="cost-summary" style="padding:8px 16px;border-bottom:1px solid var(--border);font-size:12px;"></div>
     <div style="padding:7px 16px 0;display:flex;gap:6px;align-items:center;">
@@ -22608,7 +22614,7 @@ async function costOpen(){
       <button class="btn btn-sm" id="cost-tab-KIDS" onclick="costTab('KIDS')">Kids · Youth · Juvy · Toddler</button>
       <span id="cost-tab-note" style="font-size:11px;color:#6b7280;margin-left:6px;"></span>
     </div>
-    <div id="cost-body" style="flex:1;overflow:auto;padding:8px 12px;"><div class="muted">Loading…</div></div>
+    <div id="cost-body" style="flex:1;overflow:auto;padding:0 12px 8px;"><div class="muted">Loading…</div></div>
   </div>`;
   document.body.appendChild(div); try{ initModalDrag(div); }catch(e){}
   _costEdits={};
@@ -22689,7 +22695,7 @@ function costSummary(){
 async function costSave(){
   const sns=Object.keys(_costEdits); if(!sns.length){ showToast('No changes'); return; }
   const btn=document.getElementById('cost-save'); if(btn){ btn.disabled=true; btn.textContent='Saving…'; }
-  let ok=0, fail=0, firstErr='';
+  let ok=0, fail=0, firstErr=''; const okSns=[];
   for(const sn of sns){
     const e=_costEdits[sn]; const patch={};
     /* 확인 도장(날짜·사람)은 숫자가 아니다 — Number() 로 밀면 NaN 이 되어 저장이 깨진다 (v963) */
@@ -22701,14 +22707,34 @@ async function costSave(){
     patch.cost_updated_by = (SESS&&SESS.email)||'';
     try{
       const r=await sbFetch('/rest/v1/styles?style_number=eq.'+encodeURIComponent(sn), {method:'PATCH', headers:{Prefer:'return=minimal'}, body:JSON.stringify(patch)});
-      if(r.ok) ok++; else { fail++; if(!firstErr){ let tx=''; try{ tx=await r.text(); }catch(_){} firstErr='HTTP '+r.status+' '+String(tx).slice(0,140); } }
+      if(r.ok){ ok++; okSns.push(sn); } else { fail++; if(!firstErr){ let tx=''; try{ tx=await r.text(); }catch(_){} firstErr='HTTP '+r.status+' '+String(tx).slice(0,140); } }
     }catch(err){ fail++; if(!firstErr) firstErr=String(err.message||err); }
   }
-  _costEdits={};
+  /* ⚠ 예전에는 여기서 _costEdits 를 통째로 비웠다. 한 줄이라도 저장에 실패하면
+     그 사람이 친 값은 화면에서도 사라지고 DB 에도 없었다 — 조용한 데이터 유실.
+     이제 성공한 것만 지우고, 실패한 줄은 그대로 들고 있는다. (v964) */
+  okSns.forEach(sn=>{ delete _costEdits[sn]; });
   try{ await loadPriceList(); }catch(e){}   // 주문화면 최소가 경고가 새 원가를 쓰도록 갱신
   await costFetch(); costRender((document.getElementById('cost-search')||{}).value||'');
-  if(btn){ btn.textContent='💾 Save changes'; btn.disabled=true; }
+  if(btn){ btn.textContent='💾 Save changes'; btn.disabled=!Object.keys(_costEdits).length; }
   showToast(fail ? ('⚠ Saved '+ok+', failed '+fail+(firstErr?(' — '+firstErr):'')) : ('✅ Saved '+ok+' style(s)'));
+  return { ok, fail, firstErr };
+}
+/* ✕ 를 누르면 저장하고 닫는다 (v964). 저장이 실패하면 닫지 않는다 —
+   창이 닫히면서 값이 사라지는 게 제일 나쁘다. */
+async function costCloseSave(){
+  const n = Object.keys(_costEdits).length;
+  const close = ()=>{ const m=document.getElementById('modal-cost'); if(m) m.remove(); };
+  if(!n){ close(); return; }
+  const x = document.getElementById('cost-close'); if(x){ x.disabled=true; x.textContent='💾…'; }
+  let res = null;
+  try{ res = await costSave(); }catch(e){ res = { ok:0, fail:n, firstErr:String(e&&e.message||e) }; }
+  if(x){ x.disabled=false; x.textContent='✕'; }
+  if(res && res.fail){
+    showToast('⚠ '+res.fail+' style(s) did not save — the window stays open so nothing is lost');
+    return;                      // 안 닫는다
+  }
+  close();
 }
 
 async function bxExport(){
