@@ -180,7 +180,7 @@ body.po-dragging{user-select:none;}
   </span>
   <select id="lang-sel" onchange="setLang(this.value)" style="font-size:11px;padding:3px 6px;border-radius:5px;border:none;background:#1d3f66;color:#fff;"><option value="ko">한국어</option><option value="en">English</option><option value="es">Español</option></select>
   <button id="wide-btn" class="btn btn-sm" onclick="toggleWide()" title="화면 넓게 / 좁게 — 기본은 넓게 (이 브라우저에만 저장돼)" style="padding:2px 8px;font-size:10px;background:#1d3f66;color:#cfe0f2;border-color:#2b5384;">↔ Wide</button>
-  <span id="app-ver" style="font-size:10px;color:#9fb8d4;">v944</span>
+  <span id="app-ver" style="font-size:10px;color:#9fb8d4;">v945</span>
 </div>
 <script>
 // ↔ 넓게 보기 — 브라우저마다 따로 저장 (v793)
@@ -25370,7 +25370,7 @@ async function hiPlanOpen(id){
 }
 // 💾 Unload Plan 수동 배치 저장 — DB(pr_inbound.meta.unloadPlan) 우선, localStorage 미러/fallback (v768)
 const LS_HIPLAN='psi_unloadplan_';
-function hiPlanSnapshot(){ return { savedAt:new Date().toISOString(), by:(typeof SESS!=='undefined'&&SESS?SESS.email:'')||'', pallets:(window._hiPlanPallets||[]).filter(p=>p.items&&p.items.length).map(p=>({stream:p.stream, cap:p.cap, items:p.items.map(x=>({st:x.st, co:x.co, sz:x.sz, boxes:x.boxes, big:!!x.big, kids:!!x.kids, loc:x.loc||'', sg:x.sg||''}))})) }; }
+function hiPlanSnapshot(){ return { savedAt:new Date().toISOString(), by:(typeof SESS!=='undefined'&&SESS?SESS.email:'')||'', pallets:(window._hiPlanPallets||[]).filter(p=>p.items&&p.items.length).map(p=>({stream:p.stream, cap:p.cap, items:p.items.map(x=>({st:x.st, co:x.co, sz:x.sz, boxes:x.boxes, big:!!x.big, kids:!!x.kids, loc:x.loc||'', rid:x.rid||'', pr:x.pr||''}))})) }; }
 async function hiPlanSave(){ const ctx=window._hiPlanCtx||{}; if(!ctx.id) return false;
   const plan=hiPlanSnapshot();
   try{ localStorage.setItem(LS_HIPLAN+ctx.id, JSON.stringify(plan)); }catch(e){}   // 미러 (같은 기기 즉시)
@@ -25396,7 +25396,7 @@ function hiPlanFromSaved(saved){
   const binNow={};
   (typeof bxStore!=='undefined'?bxStore:[]).forEach(b=>{ if(bxWh(b)!=='SC') return; const L=String(b.loc||'').toUpperCase(); if(!L||L==='TRANSFER'||trIs3PLoc(b.loc,'SC')) return; binNow[L]=(binNow[L]||0)+1; });
   window._hiBinNow=binNow;
-  const pallets=(saved.pallets||[]).map(p=>({ stream:p.stream, cap:p.cap, items:(p.items||[]).map(x=>({st:x.st, co:x.co, sz:x.sz, boxes:Number(x.boxes)||0, big:!!x.big, kids:!!x.kids, loc:x.loc||'', sg:x.sg||''})) }));
+  const pallets=(saved.pallets||[]).map(p=>({ stream:p.stream, cap:p.cap, items:(p.items||[]).map(x=>{ const o={st:x.st, co:x.co, sz:x.sz, boxes:Number(x.boxes)||0, big:!!x.big, kids:!!x.kids, loc:x.loc||''}; if(x.rid) o.rid=x.rid; if(x.pr) o.pr=x.pr; return o; }) }));
   pallets.forEach(hiPalletRecompute);
   return pallets;
 }
@@ -25459,92 +25459,87 @@ function hiPlanDrop(ev, targetPi){
   else { tgt=pallets[targetPi]; if(!tgt) return; }
   // 대상에 같은 아이템 있으면 합침
   const ex=tgt.items.find(x=>x.st===item.st && x.co===item.co && x.sz===item.sz);
-  if(ex) ex.boxes+=item.boxes; else tgt.items.push(Object.assign({}, item));
+  if(ex){
+    ex.boxes+=item.boxes;
+    /* 합쳐져 사라지는 줄을 부모로 삼던 줄이 있으면 새 줄을 부모로 이어 준다 (v945) */
+    if(item.rid){ if(!ex.rid) ex.rid=hiRid();
+      pallets.forEach(q=>(q.items||[]).forEach(x=>{ if(x.pr===item.rid) x.pr=ex.rid; })); }
+  } else tgt.items.push(Object.assign({}, item));
   src.items.splice(d.ii,1);
   hiPalletRecompute(src); hiPalletRecompute(tgt);
   hiPlanRenderCards();
   hiPlanSaveDebounced();   // 💾 드래그 변경 저장 (v767)
 }
-// ✂ 줄 나누기 (v943) — 같은 줄을 하나 더 만든다.
-/*  예: #1530 DUSK M 5박스 → ✂ 누르면 같은 줄이 하나 더 생긴다.
-    새 줄에 2 를 넣으면 원래 줄은 저절로 3 이 된다 — 합계는 절대 안 변한다.
-    그 다음 새 줄을 원하는 팔렛으로 끌어다 놓으면 끝. ✂ 를 또 누르면 또 한 줄.
-    수량을 고치면 부족하거나 남는 만큼은 같은 품목의 다른 줄에서 오가고 간다 —
-    패킹리스트 총량과 어긋나면 저장된 배치가 통째로 무효되기 때문이다. */
+/* ✂ 줄 나누기 (v945)
+   기본은 수량을 못 건드린다 — 자동 배치가 짠 숫자를 실수로 바꿀 일이 없다.
+   매니저가 ✂ 를 누르면 바로 아래에 똑같은 줄이 하나 생기고, 그 줄의 수량 칸만 비어 있다.
+   거기에 원하는 수를 넣으면 원래 줄에서 그만큼 빠진다 (합계는 절대 안 변한다).
+   그 줄은 아무 팔렛으로나 끌어다 놓을 수 있고, ✕ 로 지우면 박스가 원래 줄로 돌아간다. */
 let _hiSgSeq = 0;
+function hiRid(){ return 'r'+(++_hiSgSeq)+Date.now().toString(36); }
 function hiKeyOf(x){ return String(x.st||'').trim().toUpperCase()+'|'+bxBaseColor(String(x.co||'').toUpperCase())+'|'+String(x.sz||'').trim().toUpperCase(); }
 function hiRowsOfKey(k){ const out=[]; (window._hiPlanPallets||[]).forEach((p,pi)=>(p.items||[]).forEach((x,ii)=>{ if(hiKeyOf(x)===k) out.push({p,pi,x,ii}); })); return out; }
-function hiRowSibs(pi, ii){ const p=(window._hiPlanPallets||[])[pi]; const it=p&&p.items[ii]; if(!it) return [];
-  return hiRowsOfKey(hiKeyOf(it)).filter(o=>!(o.pi===pi && o.ii===ii)); }
-// ✂ 누르면 같은 줄이 바로 아래에 하나 더 생긴다 (기본값: 반)
+function hiFindRid(rid){
+  if(!rid) return null;
+  const ps=window._hiPlanPallets||[];
+  for(let pi=0;pi<ps.length;pi++){ const items=ps[pi].items||[];
+    for(let ii=0;ii<items.length;ii++){ if(items[ii].rid===rid) return {p:ps[pi], pi, x:items[ii], ii}; } }
+  return null;
+}
+// ✂ — 같은 줄을 하나 더, 수량은 비운 채로
 function hiRowSplit(pi, ii){
   const p=(window._hiPlanPallets||[])[pi]; if(!p) return;
   const it=p.items[ii]; if(!it) return;
-  const tot=Number(it.boxes)||0;
-  if(tot<2){ showToast('\u26A0 Only 1 box \u2014 nothing to split'); return; }
-  const sg = it.sg || ('sg'+(++_hiSgSeq)+Date.now().toString(36));
-  it.sg = sg;
-  const n = Math.max(1, Math.floor(tot/2));
-  it.boxes = tot - n;
-  p.items.splice(ii+1, 0, Object.assign({}, it, {boxes:n, sg:sg}));
+  if((Number(it.boxes)||0)<1){ showToast('⚠ This row has no boxes to move'); return; }
+  if(!it.rid) it.rid=hiRid();
+  const child=Object.assign({}, it, {boxes:0, rid:hiRid(), pr:it.rid});
+  p.items.splice(ii+1, 0, child);
   hiPalletRecompute(p);
   hiPlanRenderCards();
   hiPlanSaveDebounced();
-  const idx=p.items.findIndex(x=>x.sg===sg && x.boxes===n);
+  const idx=p.items.findIndex(x=>x.rid===child.rid);
   const el=document.getElementById('hiqi-'+pi+'-'+(idx<0?ii+1:idx));
-  if(el){ try{ el.focus(); el.select(); }catch(e){} }
-  showToast('\u2702 Split into '+(tot-n)+' + '+n+' bx \u2014 type the qty you want, then drag the new row to another pallet');
+  if(el){ try{ el.focus(); }catch(e){} }
+  showToast('✂ New row added — type how many boxes go on it, then drag it where you want');
 }
-/* 수량 입력 — 늘린 만큼은 같은 품목의 다른 줄에서 빼 오고, 줄인 만큼은 거기로 돌려준다 */
+/* 새 줄의 수량 — 넣은 만큼 원래 줄에서 빠지고, 지우면 그대로 돌아간다 */
 function hiRowQty(pi, ii, val, elId){
   const p=(window._hiPlanPallets||[])[pi]; const it=p&&p.items[ii]; if(!it) return;
-  let sibs=hiRowSibs(pi, ii);
+  const par=hiFindRid(it.pr);
   const old=Number(it.boxes)||0;
   let n=parseInt(val,10); if(!(n>=0)) n=0;
-  /* 이 품목이 이 줄 하나뿐인데 수량을 줄이면 — 남는 만큼이 바로 아래에 새 줄로 떨어진다.
-     ✂ 를 누른 것과 같다. 그래서 모든 줄이 똑같이 생기고 똑같이 움직인다 (v944). */
-  if(!sibs.length && n<old){
-    const sg = it.sg || ('sg'+(++_hiSgSeq)+Date.now().toString(36));
-    it.sg = sg; it.boxes = n;
-    p.items.splice(ii+1, 0, Object.assign({}, it, {boxes: old-n, sg:sg}));
-    hiPlanRenderCards();
-    hiPlanSaveDebounced();
-    const id = elId||('hiqi-'+pi+'-'+ii);
-    const el = document.getElementById(id);
-    if(el){ try{ el.focus(); const v=el.value; el.value=''; el.value=v; }catch(e){} }
-    return;
-  }
-  if(!sibs.length){ n=old; }
+  if(!par){ n=old; }
   else {
-    const pool=sibs.reduce((a,o)=>a+(Number(o.x.boxes)||0),0);
-    if(n>old+pool) n=old+pool;
+    const tot=old+(Number(par.x.boxes)||0);
+    if(n>tot) n=tot;
+    par.x.boxes = tot-n;
   }
-  const d=n-old;
   it.boxes=n;
-  if(d>0){
-    const order=sibs.slice().sort((a,b)=>{
-      const sa=(a.x.sg&&a.x.sg===it.sg)?0:1, sb=(b.x.sg&&b.x.sg===it.sg)?0:1;
-      if(sa!==sb) return sa-sb;
-      if(a.pi!==b.pi) return (a.pi===pi?0:1)-(b.pi===pi?0:1);
-      return (Number(b.x.boxes)||0)-(Number(a.x.boxes)||0);
-    });
-    let need=d;
-    for(const o of order){ if(need<=0) break; const take=Math.min(need, Number(o.x.boxes)||0); o.x.boxes-=take; need-=take; }
-  } else if(d<0){
-    const order=sibs.slice().sort((a,b)=>{
-      const sa=(a.x.sg&&a.x.sg===it.sg)?0:1, sb=(b.x.sg&&b.x.sg===it.sg)?0:1;
-      if(sa!==sb) return sa-sb;
-      return (a.pi===pi?0:1)-(b.pi===pi?0:1);
-    });
-    order[0].x.boxes = (Number(order[0].x.boxes)||0) + (-d);
-  }
-  const me=document.getElementById(elId||('hiqi-'+pi+'-'+ii));
-  if(me && String(me.value)!==String(n)) me.value=n;
-  hiRowsPaint(elId||('hiqi-'+pi+'-'+ii));
+  const id=elId||('hiqi-'+pi+'-'+ii);
+  const me=document.getElementById(id);
+  if(me){ const typed=parseInt(me.value,10); if(!(typed===n) && !(me.value==='' && n===0)) me.value = n||''; }
+  hiRowsPaint(id);
 }
 function hiRowBump(pi, ii, d){ const p=(window._hiPlanPallets||[])[pi]; const it=p&&p.items[ii]; if(!it) return;
   hiRowQty(pi, ii, (Number(it.boxes)||0)+d); }
-/* 타이핑 중에는 칸만 갱신한다 — 줄 순서를 다시 잡으면 커서가 튀거나서. */
+/* ✕ — 새로 만든 줄을 지운다. 박스는 원래 줄로 돌아간다 */
+function hiRowDel(pi, ii){
+  const ps=window._hiPlanPallets||[]; const p=ps[pi]; const it=p&&p.items[ii]; if(!it) return;
+  const n=Number(it.boxes)||0;
+  let back=hiFindRid(it.pr);
+  if(!back && n>0){
+    const alt=hiRowsOfKey(hiKeyOf(it)).filter(o=>!(o.pi===pi && o.ii===ii))[0];
+    if(!alt){ showToast('⚠ Nowhere to put these '+n+' box(es) back — set this row to 0 first'); return; }
+    back=alt;
+  }
+  if(back && n>0) back.x.boxes=(Number(back.x.boxes)||0)+n;
+  const inherit = it.pr || '';
+  ps.forEach(q=>(q.items||[]).forEach(x=>{ if(x.pr===it.rid){ if(inherit) x.pr=inherit; else delete x.pr; } }));
+  p.items.splice(ii,1);
+  hiRowQtyDone();
+  showToast(n>0 ? ('✕ Row removed — '+n+' bx went back') : '✕ Row removed');
+}
+/* 타이핑 중에는 숫자만 갱신한다 — 다시 그리면 커서가 튄다 */
 function hiRowsPaint(skipId){
   (window._hiPlanPallets||[]).forEach((p,i)=>{
     const cap = p.cap || hiPalletCap(p.stream==='adult-big');
@@ -25558,17 +25553,27 @@ function hiRowsPaint(skipId){
     if(g){ if(over){ g.textContent='OVER by '+(p.total-cap); g.style.background='#dc2626'; g.style.color='#fff'; }
            else if(full){ g.textContent='FULL'; g.style.background='#16a34a'; g.style.color='#fff'; }
            else { g.textContent='partial'; g.style.background='#fde68a'; g.style.color='#92400e'; } }
-    (p.items||[]).forEach((x,ii)=>{ const id='hiqi-'+i+'-'+ii; if(id===skipId) return;
-      const el=document.getElementById(id); if(el && String(el.value)!==String(Number(x.boxes)||0)) el.value=Number(x.boxes)||0; });
+    (p.items||[]).forEach((x,ii)=>{
+      const nb=Number(x.boxes)||0;
+      const c=document.getElementById('hiqc-'+i+'-'+ii); if(c) c.textContent = nb+' bx';
+      const id='hiqi-'+i+'-'+ii; if(id===skipId) return;
+      const el=document.getElementById(id);
+      if(el && String(el.value)!==String(nb||'')) el.value = nb||'';
+    });
   });
 }
-/* 칸에서 빠져나오면 — 0 짜리 줄을 치우고 다시 그린다 */
+/* 칸에서 손을 떼면 — 빈 줄을 정리하고 다시 그린다 */
 function hiRowQtyDone(){
-  let pallets=(window._hiPlanPallets||[]);
-  pallets.forEach(p=>{ p.items=(p.items||[]).filter(x=>(Number(x.boxes)||0)>0); });
-  pallets=pallets.filter(p=>p.items.length);
-  window._hiPlanPallets=pallets;
-  pallets.forEach(hiPalletRecompute);
+  let ps=(window._hiPlanPallets||[]);
+  const keep = x => (Number(x.boxes)||0)>0 || !!x.pr;     // 수량을 아직 안 넣은 새 줄은 남긴다
+  ps.forEach(p=>{ p.items=(p.items||[]).filter(keep); });
+  ps=ps.filter(p=>p.items.length);
+  window._hiPlanPallets=ps;
+  // 원래 줄이 0 이 돼서 사라졌으면, 새 줄이 그냥 보통 줄이 된다
+  ps.forEach(p=>(p.items||[]).forEach(x=>{ if(x.pr && !hiFindRid(x.pr)) delete x.pr; }));
+  ps.forEach(p=>{ p.items=(p.items||[]).filter(keep); });
+  window._hiPlanPallets=ps.filter(p=>p.items.length);
+  window._hiPlanPallets.forEach(hiPalletRecompute);
   hiPlanRenderCards();
   hiPlanSaveDebounced();
 }
@@ -25617,20 +25622,27 @@ function hiPalletCardsHtml(pallets){
   const cards = pallets.map((p,i)=>{
     const rows=p.items.map((it,ii)=>{
       const nb=Number(it.boxes)||0;
-      const qtyCell = `<span style="flex:none;display:flex;align-items:center;gap:3px;" ondragstart="event.stopPropagation();event.preventDefault();">
-             <button type="button" draggable="false" onclick="event.stopPropagation();hiRowBump(${i},${ii},-1)" onblur="hiRowQtyDone()" title="One box less — it goes back to the other row of this item" style="flex:none;width:22px;height:24px;border:1px solid #e2e8f0;background:#f8fafc;border-radius:6px;font-weight:900;color:#475569;cursor:pointer;padding:0;line-height:1;">−</button>
-             <input id="hiqi-${i}-${ii}" type="number" min="0" inputmode="numeric" draggable="false" value="${nb}" oninput="hiRowQty(${i},${ii},this.value,this.id)" onchange="hiRowQty(${i},${ii},this.value,this.id)" onblur="hiRowQtyDone()" onclick="event.stopPropagation()" title="Type how many boxes stay on this row — the rest goes to the other row of the same item" style="flex:none;width:46px;height:24px;box-sizing:border-box;text-align:center;font-weight:800;font-size:12.5px;color:#4c1d95;background:#fff;border:1.5px solid #a78bfa;border-radius:6px;">
-             <button type="button" draggable="false" onclick="event.stopPropagation();hiRowBump(${i},${ii},1)" onblur="hiRowQtyDone()" title="One box more — taken from the other row of this item" style="flex:none;width:22px;height:24px;border:1px solid #e2e8f0;background:#f8fafc;border-radius:6px;font-weight:900;color:#475569;cursor:pointer;padding:0;line-height:1;">+</button>
+      const isSplit=!!it.pr;                       // ✂ 로 매니저가 만든 줄 — 이 줄만 수량을 넣는다
+      const qtyCell = isSplit
+        ? `<span style="flex:none;width:112px;box-sizing:border-box;display:flex;align-items:center;justify-content:flex-end;gap:3px;" ondragstart="event.stopPropagation();event.preventDefault();">
+             <button type="button" draggable="false" onclick="event.stopPropagation();hiRowBump(${i},${ii},-1)" onblur="hiRowQtyDone()" title="One box less — it goes back to the original row" style="flex:none;width:22px;height:24px;border:1px solid #e2e8f0;background:#f8fafc;border-radius:6px;font-weight:900;color:#475569;cursor:pointer;padding:0;line-height:1;">−</button>
+             <input id="hiqi-${i}-${ii}" type="number" min="0" inputmode="numeric" draggable="false" value="${nb||''}" placeholder="0" oninput="hiRowQty(${i},${ii},this.value,this.id)" onchange="hiRowQty(${i},${ii},this.value,this.id)" onblur="hiRowQtyDone()" onclick="event.stopPropagation()" title="How many boxes go on this new row — they come out of the original row" style="flex:none;width:44px;height:24px;box-sizing:border-box;text-align:center;font-weight:800;font-size:12.5px;color:#4c1d95;background:#fff;border:1.5px solid #7c3aed;border-radius:6px;">
+             <button type="button" draggable="false" onclick="event.stopPropagation();hiRowBump(${i},${ii},1)" onblur="hiRowQtyDone()" title="One box more — taken from the original row" style="flex:none;width:22px;height:24px;border:1px solid #e2e8f0;background:#f8fafc;border-radius:6px;font-weight:900;color:#475569;cursor:pointer;padding:0;line-height:1;">+</button>
              <span style="font-size:10.5px;font-weight:800;color:#94a3b8;">bx</span>
-           </span>`;
-      return `<div draggable="true" ondragstart="hiPlanDragStart(event,${i},${ii})" title="Drag to another pallet" style="display:flex;align-items:center;gap:7px;padding:4px 6px;border-top:1px solid #f1f5f9;font-size:13px;cursor:grab;border-radius:6px;">
+           </span>`
+        : `<span id="hiqc-${i}-${ii}" style="flex:none;width:112px;box-sizing:border-box;font-weight:800;color:#5b21b6;background:#f5f3ff;border-radius:6px;padding:4px 0;text-align:center;">${nb} bx</span>`;
+      const delCell = isSplit
+        ? `<span draggable="false" onclick="event.stopPropagation();hiRowDel(${i},${ii})" title="Remove this row — its boxes go back to the original row" style="flex:none;width:26px;box-sizing:border-box;text-align:center;font-size:12px;font-weight:900;color:#b91c1c;background:#fef2f2;border:1px solid #fecaca;border-radius:6px;padding:2px 0;cursor:pointer;">✕</span>`
+        : `<span style="flex:none;width:26px;"></span>`;
+      return `<div draggable="true" ondragstart="hiPlanDragStart(event,${i},${ii})" title="Drag to another pallet" style="display:flex;align-items:center;gap:7px;padding:4px 6px;border-top:1px solid #f1f5f9;font-size:13px;cursor:grab;border-radius:6px;${isSplit?'background:#faf7ff;':''}">
       <span style="color:#c4b5fd;font-weight:800;">⠿</span>
-      <span style="font-weight:800;color:#111;min-width:52px;">#${esc(it.st)}</span>
+      <span style="font-weight:800;color:#111;min-width:52px;">${isSplit?'<span style="color:#a78bfa;font-weight:900;">↳</span> ':''}#${esc(it.st)}</span>
       <span style="flex:1;min-width:0;color:#334155;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${esc(bxBaseColor(it.co))}</span>
       <span style="flex:none;width:44px;font-weight:700;color:#475569;text-align:center;">${esc(it.sz)}</span>
       <span draggable="false" onclick="event.stopPropagation();hiQrPrintItem(${i},${ii})" title="Print ${nb} QR sticker(s) for this item — one per box" style="flex:none;width:28px;box-sizing:border-box;text-align:center;font-size:11px;font-weight:900;color:#4c1d95;background:#ede9fe;border:1px solid #ddd6fe;border-radius:6px;padding:2px 0;cursor:pointer;">⬛</span>
       ${qtyCell}
-      <span draggable="false" onclick="event.stopPropagation();hiRowSplit(${i},${ii})" title="${nb>1?'Split — makes one more row of this item; type the qty on it, then drag it to another pallet':'Only 1 box — nothing to split'}" style="flex:none;width:26px;box-sizing:border-box;text-align:center;font-size:12px;font-weight:900;color:${nb>1?'#7c3aed':'#e2e8f0'};background:${nb>1?'#f5f3ff':'transparent'};border:1px solid ${nb>1?'#ddd6fe':'transparent'};border-radius:6px;padding:2px 0;cursor:${nb>1?'pointer':'default'};">✂</span>
+      <span draggable="false" onclick="event.stopPropagation();hiRowSplit(${i},${ii})" title="${nb>0?'Split — adds an empty copy of this row below; type a qty on it, then drag it where you want':'No boxes to move'}" style="flex:none;width:26px;box-sizing:border-box;text-align:center;font-size:12px;font-weight:900;color:${nb>0?'#7c3aed':'#e2e8f0'};background:${nb>0?'#f5f3ff':'transparent'};border:1px solid ${nb>0?'#ddd6fe':'transparent'};border-radius:6px;padding:2px 0;cursor:${nb>0?'pointer':'default'};">✂</span>
+      ${delCell}
     </div>`;
     }).join('');
     const isNew = !(p.bins && p.bins.length);
@@ -25760,7 +25772,7 @@ function hiPalletSheet(){
   const totItems=lines.length;
   const w=window.open('','_blank'); if(!w){ showToast('⚠ Allow popups to print'); return; }
   const cards=pallets.map((p,i)=>{
-    const rows=p.items.map(it=>`<tr><td class="ck"></td><td class="st">#${esc(it.st)}</td><td>${esc(bxBaseColor(it.co))}</td><td class="sz">${esc(it.sz)}</td><td class="bx">${it.boxes}</td></tr>`).join('');
+    const rows=p.items.filter(it=>(Number(it.boxes)||0)>0).map(it=>`<tr><td class="ck"></td><td class="st">#${esc(it.st)}</td><td>${esc(bxBaseColor(it.co))}</td><td class="sz">${esc(it.sz)}</td><td class="bx">${it.boxes}</td></tr>`).join('');
     const dest = p.bins&&p.bins.length ? ('Store at: '+p.bins.map(b=>esc(b.loc)+' ('+b.now+' now)').join(', ')) : 'New location — assign on receive';
     const over=p.total>p.cap; const state=over?'· OVER':(p.full?'· FULL':'· partial');
     return `<div class="pallet">
