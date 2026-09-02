@@ -180,7 +180,7 @@ body.po-dragging{user-select:none;}
   </span>
   <select id="lang-sel" onchange="setLang(this.value)" style="font-size:11px;padding:3px 6px;border-radius:5px;border:none;background:#1d3f66;color:#fff;"><option value="ko">한국어</option><option value="en">English</option><option value="es">Español</option></select>
   <button id="wide-btn" class="btn btn-sm" onclick="toggleWide()" title="화면 넓게 / 좁게 — 기본은 넓게 (이 브라우저에만 저장돼)" style="padding:2px 8px;font-size:10px;background:#1d3f66;color:#cfe0f2;border-color:#2b5384;">↔ Wide</button>
-  <span id="app-ver" style="font-size:10px;color:#9fb8d4;">v962</span>
+  <span id="app-ver" style="font-size:10px;color:#9fb8d4;">v963</span>
 </div>
 <script>
 // ↔ 넓게 보기 — 브라우저마다 따로 저장 (v793)
@@ -2136,12 +2136,30 @@ async function loadPriceList(){
 function ourMinPrice(style, size){
   const row = PRICE_MAP[String(style||'').trim()]; if(!row) return null;
   const s = String(size||'').toUpperCase();
-  const kid = /kid/i.test(row.category||'');
   const co = {XS:'xs',S:'s',M:'m',L:'l',XL:'xl','2XL':'2xl','3XL':'3xl','4XL':'4xl','5XL':'5xl','6XL':'5xl'};
+  /* 카테고리로 어느 원가 칸을 볼지 정한다 (v963).
+     예전 판정식 /kid/ 는 Youth·Juvy·Toddler 를 못 잡아서, 그 스타일들의 원가를
+     성인 칸에서 읽고 있었다 — 아동 칸에 값을 넣어도 아무 효과가 없었다. */
+  const cat = String(row.category||'').toUpperCase();
+  const grp = cat.indexOf('TODDLER')>=0 ? 'TODDLER'
+            : cat.indexOf('JUVY')>=0    ? 'JUVY'
+            : cat.indexOf('YOUTH')>=0   ? 'YOUTH'
+            : cat.indexOf('KID')>=0     ? 'KIDS' : null;
   let c = null;
-  if(/^[2-5]T$/.test(s)){ const tt = s.toLowerCase(); c = row['cost_kids_'+tt]; if(c==null) c = row['cost_'+tt]; if(c==null) c = row['cost_tod_'+tt]; }
-  else if(s.charAt(0)==='Y'){ const m = {YXS:'xs',YS:'s',YM:'m',YL:'l',YXL:'xl'}[s]; if(m){ c = row['cost_youth_'+m]; if(c==null && (m==='s'||m==='m'||m==='l')) c = row['cost_juvy_'+m]; } }
-  else if(co[s]){ c = kid ? row['cost_kids_'+co[s]] : row['cost_'+co[s]]; if(c==null) c = row['cost_'+co[s]]; }
+  const pick = (...cols)=>{ for(const k of cols){ const v=row[k]; if(v!=null && v!=='') return v; } return null; };
+  if(/^[2-5]T$/.test(s)){
+    const tt = s.toLowerCase();
+    c = (grp==='TODDLER') ? pick('cost_'+tt,'cost_tod_'+tt,'cost_kids_'+tt)
+                          : pick('cost_kids_'+tt,'cost_'+tt,'cost_tod_'+tt);
+  }
+  else if(s.charAt(0)==='Y'){ const m = {YXS:'xs',YS:'s',YM:'m',YL:'l',YXL:'xl'}[s]; if(m) c = pick('cost_youth_'+m,'cost_juvy_'+m,'cost_kids_'+m); }
+  else if(co[s]){
+    const k = co[s];
+    c = grp==='YOUTH' ? pick('cost_youth_'+k,'cost_'+k)
+      : grp==='JUVY'  ? pick('cost_juvy_'+k,'cost_'+k)
+      : grp==='KIDS'  ? pick('cost_kids_'+k,'cost_'+k)
+      : pick('cost_'+k);
+  }
   c = Number(c);
   if(!c || c <= 0) c = Number(row.unit_cost) || 0;
   if(!c || c <= 0) return null;
@@ -22493,20 +22511,84 @@ async function bxAgingExcel(){
 
 // ═══ Cost & Margin editor (v571) — owner/accounting 전용. styles 테이블의 사이즈별 원가+최소마진 편집 ═══
 let _costRows = [], _costEdits = {};
+let _costTab = 'ADULT';        // ADULT | KIDS  (v963)
 const COST_ADULT_SIZES = [['XS','cost_xs'],['S','cost_s'],['M','cost_m'],['L','cost_l'],['XL','cost_xl'],['2XL','cost_2xl'],['3XL','cost_3xl'],['4XL','cost_4xl'],['5XL','cost_5xl']];
+/* ── 아동 계열은 사이즈 체계가 달라서 성인 칸에 넣을 수가 없었다 (v963).
+   카테고리별로 자기 사이즈 칸을 갖게 하고, 그 칸에 넣은 값을 주문화면 최저가 경고도 읽게 한다.
+   ⚠ 예전 판정식 /kid|youth|tod/ 은 **Juvy 를 못 잡아서** Juvy 28개가 성인으로 섞여 있었다. */
+const COST_KID_SIZES = {
+  TODDLER: [['2T','cost_2t'],['3T','cost_3t'],['4T','cost_4t'],['5T','cost_5t']],
+  JUVY:    [['S','cost_juvy_s'],['M','cost_juvy_m'],['L','cost_juvy_l']],
+  YOUTH:   [['XS','cost_youth_xs'],['S','cost_youth_s'],['M','cost_youth_m'],['L','cost_youth_l'],['XL','cost_youth_xl']],
+  KIDS:    [['2T','cost_kids_2t'],['3T','cost_kids_3t'],['4T','cost_kids_4t'],['5T','cost_kids_5t'],['XS','cost_kids_xs'],['S','cost_kids_s'],['M','cost_kids_m'],['L','cost_kids_l'],['XL','cost_kids_xl']]
+};
+/* 아동 탭은 네 체계를 한 표에 얹는다 — 열은 합집합, 자기 체계에 없는 칸은 잠근다 */
+const COST_KID_COLS = ['2T','3T','4T','5T','XS','S','M','L','XL'];
+function costKidGroup(cat){
+  const c = String(cat||'').toUpperCase();
+  if(c.indexOf('TODDLER')>=0) return 'TODDLER';
+  if(c.indexOf('JUVY')>=0)    return 'JUVY';
+  if(c.indexOf('YOUTH')>=0)   return 'YOUTH';
+  if(c.indexOf('KID')>=0)     return 'KIDS';
+  return null;                       // null = 성인
+}
+function costIsKid(r){ return !!costKidGroup(r && r.category); }
+function costColFor(r, sizeLabel){
+  const g = costKidGroup(r && r.category); if(!g) return null;
+  const hit = COST_KID_SIZES[g].find(x=>x[0]===sizeLabel);
+  return hit ? hit[1] : null;
+}
+function costSizesOf(r){
+  const g = costKidGroup(r && r.category);
+  return g ? COST_KID_SIZES[g] : COST_ADULT_SIZES;
+}
 function costEff(r,col){ const sn=String(r.style_number); const e=_costEdits[sn]; if(e && e[col]!==undefined){ const v=e[col]; return (v===''||v==null)?null:Number(v); } const v=r[col]; return (v==null||v==='')?null:Number(v); }
 function oncost(idx,col,val){ const r=_costRows[idx]; if(!r) return; const sn=String(r.style_number); (_costEdits[sn]=_costEdits[sn]||{})[col]=val; const b=document.getElementById('cost-save'); if(b){ b.disabled=false; } }
+/* ── ✔ 확인 도장 (v963) ────────────────────────────────
+   원가를 실제로 맞다고 확인한 줄에 날짜와 사람을 찍는다.
+   확인된 줄은 잠긴다 — 이미 본 줄을 다음에 또 건드리지 않게. 자물쇠를 눌러 다시 연다.
+   styles 테이블에는 원래 감사 컬럼이 아예 없어서 "이 원가 누가 넣었지?" 를 답할 수가 없었다. */
+function costConfirmedAt(r){
+  const sn=String(r.style_number); const e=_costEdits[sn];
+  if(e && e.cost_confirmed_at!==undefined) return e.cost_confirmed_at;
+  return r.cost_confirmed_at || null;
+}
+function costConfirmedBy(r){
+  const sn=String(r.style_number); const e=_costEdits[sn];
+  if(e && e.cost_confirmed_by!==undefined) return e.cost_confirmed_by;
+  return r.cost_confirmed_by || null;
+}
+function costLocked(r){ return !!costConfirmedAt(r); }
+async function costConfirm(idx){
+  const r=_costRows[idx]; if(!r) return;
+  const sn=String(r.style_number);
+  const on = !costLocked(r);
+  if(!on && !confirm('🔓 '+sn+' 확인 표시를 지우고 다시 편집할 수 있게 할까요?')) return;
+  const e=(_costEdits[sn]=_costEdits[sn]||{});
+  e.cost_confirmed_at = on ? new Date().toISOString() : null;
+  e.cost_confirmed_by = on ? ((SESS&&SESS.email)||'') : null;
+  const b=document.getElementById('cost-save'); if(b) b.disabled=false;
+  costRender((document.getElementById('cost-search')||{}).value||'');
+}
+function costTab(t){ _costTab = (t==='KIDS')?'KIDS':'ADULT'; costRender((document.getElementById('cost-search')||{}).value||''); }
 async function costFetch(){
-  const sel='style_number,description,category,min_margin_pct,cost_xs,cost_s,cost_m,cost_l,cost_xl,cost_2xl,cost_3xl,cost_4xl,cost_5xl';
+  const kidCols = Object.values(COST_KID_SIZES).reduce((a,v)=>a.concat(v.map(x=>x[1])), []);
+  const sel='style_number,description,category,min_margin_pct,cost_confirmed_at,cost_confirmed_by,cost_xs,cost_s,cost_m,cost_l,cost_xl,cost_2xl,cost_3xl,cost_4xl,cost_5xl,'+[...new Set(kidCols)].join(',');
   try{ const r=await sbFetch('/rest/v1/styles?select='+sel+'&order=style_number.asc'); _costRows = r.ok ? await r.json() : []; }
   catch(e){ _costRows=[]; }
 }
 function costValuation(){
   if(!bxLoaded) return null;
   const byStyle={}; _costRows.forEach(r=> byStyle[String(r.style_number).trim()]=r);
-  const colOf={}; COST_ADULT_SIZES.forEach(([lab,col])=> colOf[lab]=col);
   let val=0, valued=0, un=0;
-  bxStore.forEach(b=>{ if(bxWh(b)==='TRANSIT') return; const r=byStyle[String(b.style).trim()]; const col=colOf[String(b.size||'').toUpperCase()]; const c=(r&&col)?costEff(r,col):null; if(c==null||!(c>0)){ un++; return; } val+=c*(Number(b.pcs)||0); valued++; });
+  /* 아동 스타일은 성인 칸이 아니라 자기 사이즈 칸에서 원가를 읽는다 (v963) —
+     예전에는 아동 박스가 통째로 "원가 없음" 으로 빠져서 재고 평가액이 실제보다 작았다. */
+  bxStore.forEach(b=>{ if(bxWh(b)==='TRANSIT') return;
+    const r=byStyle[String(b.style).trim()];
+    const sz=String(b.size||'').toUpperCase();
+    const hit = r ? costSizesOf(r).find(x=>x[0]===sz) : null;
+    const c = hit ? costEff(r, hit[1]) : null;
+    if(c==null||!(c>0)){ un++; return; } val+=c*(Number(b.pcs)||0); valued++; });
   return {val, valuedBoxes:valued, unvaluedBoxes:un};
 }
 async function costOpen(){
@@ -22521,6 +22603,11 @@ async function costOpen(){
       <button class="btn btn-sm" style="background:transparent;color:#a7f3d0;border-color:#34d399;" onclick="document.getElementById('modal-cost').remove()">✕</button>
     </div>
     <div id="cost-summary" style="padding:8px 16px;border-bottom:1px solid var(--border);font-size:12px;"></div>
+    <div style="padding:7px 16px 0;display:flex;gap:6px;align-items:center;">
+      <button class="btn btn-sm" id="cost-tab-ADULT" onclick="costTab('ADULT')">Adult</button>
+      <button class="btn btn-sm" id="cost-tab-KIDS" onclick="costTab('KIDS')">Kids · Youth · Juvy · Toddler</button>
+      <span id="cost-tab-note" style="font-size:11px;color:#6b7280;margin-left:6px;"></span>
+    </div>
     <div id="cost-body" style="flex:1;overflow:auto;padding:8px 12px;"><div class="muted">Loading…</div></div>
   </div>`;
   document.body.appendChild(div); try{ initModalDrag(div); }catch(e){}
@@ -22532,21 +22619,43 @@ async function costOpen(){
 function costRender(filter){
   const body=document.getElementById('cost-body'); if(!body) return;
   const f=String(filter||'').trim().toLowerCase();
-  const rows=_costRows.filter(r=> !f || String(r.style_number).toLowerCase().indexOf(f)>=0 || String(r.description||'').toLowerCase().indexOf(f)>=0);
+  const rows=_costRows
+    .filter(r=> (_costTab==='KIDS') === costIsKid(r))
+    .filter(r=> !f || String(r.style_number).toLowerCase().indexOf(f)>=0 || String(r.description||'').toLowerCase().indexOf(f)>=0);
   /* ⚠ .etbl th 는 color:#fff 다. 인라인으로 밝은 배경만 덮어쓰면 흰 글씨 + 흰 배경이 되어
      글자가 사라진다 — Style 과 Margin % 헤더가 실제로 안 보였다. 글자색도 같이 준다. (v962) */
-  const head=`<tr><th class="tl" style="position:sticky;left:0;background:#e2e8f0;color:#0f2a4a;z-index:2;">Style</th><th class="tl">Description</th><th>Cat</th><th style="background:#047857;color:#fff;" title="Minimum margin %. Order price below (cost × (1 + this%)) turns the Price cell red on the order screen. It does not change any price by itself.">Min margin %</th>${COST_ADULT_SIZES.map(s=>`<th>${s[0]}</th>`).join('')}</tr>`;
+  /* 성인 / 아동 두 탭. 아동은 사이즈 체계가 달라서 열 자체가 다르다 (v963) */
+  const kidTab = _costTab==='KIDS';
+  const cols = kidTab ? COST_KID_COLS.map(z=>[z,null]) : COST_ADULT_SIZES;
+  const head=`<tr>`
+    + `<th class="tl" style="position:sticky;left:0;background:#e2e8f0;color:#0f2a4a;z-index:2;">Style</th>`
+    + `<th class="tl">Description</th><th>Cat</th>`
+    + `<th style="background:#0f766e;color:#fff;" title="Tick when you have checked this style's cost against the source. The row locks and the date is stamped, so an already-checked row is not touched again.">✔ Confirmed</th>`
+    + `<th style="background:#047857;color:#fff;" title="Minimum margin %. Order price below (cost × (1 + this%)) turns the Price cell red on the order screen. It does not change any price by itself.">Min margin %</th>`
+    + cols.map(c=>`<th>${c[0]}</th>`).join('') + `</tr>`;
   const bodyRows=rows.map(r=>{
     const idx=_costRows.indexOf(r);
-    const nonAdult=/kid|youth|tod/i.test(String(r.category||''));
-    const cells=COST_ADULT_SIZES.map(([lab,col])=>{ const v=costEff(r,col); const empty=(v==null||!(v>0)); return `<td style="padding:1px;${empty?'background:#fef9c3;':''}"><input class="num" value="${v!=null?v:''}" oninput="oncost(${idx},'${col}',this.value)" style="width:52px;text-align:right;font-family:Consolas,monospace;" placeholder="—"></td>`; }).join('');
+    const lock=costLocked(r);
+    const cells=cols.map(([lab,adultCol])=>{
+      const col = kidTab ? costColFor(r, lab) : adultCol;
+      if(!col) return `<td style="background:#f8fafc;" title="${esc(String(r.category||''))} does not carry ${esc(lab)}"></td>`;
+      const v=costEff(r,col); const empty=(v==null||!(v>0));
+      return `<td style="padding:1px;${lock?'background:#f1f5f9;':(empty?'background:#fef9c3;':'')}"><input class="num" value="${v!=null?v:''}" oninput="oncost(${idx},'${col}',this.value)"${lock?' disabled':''} style="width:52px;text-align:right;font-family:Consolas,monospace;${lock?'background:#f1f5f9;color:#64748b;':''}" placeholder="—"></td>`;
+    }).join('');
     const m=costEff(r,'min_margin_pct');
-    const bg=nonAdult?'#fdf2f8':'#fff';
-    return `<tr${nonAdult?' style="background:#fdf2f8;"':''}>
+    const cAt=costConfirmedAt(r), cBy=String(costConfirmedBy(r)||'').split('@')[0];
+    const stamp = cAt ? new Date(cAt).toLocaleDateString('en-US',{month:'numeric',day:'numeric',year:'2-digit'}) : '';
+    const confirmCell = `<td style="white-space:nowrap;${lock?'background:#ecfdf5;':''}">`
+      + `<button class="btn btn-sm" onclick="costConfirm(${idx})" title="${lock?('Confirmed '+esc(stamp)+(cBy?(' by '+esc(cBy)):'')+' — click to unlock and edit again'):'Mark this style checked and lock the row'}" style="border:none;padding:1px 6px;font-size:12px;font-weight:900;color:${lock?'#047857':'#cbd5e1'};">${lock?'✔':'○'}</button>`
+      + (lock?`<span style="font-size:9.5px;color:#047857;font-weight:700;">${esc(stamp)}</span><div style="font-size:8.5px;color:#94a3b8;line-height:1.1;">${esc(cBy)}</div>`:'')
+      + `</td>`;
+    const bg=lock?'#f0fdf4':'#fff';
+    return `<tr${lock?' style="background:#f0fdf4;"':''}>
       <td class="tl" style="font-weight:800;position:sticky;left:0;background:${bg};z-index:1;">${esc(String(r.style_number))}</td>
       <td class="tl" style="font-size:11px;color:#6b7280;max-width:170px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;" title="${esc(r.description||'')}">${esc(r.description||'')}</td>
       <td style="font-size:10px;color:#9ca3af;">${esc(r.category||'')}</td>
-      <td style="padding:1px;background:#ecfdf5;"><input class="num" value="${m!=null?m:''}" oninput="oncost(${idx},'min_margin_pct',this.value)" title="Minimum margin %. If an order line's price falls under cost × (1 + this%), that Price cell turns red as a warning. Nothing is priced automatically." style="width:52px;text-align:right;font-family:Consolas,monospace;" placeholder="—"></td>
+      ${confirmCell}
+      <td style="padding:1px;background:${lock?'#f1f5f9':'#ecfdf5'};"><input class="num" value="${m!=null?m:''}" oninput="oncost(${idx},'min_margin_pct',this.value)"${lock?' disabled':''} title="Minimum margin %. If an order line's price falls under cost × (1 + this%), that Price cell turns red as a warning. Nothing is priced automatically." style="width:52px;text-align:right;font-family:Consolas,monospace;${lock?'background:#f1f5f9;color:#64748b;':''}" placeholder="—"></td>
       ${cells}
     </tr>`;
   }).join('');
@@ -22555,13 +22664,27 @@ function costRender(filter){
 }
 function costSummary(){
   const el=document.getElementById('cost-summary'); if(!el) return;
-  const total=_costRows.length;
-  const withCost=_costRows.filter(r=> COST_ADULT_SIZES.some(([lab,col])=> costEff(r,col)>0)).length;
-  const nonAdult=_costRows.filter(r=>/kid|youth|tod/i.test(String(r.category||''))).length;
+  /* 탭에 맞는 것만 센다 — 아동은 자기 사이즈 칸으로 (v963) */
+  const inTab=_costRows.filter(r=> (_costTab==='KIDS') === costIsKid(r));
+  const total=inTab.length;
+  const withCost=inTab.filter(r=> costSizesOf(r).some(([lab,col])=> costEff(r,col)>0)).length;
+  const conf=inTab.filter(r=>costLocked(r)).length;
+  const kidN=_costRows.filter(costIsKid).length;
   const v=costValuation();
+  /* 탭 버튼 칠하기 */
+  ['ADULT','KIDS'].forEach(t=>{ const b=document.getElementById('cost-tab-'+t); if(!b) return;
+    const on = _costTab===t;
+    b.style.cssText = on ? 'background:#065f46;color:#fff;border-color:#065f46;font-weight:800;' : '';
+    const n = _costRows.filter(r=> (t==='KIDS') === costIsKid(r)).length;
+    b.textContent = (t==='ADULT'?'Adult':'Kids · Youth · Juvy · Toddler') + ' (' + n + ')';
+  });
+  const note=document.getElementById('cost-tab-note');
+  if(note) note.textContent = _costTab==='KIDS'
+    ? 'Each row shows only the sizes its own category carries — Toddler 2T-5T · Juvy S-L · Youth XS-XL · Kids 2T-XL. Greyed cells are sizes that style does not have.'
+    : 'Adult sizes XS-5XL.';
   const valHtml = v ? ` &nbsp;·&nbsp; <b style="color:#065f46;">Inventory value @ cost: $${Math.round(v.val).toLocaleString()}</b> <span style="color:#6b7280;">(${v.valuedBoxes.toLocaleString()} boxes valued${v.unvaluedBoxes?`, ${v.unvaluedBoxes.toLocaleString()} no cost`:''})</span>`
     : ' &nbsp;·&nbsp; <span style="color:#9ca3af;">inventory value: open Full Box once to load stock</span>';
-  el.innerHTML=`<b>${withCost}</b>/${total} styles have cost${nonAdult?` &nbsp;·&nbsp; <span style="color:#be185d;">${nonAdult} kids/youth style(s) — pink rows; different size system, so only the adult columns are editable</span>`:''}${valHtml} &nbsp;·&nbsp; <span style="color:#9ca3af;">yellow cell = no cost</span><div style="margin-top:5px;font-size:11px;color:#047857;"><b>Min margin %</b> is a price guard only \u2014 an order line priced under <b>cost \u00D7 (1 + margin%)</b> turns that Price cell red. It never sets a price, and it is not used on invoices or in the inventory value above.</div>`;
+  el.innerHTML=`<b>${withCost}</b>/${total} ${_costTab==='KIDS'?'kids/youth/juvy/toddler':'adult'} styles have cost &nbsp;·&nbsp; <b style="color:#047857;">\u2714 ${conf} confirmed</b> <span style="color:#6b7280;">(locked \u2014 click the \u2714 to unlock)</span> &nbsp;·&nbsp; <span style="color:#9ca3af;">${kidN} kids-family / ${_costRows.length} total</span>${valHtml} &nbsp;·&nbsp; <span style="color:#9ca3af;">yellow cell = no cost</span><div style="margin-top:5px;font-size:11px;color:#047857;"><b>Min margin %</b> is a price guard only \u2014 an order line priced under <b>cost \u00D7 (1 + margin%)</b> turns that Price cell red. It never sets a price, and it is not used on invoices or in the inventory value above.</div>`;
 }
 async function costSave(){
   const sns=Object.keys(_costEdits); if(!sns.length){ showToast('No changes'); return; }
@@ -22569,7 +22692,13 @@ async function costSave(){
   let ok=0, fail=0, firstErr='';
   for(const sn of sns){
     const e=_costEdits[sn]; const patch={};
-    Object.keys(e).forEach(col=>{ const v=e[col]; patch[col]=(v===''||v==null)?null:Number(v); });
+    /* 확인 도장(날짜·사람)은 숫자가 아니다 — Number() 로 밀면 NaN 이 되어 저장이 깨진다 (v963) */
+    const TEXT_COLS = {cost_confirmed_at:1, cost_confirmed_by:1, cost_updated_at:1, cost_updated_by:1};
+    Object.keys(e).forEach(col=>{ const v=e[col];
+      if(TEXT_COLS[col]){ patch[col]=(v===''||v==null)?null:String(v); return; }
+      patch[col]=(v===''||v==null)?null:Number(v); });
+    patch.cost_updated_at = new Date().toISOString();
+    patch.cost_updated_by = (SESS&&SESS.email)||'';
     try{
       const r=await sbFetch('/rest/v1/styles?style_number=eq.'+encodeURIComponent(sn), {method:'PATCH', headers:{Prefer:'return=minimal'}, body:JSON.stringify(patch)});
       if(r.ok) ok++; else { fail++; if(!firstErr){ let tx=''; try{ tx=await r.text(); }catch(_){} firstErr='HTTP '+r.status+' '+String(tx).slice(0,140); } }
