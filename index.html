@@ -180,7 +180,7 @@ body.po-dragging{user-select:none;}
   </span>
   <select id="lang-sel" onchange="setLang(this.value)" style="font-size:11px;padding:3px 6px;border-radius:5px;border:none;background:#1d3f66;color:#fff;"><option value="ko">한국어</option><option value="en">English</option><option value="es">Español</option></select>
   <button id="wide-btn" class="btn btn-sm" onclick="toggleWide()" title="화면 넓게 / 좁게 — 기본은 넓게 (이 브라우저에만 저장돼)" style="padding:2px 8px;font-size:10px;background:#1d3f66;color:#cfe0f2;border-color:#2b5384;">↔ Wide</button>
-  <span id="app-ver" style="font-size:10px;color:#9fb8d4;">v954</span>
+  <span id="app-ver" style="font-size:10px;color:#9fb8d4;">v955</span>
 </div>
 <script>
 // ↔ 넓게 보기 — 브라우저마다 따로 저장 (v793)
@@ -2565,7 +2565,7 @@ function buildDocHtml(wh, opts){
       <tbody>${moveRows}</tbody>
     </table>
     ${_sigC('Move to PC Room by')}` : '';
-  const p2Done = hasDone ? `<div style="background:#e2e8f0;color:#334155;padding:6px 20px;font-weight:800;letter-spacing:.5px;font-size:12.5px;margin:${(hasFull||hasMove)?'26px':'0'} 0 5px;">\u2714 ALREADY MOVED TO PC ROOM ON AN EARLIER PRINT \u2014 DO NOT MOVE AGAIN</div>
+  const p2Done = hasDone ? `<div style="background:#e2e8f0;color:#334155;padding:6px 20px;font-weight:800;letter-spacing:.5px;font-size:12.5px;margin:${(hasFull||hasMove)?'26px':'0'} 0 5px;">\u2714 ALREADY CARRIED TO THE PC ROOM BEFORE THIS CHANGE \u2014 DO NOT MOVE AGAIN</div>
     <table class="inv-tbl" style="opacity:.75;">
       <thead><tr><th>Style#</th><th class="tl">Color</th><th>Size</th><th>\u{1F4E6}\u2192\u{1F9FA} Boxes</th><th class="tl">Came from (bin)</th></tr></thead>
       <tbody>${doneRows}</tbody>
@@ -3222,6 +3222,28 @@ async function _saveCurrentInner(){
     orderChanges = computeOrderDiff(existing, rec);
     if(orderChanges.length) rec.meta = {...rec.meta, _modified: { at: new Date().toISOString(), by: (SESS && SESS.email) || '' }};
     else if(existing.meta && existing.meta._modified) rec.meta = {...rec.meta, _modified: existing.meta._modified};
+    /* ✔ ALREADY MOVED TO PC ROOM — 오더를 고쳤을 때만 나온다 (v955).
+       예전에는 PR 을 두 번째 뽑기만 해도 나왔다. 그래서 아직 시작도 안 한 오더에서
+       직원이 옮겨야 할 목록이 사라졌다. 이제 근거는 하나뿐이다:
+       창고가 실제로 PC Room 으로 들고 간 박스(pr_boxes 의 'PC ROOM (PO n)') 만
+       "이미 옮김" 으로 빠진다. 고치지 않았으면 아무것도 안 빠진다. */
+    if(orderChanges.length && pre && pre.move && pre.move.length){
+      const moved = {};
+      pre.move.forEach(b2=>{
+        const k = String(b2.style).trim()+'|'+String(b2.color).trim().toUpperCase()+'|'+String(b2.size).trim().toUpperCase();
+        moved[k] = (moved[k]||0) + 1;
+      });
+      (rec.lines||[]).forEach(L=>{
+        if(!(L.pcMove||[]).length) return;
+        const k = String(L.style||'').trim()+'|'+String(L.color||'').trim().toUpperCase()+'|'+String(L.size||'').trim().toUpperCase();
+        const tot = (L.pcMove||[]).reduce((a2,g)=>a2+(Number(g.n)||1),0);
+        const n = Math.min(tot, moved[k]||0);
+        if(n>0){ L.pcMovePrintedN = n; moved[k] -= n; }
+        else delete L.pcMovePrintedN;
+      });
+    } else {
+      (rec.lines||[]).forEach(L=>{ delete L.pcMovePrintedN; });
+    }
   }
   const ok = await upsertRec(rec);
   if(!ok){ alert(t('save_fail')); return; }
@@ -5977,22 +5999,40 @@ async function printSavedPRWh(base, wh){
   void pick;   // 옛 pick list(중복) 제거 — ②FULL BOX/③MOVE TO PC ROOM 는 이제 PR 문서(page 2)에 포함됨 (v491)
   printDocHtml(buildPRDocFromRec(rec, wh), plNum(rec.base, wh));
   markDocPrinted(base, wh, 'pr');
-  pcMoveStampPrinted(rec, wh);
 }
-/* ③ MOVE TO PC ROOM 에 찍혀 나간 개수를 줄에 남긴다 (v931).
-   다음에 PR 을 다시 뽑을 때 이만큼은 "이미 옮김" 으로 빠진다. */
-async function pcMoveStampPrinted(rec, wh){
+/* ③ MOVE TO PC ROOM 을 "이미 옮김" 으로 표시한다.
+   ⚠ v955: 예전에는 PR 을 프린트할 때마다 여기를 찍었다. 그건 틀렸다 —
+   종이를 뽑은 것과 직원이 박스를 옮긴 것은 다른 일이다. 오더를 시작도 안 했는데
+   두 번째 프린트에서 옮길 목록이 사라져 버렸다. 이제 프린트로는 절대 안 찍고,
+   매니저가 직접 "이미 옮겼다" 고 표시할 때만 찍는다. */
+async function pcMoveStampPrinted(rec, wh, done){
   try{
     let touched = 0;
     (rec.lines||[]).forEach(L=>{
       if((String(L.wh||'SC').trim().toUpperCase()||'SC') !== wh) return;
-      const n = (L.pcMove||[]).reduce((a,g)=>a+(Number(g.n)||1),0);
-      if(n > (Number(L.pcMovePrintedN)||0)){ L.pcMovePrintedN = n; touched++; }
+      if(!(L.pcMove||[]).length) return;
+      const n = done ? (L.pcMove||[]).reduce((a,g)=>a+(Number(g.n)||1),0) : 0;
+      if((Number(L.pcMovePrintedN)||0) !== n){ L.pcMovePrintedN = n; touched++; }
     });
-    if(!touched) return;
+    if(!touched) return false;
     await sbFetch('/rest/v1/pr_orders?base=eq.'+encodeURIComponent(rec.base),
       {method:'PATCH', headers:{Prefer:'return=minimal'}, body:JSON.stringify({lines: rec.lines})});
-  }catch(e){ console.warn('pcMoveStampPrinted', e); }
+    return true;
+  }catch(e){ console.warn('pcMoveStampPrinted', e); return false; }
+}
+/* 매니저용 — PC Room 이동이 실제로 끝났는지 표시/해제 (v955) */
+async function pcMoveMarkDone(base, wh){
+  const rec = savedCache.find(r=>r.base===base); if(!rec) return;
+  const any = (rec.lines||[]).some(L=>(String(L.wh||'SC').trim().toUpperCase()||'SC')===wh && (L.pcMove||[]).length);
+  if(!any){ showToast('No PC Room moves on this order'); return; }
+  const already = (rec.lines||[]).some(L=>(String(L.wh||'SC').trim().toUpperCase()||'SC')===wh && (L.pcMove||[]).length && (Number(L.pcMovePrintedN)||0)>0);
+  const msg = already
+    ? '↩ Mark the PC Room moves as NOT done?\n\nThey come back onto the printed Pull Request so staff move them.'
+    : '✔ Mark the PC Room moves as already done?\n\nThey stop printing on the Pull Request — only do this once the boxes really are in the PC Room.';
+  if(!confirm(msg)) return;
+  const ok = await pcMoveStampPrinted(rec, wh, !already);
+  showToast(ok ? (already ? '↩ PC Room moves are back on the Pull Request' : '✔ PC Room moves marked done') : '⚠ Could not save');
+  renderSaved();
 }
 function bxPickListHtml(rec, wh, outRows){
   const lines = (rec.lines||[]).filter(L=>(String(L.wh||'SC').trim().toUpperCase()||'SC')===wh);
