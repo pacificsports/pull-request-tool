@@ -192,7 +192,7 @@ body.po-dragging{user-select:none;}
   </span>
   <select id="lang-sel" onchange="setLang(this.value)" style="font-size:11px;padding:3px 6px;border-radius:5px;border:none;background:#1d3f66;color:#fff;"><option value="ko">한국어</option><option value="en">English</option><option value="es">Español</option></select>
   <button id="wide-btn" class="btn btn-sm" onclick="toggleWide()" title="화면 넓게 / 좁게 — 기본은 넓게 (이 브라우저에만 저장돼)" style="padding:2px 8px;font-size:10px;background:#1d3f66;color:#cfe0f2;border-color:#2b5384;">↔ Wide</button>
-  <span id="app-ver" style="font-size:10px;color:#9fb8d4;">v981</span>
+  <span id="app-ver" style="font-size:10px;color:#9fb8d4;">v982</span>
 </div>
 <script>
 // ↔ 넓게 보기 — 브라우저마다 따로 저장 (v793)
@@ -18794,13 +18794,26 @@ let _mvRows = [], _mvGrp = [], _mvPc = [], _mvTx = [], _mvCtx = null, _mvMode = 
    큰 카드로 ① 스타일 → ② 색, ★ 즐겨찾기와 "이 컴퓨터에서 많이 쓴 것" 이 맨 위,
    그 아래 카테고리별. 창고에서 장갑 낀 손으로도 눌리는 크기가 핵심이다.
    고른 뒤에는 원래 쓰던 ⬛ QR 스티커 창(bxQrOpen)이 그대로 열린다 — 인쇄는 손 안 댔다. */
-const LBL_FAV_K = 'psi_lbl_fav', LBL_USE_K = 'psi_lbl_use';
-function lblLoad(k){ try{ return JSON.parse(localStorage.getItem(k)||'{}')||{}; }catch(e){ return {}; } }
-function lblSave(k,v){ try{ localStorage.setItem(k, JSON.stringify(v)); }catch(e){} }
-function lblFavHas(k){ return !!lblLoad(LBL_FAV_K)[k]; }
-function lblFavTgl(k){ const f=lblLoad(LBL_FAV_K); if(f[k]) delete f[k]; else f[k]=1; lblSave(LBL_FAV_K,f); blPickPaint(); }
-function lblUseBump(k){ const u=lblLoad(LBL_USE_K); u[k]=(Number(u[k])||0)+1; lblSave(LBL_USE_K,u); }
-function lblUseN(k){ return Number(lblLoad(LBL_USE_K)[k])||0; }
+/* ★ 즐겨찾기 — **순서가 있는 목록**이다 (v982).
+   "이 컴퓨터에서 많이 쓴 것" 은 뺐다: 기계가 정한 순서라 원하는 자리에 못 놓는다.
+   즐겨찾기 하나로 충분하고, 대신 **끌어서 순서를 바꾼다** — 제일 많이 쓰는 걸 맨 앞에.
+   옛 형식({key:1})으로 저장돼 있으면 읽을 때 배열로 바꿔 준다. */
+const LBL_FAV_K = 'psi_lbl_fav';
+function lblFavList(){
+  try{
+    const v = JSON.parse(localStorage.getItem(LBL_FAV_K)||'[]');
+    if(Array.isArray(v)) return v.filter(x=>typeof x==='string');
+    if(v && typeof v==='object') return Object.keys(v);       // 옛 형식
+  }catch(e){}
+  return [];
+}
+function lblFavSet(list){ try{ localStorage.setItem(LBL_FAV_K, JSON.stringify(list.filter((x,i,a)=>a.indexOf(x)===i))); }catch(e){} }
+function lblFavHas(k){ return lblFavList().indexOf(k) >= 0; }
+function lblFavTgl(k){
+  const l = lblFavList(), i = l.indexOf(k);
+  if(i>=0) l.splice(i,1); else l.push(k);
+  lblFavSet(l); blPickPaint();
+}
 /* 카드 밑에 적히는 원단 이름 — "Adult 30/1 CVC Short Sleeve Tee" → "30/1 CVC".
    품목 종류(S/S·L/S·Tank)는 카테고리 제목에 이미 있으니 여기서는 뺀다. */
 function lblFabric(st){
@@ -18836,19 +18849,68 @@ function blPickOpen(){
   document.body.appendChild(div);
   blPickPaint();
 }
-function blpCard(key, big, sub, kid, onclick){
+function blpCard(key, big, sub, kid, onclick, favRow){
   const fav = lblFavHas(key);
   const bg = kid ? '#fdf6e9' : '#f4f8fd', bd = kid ? '#e8d9b8' : '#cfe0f2';
-  return `<div onclick="${onclick}" style="position:relative;cursor:pointer;background:${bg};border:1.5px solid ${bd};border-radius:11px;padding:11px 13px;min-height:56px;">
+  return `<div onclick="${onclick}"${favRow?` data-fk="${esc(key)}"`:''} style="position:relative;cursor:pointer;background:${bg};border:1.5px solid ${bd};border-radius:11px;padding:11px 13px;min-height:56px;${favRow?'touch-action:manipulation;':''}">
     <div style="font-size:22px;font-weight:900;color:#101a2c;line-height:1.05;letter-spacing:-.5px;padding-right:20px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${esc(big)}</div>
     ${sub?`<div style="font-size:10.5px;font-weight:700;color:#7b8794;letter-spacing:.04em;margin-top:3px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${esc(sub)}</div>`:''}
     <span onclick="event.stopPropagation();lblFavTgl('${esc(key)}')" title="Favourite" style="position:absolute;top:8px;right:9px;font-size:15px;line-height:1;color:${fav?'#c8951f':'#cfd6de'};">${fav?'★':'☆'}</span>
   </div>`;
 }
-function blpSection(title, cards, color){
+function blpSection(title, cards, color, drag){
   if(!cards.length) return '';
-  return `<div style="font-size:11.5px;font-weight:900;letter-spacing:.09em;color:${color||'#c8951f'};margin:14px 0 6px;padding-bottom:4px;border-bottom:2px solid ${color||'#c8951f'}33;">${esc(title)}</div>
-    <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;">${cards.join('')}</div>`;
+  return `<div style="font-size:11.5px;font-weight:900;letter-spacing:.09em;color:${color||'#c8951f'};margin:14px 0 6px;padding-bottom:4px;border-bottom:2px solid ${color||'#c8951f'}33;">${esc(title)}${drag?'<span style="float:right;font-weight:700;letter-spacing:0;color:#94a3b8;font-size:10px;text-transform:none;">press &amp; hold to reorder</span>':''}</div>
+    <div${drag?' id="blp-fav"':''} style="display:grid;grid-template-columns:1fr 1fr;gap:8px;">${cards.join('')}</div>`;
+}
+/* ═══ ★ 즐겨찾기 끌어서 순서 바꾸기 (v982) ═══
+   HTML5 drag 는 터치에서 안 먹는다. 창고 화면은 태블릿으로도 보므로 pointer 이벤트로 직접 만든다.
+   그냥 누르면 선택, **꾹 누르면(220ms) 카드가 들리고** 그때부터 끌어서 자리를 바꾼다.
+   놓으면 그 순간의 화면 순서를 그대로 저장한다. */
+let _blpDrag = null;
+function blpDragArm(){
+  const box = document.getElementById('blp-fav'); if(!box || box._armed) return;
+  box._armed = 1;
+  box.addEventListener('pointerdown', e=>{
+    const card = e.target.closest('[data-fk]'); if(!card || e.target.closest('span[onclick]')) return;
+    const timer = setTimeout(()=>{
+      _blpDrag = { box, card, moved:false };
+      card.style.opacity = '.6'; card.style.transform = 'scale(1.03)';
+      card.style.boxShadow = '0 8px 20px rgba(15,23,42,.22)';
+      box.style.touchAction = 'none';
+      try{ card.setPointerCapture(e.pointerId); }catch(err){}
+    }, 220);
+    const cancel = ()=>{ clearTimeout(timer); card.removeEventListener('pointerup', cancel); card.removeEventListener('pointercancel', cancel); };
+    card.addEventListener('pointerup', cancel); card.addEventListener('pointercancel', cancel);
+  });
+  box.addEventListener('pointermove', e=>{
+    if(!_blpDrag) return;
+    e.preventDefault(); _blpDrag.moved = true;
+    const el = document.elementFromPoint(e.clientX, e.clientY);
+    const over = el && el.closest ? el.closest('[data-fk]') : null;
+    if(!over || over === _blpDrag.card || over.parentElement !== box) return;
+    const kids = [...box.children];
+    const a = kids.indexOf(_blpDrag.card), b = kids.indexOf(over);
+    box.insertBefore(_blpDrag.card, a < b ? over.nextSibling : over);
+  });
+  const drop = ()=>{
+    if(!_blpDrag) return;
+    const { box:b2, card } = _blpDrag;
+    card.style.opacity=''; card.style.transform=''; card.style.boxShadow='';
+    b2.style.touchAction = '';
+    if(_blpDrag.moved){
+      /* 화면에 보이는 순서를 그대로 저장 — 이 화면에 없는 즐겨찾기(다른 스타일의 색 등)는 뒤에 그대로 둔다 */
+      const shown = [...b2.children].map(x=>x.getAttribute('data-fk')).filter(Boolean);
+      const keep = lblFavList().filter(k=>shown.indexOf(k) < 0);
+      lblFavSet(shown.concat(keep));
+      card._noClick = 1; setTimeout(()=>{ card._noClick = 0; }, 60);
+    }
+    _blpDrag = null;
+  };
+  box.addEventListener('pointerup', drop);
+  box.addEventListener('pointercancel', drop);
+  /* 끌고 나서 손을 떼면 클릭이 따라 들어온다 — 그러면 원치 않는 스타일이 열린다 */
+  box.addEventListener('click', e=>{ const c = e.target.closest('[data-fk]'); if(c && c._noClick){ e.stopPropagation(); e.preventDefault(); } }, true);
 }
 function blPickPaint(){
   const body = document.getElementById('blp-body'); if(!body) return;
@@ -18860,44 +18922,41 @@ function blPickPaint(){
   if(!_blpStyle){
     const all = (typeof skuStyles === 'function' ? skuStyles() : []).map(String)
       .filter(st => !q || st.toUpperCase().indexOf(q)>=0 || lblFabric(st).indexOf(q)>=0);
-    const card = st => blpCard('S|'+st, st, lblFabric(st), lblIsKid(st), `blPickStyle('${esc(st)}')`);
-    const fav = all.filter(st=>lblFavHas('S|'+st));
-    const used = all.filter(st=>!lblFavHas('S|'+st) && lblUseN('S|'+st)>0)
-                    .sort((a,b)=>lblUseN('S|'+b)-lblUseN('S|'+a)).slice(0,6);
-    const seen = new Set(fav.concat(used));
+    const card = (st, favRow) => blpCard('S|'+st, st, lblFabric(st), lblIsKid(st), `blPickStyle('${esc(st)}')`, favRow);
+    /* 즐겨찾기는 **저장된 순서 그대로** — 알파벳순으로 다시 정렬하면 끌어놓은 뜻이 사라진다 */
+    const fav = lblFavList().filter(k=>k.indexOf('S|')===0).map(k=>k.slice(2)).filter(st=>all.indexOf(st)>=0);
+    const seen = new Set(fav);
     const byCat = {};
     all.forEach(st=>{ if(seen.has(st)) return;
       const m=(typeof STYLE_MASTER!=='undefined')?STYLE_MASTER[st]:null;
       const c=(m&&m[0])||'Other'; (byCat[c]=byCat[c]||[]).push(st); });
-    let html = blpSection('★ FAVORITES', fav.map(card))
-      + (fav.length?`<div style="font-size:11px;font-weight:800;color:#94a3b8;letter-spacing:.06em;margin-top:12px;">1 · TAP THE STYLE</div>`:'')
-      + blpSection('USED MOST ON THIS COMPUTER', used.map(card), '#0f766e');
-    Object.keys(byCat).sort().forEach(c=>{ html += blpSection(c.toUpperCase(), byCat[c].sort().map(card), '#334155'); });
+    let html = `<div style="font-size:11px;font-weight:800;color:#94a3b8;letter-spacing:.06em;margin:2px 0 0;">1 · TAP THE STYLE</div>`
+      + blpSection('★ FAVORITES', fav.map(st=>card(st,true)), '#c8951f', fav.length>1);
+    Object.keys(byCat).sort().forEach(c=>{ html += blpSection(c.toUpperCase(), byCat[c].sort().map(st=>card(st,false)), '#334155'); });
     if(!all.length) html = '<div style="padding:26px;text-align:center;color:#94a3b8;">No styles'+(q?' for "'+esc(q)+'"':'')+'.</div>';
-    else if(!fav.length) html = `<div style="font-size:11px;font-weight:800;color:#94a3b8;letter-spacing:.06em;margin:2px 0 -6px;">1 · TAP THE STYLE</div>` + html;
     body.innerHTML = html; body.scrollTop = 0;
+    blpDragArm();
     return;
   }
   const st = _blpStyle;
   const cols = ((typeof skuColors === 'function') ? skuColors(st) : []).map(c=>String(c).toUpperCase())
     .filter(c => !q || c.indexOf(q)>=0);
   const kid = lblIsKid(st);
-  const card = c => blpCard('C|'+st+'|'+c, c, '', kid, `blPickColor('${esc(st)}','${esc(c)}')`);
-  const fav = cols.filter(c=>lblFavHas('C|'+st+'|'+c));
-  const used = cols.filter(c=>!lblFavHas('C|'+st+'|'+c) && lblUseN('C|'+st+'|'+c)>0)
-                   .sort((a,b)=>lblUseN('C|'+st+'|'+b)-lblUseN('C|'+st+'|'+a)).slice(0,6);
-  const seen = new Set(fav.concat(used));
+  const card = (c, favRow) => blpCard('C|'+st+'|'+c, c, '', kid, `blPickColor('${esc(st)}','${esc(c)}')`, favRow);
+  const pre = 'C|'+st+'|';
+  const fav = lblFavList().filter(k=>k.indexOf(pre)===0).map(k=>k.slice(pre.length)).filter(c=>cols.indexOf(c)>=0);
+  const seen = new Set(fav);
   const rest = cols.filter(c=>!seen.has(c)).sort();
   body.innerHTML = `<div style="font-size:11px;font-weight:800;color:#94a3b8;letter-spacing:.06em;margin:2px 0 0;">2 · TAP THE COLOUR &nbsp;<span style="color:#cbd5e1;">·</span>&nbsp; ${cols.length} on file</div>`
-    + blpSection('★ FAVORITES', fav.map(card))
-    + blpSection('USED MOST ON THIS COMPUTER', used.map(card), '#0f766e')
-    + blpSection('ALL COLOURS', rest.map(card), '#334155')
+    + blpSection('★ FAVORITES', fav.map(c=>card(c,true)), '#c8951f', fav.length>1)
+    + blpSection('ALL COLOURS', rest.map(c=>card(c,false)), '#334155')
     + (cols.length?'':'<div style="padding:26px;text-align:center;color:#94a3b8;">No colours on file for #'+esc(st)+'.</div>');
   body.scrollTop = 0;
+  blpDragArm();
 }
-function blPickStyle(st){ _blpStyle = String(st); lblUseBump('S|'+_blpStyle);
+function blPickStyle(st){ _blpStyle = String(st);
   const q=document.getElementById('blp-q'); if(q) q.value=''; blPickPaint(); }
-function blPickColor(st, c){ lblUseBump('C|'+st+'|'+c);
+function blPickColor(st, c){
   const m=document.getElementById('modal-blpick'); if(m) m.remove();
   bxQrOpen(st, c); }
 /* ═══ ⬇ 아이티로 보낼 오프라인 파일 만들기 (v981) ═══
@@ -19013,43 +19072,60 @@ function blExportHtml(){
 + '    msg("✓ "+n+" label(s) sent → "+(p.name||p.uid), true); return true;\n'
 + '  }catch(e){ msg("⚠ Print failed: "+(e.message||e),false); return false; }\n'
 + '}\n'
-+ 'const FAV="lbl_fav_off", USE="lbl_use_off";\n'
-+ 'function ld(k){ try{ return JSON.parse(localStorage.getItem(k)||"{}")||{}; }catch(e){ return {}; } }\n'
-+ 'function sv(k,v){ try{ localStorage.setItem(k,JSON.stringify(v)); }catch(e){} }\n'
-+ 'function favHas(k){ return !!ld(FAV)[k]; }\n'
-+ 'function favTgl(k){ const f=ld(FAV); if(f[k]) delete f[k]; else f[k]=1; sv(FAV,f); paint(); }\n'
-+ 'function useN(k){ return Number(ld(USE)[k])||0; }\n'
-+ 'function useBump(k){ const u=ld(USE); u[k]=(Number(u[k])||0)+1; sv(USE,u); }\n'
++ 'const FAV="lbl_fav_off";\n'
++ '/* ★ 즐겨찾기는 순서가 있는 목록. 꾹 눌러서 끌면 순서가 바뀐다. */\n'
++ 'function favList(){ try{ const v=JSON.parse(localStorage.getItem(FAV)||"[]"); if(Array.isArray(v)) return v.filter(x=>typeof x==="string"); if(v&&typeof v==="object") return Object.keys(v); }catch(e){} return []; }\n'
++ 'function favSet(l){ try{ localStorage.setItem(FAV, JSON.stringify(l.filter((x,i,a)=>a.indexOf(x)===i))); }catch(e){} }\n'
++ 'function favHas(k){ return favList().indexOf(k)>=0; }\n'
++ 'function favTgl(k){ const l=favList(), i=l.indexOf(k); if(i>=0) l.splice(i,1); else l.push(k); favSet(l); paint(); }\n'
++ 'let DRAG=null;\n'
++ 'function dragArm(){ const box=document.getElementById("favbox"); if(!box||box._armed) return; box._armed=1;\n'
++ '  box.addEventListener("pointerdown",e=>{ const card=e.target.closest("[data-fk]"); if(!card||e.target.closest("s")) return;\n'
++ '    const tm=setTimeout(()=>{ DRAG={box,card,moved:false}; card.style.opacity=".6"; card.style.transform="scale(1.03)"; card.style.boxShadow="0 8px 20px rgba(15,23,42,.22)"; box.style.touchAction="none"; try{ card.setPointerCapture(e.pointerId); }catch(x){} },220);\n'
++ '    const c=()=>{ clearTimeout(tm); card.removeEventListener("pointerup",c); card.removeEventListener("pointercancel",c); };\n'
++ '    card.addEventListener("pointerup",c); card.addEventListener("pointercancel",c); });\n'
++ '  box.addEventListener("pointermove",e=>{ if(!DRAG) return; e.preventDefault(); DRAG.moved=true;\n'
++ '    const el=document.elementFromPoint(e.clientX,e.clientY); const ov=el&&el.closest?el.closest("[data-fk]"):null;\n'
++ '    if(!ov||ov===DRAG.card||ov.parentElement!==box) return;\n'
++ '    const ks=[].slice.call(box.children), a=ks.indexOf(DRAG.card), b=ks.indexOf(ov);\n'
++ '    box.insertBefore(DRAG.card, a' + String.fromCharCode(60) + 'b ? ov.nextSibling : ov); });\n'
++ '  const drop=()=>{ if(!DRAG) return; const cd=DRAG.card; cd.style.opacity=""; cd.style.transform=""; cd.style.boxShadow=""; DRAG.box.style.touchAction="";\n'
++ '    if(DRAG.moved){ const shown=[].slice.call(DRAG.box.children).map(x=>x.getAttribute("data-fk")).filter(Boolean);\n'
++ '      favSet(shown.concat(favList().filter(k=>shown.indexOf(k)' + String.fromCharCode(60) + '0))); cd._nc=1; setTimeout(()=>{cd._nc=0;},60); }\n'
++ '    DRAG=null; };\n'
++ '  box.addEventListener("pointerup",drop); box.addEventListener("pointercancel",drop);\n'
++ '  box.addEventListener("click",e=>{ const c=e.target.closest("[data-fk]"); if(c&&c._nc){ e.stopPropagation(); e.preventDefault(); } },true);\n'
++ '}\n'
 + 'let CUR="";\n'
-+ 'function card(key,big,sub,kid,click){ const f=favHas(key);\n'
-+ '  return "' + S + 'div class=\\"card\\" style=\\"background:"+(kid?"#fdf6e9":"#f4f8fd")+";border-color:"+(kid?"#e8d9b8":"#cfe0f2")+"\\" onclick=\\""+click+"\\">' + S + 'b>"+esc(big)+"' + S + '/b>"+(sub?("' + S + 'i>"+esc(sub)+"' + S + '/i>"):"")+"' + S + 's onclick=\\"event.stopPropagation();favTgl(\'"+key+"\')\\" style=\\"color:"+(f?"#c8951f":"#cfd6de")+"\\">"+(f?"★":"☆")+"' + S + '/s>' + S + '/div>"; }\n'
-+ 'function sec(title,cards,color){ if(!cards.length) return "";\n'
-+ '  return "' + S + 'div class=\\"sec\\" style=\\"color:"+(color||"#c8951f")+";border-bottom:2px solid "+(color||"#c8951f")+"33\\">"+esc(title)+"' + S + '/div>' + S + 'div class=\\"grid\\">"+cards.join("")+"' + S + '/div>"; }\n'
++ 'function card(key,big,sub,kid,click,fv){ const f=favHas(key);\n'
++ '  return "' + S + 'div class=\\"card\\""+(fv?(" data-fk=\\""+key+"\\""):"")+" style=\\"background:"+(kid?"#fdf6e9":"#f4f8fd")+";border-color:"+(kid?"#e8d9b8":"#cfe0f2")+"\\" onclick=\\""+click+"\\">' + S + 'b>"+esc(big)+"' + S + '/b>"+(sub?("' + S + 'i>"+esc(sub)+"' + S + '/i>"):"")+"' + S + 's onclick=\\"event.stopPropagation();favTgl(\'"+key+"\')\\" style=\\"color:"+(f?"#c8951f":"#cfd6de")+"\\">"+(f?"★":"☆")+"' + S + '/s>' + S + '/div>"; }\n'
++ 'function sec(title,cards,color,drag){ if(!cards.length) return "";\n'
++ '  return "' + S + 'div class=\\"sec\\" style=\\"color:"+(color||"#c8951f")+";border-bottom:2px solid "+(color||"#c8951f")+"33\\">"+esc(title)+(drag?"' + S + 'span style=\\"float:right;font-weight:700;letter-spacing:0;color:#94a3b8;font-size:10px;text-transform:none\\">press &amp; hold to reorder' + S + '/span>":"")+"' + S + '/div>' + S + 'div"+(drag?" id=\\"favbox\\"":"")+" class=\\"grid\\">"+cards.join("")+"' + S + '/div>"; }\n'
 + 'function paint(){\n'
 + '  const b=document.getElementById("body"), q=(document.getElementById("q").value||"").trim().toUpperCase();\n'
 + '  document.getElementById("back").style.display = CUR ? "" : "none";\n'
 + '  if(!CUR){\n'
 + '    const all=Object.keys(DATA).filter(st=>!q||st.indexOf(q)>=0||(DATA[st].fab||"").indexOf(q)>=0);\n'
-+ '    const c=st=>card("S|"+st,st,DATA[st].fab,DATA[st].kid,"pick(\'"+st+"\')");\n'
-+ '    const fav=all.filter(st=>favHas("S|"+st));\n'
-+ '    const used=all.filter(st=>!favHas("S|"+st)&&useN("S|"+st)>0).sort((x,y)=>useN("S|"+y)-useN("S|"+x)).slice(0,6);\n'
-+ '    const seen=new Set(fav.concat(used)), byCat={};\n'
++ '    const c=(st,fv)=>card("S|"+st,st,DATA[st].fab,DATA[st].kid,"pick(\'"+st+"\')",fv);\n'
++ '    const fav=favList().filter(k=>k.indexOf("S|")===0).map(k=>k.slice(2)).filter(st=>all.indexOf(st)>=0);\n'
++ '    const seen=new Set(fav), byCat={};\n'
 + '    all.forEach(st=>{ if(seen.has(st)) return; (byCat[DATA[st].cat]=byCat[DATA[st].cat]||[]).push(st); });\n'
-+ '    let h="' + S + 'div class=\\"sec\\" style=\\"color:#94a3b8;border:0\\">1 · TAP THE STYLE' + S + '/div>"+sec("★ FAVORITES",fav.map(c))+sec("USED MOST ON THIS COMPUTER",used.map(c),"#0f766e");\n'
-+ '    Object.keys(byCat).sort().forEach(k=>{ h+=sec(k.toUpperCase(),byCat[k].sort().map(c),"#334155"); });\n'
-+ '    b.innerHTML = all.length?h:"' + S + 'p class=\\"note\\">No styles found.' + S + '/p>"; return;\n'
++ '    let h="' + S + 'div class=\\"sec\\" style=\\"color:#94a3b8;border:0\\">1 · TAP THE STYLE' + S + '/div>"+sec("★ FAVORITES",fav.map(st=>c(st,true)),"#c8951f",fav.length>1);\n'
++ '    Object.keys(byCat).sort().forEach(k=>{ h+=sec(k.toUpperCase(),byCat[k].sort().map(st=>c(st,false)),"#334155"); });\n'
++ '    b.innerHTML = all.length?h:"' + S + 'p class=\\"note\\">No styles found.' + S + '/p>"; dragArm(); return;\n'
 + '  }\n'
 + '  const d=DATA[CUR], cols=d.colors.filter(x=>!q||x.indexOf(q)>=0);\n'
-+ '  const c=x=>card("C|"+CUR+"|"+x,x,"",d.kid,"pickColor(\'"+x.replace(/\'/g,"")+"\')");\n'
-+ '  const fav=cols.filter(x=>favHas("C|"+CUR+"|"+x));\n'
-+ '  const used=cols.filter(x=>!favHas("C|"+CUR+"|"+x)&&useN("C|"+CUR+"|"+x)>0).sort((x,y)=>useN("C|"+CUR+"|"+y)-useN("C|"+CUR+"|"+x)).slice(0,6);\n'
-+ '  const seen=new Set(fav.concat(used));\n'
++ '  const c=(x,fv)=>card("C|"+CUR+"|"+x,x,"",d.kid,"pickColor(\'"+x.replace(/\'/g,"")+"\')",fv);\n'
++ '  const pre="C|"+CUR+"|";\n'
++ '  const fav=favList().filter(k=>k.indexOf(pre)===0).map(k=>k.slice(pre.length)).filter(x=>cols.indexOf(x)>=0);\n'
++ '  const seen=new Set(fav);\n'
 + '  b.innerHTML="' + S + 'div class=\\"sec\\" style=\\"color:#94a3b8;border:0\\">2 · TAP THE COLOUR · "+cols.length+" on file' + S + '/div>"\n'
-+ '    +sec("★ FAVORITES",fav.map(c))+sec("USED MOST ON THIS COMPUTER",used.map(c),"#0f766e")\n'
-+ '    +sec("ALL COLOURS",cols.filter(x=>!seen.has(x)).map(c),"#334155");\n'
++ '    +sec("★ FAVORITES",fav.map(x=>c(x,true)),"#c8951f",fav.length>1)\n'
++ '    +sec("ALL COLOURS",cols.filter(x=>!seen.has(x)).map(x=>c(x,false)),"#334155");\n'
++ '  dragArm();\n'
 + '}\n'
-+ 'function pick(st){ CUR=st; useBump("S|"+st); document.getElementById("q").value=""; paint(); window.scrollTo(0,0); }\n'
-+ 'function pickColor(col){ useBump("C|"+CUR+"|"+col); sheet(CUR,col); }\n'
++ 'function pick(st){ CUR=st; document.getElementById("q").value=""; paint(); window.scrollTo(0,0); }\n'
++ 'function pickColor(col){ sheet(CUR,col); }\n'
 + 'const BIG=["3XL","4XL","5XL","6XL"];\n'
 + 'function ppbFor(st,sz){ const d=DATA[st]; return BIG.indexOf(sz)>=0 ? d.ppbBig : d.ppb; }\n'
 + 'function sheet(st,col){\n'
