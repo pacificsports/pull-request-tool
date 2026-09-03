@@ -192,7 +192,7 @@ body.po-dragging{user-select:none;}
   </span>
   <select id="lang-sel" onchange="setLang(this.value)" style="font-size:11px;padding:3px 6px;border-radius:5px;border:none;background:#1d3f66;color:#fff;"><option value="ko">한국어</option><option value="en">English</option><option value="es">Español</option></select>
   <button id="wide-btn" class="btn btn-sm" onclick="toggleWide()" title="화면 넓게 / 좁게 — 기본은 넓게 (이 브라우저에만 저장돼)" style="padding:2px 8px;font-size:10px;background:#1d3f66;color:#cfe0f2;border-color:#2b5384;">↔ Wide</button>
-  <span id="app-ver" style="font-size:10px;color:#9fb8d4;">v976</span>
+  <span id="app-ver" style="font-size:10px;color:#9fb8d4;">v977</span>
 </div>
 <script>
 // ↔ 넓게 보기 — 브라우저마다 따로 저장 (v793)
@@ -7957,7 +7957,17 @@ function bpSum(){
   const el = $('bp-sum');
   if(el) el.textContent = n ? (n + ' to apply — $' + tot.toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2})) : '';
 }
+/* 💰 팩토링 일괄 입금 (v977 에서 이중 기록·조용한 실패 방지).
+   낱건 입금(cmSubmitPay)에서 실제로 더블클릭 이중 기록 사고가 났다(v976). 여기도 구조가 같았고
+   두 가지가 더 나빴다:
+     · Apply 버튼을 안 잠가서 두 번 누르면 명세서 한 장이 통째로 두 번 들어간다
+     · 저장(PATCH) 실패를 `catch(e){}` 로 삼키면서 "N payment(s) applied" 라고 알려줬다
+       — 화면엔 들어갔는데 DB 엔 없는 상태가 조용히 만들어진다
+   그래서 버튼을 잠그고, 같은 금액·같은 비고가 2분 안에 이미 있으면 그 줄만 건너뛰고,
+   실패한 오더는 화면에 되돌려 놓고 몇 건이 실패했는지 말한다. */
+let _bpBusy = false;
 async function applyBulkPay(){
+  if(_bpBusy) return;
   const picks = [];
   document.querySelectorAll('.bp-cb:checked').forEach(cb=>{
     const i = parseInt(cb.dataset.i);
@@ -7967,22 +7977,49 @@ async function applyBulkPay(){
     if(r2 && r2.hit && v > 0) picks.push({ ...r2.hit, amt: v });
   });
   if(!picks.length){ showToast('⚠ Nothing to apply'); return; }
+  _bpBusy = true;
+  const ab = document.getElementById('bp-apply');
+  if(ab){ ab.disabled = true; ab.style.opacity = '.5'; ab.textContent = '적용 중…'; }
+  const unlockBp = ()=>{ _bpBusy = false;
+    const b2 = document.getElementById('bp-apply');
+    if(b2){ b2.disabled = false; b2.style.opacity = '1'; b2.textContent = '💰 Apply'; } };
   const byBase = {};
   picks.forEach(p=>{ (byBase[p.base] = byBase[p.base] || []).push(p); });
-  let ok = 0;
+  const note0 = 'Factoring' + (_bpPayer ? ' — ' + _bpPayer : '');
+  let ok = 0, dup = 0, failN = 0; const failIv = [];
   for(const base in byBase){
     const rec = savedCache.find(s=>s.base===base); if(!rec) continue;
+    const added = [];                       // 실패하면 되돌리려고 어디에 몇 개 넣었는지 기억
     byBase[base].forEach(p=>{
       const iv = rec.inv[p.wh]; if(!iv) return;
       iv.payments = Array.isArray(iv.payments) ? iv.payments : [];
-      iv.payments.push({ amt: p.amt, at: new Date().toISOString(), by: (SESS&&SESS.email)||'', note: 'Factoring' + (_bpPayer ? ' — ' + _bpPayer : '') });
+      const now = Date.now();
+      const twin = iv.payments.find(x => (Number(x.amt)||0) === p.amt
+                                      && String(x.note||'') === note0
+                                      && Math.abs(now - (Date.parse(x.at)||0)) <= 120000);
+      if(twin){ dup++; return; }            // 방금 같은 명세서를 이미 넣었다 — 건너뛴다
+      iv.payments.push({ amt: p.amt, at: new Date().toISOString(), by: (SESS&&SESS.email)||'', note: note0 });
+      added.push(iv);
       logHist(base, 'Payment (bulk/factoring) $' + p.amt.toFixed(2) + ' — ' + p.wh + ' (' + (iv.invNo||'') + ')');
       ok++;
     });
-    try{ await sbFetch('/rest/v1/pr_orders?base=eq.'+encodeURIComponent(base), {method:'PATCH', headers:{Prefer:'return=minimal'}, body:JSON.stringify({inv:rec.inv, updated_at:new Date().toISOString()})}); }catch(e){}
+    if(!added.length) continue;
+    try{
+      const r = await sbFetch('/rest/v1/pr_orders?base=eq.'+encodeURIComponent(base), {method:'PATCH', headers:{Prefer:'return=minimal'}, body:JSON.stringify({inv:rec.inv, updated_at:new Date().toISOString()})});
+      if(!r.ok) throw new Error('HTTP '+r.status);
+    }catch(e){
+      added.forEach(iv=>{ iv.payments.pop(); });      // 안 들어갔으니 화면에서도 뺀다
+      ok -= added.length; failN += added.length; failIv.push(base);
+    }
   }
-  const m = document.getElementById('modal-bulkpay'); if(m) m.remove();
-  showToast('💰 ' + ok + ' payment(s) applied');
+  unlockBp();
+  if(failN){
+    alert('⚠ ' + failN + '건이 저장되지 않았습니다.\n\n' + failIv.slice(0,6).join('\n')
+        + '\n\n이 건들은 기록되지 않았습니다 — 다시 시도해 주세요.');
+  }else{
+    const m = document.getElementById('modal-bulkpay'); if(m) m.remove();
+  }
+  showToast('💰 ' + ok + ' payment(s) applied' + (dup ? ' · ' + dup + ' 중복 건너뜀' : '') + (failN ? ' · ⚠ ' + failN + ' 실패' : ''));
   renderSaved();
 }
 function payFromRow(base, wh){ plBase = base; plWh = wh; openPayModal(); }
@@ -8005,20 +8042,42 @@ function openPayModal(){
     </div>
     <div style="padding:0 16px 14px;display:flex;gap:8px;justify-content:flex-end;">
       <button class="btn btn-sm" onclick="document.getElementById('modal-pay').remove()">Cancel</button>
-      <button class="btn btn-sm" style="background:#065f46;color:#fff;border-color:#065f46;font-weight:800;" onclick="submitPayment()">💰 Record</button>
+      <button id="pay-go" class="btn btn-sm" style="background:#065f46;color:#fff;border-color:#065f46;font-weight:800;" onclick="submitPayment()">💰 Record</button>
     </div>
   </div>`;
   document.body.appendChild(div);
   initModalDrag(div);
 }
+/* 이쪽 Payment 모달도 같은 구멍이 있었다 (v977) — 버튼 잠금 없음, 중복 확인 없음,
+   게다가 저장 실패를 `catch(e){}` 로 삼키고 "Payment recorded" 라고 말했다.
+   돈이 걸린 화면에서 조용한 실패가 이중 기록보다 나쁘다. */
+let _payBusy = false;
 async function submitPayment(){
+  if(_payBusy) return;
   const rec = savedCache.find(s=>s.base===plBase); if(!rec) return;
   const iv = rec.inv[plWh];
   const amt = parseFloat(($('pay-amt')||{}).value) || 0;
   if(!(amt > 0)){ showToast('⚠ Check the amount'); return; }
   iv.payments = Array.isArray(iv.payments) ? iv.payments : [];
+  const now = Date.now();
+  const twin = iv.payments.find(p => (Number(p.amt)||0) === amt
+                                  && !String(p.note||'').trim()
+                                  && Math.abs(now - (Date.parse(p.at)||0)) <= 120000);
+  if(twin && !confirm('⚠ 이 인보이스(' + (iv.invNo||'') + ')에 방금 같은 금액이 들어갔습니다.\n\n'
+      + '  $' + amt.toFixed(2) + '\n  ' + new Date(twin.at).toLocaleTimeString() + '\n\n'
+      + '두 번 받은 게 아니라면 취소하세요.\n한 번 더 기록할까요?')) return;
+  _payBusy = true;
+  const go = document.getElementById('pay-go');
+  if(go){ go.disabled = true; go.style.opacity = '.5'; go.textContent = '저장 중…'; }
+  const unlock = ()=>{ _payBusy = false;
+    const g = document.getElementById('pay-go');
+    if(g){ g.disabled = false; g.style.opacity = '1'; g.textContent = '💰 Record'; } };
   iv.payments.push({ amt: amt, at: new Date().toISOString(), by: (SESS&&SESS.email)||'' });
-  try{ await sbFetch('/rest/v1/pr_orders?base=eq.'+encodeURIComponent(plBase), {method:'PATCH', headers:{Prefer:'return=minimal'}, body:JSON.stringify({inv:rec.inv, updated_at:new Date().toISOString()})}); }catch(e){}
+  try{
+    const r = await sbFetch('/rest/v1/pr_orders?base=eq.'+encodeURIComponent(plBase), {method:'PATCH', headers:{Prefer:'return=minimal'}, body:JSON.stringify({inv:rec.inv, updated_at:new Date().toISOString()})});
+    if(!r.ok) throw new Error('HTTP '+r.status);
+  }catch(e){ iv.payments.pop(); unlock(); showToast('⚠ Save failed — not recorded: '+(e.message||e)); return; }
+  _payBusy = false;
   logHist(plBase, 'Payment recorded $' + amt.toFixed(2) + ' — ' + plWh + ' (' + (iv.invNo||'') + ')');
   const m = document.getElementById('modal-pay'); if(m) m.remove();
   showToast('💰 Payment recorded — balance $' + invBalance(rec, plWh).toFixed(2));
