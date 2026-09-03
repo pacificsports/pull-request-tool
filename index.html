@@ -192,7 +192,7 @@ body.po-dragging{user-select:none;}
   </span>
   <select id="lang-sel" onchange="setLang(this.value)" style="font-size:11px;padding:3px 6px;border-radius:5px;border:none;background:#1d3f66;color:#fff;"><option value="ko">한국어</option><option value="en">English</option><option value="es">Español</option></select>
   <button id="wide-btn" class="btn btn-sm" onclick="toggleWide()" title="화면 넓게 / 좁게 — 기본은 넓게 (이 브라우저에만 저장돼)" style="padding:2px 8px;font-size:10px;background:#1d3f66;color:#cfe0f2;border-color:#2b5384;">↔ Wide</button>
-  <span id="app-ver" style="font-size:10px;color:#9fb8d4;">v966</span>
+  <span id="app-ver" style="font-size:10px;color:#9fb8d4;">v967</span>
 </div>
 <script>
 // ↔ 넓게 보기 — 브라우저마다 따로 저장 (v793)
@@ -2743,24 +2743,43 @@ function revOf(rec, n){
   return (n==null) ? revs[revs.length-1] : (revs.find(r=>Number(r.n)===Number(n)) || null);
 }
 function revCount(rec){ return ((rec && rec.meta && Array.isArray(rec.meta._revs)) ? rec.meta._revs : []).length; }
-/* 한 줄의 변화를 창고 일감으로 바꾼다: 풀박스 몇 개, 낱장 몇 장 (부호 포함) */
+/* 한 품목의 변화를 **그 창고의** 일감으로 바꾼다: 풀박스 몇 개, 낱장 몇 장 (부호 포함).
+   창고별 전/후 수량만 보므로, SC→CA 이동은 SC 종이엔 반납으로 CA 종이엔 출고로 저절로 갈라진다. */
 function revWork(rec, wh, rv){
-  const out = { full: [], loose: [], moved: [] };
+  const out = { full: [], loose: [] };
   if(!rv) return out;
-  const cur = {}; (rec.lines||[]).forEach(l=>{ if(l) cur[[l.style||'',l.color||'',l.size||''].filter(Boolean).join(' ')] = l; });
+  const K = l => [l.style||'', l.color||'', l.size||''].filter(Boolean).join(' ');
+  const cur = {};
+  (rec.lines||[]).forEach(l=>{ if(l && ((String(l.wh||'SC').trim().toUpperCase())||'SC')===wh) cur[K(l)] = l; });
   (rv.keys||[]).forEach(k=>{
     const sn = (rv.lines||{})[k]; if(!sn) return;
+    let f, t;
+    if(sn.byWh){                                   // v967 형식
+      const bw = sn.byWh[wh]; if(!bw) return;
+      f = Number(bw.from)||0; t = Number(bw.to)||0;
+    } else if(sn.qtyFrom != null){                 // v966 옛 형식도 계속 읽는다
+      f = (sn.whFrom===wh) ? (Number(sn.qtyFrom)||0) : 0;
+      t = (sn.whTo===wh)   ? (Number(sn.qtyTo)||0)   : 0;
+    } else return;
+    if(f === t) return;
     const ppb = Number(sn.ppb)||DEFAULT_PPB;
-    const calc = (q, w) => (w===wh && q>0) ? boxCalc({qty:q, ppb, wh:w}) : {full:0, loose:0};
-    const a = calc(Number(sn.qtyFrom)||0, sn.whFrom || sn.whTo);
-    const b = calc(Number(sn.qtyTo)||0,   sn.whTo   || sn.whFrom);
+    const a = boxCalc({qty:f, ppb}), b = boxCalc({qty:t, ppb});
     const dF = (b.full||0) - (a.full||0);
     const dL = (b.loose||0) - (a.loose||0);
     if(!dF && !dL) return;
-    const L = cur[k] || null;
+    /* 다른 창고가 반대로 움직였으면 그건 "이동" 이다 — 종이에 그렇게 적어 준다.
+       그래야 직원이 "왜 갑자기 반납이지?" 하고 전화하지 않는다. */
+    let moveNote = '';
+    const dq = t - f;
+    if(sn.byWh){
+      const opp = Object.keys(sn.byWh).filter(w=>w!==wh).map(w=>{
+        const x = sn.byWh[w]; const d = (Number(x.to)||0) - (Number(x.from)||0);
+        return d ? { wh:w, d } : null;
+      }).filter(Boolean).find(o => (o.d > 0) !== (dq > 0));
+      if(opp) moveNote = (dq > 0) ? ('came over from ' + opp.wh) : ('moved to ' + opp.wh);
+    }
     const row = { k, style:sn.style, color:sn.color, size:sn.size, desc:sn.desc,
-                  pbox: sn.pbox, qtyFrom:Number(sn.qtyFrom)||0, qtyTo:Number(sn.qtyTo)||0,
-                  line: L, dF, dL };
+                  pbox: sn.pbox, qtyFrom:f, qtyTo:t, line: cur[k]||null, dF, dL, moveNote };
     if(dF) out.full.push(row);
     if(dL) out.loose.push(row);
   });
@@ -2785,7 +2804,7 @@ function buildRevDocHtml(rec, wh, n){
       <td style="font-weight:700;">${esc(r.style)}</td><td class="tl">${esc(r.color)}</td><td>${esc(r.size)}</td>
       <td>${revDirChip(r.dL)}</td>
       ${cell(Math.abs(r.dL))}
-      <td class="tl" style="font-size:10.5px;color:#475569;">${r.dL>0 ? (bins || 'from the PC Room') : 'back to the PC Room'}${r.pbox?`<div style="color:#c2410c;font-weight:700;">Box ${esc(r.pbox)}</div>`:''}</td>
+      <td class="tl" style="font-size:10.5px;color:#475569;">${r.dL>0 ? (bins || 'from the PC Room') : 'back to the PC Room'}${r.moveNote?`<div style="color:#7c2d12;font-weight:800;">⇄ ${esc(r.moveNote)}</div>`:''}${r.pbox?`<div style="color:#c2410c;font-weight:700;">Box ${esc(r.pbox)}</div>`:''}</td>
       <td style="font-size:10px;color:#94a3b8;white-space:nowrap;">${r.qtyFrom.toLocaleString()} → ${r.qtyTo.toLocaleString()}</td>
     </tr>`;
   }).join('');
@@ -2796,7 +2815,7 @@ function buildRevDocHtml(rec, wh, n){
       <td style="font-weight:700;">${esc(r.style)}</td><td class="tl">${esc(r.color)}</td><td>${esc(r.size)}</td>
       <td>${revDirChip(r.dF)}</td>
       ${cell(Math.abs(r.dF))}
-      <td class="tl" style="font-size:10.5px;color:#475569;">${r.dF>0 ? (esc(locs) || 'pull from the bin') : 'return to its bin'}</td>
+      <td class="tl" style="font-size:10.5px;color:#475569;">${r.dF>0 ? (esc(locs) || 'pull from the bin') : 'return to its bin'}${r.moveNote?`<div style="color:#7c2d12;font-weight:800;">⇄ ${esc(r.moveNote)}</div>`:''}</td>
       <td style="font-size:10px;color:#94a3b8;white-space:nowrap;">${r.qtyFrom.toLocaleString()} → ${r.qtyTo.toLocaleString()}</td>
     </tr>`;
   }).join('');
@@ -2813,6 +2832,7 @@ function buildRevDocHtml(rec, wh, n){
     <div style="background:#fff7ed;border:1px solid #fed7aa;border-top:none;padding:8px 20px;font-size:11.5px;color:#7c2d12;">
       Everything else in this order is unchanged and already in progress — <b>do not pull it again</b>.
       Some lines say <b>PUT BACK</b>: the order got smaller, so those pieces go back where they came from.
+      ${(w.full.concat(w.loose)).some(r=>r.moveNote) ? `<div style="margin-top:4px;font-weight:800;">⇄ Lines marked <b>moved to</b> / <b>came over from</b> switched warehouse — the other warehouse has the matching sheet. Nothing is lost, it just ships from the other side.</div>` : ''}
     </div>
     <div style="display:flex;justify-content:space-between;gap:16px;background:#f5f7fa;border:1px solid var(--border);border-top:none;padding:10px 20px;margin-bottom:14px;">
       <div><div style="font-weight:700;font-size:11px;color:var(--header);">PEACE TEXTILE AMERICA, INC. <span style="font-weight:400;color:#555;">d.b.a Pacific Sports</span></div>
@@ -3461,20 +3481,40 @@ async function _saveCurrentInner(){
     if(orderChanges.length){
       const lineCh = orderChanges.filter(c=>c.kind!=='meta');
       const K = l => [l.style||'', l.color||'', l.size||''].filter(Boolean).join(' ');
-      const oldMap = {}; (existing.lines||[]).forEach(l=>{ if(l) oldMap[K(l)] = l; });
-      const newMap = {}; (rec.lines||[]).forEach(l=>{ if(l) newMap[K(l)] = l; });
-      const keys = [...new Set(lineCh.map(c=>c.item))];
-      const snap = {};
-      keys.forEach(k=>{
-        const o = oldMap[k] || null, n = newMap[k] || null;
-        const src = n || o; if(!src) return;
-        snap[k] = {
-          style: src.style||'', color: src.color||'', size: src.size||'', desc: src.desc||'',
-          ppb: Number((n||o).ppb)||DEFAULT_PPB,
-          pbox: String((n||o).pbox||''),
-          qtyFrom: Number(o&&o.qty)||0,  qtyTo: Number(n&&n.qty)||0,
-          whFrom: String((o&&o.wh)||''), whTo: String((n&&n.wh)||'')
-        };
+      /* ⚠ 창고별로 모아야 한다 (v967).
+         SC 로 내보내려다 재고가 없어 CA 로 넘기는 일이 잦고 그 반대도 잦다.
+         또 한 줄을 SC 120 / CA 80 으로 쪼개면 같은 style|color|size 로 줄이 둘이 된다.
+         그래서 줄 하나가 아니라 **품목별 · 창고별 수량**으로 전/후를 찍는다.
+         이렇게 하면 창고 이동은 자동으로 "SC 반납 + CA 출고" 두 장으로 갈라진다. */
+      const agg = (lines)=>{
+        const m = {};
+        (lines||[]).forEach(l=>{ if(!l) return;
+          const k = K(l); if(!k) return;
+          const w = (String(l.wh||'SC').trim().toUpperCase())||'SC';
+          const o = m[k] || (m[k] = { style:l.style||'', color:l.color||'', size:l.size||'',
+                                      desc:l.desc||'', ppb:Number(l.ppb)||DEFAULT_PPB, pbox:String(l.pbox||''), wh:{} });
+          o.wh[w] = (o.wh[w]||0) + (Number(l.qty)||0);
+          if(!o.desc && l.desc) o.desc = l.desc;
+          if(!o.pbox && l.pbox) o.pbox = String(l.pbox);
+        });
+        return m;
+      };
+      const A = agg(existing.lines), B = agg(rec.lines);
+      const keys = []; const snap = {};
+      [...new Set([...Object.keys(A), ...Object.keys(B)])].forEach(k=>{
+        const a = A[k], b = B[k];
+        const whs = [...new Set([...Object.keys((a&&a.wh)||{}), ...Object.keys((b&&b.wh)||{})])];
+        const byWh = {}; let changed = false;
+        whs.forEach(w=>{
+          const f = Number((a&&a.wh[w])||0), t = Number((b&&b.wh[w])||0);
+          if(f !== t) changed = true;
+          if(f || t) byWh[w] = { from:f, to:t };
+        });
+        if(!changed) return;
+        const src = b || a;
+        snap[k] = { style:src.style, color:src.color, size:src.size, desc:src.desc,
+                    ppb:src.ppb, pbox:src.pbox, byWh };
+        keys.push(k);
       });
       const prev = (existing.meta && Array.isArray(existing.meta._revs)) ? existing.meta._revs : [];
       rec.meta = { ...rec.meta, _revs: prev.concat([{
