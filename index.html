@@ -192,7 +192,7 @@ body.po-dragging{user-select:none;}
   </span>
   <select id="lang-sel" onchange="setLang(this.value)" style="font-size:11px;padding:3px 6px;border-radius:5px;border:none;background:#1d3f66;color:#fff;"><option value="ko">한국어</option><option value="en">English</option><option value="es">Español</option></select>
   <button id="wide-btn" class="btn btn-sm" onclick="toggleWide()" title="화면 넓게 / 좁게 — 기본은 넓게 (이 브라우저에만 저장돼)" style="padding:2px 8px;font-size:10px;background:#1d3f66;color:#cfe0f2;border-color:#2b5384;">↔ Wide</button>
-  <span id="app-ver" style="font-size:10px;color:#9fb8d4;">v967</span>
+  <span id="app-ver" style="font-size:10px;color:#9fb8d4;">v968</span>
 </div>
 <script>
 // ↔ 넓게 보기 — 브라우저마다 따로 저장 (v793)
@@ -358,6 +358,7 @@ try{ applyWide(localStorage.getItem('psx_wide') !== '0'); }catch(e){ applyWide(t
       <button class="btn" onclick="clearAllLines()" data-i18n="clear_all">🗑 Clear all</button>
       <button class="btn" style="border-color:#fbbf24;color:#b45309;" onclick="discardDraft()" title="Clears only the on-screen draft. Stock & box moves are NOT touched.">🧹 Discard draft</button>
       <span id="wh-summary" style="margin-left:auto;display:inline-flex;gap:6px;align-items:center;"></span>
+      <button class="btn" id="po-cancel-btn" style="display:none;border-color:#fca5a5;color:#b91c1c;font-weight:700;" onclick="cancelModify()" title="Throw away everything you changed here and close — the order goes back exactly as it was">✕ Cancel</button>
       <button class="btn btn-primary" onclick="saveCurrent()" data-i18n="save">💾 Save</button>
     </div>
     <div style="margin-top:10px;display:flex;gap:10px;align-items:flex-start;background:#fffbeb;border:1px solid #fcd34d;border-radius:8px;padding:8px 12px;">
@@ -2746,7 +2747,7 @@ function revCount(rec){ return ((rec && rec.meta && Array.isArray(rec.meta._revs
 /* 한 품목의 변화를 **그 창고의** 일감으로 바꾼다: 풀박스 몇 개, 낱장 몇 장 (부호 포함).
    창고별 전/후 수량만 보므로, SC→CA 이동은 SC 종이엔 반납으로 CA 종이엔 출고로 저절로 갈라진다. */
 function revWork(rec, wh, rv){
-  const out = { full: [], loose: [] };
+  const out = { full: [], loose: [], move: [], pin: [] };
   if(!rv) return out;
   const K = l => [l.style||'', l.color||'', l.size||''].filter(Boolean).join(' ');
   const cur = {};
@@ -2760,7 +2761,13 @@ function revWork(rec, wh, rv){
     } else if(sn.qtyFrom != null){                 // v966 옛 형식도 계속 읽는다
       f = (sn.whFrom===wh) ? (Number(sn.qtyFrom)||0) : 0;
       t = (sn.whTo===wh)   ? (Number(sn.qtyTo)||0)   : 0;
-    } else return;
+    } else { f = 0; t = 0; }
+    /* 수량이 그대로여도 박스만 옮겼을 수 있다 — 그건 그것대로 일감이다 (v968) */
+    ((sn.mv||{})[wh] || []).forEach(g=>{
+      const row = { k, style:sn.style, color:sn.color, size:sn.size,
+                    loc:String(g.loc||'?'), n:Number(g.n)||1, pcs:Number(g.pcs)||0 };
+      (g.pin ? out.pin : out.move).push(row);
+    });
     if(f === t) return;
     const ppb = Number(sn.ppb)||DEFAULT_PPB;
     const a = boxCalc({qty:f, ppb}), b = boxCalc({qty:t, ppb});
@@ -2793,7 +2800,7 @@ function revDirChip(n){
 function buildRevDocHtml(rec, wh, n){
   const rv = revOf(rec, n); if(!rv) return '';
   const w  = revWork(rec, wh, rv);
-  if(!w.full.length && !w.loose.length) return '';
+  if(!w.full.length && !w.loose.length && !w.move.length && !w.pin.length) return '';
   const num = plNum(rec.base, wh);
   const m = rec.meta || {};
   const when = new Date(rv.at||Date.now()).toLocaleString('en-US',{month:'numeric',day:'numeric',year:'numeric',hour:'numeric',minute:'2-digit'});
@@ -2851,6 +2858,19 @@ function buildRevDocHtml(rec, wh, n){
     ${w.full.length ? `<div style="background:#1d4ed8;color:#fff;padding:7px 20px;font-weight:800;letter-spacing:1px;font-size:14px;margin:${w.loose.length?'34px':'0'} 0 6px;">📦 FULL BOX</div>
     <table class="inv-tbl"><thead>${head}</thead><tbody>${fullRows}</tbody></table>
     ${_sigC('Full Box done by')}` : ''}
+    ${w.move.length ? `<div style="background:#7c3aed;color:#fff;padding:7px 20px;font-weight:800;letter-spacing:1px;font-size:14px;margin:${(w.loose.length||w.full.length)?'30px':'0'} 0 6px;">📦→🧺 CARRY THESE BOXES TO THE PC ROOM</div>
+    <table class="inv-tbl">
+      <thead><tr><th>Style#</th><th class="tl">Color</th><th>Size</th><th style="background:#7c3aed;">Boxes</th><th class="tl">From (bin)</th></tr></thead>
+      <tbody>${w.move.map(r=>`<tr><td style="font-weight:700;">${esc(r.style)}</td><td class="tl">${esc(r.color)}</td><td>${esc(r.size)}</td><td style="text-align:center;font-weight:900;">${r.n}</td><td class="tl" style="font-family:Consolas,monospace;font-weight:700;">${esc(r.loc)}</td></tr>`).join('')}</tbody>
+    </table>
+    ${_sigC('Moved to PC Room by')}` : ''}
+    ${w.pin.length ? `<div style="background:#0e7490;color:#fff;padding:7px 20px;font-weight:800;letter-spacing:1px;font-size:14px;margin:${(w.loose.length||w.full.length||w.move.length)?'30px':'0'} 0 6px;">✂ OPEN AT THE BIN — DO NOT CARRY (📍 pinned)</div>
+    <table class="inv-tbl">
+      <thead><tr><th>Style#</th><th class="tl">Color</th><th>Size</th><th style="background:#0e7490;">Boxes to open</th><th class="tl">At bin</th></tr></thead>
+      <tbody>${w.pin.map(r=>`<tr><td style="font-weight:700;">${esc(r.style)}</td><td class="tl">${esc(r.color)}</td><td>${esc(r.size)}</td><td style="text-align:center;font-weight:900;">${r.n}</td><td class="tl" style="font-family:Consolas,monospace;font-weight:700;">📍 ${esc(r.loc)}</td></tr>`).join('')}</tbody>
+    </table>
+    <div style="margin-top:6px;padding:7px 12px;background:#ecfeff;border:1px solid #a5f3fc;border-radius:4px;font-size:11px;color:#0e7490;font-weight:700;">Open the box where it stands and leave the loose pieces at that same bin. Do not carry anything to the PC Room.</div>
+    ${_sigC('Opened at the bin by')}` : ''}
   </div>`;
 }
 function printRevPR(base, wh, n){
@@ -3492,10 +3512,21 @@ async function _saveCurrentInner(){
           const k = K(l); if(!k) return;
           const w = (String(l.wh||'SC').trim().toUpperCase())||'SC';
           const o = m[k] || (m[k] = { style:l.style||'', color:l.color||'', size:l.size||'',
-                                      desc:l.desc||'', ppb:Number(l.ppb)||DEFAULT_PPB, pbox:String(l.pbox||''), wh:{} });
+                                      desc:l.desc||'', ppb:Number(l.ppb)||DEFAULT_PPB, pbox:String(l.pbox||''), wh:{}, mv:{} });
           o.wh[w] = (o.wh[w]||0) + (Number(l.qty)||0);
           if(!o.desc && l.desc) o.desc = l.desc;
           if(!o.pbox && l.pbox) o.pbox = String(l.pbox);
+          /* 📦→🧺 PC Room 으로 옮긴(또는 그 자리에서 깐) 박스도 같이 센다 (v968).
+             이 일은 풀박스 뽑는 사람이 하므로, 종이에서도 FULL BOX 쪽에 붙는다. */
+          const mw = (String(l.pcMoveWh||l.wh||'SC').trim().toUpperCase())||'SC';
+          (l.pcMove||[]).forEach(g=>{
+            const loc = String(g.loc||'?').toUpperCase(), pin = !!g.pin;
+            const slot = o.mv[mw] || (o.mv[mw] = {});
+            const kk = loc+'|'+(pin?'P':'C');
+            const e = slot[kk] || (slot[kk] = { loc, pin, n:0, pcs:0 });
+            e.n += Number(g.n)||1;
+            e.pcs += Number(g.pcs)||0;
+          });
         });
         return m;
       };
@@ -3510,10 +3541,24 @@ async function _saveCurrentInner(){
           if(f !== t) changed = true;
           if(f || t) byWh[w] = { from:f, to:t };
         });
+        /* 이번 수정에서 **새로** 옮긴 박스만 골라낸다 — 전에 이미 옮긴 건 다시 시키지 않는다 */
+        const mvWhs = [...new Set([...Object.keys((a&&a.mv)||{}), ...Object.keys((b&&b.mv)||{})])];
+        const mv = {};
+        mvWhs.forEach(w=>{
+          const before = (a && a.mv[w]) || {}, after = (b && b.mv[w]) || {};
+          const rows = [];
+          Object.keys(after).forEach(kk=>{
+            const A2 = after[kk], B2 = before[kk];
+            const dn = (A2.n||0) - ((B2 && B2.n)||0);
+            if(dn > 0) rows.push({ loc:A2.loc, pin:A2.pin, n:dn,
+                                   pcs: Math.round((A2.pcs||0) * dn / (A2.n||1)) });
+          });
+          if(rows.length){ mv[w] = rows; changed = true; }
+        });
         if(!changed) return;
         const src = b || a;
         snap[k] = { style:src.style, color:src.color, size:src.size, desc:src.desc,
-                    ppb:src.ppb, pbox:src.pbox, byWh };
+                    ppb:src.ppb, pbox:src.pbox, byWh, ...(Object.keys(mv).length?{mv}:{}) };
         keys.push(k);
       });
       const prev = (existing.meta && Array.isArray(existing.meta._revs)) ? existing.meta._revs : [];
@@ -3678,6 +3723,26 @@ async function loadSaved(base){
   pcMoveRelink(poLines, (rec.meta&&rec.meta.po)).then(k=>{ if(k) renderTable(); });
   window.scrollTo({top:0,behavior:'smooth'});
 }
+/* ✕ Cancel — 이것저것 해보다가 그냥 없던 일로 하고 닫는다 (v968).
+   ⚠ 화면만 지우면 안 된다. 수정하는 동안 📍 로 박스를 PC Room 에 옮겼다면
+   그건 이미 DB 에 반영돼 있다 — 그것까지 되돌려야 진짜 "원래대로" 다. */
+async function cancelModify(){
+  const pend = (typeof pcPendingMoves==='function') ? pcPendingMoves() : [];
+  const nB = pend.reduce((a,l)=>a+((l.pcMoveData||[]).length),0);
+  const msg = '✕ 이번에 고친 내용을 모두 버리고 닫습니다.\n\n오더는 열기 전 상태 그대로 남습니다.'
+    + (nB ? ('\n\n⚠ 이 화면에서 PC Room 으로 옮긴 박스 ' + nB + '개도 함께 되돌립니다 (박스는 원래 자리로, PC Room 수량도 원복).') : '')
+    + '\n\n계속할까요?';
+  if(!confirm(msg)) return;
+  if(nB){
+    showToast('↩ Putting ' + nB + ' box move(s) back…');
+    try{ await pcUndoAllPending(); }
+    catch(e){ alert('⚠ 박스 이동을 되돌리지 못했습니다 — 화면은 그대로 둡니다.\n\n' + String(e && e.message || e)
+                    + '\n\n각 줄의 ↩ 버튼으로 하나씩 되돌린 뒤 다시 시도해 주세요.'); return; }
+  }
+  clearOrderForm();
+  showToast('✕ Cancelled — nothing was changed');
+  window.scrollTo({top:0, behavior:'smooth'});
+}
 /* 자물쇠 열기/잠그기. 연 줄만 이번 수정 대상이고, 새 Pull Request 에 나온다. (v966) */
 function poLockToggle(i){
   const l = poLines[i]; if(!l) return;
@@ -3689,6 +3754,8 @@ function poLockOpenAll(){ poLines.forEach(l=>{ if(l) l._lk=false; }); renderTabl
 function poLockCloseAll(){ poLines.forEach(l=>{ if(l) l._lk=true; }); renderTable(); poLockBanner(); }
 /* 몇 줄이 열려 있는지 위에 계속 보여 준다 — 다 잠근 채로 저장하면 아무것도 안 바뀐다 */
 function poLockBanner(){
+  const cb = document.getElementById('po-cancel-btn');
+  if(cb) cb.style.display = window._poLockMode ? '' : 'none';
   const el = document.getElementById('po-lock-bar'); if(!el) return;
   if(!window._poLockMode){ el.style.display='none'; el.innerHTML=''; return; }
   const open = poLines.filter(l=>l && !l._lk).length;
