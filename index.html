@@ -192,7 +192,7 @@ body.po-dragging{user-select:none;}
   </span>
   <select id="lang-sel" onchange="setLang(this.value)" style="font-size:11px;padding:3px 6px;border-radius:5px;border:none;background:#1d3f66;color:#fff;"><option value="ko">한국어</option><option value="en">English</option><option value="es">Español</option></select>
   <button id="wide-btn" class="btn btn-sm" onclick="toggleWide()" title="화면 넓게 / 좁게 — 기본은 넓게 (이 브라우저에만 저장돼)" style="padding:2px 8px;font-size:10px;background:#1d3f66;color:#cfe0f2;border-color:#2b5384;">↔ Wide</button>
-  <span id="app-ver" style="font-size:10px;color:#9fb8d4;">v971</span>
+  <span id="app-ver" style="font-size:10px;color:#9fb8d4;">v972</span>
 </div>
 <script>
 // ↔ 넓게 보기 — 브라우저마다 따로 저장 (v793)
@@ -18203,6 +18203,7 @@ function pmColorHtml(sty, c, sizes, onlyNo){
       ${noMas?`<span style="font-size:10px;font-weight:800;background:#fef3c7;color:#92400e;border-radius:20px;padding:1px 7px;">${noMas} not in MAS</span>`:''}
       <span style="margin-left:auto;display:flex;gap:5px;">
         <span onclick="event.stopPropagation();skuEditOpen('${esc(sty)}','${esc(CU)}')" title="Rename / merge this color" style="cursor:pointer;background:#f5f3ff;color:#5b21b6;border:1px solid #ddd6fe;border-radius:6px;padding:1px 7px;font-size:10.5px;font-weight:800;">✏️</span>
+        <span onclick="event.stopPropagation();skuMoveOpen('${esc(sty)}','${esc(CU)}')" title="Move this color to another style # — for a wrong style typed at receiving" style="cursor:pointer;background:#f0fdfa;color:#0f766e;border:1px solid #99f6e4;border-radius:6px;padding:1px 7px;font-size:10.5px;font-weight:800;">🔀</span>
         ${(!nBox)?`<span onclick="event.stopPropagation();skuDeleteColor('${esc(sty)}','${esc(CU)}')" title="Remove from the master (stock is 0)" style="cursor:pointer;background:#fef2f2;color:#b91c1c;border:1px solid #fecaca;border-radius:6px;padding:1px 7px;font-size:10.5px;font-weight:800;">🗑</span>`:''}
       </span>
     </div>
@@ -18572,6 +18573,235 @@ async function skuDeleteColor(style, color){
   showToast('🗑 Deleted: '+style+' / '+color);
   skuManager();
 }
+/* ═══════════ 🔀 스타일 번호 옮기기 (v972) ═══════════
+   "8368 GREY HTR 을 1368 GREY HTR 로 잘못 넣었다" 같은 입력 실수를 고치는 자리.
+
+   색 이름 바꾸기(skuEditOpen)와 결정적으로 다른 점 하나 —
+   같은 스타일·같은 색이라도 원래부터 맞게 들어와 있던 재고가 섞여 있다.
+   (실제로 1368 GREY HTR 은 8/9 입고분 79박스가 진짜였고, 8/31 입고분 33박스만 오타였다.)
+   그래서 전부 옮기지 않고 "입고 묶음"(입고일 · 입고한 사람 · 창고)별로 골라서 옮긴다.
+
+   같이 따라가는 것: 박스 · 박스 이동기록 · PC Room · 아직 살아있는 이송(Transfer) 라인.
+   따라가지 않는 것: 이미 나간 오더/패킹리스트, MAS 아이템 코드 — 화면에서 경고로 알려준다. */
+let _mvBox = [], _mvPc = [], _mvTx = [], _mvCtx = null;
+
+async function skuMoveOpen(style, color){
+  const ex = document.getElementById('modal-skumove'); if(ex) ex.remove();
+  const CU = String(color).toUpperCase();
+  _mvCtx = { style: String(style).trim(), color: CU };
+  _mvBox = []; _mvPc = []; _mvTx = [];
+  const div = document.createElement('div'); div.id = 'modal-skumove';
+  div.style.cssText = 'position:fixed;inset:0;background:rgba(15,23,42,.6);z-index:270;display:flex;align-items:flex-start;justify-content:center;padding:26px 12px;overflow-y:auto;';
+  div.onclick = e => { if(e.target === div) div.remove(); };
+  div.innerHTML = `<div style="background:#fff;border-radius:14px;max-width:640px;width:100%;overflow:hidden;box-shadow:0 12px 40px rgba(15,23,42,.35);">
+    <div style="background:#0f766e;color:#fff;padding:11px 16px;display:flex;align-items:center;gap:10px;">
+      <span style="font-weight:800;font-size:15px;">🔀 Move to another style #</span>
+      <button onclick="document.getElementById('modal-skumove').remove()" style="margin-left:auto;background:rgba(255,255,255,.2);color:#fff;border:none;border-radius:8px;padding:5px 11px;font-weight:800;cursor:pointer;">✕</button>
+    </div>
+    <div style="background:#f0fdfa;padding:9px 16px;border-bottom:1px solid #ccfbf1;font-size:13px;font-weight:800;color:#1e293b;">
+      #${esc(_mvCtx.style)} · ${esc(CU)}
+      <span style="font-weight:700;color:#64748b;font-size:11.5px;margin-left:8px;">the color name stays — only the style # changes</span>
+    </div>
+    <div style="padding:12px 16px;display:flex;flex-direction:column;gap:9px;">
+      <div style="font-size:11px;font-weight:800;color:#64748b;">NEW STYLE #</div>
+      <input id="skmv-new" class="fi" list="skmv-list" placeholder="e.g. 8368" oninput="skuMovePaint()" style="width:100%;box-sizing:border-box;font-size:15px;font-weight:800;padding:8px 10px;">
+      <datalist id="skmv-list">${(typeof skuStyles === 'function' ? skuStyles() : []).map(s => '<option value="' + esc(String(s)) + '">').join('')}</datalist>
+      <div id="skmv-body" style="font-size:12px;line-height:1.55;color:#64748b;">Reading the stock…</div>
+    </div>
+    <div style="padding:10px 16px;border-top:1px solid #eee;display:flex;gap:8px;align-items:center;">
+      <span id="skmv-sum" style="font-size:11.5px;color:#475569;font-weight:800;"></span>
+      <button class="btn" style="margin-left:auto;" onclick="document.getElementById('modal-skumove').remove()">Cancel</button>
+      <button id="skmv-go" class="btn" style="background:#0f766e;color:#fff;border-color:#0f766e;font-weight:800;" onclick="skuMoveGo()" disabled>Move</button>
+    </div></div>`;
+  document.body.appendChild(div);
+  const f = document.getElementById('skmv-new'); if(f){ try{ f.focus(); }catch(e){} }
+  await skuMoveLoad();
+}
+
+async function skuMoveLoad(){
+  const S = _mvCtx.style, C = _mvCtx.color;
+  // 1) 박스 — IN 뿐 아니라 OUT 이력까지 (오타는 이력에도 남아 있다)
+  try{
+    const r = await sbFetch('/rest/v1/pr_boxes?select=id,size,pcs,status,wh,loc,in_at,in_by,out_po&style=eq.' + encodeURIComponent(S) + '&' + pgColorEq(C) + '&order=in_at.desc&limit=8000');
+    const rows = r.ok ? await r.json() : [];
+    const map = {};
+    rows.forEach(b => {
+      const d = String(b.in_at || '').slice(0, 10) || '(no date)';
+      const who = String(b.in_by || '').split('@')[0] || '(unknown)';
+      const k = d + '' + who + '' + (b.wh || 'SC');
+      if(!map[k]) map[k] = { d, who, wh: b.wh || 'SC', ids: [], pcs: 0, nIn: 0, nOut: 0, locs: {}, pos: {} };
+      const g = map[k];
+      g.ids.push(b.id); g.pcs += Number(b.pcs) || 0;
+      if(String(b.status || 'IN') === 'OUT'){ g.nOut++; if(b.out_po) g.pos[b.out_po] = 1; } else { g.nIn++; g.locs[b.loc || '?'] = 1; }
+    });
+    _mvBox = Object.keys(map).sort().reverse().map(k => map[k]);
+  }catch(e){ _mvBox = []; }
+  // 2) PC Room (SC / CA)
+  try{
+    if(typeof pcLoaded !== 'undefined' && !pcLoaded){
+      const r0 = await sbFetch('/rest/v1/pr_pcroom?select=k,style,color,qty,bqty,bnote,sizes,wh,locs,updated_at,updated_by');
+      if(r0.ok){ pcStore = await r0.json(); pcLoaded = true; }
+    }
+    _mvPc = ['SC', 'CA'].map(w => {
+      const k = pcKey(S, C, w);
+      const row = (pcStore || []).find(x => x.k === k);
+      if(!row) return null;
+      const tot = Object.keys(row.qty || {}).reduce((a, sz) => a + (Number(row.qty[sz]) || 0), 0);
+      return { wh: w, k, row, pcs: tot };
+    }).filter(Boolean);
+  }catch(e){ _mvPc = []; }
+  // 3) 아직 살아있는 이송 — 라인 안에 이 스타일/색이 들어 있는 것만
+  try{
+    const q = encodeURIComponent(JSON.stringify([{ style: S, color: C }]));
+    const r = await sbFetch('/rest/v1/pr_transfers?select=id,ref,status,lines&lines=cs.' + q + '&limit=200');
+    _mvTx = r.ok ? await r.json() : [];
+  }catch(e){ _mvTx = []; }
+  skuMovePaint();
+}
+
+function skuMoveNew(){ return String((document.getElementById('skmv-new') || {}).value || '').trim(); }
+function skuMoveChecked(){
+  const b = _mvBox.filter((g, i) => { const el = document.getElementById('skmv-b-' + i); return el && el.checked; });
+  const p = _mvPc.filter((g, i) => { const el = document.getElementById('skmv-p-' + i); return el && el.checked; });
+  return { b, p };
+}
+function skuMoveAll(on){
+  _mvBox.forEach((g, i) => { const el = document.getElementById('skmv-b-' + i); if(el) el.checked = !!on; });
+  _mvPc.forEach((g, i) => { const el = document.getElementById('skmv-p-' + i); if(el) el.checked = !!on; });
+  skuMovePaint();
+}
+
+function skuMovePaint(){
+  const body = document.getElementById('skmv-body'); if(!body) return;
+  const ns = skuMoveNew(), S = _mvCtx.style, C = _mvCtx.color;
+  // 첫 그리기 — 목록을 만든다 (체크 상태는 유지)
+  if(!body.dataset.built){
+    const rowsB = _mvBox.map((g, i) => {
+      const locs = Object.keys(g.locs).slice(0, 3).join(', ');
+      const pos = Object.keys(g.pos).slice(0, 2).join(', ');
+      return `<label style="display:flex;gap:8px;align-items:flex-start;padding:6px 8px;border:1px solid #e2e8f0;border-radius:8px;cursor:pointer;background:${g.nOut ? '#fffbeb' : '#fff'};">
+        <input type="checkbox" id="skmv-b-${i}" onchange="skuMovePaint()" style="margin-top:2px;">
+        <span style="flex:1;">
+          <b style="color:#0f172a;">${esc(g.d)}</b>
+          <span style="color:#64748b;"> · ${esc(g.who)} · ${esc(g.wh)}</span><br>
+          <span style="color:#0f766e;font-weight:800;">${g.ids.length} box · ${g.pcs.toLocaleString()} pcs</span>
+          ${g.nIn ? `<span style="color:#64748b;"> · ${g.nIn} in stock${locs ? ' @' + esc(locs) : ''}</span>` : ''}
+          ${g.nOut ? `<span style="color:#b45309;font-weight:800;"> · ⚠ ${g.nOut} already shipped${pos ? ' (' + esc(pos) + ')' : ''}</span>` : ''}
+        </span></label>`;
+    }).join('');
+    const rowsP = _mvPc.map((g, i) => `<label style="display:flex;gap:8px;align-items:center;padding:6px 8px;border:1px solid #e2e8f0;border-radius:8px;cursor:pointer;">
+        <input type="checkbox" id="skmv-p-${i}" onchange="skuMovePaint()">
+        <span style="flex:1;"><b style="color:#0f172a;">🧺 PC Room ${esc(g.wh)}</b>
+        <span style="color:#0f766e;font-weight:800;"> · ${g.pcs.toLocaleString()} pcs loose</span></span></label>`).join('');
+    body.innerHTML = `<div style="display:flex;align-items:center;gap:8px;margin-bottom:5px;">
+        <span style="font-size:11px;font-weight:800;color:#64748b;">WHAT MOVES — pick the receipt(s) that were typed wrong</span>
+        <span style="margin-left:auto;font-size:10.5px;font-weight:800;color:#0f766e;cursor:pointer;" onclick="skuMoveAll(true)">select all</span>
+        <span style="font-size:10.5px;font-weight:800;color:#94a3b8;cursor:pointer;" onclick="skuMoveAll(false)">none</span>
+      </div>
+      <div style="display:flex;flex-direction:column;gap:5px;max-height:230px;overflow-y:auto;">
+        ${rowsB || '<span style="color:#94a3b8;">No boxes under this style/color.</span>'}${rowsP}
+      </div>
+      <div id="skmv-note" style="margin-top:9px;"></div>`;
+    body.dataset.built = '1';
+    // 묶음이 하나뿐이면 고민할 게 없다 — 미리 켜 둔다
+    if(_mvBox.length === 1){ const el = document.getElementById('skmv-b-0'); if(el) el.checked = true; }
+  }
+  const { b, p } = skuMoveChecked();
+  const nBox = b.reduce((a, g) => a + g.ids.length, 0);
+  const nPcs = b.reduce((a, g) => a + g.pcs, 0);
+  const nOut = b.reduce((a, g) => a + g.nOut, 0);
+  const nLoose = p.reduce((a, g) => a + g.pcs, 0);
+  const idSet = new Set(); b.forEach(g => g.ids.forEach(x => idSet.add(x)));
+  const tx = _mvTx.filter(t => (t.lines || []).some(l => String(l.style) === S && String(l.color).toUpperCase() === C && (l.ids || []).some(x => idSet.has(x))));
+  const txLive = tx.filter(t => String(t.status || '').toUpperCase() !== 'RECEIVED');
+
+  let ok = true, html = '';
+  if(!ns){ ok = false; html = '<span style="color:#94a3b8;">Type the style # these really are.</span>'; }
+  else if(ns === S){ ok = false; html = '<span style="color:#94a3b8;">Same style # — nothing to change.</span>'; }
+  else if(!nBox && !p.length){ ok = false; html = '<span style="color:#94a3b8;">Tick at least one receipt or PC Room row.</span>'; }
+  else {
+    const known = (typeof skuStyles === 'function') && skuStyles().some(x => String(x) === ns);
+    html = `<div style="background:#f0fdfa;border:1px solid #99f6e4;border-radius:9px;padding:8px 10px;color:#134e4a;">
+      <b>#${esc(S)} → #${esc(ns)}</b> · ${esc(C)}<br>
+      <span style="color:#0f766e;font-weight:800;">📦 ${nBox} box · ${nPcs.toLocaleString()} pcs</span>
+      ${nLoose ? `<span style="color:#0f766e;font-weight:800;"> · 🧺 ${nLoose.toLocaleString()} pcs loose</span>` : ''}
+      ${txLive.length ? `<span style="color:#0f766e;font-weight:800;"> · 🚚 ${txLive.length} transfer(s) relabeled</span>` : ''}
+    </div>`;
+    if(!known) html += `<div style="margin-top:6px;color:#b45309;font-weight:800;">⚠ #${esc(ns)} is not in the SKU master yet — ${esc(C)} will be registered under it.</div>`;
+    if(nOut) html += `<div style="margin-top:6px;color:#b91c1c;font-weight:800;">⚠ ${nOut} of these boxes already shipped. The stock record moves, but the pull request / packing list for those orders keeps the old number — check those orders by hand.</div>`;
+    html += `<div style="margin-top:6px;color:#94a3b8;">MAS item codes are not touched.</div>`;
+  }
+  const note = document.getElementById('skmv-note'); if(note) note.innerHTML = html;
+  const sum = document.getElementById('skmv-sum'); if(sum) sum.textContent = (nBox || nLoose) ? (nBox + ' box' + (nLoose ? ' + ' + nLoose.toLocaleString() + ' pcs' : '')) : '';
+  const go = document.getElementById('skmv-go');
+  if(go){ go.disabled = !ok; go.style.opacity = ok ? '1' : '.45'; go.style.cursor = ok ? 'pointer' : 'not-allowed'; }
+}
+
+async function skuMoveGo(){
+  const ns = skuMoveNew(), S = _mvCtx.style, C = _mvCtx.color;
+  const { b, p } = skuMoveChecked();
+  if(!ns || ns === S || (!b.length && !p.length)) return;
+  const ids = []; b.forEach(g => g.ids.forEach(x => ids.push(x)));
+  const go = document.getElementById('skmv-go'); if(go){ go.disabled = true; go.textContent = 'Working…'; }
+  let nTx = 0;
+  try{
+    // 0) 도착지 SKU 등록
+    if(typeof skuHas === 'function' && !skuHas(ns, C)) await skuRegister([{ style: ns, color: C }]);
+    // 1) 박스 — 80개씩 끊어서
+    for(let i = 0; i < ids.length; i += 80){
+      const part = ids.slice(i, i + 80);
+      const r = await sbFetch('/rest/v1/pr_boxes?id=in.(' + part.join(',') + ')', { method: 'PATCH', headers: { Prefer: 'return=minimal' }, body: JSON.stringify({ style: ns }) });
+      if(!r.ok) throw new Error('boxes HTTP ' + r.status);
+    }
+    // 2) 박스 이동기록 — 옮긴 박스가 들어있는 줄만
+    if(ids.length){
+      const idSet = new Set(ids);
+      const rm = await sbFetch('/rest/v1/pr_boxmoves?select=id,box_ids&style=eq.' + encodeURIComponent(S) + '&' + pgColorEq(C) + '&limit=2000');
+      const mv = rm.ok ? await rm.json() : [];
+      const hit = mv.filter(m => (m.box_ids || []).some(x => idSet.has(x))).map(m => m.id);
+      for(let i = 0; i < hit.length; i += 80){
+        await sbFetch('/rest/v1/pr_boxmoves?id=in.(' + hit.slice(i, i + 80).join(',') + ')', { method: 'PATCH', headers: { Prefer: 'return=minimal' }, body: JSON.stringify({ style: ns }) });
+      }
+      // 3) 이송 라인
+      for(const t of _mvTx){
+        let touched = false;
+        const lines = (t.lines || []).map(l => {
+          if(String(l.style) === S && String(l.color).toUpperCase() === C && (l.ids || []).some(x => idSet.has(x))){ touched = true; return { ...l, style: ns }; }
+          return l;
+        });
+        if(!touched) continue;
+        const r = await sbFetch('/rest/v1/pr_transfers?id=eq.' + t.id, { method: 'PATCH', headers: { Prefer: 'return=minimal' }, body: JSON.stringify({ lines }) });
+        if(r.ok) nTx++;
+      }
+    }
+    // 4) PC Room — 있으면 합치고 없으면 키만 바꾼다 (색 이름 바꾸기와 같은 규칙)
+    for(const g of p){
+      const kNew = pcKey(ns, C, g.wh);
+      const rowNew = (pcStore || []).find(x => x.k === kNew);
+      if(rowNew){
+        rowNew.qty = rowNew.qty || {};
+        Object.keys(g.row.qty || {}).forEach(sz => { rowNew.qty[sz] = (Number(rowNew.qty[sz]) || 0) + (Number(g.row.qty[sz]) || 0); if(!rowNew.qty[sz]) delete rowNew.qty[sz]; });
+        await pcSaveRow(rowNew);
+        await sbFetch('/rest/v1/pr_pcroom?k=eq.' + encodeURIComponent(g.k), { method: 'DELETE', headers: { Prefer: 'return=minimal' } });
+        pcStore = pcStore.filter(x => x.k !== g.k);
+      }else{
+        await sbFetch('/rest/v1/pr_pcroom?k=eq.' + encodeURIComponent(g.k), { method: 'PATCH', headers: { Prefer: 'return=minimal' }, body: JSON.stringify({ k: kNew, style: ns }) });
+        g.row.k = kNew; g.row.style = ns;
+      }
+    }
+    await bxRefetch();
+  }catch(e){
+    showToast('⚠ Move failed: ' + String(e.message || '').slice(0, 80));
+    const g2 = document.getElementById('skmv-go'); if(g2){ g2.disabled = false; g2.textContent = 'Move'; }
+    return;
+  }
+  const em = document.getElementById('modal-skumove'); if(em) em.remove();
+  showToast('🔀 ' + S + ' → ' + ns + ' · ' + C + ' — ' + ids.length + ' box' + (nTx ? ' · ' + nTx + ' transfer' : ''));
+  if($('bx-body')) renderBoxRoom();
+  if(typeof renderPcRoom === 'function' && $('pc-body')) renderPcRoom();
+  skuManager();
+}
+
 // ═══ 재고조사 날짜 스탬프 (style+color 단위 · PC Room / Full Box 공용) ═══
 let stMap = {}; let stLoaded = false;
 async function stFetch(){
