@@ -59,6 +59,12 @@ body.narrow main{max-width:1100px;}
 .etbl th{background:var(--header);color:#fff;font-size:10px;text-transform:uppercase;letter-spacing:.5px;padding:6px 8px;text-align:center;white-space:nowrap;}
 .etbl th.tl{text-align:left;}
 .etbl thead th{position:sticky;top:0;z-index:5;}
+/* 🔒 수정 모드: 저장된 오더를 열면 모든 줄이 잠긴다 (v966).
+   창고가 이미 뽑아 놓은 줄을 무심코 건드려서 통째로 다시 나가는 사고를 막는다.
+   고칠 줄만 자물쇠를 눌러 연다. 잠긴 줄은 자물쇠 말고는 아무것도 눌리지 않는다. */
+tr.polk > td{pointer-events:none;opacity:.5;}
+tr.polk .polk-btn{pointer-events:auto;opacity:1;}
+tr.polk{background:#f8fafc;}
 /* 원가 화면: 스티키 헤더 뒤로 줄이 비쳐 보이던 것 (v964).
    머리칸은 배경이 불투명해야 하고, 줄의 스티키 첫 칸(z-index:1)보다 반드시 위여야 한다.
    왼쪽 위 모서리 칸은 가로·세로 양쪽으로 붙으니 제일 위로 올린다. */
@@ -186,7 +192,7 @@ body.po-dragging{user-select:none;}
   </span>
   <select id="lang-sel" onchange="setLang(this.value)" style="font-size:11px;padding:3px 6px;border-radius:5px;border:none;background:#1d3f66;color:#fff;"><option value="ko">한국어</option><option value="en">English</option><option value="es">Español</option></select>
   <button id="wide-btn" class="btn btn-sm" onclick="toggleWide()" title="화면 넓게 / 좁게 — 기본은 넓게 (이 브라우저에만 저장돼)" style="padding:2px 8px;font-size:10px;background:#1d3f66;color:#cfe0f2;border-color:#2b5384;">↔ Wide</button>
-  <span id="app-ver" style="font-size:10px;color:#9fb8d4;">v965</span>
+  <span id="app-ver" style="font-size:10px;color:#9fb8d4;">v966</span>
 </div>
 <script>
 // ↔ 넓게 보기 — 브라우저마다 따로 저장 (v793)
@@ -330,6 +336,7 @@ try{ applyWide(localStorage.getItem('psx_wide') !== '0'); }catch(e){ applyWide(t
     <div class="card-title"><span data-i18n="t_lines">③ Line Items &amp; Warehouse</span>
       <span class="muted" style="font-weight:400;" data-i18n="lines_hint">Check stock in Davinci → assign SC / CA / BO per line</span>
     </div>
+    <div id="po-lock-bar" style="display:none;gap:10px;align-items:center;flex-wrap:wrap;margin:0 0 9px;padding:8px 12px;background:#fffbeb;border:1px solid #fcd34d;border-radius:8px;font-size:12px;"></div>
     <div style="overflow-x:auto;" id="lines-xwrap">
     <table class="etbl">
       <thead><tr>
@@ -2255,12 +2262,14 @@ function pcPulseSync(i){
   else poLines.forEach((l,n)=>one(n));
 }
 function renderTable(){
+  try{ setTimeout(poLockBanner, 0); }catch(e){}
   const tb = $('lines-body');
   _lineAvailCache = {};   // 재고 캐시 초기화 — 이번 렌더 동안만 재사용 (v442)
   tb.innerHTML = poLines.map((l,i)=>{
     const b = boxCalc(l);
-    return `<tr id="row-${i}" draggable="false" onmousedown="poDragArm(event,${i})" ondragstart="poDragStart(event,${i})" ondragend="poDragEnd()" ondragover="poDragOver(event,${i})" ondragleave="poDragLeave(${i})" ondrop="poDrop(event,${i})" title="Grab anywhere on this line (not on a box you type in) and drag it up or down" style="${l.wh==='BO'?'background:#fef2f2;':''}">
-      <td class="muted" style="white-space:nowrap;"><span title="Drag to move this line up or down" style="cursor:grab;color:#94a3b8;font-weight:900;padding:0 2px;user-select:none;">\u283F</span><button class="btn btn-sm" style="color:#7c3aed;border:none;padding:2px 4px;" onclick="openSplitLine(${i})" title="Split this line's qty across SC/CA/BO/NA">✂</button>${l.wh==='BO'?`<button class="btn btn-sm" style="color:#dc2626;border:none;padding:2px 4px;font-weight:800;" onclick="openAltPicker(${i})" title="Choose an in-stock alternative (size / color / style)">⇄</button>`:''}${i+1}${l._altFrom?`<div style="font-size:8.5px;color:#dc2626;font-weight:800;line-height:1;margin-top:1px;" title="Alternative for ${esc(l._altFrom.style)} ${esc(String(l._altFrom.color).toUpperCase())} ${esc(String(l._altFrom.size).toUpperCase())} (BO ${(Number(l._altFrom.qty)||0).toLocaleString()})">⇄alt</div>`:''}</td>
+    const _lk = !!l._lk;
+    return `<tr id="row-${i}"${_lk?' class="polk"':''} draggable="false" onmousedown="poDragArm(event,${i})" ondragstart="poDragStart(event,${i})" ondragend="poDragEnd()" ondragover="poDragOver(event,${i})" ondragleave="poDragLeave(${i})" ondrop="poDrop(event,${i})" title="${_lk?'Locked — this line is not part of this change. Click the padlock to edit it.':'Grab anywhere on this line (not on a box you type in) and drag it up or down'}" style="${l.wh==='BO'&&!_lk?'background:#fef2f2;':''}">
+      <td class="muted" style="white-space:nowrap;">${_lk?`<button class="btn btn-sm polk-btn" onclick="poLockToggle(${i})" title="This line is locked so it is not touched by this change. Click to unlock and edit it." style="border:none;padding:2px 3px;font-size:12px;color:#94a3b8;">\u{1F512}</button>`:`<button class="btn btn-sm polk-btn" onclick="poLockToggle(${i})" title="${window._poLockMode?'Unlocked — this line IS part of this change and will print on the revision. Click to lock it again.':'Lock this line'}" style="border:none;padding:2px 3px;font-size:12px;color:${window._poLockMode?'#b45309':'#e2e8f0'};">${window._poLockMode?'\u{1F513}':'\u{1F512}'}</button>`}<span title="Drag to move this line up or down" style="cursor:grab;color:#94a3b8;font-weight:900;padding:0 2px;user-select:none;">\u283F</span><button class="btn btn-sm" style="color:#7c3aed;border:none;padding:2px 4px;" onclick="openSplitLine(${i})" title="Split this line's qty across SC/CA/BO/NA">✂</button>${l.wh==='BO'?`<button class="btn btn-sm" style="color:#dc2626;border:none;padding:2px 4px;font-weight:800;" onclick="openAltPicker(${i})" title="Choose an in-stock alternative (size / color / style)">⇄</button>`:''}${i+1}${l._altFrom?`<div style="font-size:8.5px;color:#dc2626;font-weight:800;line-height:1;margin-top:1px;" title="Alternative for ${esc(l._altFrom.style)} ${esc(String(l._altFrom.color).toUpperCase())} ${esc(String(l._altFrom.size).toUpperCase())} (BO ${(Number(l._altFrom.qty)||0).toLocaleString()})">⇄alt</div>`:''}</td>
       <td><input id="st-${i}" value="${esc(l.style)}" onchange="updLine(${i},'style',this.value)" placeholder="?" style="min-width:60px;max-width:80px;font-weight:700;${l.style?'':'background:#fef9c3;border-color:#facc15;'}"></td>
       <td class="tl"><input id="de-${i}" class="tl" value="${esc(l.desc||'')}" onchange="updLine(${i},'desc',this.value)" placeholder="(PO description)" title="${esc(l.desc||'')}${l.rawDesc?('\n\nFrom the PO: '+esc(l.rawDesc)):''}" style="width:100%;min-width:240px;color:#6b7280;font-size:11px;"></td>
       <td class="tl"><input class="tl" value="${esc(l.color)}" onchange="updLine(${i},'color',this.value)" style="min-width:110px;"><div id="vchip-${i}" style="margin-top:2px;display:flex;gap:3px;flex-wrap:wrap;">${varChip(l)}${skuChip(l,i)}</div></td>
@@ -2721,6 +2730,115 @@ function buildDocHtml(wh, opts){
   </div>`;
 }
 
+/* ═══════════ 📝 REVISION PULL REQUEST (v966) ═══════════
+   오더를 고치면 전체 PR 이 또 나와서, 창고가 이미 뽑아 놓은 것까지 다시 뽑는 일이 있었다.
+   이제 고친 줄만 한 장으로 나온다.
+
+   종이를 나누는 기준은 "가져와라 / 갖다 놔라" 가 아니라 **누가 어디서 일하는가** 다.
+   PC Room 사람은 PC Room 안에서 뽑기도 하고 도로 놓기도 한다 — 그러니 한 표에 같이 나온다.
+   Full Box 사람도 마찬가지. 한 사람이 한 바퀴만 돌면 끝나게. */
+function revOf(rec, n){
+  const revs = (rec && rec.meta && Array.isArray(rec.meta._revs)) ? rec.meta._revs : [];
+  if(!revs.length) return null;
+  return (n==null) ? revs[revs.length-1] : (revs.find(r=>Number(r.n)===Number(n)) || null);
+}
+function revCount(rec){ return ((rec && rec.meta && Array.isArray(rec.meta._revs)) ? rec.meta._revs : []).length; }
+/* 한 줄의 변화를 창고 일감으로 바꾼다: 풀박스 몇 개, 낱장 몇 장 (부호 포함) */
+function revWork(rec, wh, rv){
+  const out = { full: [], loose: [], moved: [] };
+  if(!rv) return out;
+  const cur = {}; (rec.lines||[]).forEach(l=>{ if(l) cur[[l.style||'',l.color||'',l.size||''].filter(Boolean).join(' ')] = l; });
+  (rv.keys||[]).forEach(k=>{
+    const sn = (rv.lines||{})[k]; if(!sn) return;
+    const ppb = Number(sn.ppb)||DEFAULT_PPB;
+    const calc = (q, w) => (w===wh && q>0) ? boxCalc({qty:q, ppb, wh:w}) : {full:0, loose:0};
+    const a = calc(Number(sn.qtyFrom)||0, sn.whFrom || sn.whTo);
+    const b = calc(Number(sn.qtyTo)||0,   sn.whTo   || sn.whFrom);
+    const dF = (b.full||0) - (a.full||0);
+    const dL = (b.loose||0) - (a.loose||0);
+    if(!dF && !dL) return;
+    const L = cur[k] || null;
+    const row = { k, style:sn.style, color:sn.color, size:sn.size, desc:sn.desc,
+                  pbox: sn.pbox, qtyFrom:Number(sn.qtyFrom)||0, qtyTo:Number(sn.qtyTo)||0,
+                  line: L, dF, dL };
+    if(dF) out.full.push(row);
+    if(dL) out.loose.push(row);
+  });
+  return out;
+}
+function revDirChip(n){
+  return n > 0
+    ? `<span style="display:inline-block;min-width:74px;background:#1d4ed8;color:#fff;font-weight:900;border-radius:4px;padding:1px 7px;font-size:11px;">PULL +${n}</span>`
+    : `<span style="display:inline-block;min-width:74px;background:#b45309;color:#fff;font-weight:900;border-radius:4px;padding:1px 7px;font-size:11px;">PUT BACK ${Math.abs(n)}</span>`;
+}
+function buildRevDocHtml(rec, wh, n){
+  const rv = revOf(rec, n); if(!rv) return '';
+  const w  = revWork(rec, wh, rv);
+  if(!w.full.length && !w.loose.length) return '';
+  const num = plNum(rec.base, wh);
+  const m = rec.meta || {};
+  const when = new Date(rv.at||Date.now()).toLocaleString('en-US',{month:'numeric',day:'numeric',year:'numeric',hour:'numeric',minute:'2-digit'});
+  const cell = (v)=>`<td style="text-align:center;font-weight:900;font-family:Consolas,monospace;">${v}</td>`;
+  const looseRows = w.loose.map(r=>{
+    const bins = (r.dL > 0 && r.line) ? prLooseBinsHtml(r.line) : '';
+    return `<tr>
+      <td style="font-weight:700;">${esc(r.style)}</td><td class="tl">${esc(r.color)}</td><td>${esc(r.size)}</td>
+      <td>${revDirChip(r.dL)}</td>
+      ${cell(Math.abs(r.dL))}
+      <td class="tl" style="font-size:10.5px;color:#475569;">${r.dL>0 ? (bins || 'from the PC Room') : 'back to the PC Room'}${r.pbox?`<div style="color:#c2410c;font-weight:700;">Box ${esc(r.pbox)}</div>`:''}</td>
+      <td style="font-size:10px;color:#94a3b8;white-space:nowrap;">${r.qtyFrom.toLocaleString()} → ${r.qtyTo.toLocaleString()}</td>
+    </tr>`;
+  }).join('');
+  const fullRows = w.full.map(r=>{
+    const locs = (r.dF>0 && r.line && r.line.pickLocs && r.line.pickLocs.length)
+      ? [...new Set(r.line.pickLocs.map(g=>String(g.loc)))].join(', ') : '';
+    return `<tr>
+      <td style="font-weight:700;">${esc(r.style)}</td><td class="tl">${esc(r.color)}</td><td>${esc(r.size)}</td>
+      <td>${revDirChip(r.dF)}</td>
+      ${cell(Math.abs(r.dF))}
+      <td class="tl" style="font-size:10.5px;color:#475569;">${r.dF>0 ? (esc(locs) || 'pull from the bin') : 'return to its bin'}</td>
+      <td style="font-size:10px;color:#94a3b8;white-space:nowrap;">${r.qtyFrom.toLocaleString()} → ${r.qtyTo.toLocaleString()}</td>
+    </tr>`;
+  }).join('');
+  const _sigC = lbl=>`<div style="margin-top:10px;max-width:360px;page-break-inside:avoid;"><div style="border-bottom:1.5px solid #111;height:30px;"></div><div style="display:flex;justify-content:space-between;align-items:baseline;margin-top:4px;"><span style="font-size:11px;font-weight:700;color:#111;">${lbl}</span><span style="font-size:10px;color:#666;">Date: ____________</span></div></div>`;
+  const head = `<tr><th>Style#</th><th class="tl">Color</th><th>Size</th><th style="min-width:96px;">Do what</th><th>How many</th><th class="tl">Where</th><th>Order qty</th></tr>`;
+  return `<div class="inv-doc">
+    <div style="background:#7c2d12;padding:12px 20px;display:flex;justify-content:space-between;align-items:center;">
+      <img src="${LOGO_B64}" style="height:38px;width:auto;">
+      <div style="color:#fff;font-size:22px;font-weight:800;letter-spacing:2px;">PULL REQUEST · REVISION ${rv.n}</div>
+    </div>
+    <div style="background:#b45309;color:#fff;padding:10px 20px;text-align:center;font-size:15px;font-weight:900;letter-spacing:1px;">
+      ⚠ THIS IS NOT THE WHOLE ORDER — DO ONLY THE LINES ON THIS SHEET
+    </div>
+    <div style="background:#fff7ed;border:1px solid #fed7aa;border-top:none;padding:8px 20px;font-size:11.5px;color:#7c2d12;">
+      Everything else in this order is unchanged and already in progress — <b>do not pull it again</b>.
+      Some lines say <b>PUT BACK</b>: the order got smaller, so those pieces go back where they came from.
+    </div>
+    <div style="display:flex;justify-content:space-between;gap:16px;background:#f5f7fa;border:1px solid var(--border);border-top:none;padding:10px 20px;margin-bottom:14px;">
+      <div><div style="font-weight:700;font-size:11px;color:var(--header);">PEACE TEXTILE AMERICA, INC. <span style="font-weight:400;color:#555;">d.b.a Pacific Sports</span></div>
+        <div class="inv-co-addr">${esc(WH_ADDR[wh]||'')}</div></div>
+      <div style="min-width:250px;">
+        <div class="inv-meta-row"><span>Ref No.</span><span>${esc(num)}</span></div>
+        <div class="inv-meta-row"><span>Customer</span><span>${esc(m.cust||'')}</span></div>
+        <div class="inv-meta-row"><span>PO Number</span><span>${esc(m.po||'')}</span></div>
+        <div class="inv-meta-row"><span>Warehouse</span><span>${esc(WH_LABEL[wh]||wh)}</span></div>
+        <div class="inv-meta-row"><span>Revision ${rv.n} made</span><span>${esc(when)}</span></div>
+      </div>
+    </div>
+    ${w.loose.length ? `<div style="background:#c2410c;color:#fff;padding:7px 20px;font-weight:800;letter-spacing:1px;font-size:14px;margin-bottom:6px;">🧺 PC ROOM — loose pieces</div>
+    <table class="inv-tbl"><thead>${head}</thead><tbody>${looseRows}</tbody></table>
+    ${_sigC('PC Room done by')}` : ''}
+    ${w.full.length ? `<div style="background:#1d4ed8;color:#fff;padding:7px 20px;font-weight:800;letter-spacing:1px;font-size:14px;margin:${w.loose.length?'34px':'0'} 0 6px;">📦 FULL BOX</div>
+    <table class="inv-tbl"><thead>${head}</thead><tbody>${fullRows}</tbody></table>
+    ${_sigC('Full Box done by')}` : ''}
+  </div>`;
+}
+function printRevPR(base, wh, n){
+  const rec = savedCache.find(s=>s.base===base); if(!rec) return;
+  const html = buildRevDocHtml(rec, wh, n);
+  if(!html){ showToast('No changed lines for '+wh+' in this revision'); return; }
+  printDocHtml(html, plNum(rec.base, wh)+' REV'+(revOf(rec,n)||{}).n);
+}
 let currentDocWh = null;
 function renderDocs(){
   const whs = activeWhs();
@@ -3336,7 +3454,42 @@ async function _saveCurrentInner(){
     } else {
       (rec.lines||[]).forEach(L=>{ delete L.pcMovePrintedN; });
     }
+    /* ── 📝 리비전 기록 (v966) ──────────────────────────────
+       이번 저장에서 실제로 바뀐 줄만 묶어 둔다. 창고에 나가는 새 종이는
+       이 묶음만 보고 만든다 — 이미 뽑아 놓은 나머지 줄은 종이에 아예 안 나온다.
+       종이가 옛 기록을 다시 뒤지지 않아도 되게, 바뀌기 전/후 값을 여기 같이 박아 둔다. */
+    if(orderChanges.length){
+      const lineCh = orderChanges.filter(c=>c.kind!=='meta');
+      const K = l => [l.style||'', l.color||'', l.size||''].filter(Boolean).join(' ');
+      const oldMap = {}; (existing.lines||[]).forEach(l=>{ if(l) oldMap[K(l)] = l; });
+      const newMap = {}; (rec.lines||[]).forEach(l=>{ if(l) newMap[K(l)] = l; });
+      const keys = [...new Set(lineCh.map(c=>c.item))];
+      const snap = {};
+      keys.forEach(k=>{
+        const o = oldMap[k] || null, n = newMap[k] || null;
+        const src = n || o; if(!src) return;
+        snap[k] = {
+          style: src.style||'', color: src.color||'', size: src.size||'', desc: src.desc||'',
+          ppb: Number((n||o).ppb)||DEFAULT_PPB,
+          pbox: String((n||o).pbox||''),
+          qtyFrom: Number(o&&o.qty)||0,  qtyTo: Number(n&&n.qty)||0,
+          whFrom: String((o&&o.wh)||''), whTo: String((n&&n.wh)||'')
+        };
+      });
+      const prev = (existing.meta && Array.isArray(existing.meta._revs)) ? existing.meta._revs : [];
+      rec.meta = { ...rec.meta, _revs: prev.concat([{
+        n: prev.length + 1,
+        at: new Date().toISOString(),
+        by: (SESS && SESS.email) || '',
+        keys, lines: snap,
+        changes: lineCh.map(c=>({item:c.item, field:c.field, from:c.from, to:c.to, kind:c.kind}))
+      }]).slice(-30) };
+    } else if(existing.meta && existing.meta._revs){
+      rec.meta = { ...rec.meta, _revs: existing.meta._revs };
+    }
   }
+  /* 화면에서만 쓰는 잠금 표시는 DB 에 남기지 않는다 (v966) */
+  (rec.lines||[]).forEach(L=>{ if(L){ delete L._lk; delete L._was; } });
   const ok = await upsertRec(rec);
   if(!ok){ alert(t('save_fail')); return; }
   // 전체 리스트 재다운로드 없이 로컬 캐시만 갱신 (11MB 다운로드 제거 — 저장 즉시 반영)
@@ -3360,6 +3513,7 @@ function clearOrderForm(){
   window._poPdfB64 = null;
   window._forceBase = null;
   window._formReplaceOf = null;
+  window._poLockMode = false;          // 새 오더는 잠그지 않는다 (v966)
   try{ localStorage.removeItem(LS_DRAFT); }catch(e){}
   togglePoViewer(false);                                  // 뷰어 닫기 + 본문 44% 밀림 원복 (v391)
   const pt = $('po-viewer-tab'); if(pt) pt.style.display = 'none';
@@ -3467,12 +3621,43 @@ async function loadSaved(base){
   togglePoViewer(false);                                  // 뷰어 닫기 + 본문 밀림 원복 (v391)
   window._forceBase = rec.base; // 편집 중 이름/PO/날짜를 고쳐도 같은 오더로 저장 (새 오더 생성 방지)
   setMeta(rec.meta); poLines = normalizeLines(rec.lines);
-  poLines.forEach(l=>{ if(l) l.pcMoveData = []; });
+  /* 🔒 수정 모드 (v966) — 저장된 오더를 열면 모든 줄을 잠근다.
+     예전에는 전부 열린 채로 열려서, 저장하면 이미 창고가 다 뽑아 놓은 줄까지
+     Pull Request 에 또 나왔다. 이제 고칠 줄만 자물쇠를 열고, 그 줄만 새 종이에 나온다.
+     _was = 열었을 때의 값. 저장할 때 무엇이 실제로 바뀌었는지 이걸로 판단한다. */
+  window._poLockMode = true;
+  poLines.forEach(l=>{ if(!l) return;
+    l.pcMoveData = [];
+    l._lk = true;
+    l._was = { qty:Number(l.qty)||0, price:Number(l.price)||0, wh:String(l.wh||''), pbox:String(l.pbox||''), ppb:Number(l.ppb)||0 };
+  });
   renderTable(); updateNumPreview(); renderDocs();
+  showToast('🔒 All lines are locked — open only the ones you are changing');
   /* 🧺 되돌리기 살리기 (v828) — 예전엔 여기서 비우고 끝이라 오더를 다시 열면 ↩ 버튼이 사라졌다.
      되돌릴 박스는 DB 에 'PC ROOM (PO xxxx)' 로 표시돼 있으니 다시 찾아 붙인다. */
   pcMoveRelink(poLines, (rec.meta&&rec.meta.po)).then(k=>{ if(k) renderTable(); });
   window.scrollTo({top:0,behavior:'smooth'});
+}
+/* 자물쇠 열기/잠그기. 연 줄만 이번 수정 대상이고, 새 Pull Request 에 나온다. (v966) */
+function poLockToggle(i){
+  const l = poLines[i]; if(!l) return;
+  l._lk = !l._lk;
+  if(!l._lk && !l._was) l._was = { qty:Number(l.qty)||0, price:Number(l.price)||0, wh:String(l.wh||''), pbox:String(l.pbox||''), ppb:Number(l.ppb)||0 };
+  renderTable(); poLockBanner();
+}
+function poLockOpenAll(){ poLines.forEach(l=>{ if(l) l._lk=false; }); renderTable(); poLockBanner(); }
+function poLockCloseAll(){ poLines.forEach(l=>{ if(l) l._lk=true; }); renderTable(); poLockBanner(); }
+/* 몇 줄이 열려 있는지 위에 계속 보여 준다 — 다 잠근 채로 저장하면 아무것도 안 바뀐다 */
+function poLockBanner(){
+  const el = document.getElementById('po-lock-bar'); if(!el) return;
+  if(!window._poLockMode){ el.style.display='none'; el.innerHTML=''; return; }
+  const open = poLines.filter(l=>l && !l._lk).length;
+  const tot  = poLines.filter(l=>l).length;
+  el.style.display='flex';
+  el.innerHTML = `<span style="font-weight:800;color:${open?'#b45309':'#0f766e'};">${open?('🔓 '+open+' of '+tot+' line(s) open for this change'):('🔒 All '+tot+' lines locked — nothing will change')}</span>`
+    + `<span style="color:#64748b;">Only the lines you open print on the new Pull Request. Everything else stays as the warehouse already has it.</span>`
+    + `<button class="btn btn-sm" onclick="poLockOpenAll()" style="margin-left:auto;">Open all</button>`
+    + `<button class="btn btn-sm" onclick="poLockCloseAll()">Lock all</button>`;
 }
 // ═══ 오더 라인 분리: 일부 아이템/수량을 별도 오더(-S1)로 빼서 따로 진행 ═══
 function splitOrderOpen(base){
@@ -30578,7 +30763,13 @@ function renderSaved(){
         ${w!=='BO' && w!=='NA' && !consolSC ? `<input type="checkbox" class="bship-cb" data-base="${esc(s.base)}" data-wh="${w}" onchange="updateBatchBar()" title="Include in batch (pre-ship = Batch Ship / post-ship = Invoice Print)" style="width:15px;height:15px;accent-color:#1d4ed8;cursor:pointer;">` : ''}
         <span class="chip chip-${w}" style="min-width:34px;text-align:center;">${w}</span>
         ${(w!=='BO' && w!=='NA' && !consolSC) ? tdBtn(s.base, w) + pcrChip(s.base, w) : ''}
-        <button class="btn btn-sm" style="background:${c};color:#fff;border-color:${c};" onclick="docBtnClick('${esc(s.base)}','${w}','pr')" oncontextmenu="return docBtnMenu(event,'${esc(s.base)}','${w}','pr')" title="Right-click: ${mp.pr?'clear':'mark'} done (green)">🖨 Pull Request${pby(mp.pr)}</button>
+        <button class="btn btn-sm" style="background:${c};color:#fff;border-color:${c};" onclick="docBtnClick('${esc(s.base)}','${w}','pr')" oncontextmenu="return docBtnMenu(event,'${esc(s.base)}','${w}','pr')" title="The WHOLE order for ${w}. Right-click: ${mp.pr?'clear':'mark'} done (green)">🖨 Pull Request${pby(mp.pr)}</button>
+        ${(()=>{ /* 📝 고친 줄만 나오는 종이 — 리비전이 있고 이 창고에 실제 일감이 있을 때만 (v966) */
+          const rv = revOf(s, null); if(!rv) return '';
+          let has=false; try{ has = !!buildRevDocHtml(s, w, rv.n); }catch(e){ has=false; }
+          if(!has) return '';
+          return `<button class="btn btn-sm" style="background:#b45309;color:#fff;border-color:#b45309;font-weight:800;" onclick="printRevPR('${esc(s.base)}','${w}',${rv.n})" title="Only the lines changed in revision ${rv.n} — pull AND put-back together, split by PC Room / Full Box. Give the warehouse this one, not the whole order.">🖨 REV ${rv.n} only</button>`;
+        })()}
         ${w==='BO' ? (()=>{ const days = Math.floor((Date.now() - new Date(s.savedAt||s.meta.date||Date.now()).getTime())/86400000); const c2 = days>=14?'#dc2626':(days>=7?'#ea580c':'#6b7280'); return `<span style="padding:2px 8px;border-radius:20px;font-size:10px;font-weight:800;background:#fff;color:${c2};border:1.5px solid ${c2};white-space:nowrap;${days>=14?'animation:overdue-pulse 1s ease-in-out infinite;':''}">⏳ Day ${days}</span>`; })() : ''}
         ${(w==='BO'||w==='NA') ? `<button class="btn btn-sm" style="background:#f5f3ff;color:#6d28d9;border-color:#c4b5fd;font-weight:700;" onclick="processFromWh('${esc(s.base)}','${w}','SC')" title="Stock arrived — split into a separate order (-${w==='BO'?'B':'N'}) and ship from SC">⚙ Process from SC</button><button class="btn btn-sm" style="background:#fff7ed;color:#c2410c;border-color:#fed7aa;font-weight:700;" onclick="processFromWh('${esc(s.base)}','${w}','CA')" title="Stock arrived — split into a separate order (-${w==='BO'?'B':'N'}) and ship from CA">⚙ Process from CA</button><button class="btn btn-sm" style="background:#fee2e2;color:#b91c1c;border-color:#fca5a5;font-weight:700;" onclick="boAltFromList('${esc(s.base)}')" title="Replace a back-ordered item with an in-stock alternative (style / color / size / qty), then finish the order">⇄ Alternate</button>` : ''}
         ${w!=='BO' && w!=='NA' ? `<button class="btn btn-sm" style="background:${(mp.label||locker)?'#16a34a':'#7c3aed'};color:#fff;border-color:${(mp.label||locker)?'#16a34a':'#7c3aed'};" onclick="docBtnClick('${esc(s.base)}','${w}','label')" oncontextmenu="return docBtnMenu(event,'${esc(s.base)}','${w}','label')" title="Right-click: ${mp.label?'clear':'mark'} done (green)">🏷 Box Label${pby(mp.label)}</button><button class="btn btn-sm" style="background:#0f766e;color:#fff;border-color:#0f766e;" onclick="openBoxLabelForRecWh('${esc(s.base)}','${w}','full')" title="Small 2x1 label for individual full boxes (load 2x1 label stock)">🏷 Full Box</button>
