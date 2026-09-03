@@ -192,7 +192,7 @@ body.po-dragging{user-select:none;}
   </span>
   <select id="lang-sel" onchange="setLang(this.value)" style="font-size:11px;padding:3px 6px;border-radius:5px;border:none;background:#1d3f66;color:#fff;"><option value="ko">한국어</option><option value="en">English</option><option value="es">Español</option></select>
   <button id="wide-btn" class="btn btn-sm" onclick="toggleWide()" title="화면 넓게 / 좁게 — 기본은 넓게 (이 브라우저에만 저장돼)" style="padding:2px 8px;font-size:10px;background:#1d3f66;color:#cfe0f2;border-color:#2b5384;">↔ Wide</button>
-  <span id="app-ver" style="font-size:10px;color:#9fb8d4;">v989</span>
+  <span id="app-ver" style="font-size:10px;color:#9fb8d4;">v990</span>
 </div>
 <script>
 // ↔ 넓게 보기 — 브라우저마다 따로 저장 (v793)
@@ -3099,8 +3099,17 @@ function mergeFailedAsEmailAtts(){
 }
 async function makePdfBlob(docHtml, attachFiles, footerText){
   await loadPdfLib();
+  /* 📄 종이를 그릴 자리 (v990에서 고침).
+     [무엇이 잘못됐었나] TTY 21장을 한 번에 만들어 보냈더니 몇 장이 **머리(PACKING LIST 띠)가
+     페이지 한가운데에 찍힌 채** 나갔다. 원인은 두 가지가 겹친 것:
+       ① 그릴 자리를 `height:0; overflow:hidden` 인 상자 안에 넣었다 — 높이가 0 이고 잘려 있는
+          부모 안에서 html2canvas 가 위치를 재면 스크롤 위치에 따라 어긋난다.
+       ② 자리를 붙이고 **120ms 만 기다리고** 찍었다. 한 장 만들 땐 충분하지만, 21장을 연달아
+          만들면 그리는 일이 밀려서 아직 자리를 못 잡은 화면을 찍는다.
+     [고침] 화면 밖 고정 좌표에 제대로 된 높이로 붙이고(잘리는 부모 없음), 글꼴이 준비되고
+     화면이 두 번 다시 그려질 때까지 기다린 뒤에 찍는다. */
   const wrap = document.createElement('div');
-  wrap.style.cssText = 'height:0;overflow:hidden;';
+  wrap.style.cssText = 'position:absolute;left:-99999px;top:0;width:760px;';
   const holder = document.createElement('div');
   holder.className = 'pdf-mode';
   holder.style.cssText = 'width:720px;background:#fff;padding:0;';   // 오른쪽 잘림 방지 안전 마진 (letter usable ≈740px → 720으로 여유)
@@ -3109,7 +3118,12 @@ async function makePdfBlob(docHtml, attachFiles, footerText){
   document.body.appendChild(wrap);
   const _sx = window.scrollX, _sy = window.scrollY;
   window.scrollTo(0, 0);
-  await new Promise(r=>setTimeout(r, 120));
+  try{ if(document.fonts && document.fonts.ready) await document.fonts.ready; }catch(e){}
+  await new Promise(r=>requestAnimationFrame(()=>requestAnimationFrame(r)));
+  await new Promise(r=>setTimeout(r, 150));
+  /* 자리가 실제로 잡혔는지 확인하고, 아직이면 조금 더 기다린다 (최대 ~1.2초).
+     높이가 0 인 채로 찍으면 빈 종이나 어긋난 종이가 나간다. */
+  for(let _t=0; _t<12 && holder.offsetHeight < 50; _t++){ await new Promise(r=>setTimeout(r, 90)); }
   let blob;
   try{
     let _worker = html2pdf().set({
@@ -13738,6 +13752,34 @@ async function bulkBadge(){
   const host=document.getElementById('bulk-banner'); if(!host) return;
   let list=[]; try{ const r=await sbFetch('/rest/v1/pr_bulkship?select=*&status=eq.PENDING&order=created_at.desc&limit=20'); if(r.ok) list=await r.json(); }catch(e){ return; }
   if(!Array.isArray(list)||!list.length){ host.innerHTML=''; return; }
+  /* 🚛 다 나간 묶음은 스스로 닫힌다 (v990).
+     [왜] 21개 PO 를 Batch Ship 으로 내보내고 인보이스까지 냈는데 초록 배너와 "LTL ready 1"
+     이 그대로 남아 있었다. 묶음을 SHIPPED 로 바꿔주는 자리가 **Inform Customer 이메일**과
+     Bulk Shipments 화면의 수동 버튼 두 곳뿐이었기 때문이다 — Batch Ship 은 묶음에 아무
+     말도 안 해줬다. 그래서 실제로 나간 화물이 영원히 "준비됨" 으로 남았다.
+     [무엇] 묶음 안의 PO 가 **전부** 그 창고에서 packing list 완료(_completed)면 나간 것이다.
+     어느 경로로 내보냈든 상관없다 — 여기서 조용히 SHIPPED 로 닫는다. */
+  try{
+    const still=[];
+    for(const b of list){
+      const wh = String(b.wh||'').toUpperCase();
+      const bases = [...new Set((b.pos||[]).map(p=>String(p.base||'')).filter(Boolean))];
+      const allOut = bases.length && bases.every(bs=>{
+        const rec = (savedCache||[]).find(s=>s.base===bs);
+        return !!(rec && rec.pl && rec.pl[wh] && rec.pl[wh]._completed);
+      });
+      if(allOut){
+        try{ await sbFetch('/rest/v1/pr_bulkship?id=eq.'+encodeURIComponent(b.id),{method:'PATCH',headers:{Prefer:'return=minimal'},
+          body:JSON.stringify({status:'SHIPPED', shipped_at:new Date().toISOString(), shipped_by:(SESS&&SESS.email)||''})}); }catch(e){}
+      } else still.push(b);
+    }
+    if(still.length !== list.length){
+      list = still;
+      if(typeof bulkBasesDirty==='function') bulkBasesDirty();   // LTL ready 카운트도 다시 세게 한다
+      try{ if(typeof renderKpi==='function') renderKpi(); }catch(e){}
+    }
+  }catch(e){}
+  if(!list.length){ host.innerHTML=''; return; }
   const _stale = await bulkStale(list);                 // 배치별로 「포장이 풀린 PO 수」
   host.innerHTML=list.map(b=>{ const n=(b.pos||[]).length, boxes=b.total_boxes||0, pal=b.pallets||0;
     const gone=_stale[b.id]||0;
@@ -22208,6 +22250,11 @@ async function bxRptOpen(){
   rows.forEach(r=>{ if(!styleSz[r.s]) styleSz[r.s] = bxRptStyleSizes(r.s); });
   const allSizes = bxRptSortSizes(new Set(rows.flatMap(r=>[...styleSz[r.s]])));
   window._bxRptRows = rows; window._bxRptSizes = allSizes; window._bxRptStyleSz = styleSz;
+  /* 🔀 보여줄 차례 (v990). 줄 배열(_bxRptRows) 자체는 절대 섞지 않는다 — 사람이 친 숫자가
+     `rpt-i-<ri>-<zi>` 라는 id 로 그 줄에 매여 있어서, 배열을 섞으면 숫자와 줄이 어긋난다.
+     그래서 "원래 번호를 어떤 차례로 내보낼지" 만 따로 들고 다닌다. 끌어서 순서를 바꿔도
+     이미 친 숫자가 그대로 남는 이유가 이것이다. */
+  window._bxRptOrder = rows.map((_,i)=>i);
   const _o = rptOptGet();                                    // 지난번에 고른 설정 그대로 (v839)
   const _src = r => rptSrc(r, _o);
   const anyWh = rows.some(r=>r.w!=='TOTAL');
@@ -22254,8 +22301,9 @@ async function bxRptOpen(){
     <div style="overflow:auto;flex:1;padding:10px 16px;">
       <div id="rpt-stk-wrap" style="${rows.some(r=>r.w!=='INC')?'':'display:none;'}">
       <table class="etbl" style="font-size:12px;">
-        <thead><tr><th class="tl">Style</th><th class="tl">Item</th><th class="tl">Color</th>${anyWh?'<th>WH</th>':''}${allSizes.map(z=>'<th>'+esc(z)+'</th>').join('')}<th>Total</th><th></th></tr></thead>
-        <tbody>${rows.map((r,ri)=> r.w==='INC' ? '' : `<tr>
+        <thead><tr><th style="width:22px;"></th><th class="tl">Style</th><th class="tl">Item</th><th class="tl">Color</th>${anyWh?'<th>WH</th>':''}${allSizes.map(z=>'<th>'+esc(z)+'</th>').join('')}<th>Total</th><th></th></tr></thead>
+        <tbody id="rpt-stk-body">${rows.map((r,ri)=> r.w==='INC' ? '' : `<tr data-ri="${ri}">
+          <td style="width:22px;text-align:center;color:#94a3b8;cursor:grab;user-select:none;font-size:13px;" class="rpt-grip" title="Drag to reorder — hold, then move up or down">⠿</td>
           <td class="tl" style="font-weight:800;font-family:Consolas,monospace;">${esc(r.s)}</td>
           <td class="tl" style="font-size:11px;color:#475569;white-space:nowrap;">${esc(bxRptType(r.s))}</td>
           <td class="tl" style="font-weight:700;">${esc(r.c)}</td>
@@ -22270,7 +22318,7 @@ async function bxRptOpen(){
       <div style="font-weight:800;color:#0e7490;margin:14px 0 6px;font-size:12.5px;">🚢 Incoming — shipped from factory (Haiti), editable · qty in PCS</div>
       <table class="etbl" style="font-size:12px;">
         <thead><tr><th class="tl">Style</th><th class="tl">Item</th><th class="tl">Color</th>${anyWh?'<th>WH</th>':''}${allSizes.map(z=>'<th>'+esc(z)+'</th>').join('')}<th>Total</th></tr></thead>
-        <tbody>${rows.map((r,ri)=>`<tr>
+        <tbody id="rpt-inc-body">${rows.map((r,ri)=>`<tr data-ri="${ri}">
           <td class="tl" style="font-weight:800;font-family:Consolas,monospace;">${esc(r.s)}</td>
           <td class="tl" style="font-size:11px;color:#475569;white-space:nowrap;">${esc(bxRptType(r.s))}</td>
           <td class="tl" style="font-weight:700;">${esc(r.c)}</td>
@@ -22294,6 +22342,7 @@ async function bxRptOpen(){
     </div></div>`;
   document.body.appendChild(div);
   bxRptOptBanner(_o);
+  try{ rptDragArm(); }catch(e){}   // 🔀 줄을 끌어서 차례 바꾸기 (v990)
 }
 function bxRptDropRow(ri){
   const r = (window._bxRptRows||[])[ri]; if(!r) return;
@@ -22319,9 +22368,59 @@ function bxRptIncTot(ri){
   sizes.forEach((z,zi)=>{ const e = document.getElementById('rpt-n-'+ri+'-'+zi); if(e && e.value!=='') t += (parseInt(String(e.value).replace(/,/g,''))||0); });
   const el = document.getElementById('rpt-nt-'+ri); if(el) el.textContent = t.toLocaleString();
 }
+/* ═══ 🔀 리포트 줄 끌어서 차례 바꾸기 (v990) ═══
+   [왜] 거래처에 보내는 표라서 보여주고 싶은 차례가 따로 있다 — 스타일 번호 순이 아니라
+   많이 나가는 것부터, 또는 이야기한 순서대로. Box Label 즐겨찾기와 같은 손놀림으로 맞춘다.
+   [어떻게] 화면의 <tr> 만 옮기고 `_bxRptOrder` 에 그 차례를 적는다. 줄 배열도, 칸에 친
+   숫자도 건드리지 않는다 — 그래서 순서를 바꿔도 이미 고쳐놓은 수량이 그대로 남는다. */
+let _rptDrag = null;
+function rptDragArm(){
+  const body = document.getElementById('rpt-stk-body'); if(!body || body._armed) return;
+  body._armed = 1;
+  const inc = document.getElementById('rpt-inc-body');
+  body.addEventListener('pointerdown', e=>{
+    const grip = e.target.closest('.rpt-grip'); if(!grip) return;
+    const tr = grip.closest('tr'); if(!tr) return;
+    e.preventDefault();
+    _rptDrag = { tr, moved:false };
+    tr.style.opacity = '.55'; tr.style.background = '#ecfeff';
+    body.style.touchAction = 'none';
+    try{ grip.setPointerCapture(e.pointerId); }catch(err){}
+  });
+  body.addEventListener('pointermove', e=>{
+    if(!_rptDrag) return;
+    e.preventDefault(); _rptDrag.moved = true;
+    const el = document.elementFromPoint(e.clientX, e.clientY);
+    const over = el && el.closest ? el.closest('tr') : null;
+    if(!over || over === _rptDrag.tr || over.parentElement !== body) return;
+    const kids = [...body.children];
+    const a = kids.indexOf(_rptDrag.tr), b = kids.indexOf(over);
+    body.insertBefore(_rptDrag.tr, a < b ? over.nextSibling : over);
+  });
+  const drop = ()=>{
+    if(!_rptDrag) return;
+    const tr = _rptDrag.tr;
+    tr.style.opacity = ''; tr.style.background = '';
+    body.style.touchAction = '';
+    if(_rptDrag.moved){
+      const ord = [...body.children].map(x=>Number(x.getAttribute('data-ri'))).filter(n=>!isNaN(n));
+      window._bxRptOrder = ord;
+      /* 🚢 Incoming 표도 같은 차례로 맞춘다 — 두 표가 서로 다른 순서면 종이가 읽기 어렵다 */
+      if(inc){ ord.forEach(ri=>{ const t2 = inc.querySelector('tr[data-ri="'+ri+'"]'); if(t2) inc.appendChild(t2); }); }
+    }
+    _rptDrag = null;
+  };
+  body.addEventListener('pointerup', drop);
+  body.addEventListener('pointercancel', drop);
+}
 function bxRptData(){
   const rows = window._bxRptRows||[], sizes = window._bxRptSizes||[];
-  return rows.map((r,ri)=>{
+  /* 화면에서 끌어놓은 차례대로 내보낸다 (v990). 칸 값은 원래 번호(ri)로 읽으므로
+     순서를 바꿔도 숫자가 따라 움직이지 않는다. */
+  const order = (Array.isArray(window._bxRptOrder) && window._bxRptOrder.length === rows.length)
+    ? window._bxRptOrder : rows.map((_,i)=>i);
+  return order.map(ri=>{
+    const r = rows[ri];
     const vals = {}, caps = {};
     let tot = 0;
     sizes.forEach((z,zi)=>{ const e = document.getElementById('rpt-i-'+ri+'-'+zi); const v = e && e.value!=='' ? (parseInt(String(e.value).replace(/,/g,''))||0) : null;
@@ -31391,6 +31490,8 @@ async function submitBatchShip(){
   renderSaved();
   showToast('🚛 ' + okCnt + ' order(s) shipped' + (fails.length ? ' · ' + fails.length + ' failed' : ''));
   if(typeof shipDraftAfterShip==='function' && shipped.length) shipDraftAfterShip(shipped);   // 출고된 오더는 batch ship draft에서 제거 (전부 나가면 draft 삭제)
+  /* 🚛 이 묶음이 이제 다 나갔으면 배너와 LTL ready 카운트에서 바로 내린다 (v990) */
+  try{ if(typeof bulkBadge==='function') bulkBadge(); }catch(e){}
   if(wantSend && okCnt>0 && sendQueue.length<okCnt){ alert('⚠ ' + (okCnt-sendQueue.length) + ' shipped order(s) had NO customer email, so no Packing List was emailed for those.\n\nOpen 📦 Packing List on each, enter the email, and press Resend.'); }
   if(wantSend && sendQueue.length){
     const _emList = [...new Set(sendQueue.map(q=>q.em))].join('\n→ ');
