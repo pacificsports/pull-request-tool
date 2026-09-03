@@ -192,7 +192,7 @@ body.po-dragging{user-select:none;}
   </span>
   <select id="lang-sel" onchange="setLang(this.value)" style="font-size:11px;padding:3px 6px;border-radius:5px;border:none;background:#1d3f66;color:#fff;"><option value="ko">한국어</option><option value="en">English</option><option value="es">Español</option></select>
   <button id="wide-btn" class="btn btn-sm" onclick="toggleWide()" title="화면 넓게 / 좁게 — 기본은 넓게 (이 브라우저에만 저장돼)" style="padding:2px 8px;font-size:10px;background:#1d3f66;color:#cfe0f2;border-color:#2b5384;">↔ Wide</button>
-  <span id="app-ver" style="font-size:10px;color:#9fb8d4;">v987</span>
+  <span id="app-ver" style="font-size:10px;color:#9fb8d4;">v988</span>
 </div>
 <script>
 // ↔ 넓게 보기 — 브라우저마다 따로 저장 (v793)
@@ -414,6 +414,7 @@ try{ applyWide(localStorage.getItem('psx_wide') !== '0'); }catch(e){ applyWide(t
       <button id="bb-inform" class="btn btn-sm" style="display:none;background:#0891b2;color:#fff;border-color:#0891b2;" onclick="openInformCustomer()" title="Draft a 'ready to ship' email to the customer (POs, pallets, boxes, weight) — copy &amp; send to request the shipping label + BOL">📧 Inform Customer (<span id="bb-inform-n">0</span>)</button>
       <button id="bb-sc" class="btn btn-sm" style="display:none;background:#1d4ed8;color:#fff;border-color:#1d4ed8;" onclick="openBatchShip('SC')">🚛 SC Batch Ship (<span id="bb-sc-n">0</span>)</button>
       <button id="bb-ca" class="btn btn-sm" style="display:none;background:#c2410c;color:#fff;border-color:#c2410c;" onclick="openBatchShip('CA')">🚛 CA Batch Ship (<span id="bb-ca-n">0</span>)</button>
+      <button id="bb-plmail" class="btn btn-sm" style="display:none;background:#7c2d12;color:#fff;border-color:#7c2d12;" onclick="batchEmailPLs()" title="Send ONE email per customer with every selected Packing List attached, plus ALL-PACKING-LISTS.pdf — our staff are BCC'd. Use this when the batch-ship email was skipped, or to send again later.">📧 Email all Packing Lists (<span id="bb-plmail-n">0</span>)</button>
       <button id="bb-inv" class="btn btn-sm" style="display:none;background:#065f46;color:#fff;border-color:#065f46;" onclick="printBatchInvoices()">🧾 Invoice Print (<span id="bb-inv-n">0</span>)</button>
       </span>
     </div>
@@ -30639,6 +30640,68 @@ function updateBatchBar(){
   if($('bb-prpl')){ $('bb-prpl').style.display = cbs.length ? 'inline-flex' : 'none'; $('bb-prpl-n').textContent = cbs.length; }
   if($('bb-inform')){ const uniq=new Set(cbs.map(c=>c.dataset.base)).size; $('bb-inform').style.display = cbs.length ? 'inline-flex' : 'none'; $('bb-inform-n').textContent = uniq; }
   if($('bb-savedraft')){ const uniq=new Set(cbs.map(c=>c.dataset.base)).size; $('bb-savedraft').style.display = cbs.length ? 'inline-flex' : 'none'; $('bb-savedraft-n').textContent = uniq; }
+  /* 📧 이미 나간(=PL 완료된) 오더만 셈한다 — 아직 안 나간 걸 메일로 보낼 일은 없다 (v988) */
+  if($('bb-plmail')){
+    const n = plMailTargets().length;
+    $('bb-plmail').style.display = n ? 'inline-flex' : 'none'; $('bb-plmail-n').textContent = n;
+  }
+}
+/* ══ 📧 선택한 오더의 Packing List 를 거래처마다 한 통으로 보낸다 (v988) ══
+   [왜] TTY 21개 PO 를 batch ship 하면서 email 을 체크했는데, 마지막 확인창에서 Cancel 이
+   눌리면 **한 통도 안 나간다.** 그때 남는 길이 "Packing List 마다 Resend" 뿐이라,
+   21번을 따로 보내야 했다 — 거래처는 메일 21통을 받고, 우리 사람도 21통을 받는다.
+   [무엇] 이 버튼은 체크된 오더 중 **이미 나간 것**만 모아 거래처 이메일별로 묶어서
+   `sendBatchPLEmail()` 로 보낸다. 한 통에 개별 PL 전부 + ALL-PACKING-LISTS.pdf 합본,
+   우리 직원 전원 BCC. batch ship 직후든 나중이든 똑같이 쓸 수 있다. */
+function plMailTargets(){
+  const out = [];
+  const seen = new Set();
+  [...document.querySelectorAll('.bship-cb:checked')].forEach(c=>{
+    const base = c.dataset.base, wh = c.dataset.wh;
+    const key = base + '|' + wh; if(seen.has(key)) return; seen.add(key);
+    const rec = savedCache.find(s=>s.base===base); if(!rec) return;
+    const d = (rec.pl||{})[wh];
+    if(!(d && d._completed)) return;            // 아직 안 나간 오더는 제외
+    let em = String((d.custEmail||'')).trim();
+    if(!em && typeof custEmailFor==='function') em = String(custEmailFor((rec.meta&&rec.meta.cust))||'').trim();
+    if(!em && rec.meta && rec.meta.custEmail) em = String(rec.meta.custEmail).trim();
+    out.push({ base, wh, rec, em });
+  });
+  return out;
+}
+async function batchEmailPLs(){
+  const list = plMailTargets();
+  if(!list.length){ showToast('⚠ No shipped orders selected — tick orders whose Packing List is done'); return; }
+  const noEm = list.filter(x=>!(x.em && x.em.includes('@')));
+  const ok   = list.filter(x=>  x.em && x.em.includes('@'));
+  if(!ok.length){
+    alert('📧 None of the selected orders has a customer email.\n\nOpen 📦 Packing List on one of them, fill in Customer Email, then try again.');
+    return;
+  }
+  /* 거래처 이메일 + 창고 단위로 묶는다 — SC 출고와 CA 출고는 서로 다른 화물이라 한 통에 담지 않는다 */
+  const groups = {};
+  ok.forEach(x=>{ const k = x.em + '' + x.wh; (groups[k] = groups[k] || { em:x.em, wh:x.wh, recs:[] }).recs.push(x.rec); });
+  const gs = Object.values(groups);
+  const summary = gs.map(g=>'  → ' + g.em + '  [' + g.wh + ']  ' + g.recs.length + ' PO' + (g.recs.length>1?'s in ONE email':'')).join('\n');
+  if(!confirm('📧 Send Packing Lists — ' + ok.length + ' PO(s) in ' + gs.length + ' email(s)\n\n'
+      + summary + '\n\nEach email carries every packing list plus ALL-PACKING-LISTS.pdf.\nOur staff are BCC-ed.'
+      + (noEm.length ? ('\n\n⚠ ' + noEm.length + ' selected PO(s) have no customer email and will be skipped.') : '')
+      + '\n\nSend now?')) return;
+  let sent = 0, poSent = 0; const failLines = [];
+  for(let i=0;i<gs.length;i++){
+    const g = gs[i];
+    showToast('📧 Sending... (' + (i+1) + '/' + gs.length + ')');
+    try{
+      if(g.recs.length === 1) await sendPLEmailFor(g.recs[0], g.wh, g.em);
+      else await sendBatchPLEmail(g.recs, g.wh, g.em);
+      sent++; poSent += g.recs.length;
+    }catch(e){
+      failLines.push('• ' + g.recs.map(r=>(r.meta&&r.meta.po)||r.base).join(', ') + '  →  ' + g.em + '   (' + ((e&&e.message)||'send failed') + ')');
+      g.recs.forEach(r=>{ try{ logHist(r.base, '⚠ Packing List email FAILED — ' + g.wh + ' → ' + g.em + ' (' + ((e&&e.message)||'error') + ')'); }catch(_){} });
+    }
+  }
+  if(failLines.length) alert('📧 ' + poSent + ' of ' + ok.length + ' PO(s) emailed in ' + sent + ' message(s).\n\n⚠ FAILED:\n' + failLines.join('\n'));
+  else showToast('📧 ' + poSent + ' PO(s) emailed in ' + sent + ' message(s)' + (sent < poSent ? ' — same customer = one combined email' : ''));
 }
 // ══ 📧 Inform Customer — 출고 준비 알림 이메일 (선택된 PO + pallet 치수 + 박스/무게) 초안 만들어 copy ══
 function openInformCustomer(){
@@ -31314,7 +31377,18 @@ async function submitBatchShip(){
   if(wantSend && okCnt>0 && sendQueue.length<okCnt){ alert('⚠ ' + (okCnt-sendQueue.length) + ' shipped order(s) had NO customer email, so no Packing List was emailed for those.\n\nOpen 📦 Packing List on each, enter the email, and press Resend.'); }
   if(wantSend && sendQueue.length){
     const _emList = [...new Set(sendQueue.map(q=>q.em))].join('\n→ ');
-    if(!confirm('📧 Packing Lists will be emailed to customers.\n→ ' + _emList + '\n\nContinue? (Cancel ships without emailing)')) { alert('📧 No email was sent. The orders are shipped — use Resend on each Packing List when you are ready.'); return; }
+    const _nEm = [...new Set(sendQueue.map(q=>q.em))].length;
+    /* 몇 통이 어디로 가는지 먼저 말해준다 — 예전엔 "Continue?" 만 물어서, 21개 PO 를 보내려는
+       사람이 "21통 나가나?" 하고 Cancel 을 눌렀다. 한 거래처면 한 통이라는 걸 미리 밝힌다 (v988) */
+    if(!confirm('📧 Send the Packing Lists now?\n\n'
+        + sendQueue.length + ' PO(s) → ' + _nEm + ' email(s)\n→ ' + _emList + '\n\n'
+        + (sendQueue.length > _nEm ? 'Same customer = ONE email with every packing list attached (plus ALL-PACKING-LISTS.pdf).\n' : '')
+        + 'Our staff are BCC-ed on every one.\n\n(Cancel = ship without emailing)')) {
+      /* Cancel 을 눌러도 막다른 길이 아니어야 한다 (v988). 예전엔 "Packing List 마다 Resend"
+         가 유일한 길이라, 21개 PO 면 21번을 따로 보내야 했다 — 거래처도 우리도 메일 21통. */
+      alert('📧 No email was sent. The orders ARE shipped.\n\nWhen you are ready: tick these orders in the list and press\n　📧 Email all Packing Lists\n\nThat sends ONE email per customer with all of them attached — not one per PO.');
+      return;
+    }
     // 같은 이멜(거래처)로 가는 오더는 한 통으로 묶음 — 개별 PL + 합본 PDF 첨부
     const byEm = {};
     sendQueue.forEach(({rec, em})=>{ (byEm[em] = byEm[em] || []).push(rec); });
