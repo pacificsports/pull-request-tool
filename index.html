@@ -192,7 +192,7 @@ body.po-dragging{user-select:none;}
   </span>
   <select id="lang-sel" onchange="setLang(this.value)" style="font-size:11px;padding:3px 6px;border-radius:5px;border:none;background:#1d3f66;color:#fff;"><option value="ko">한국어</option><option value="en">English</option><option value="es">Español</option></select>
   <button id="wide-btn" class="btn btn-sm" onclick="toggleWide()" title="화면 넓게 / 좁게 — 기본은 넓게 (이 브라우저에만 저장돼)" style="padding:2px 8px;font-size:10px;background:#1d3f66;color:#cfe0f2;border-color:#2b5384;">↔ Wide</button>
-  <span id="app-ver" style="font-size:10px;color:#9fb8d4;">v985</span>
+  <span id="app-ver" style="font-size:10px;color:#9fb8d4;">v986</span>
 </div>
 <script>
 // ↔ 넓게 보기 — 브라우저마다 따로 저장 (v793)
@@ -2595,6 +2595,27 @@ function prPinLeft(l, loc){
     return hit ? hit.pcs : 0;
   }catch(e){ return null; }
 }
+/* 📍 핀이 실제 낱장 수와 맞는지까지 같이 본다 (v986).
+   n   = 종이에 찍을 "그 자리에 남는 장수"
+   off = 핀 합계가 실제 낱장 수와 다름 → 이 숫자는 믿지 말고 세어봐야 한다
+   bin 이 하나뿐이면(대부분) 실제 낱장 수가 곧 그 자리 장수다. 여러 자리에 나뉘어 있으면
+   어느 자리가 틀렸는지 알 방법이 없으므로 적힌 값을 그대로 두고 ⚠ 만 세운다. */
+function prPinInfo(l, loc){
+  try{
+    const wh = String((l&&l.wh)||'').trim().toUpperCase();
+    const row = (typeof pcStore!=='undefined'?pcStore:[]).find(r=>r.k===pcKey(bxStyleFor(l), bxColorFor(l), wh));
+    if(!row) return null;
+    const s2 = String(l.size||'').trim().toUpperCase();
+    const list = pcLocList(row, s2);
+    const hit = list.find(x=>x.loc===String(loc||'').toUpperCase());
+    const at  = hit ? hit.pcs : 0;
+    const pin = list.reduce((a,x)=>a+x.pcs, 0);
+    const qty = Math.max(0, Number((row.qty||{})[s2])||0);
+    const off = (pin !== qty);
+    const n   = (off && list.length<=1) ? qty : at;
+    return { n, off, pin, qty, at };
+  }catch(e){ return null; }
+}
 function prLooseBinsHtml(l){
   const p = prLoosePicks(l);
   if(!p.length) return '';
@@ -2655,18 +2676,30 @@ function buildDocHtml(wh, opts){
   const moveRows = carryLines.map(l=>{const gs=_mvCarry(l);const locs=gs.map(g=>esc(g.loc)+(g.n>1?' ×'+g.n:'')).join(', ');const n=gs.reduce((a,g)=>a+(g.n||1),0);return `<tr><td style="font-weight:700;">${esc(l.style||'')}</td><td class="tl">${esc(l.color)}</td><td>${esc(l.size)}</td><td style="text-align:center;font-weight:800;">${n}</td><td class="tl">${esc(locs)}</td></tr>`;}).join('');
   /* ④ 핀: 박스를 그 자리에서 까고 남는 장수는 그 자리에 그대로 둔다 —
      오더가 가져가는 장수와 남길 장수를 둘 다 찍어 준다 */
+  /* 📍 "그 자리에 남는 장수" — 핀을 그대로 믿고 찍으면 안 된다 (v986).
+     PC Room 은 숫자를 **두 개** 들고 있다: 낱장이 실제로 몇 장인지(qty, 이동기록으로
+     검증되는 값)와, 그게 어느 bin 에 몇 장씩 있는지(핀). 둘은 따로 저장돼서 어긋날 수 있고,
+     실제로 어긋난 게 있었다 — 1315 LIGHT NAVY (SIDE SEAM) CA XL 은 진짜 낱장이 37장인데
+     핀은 109장이라고 적혀 있었고, 종이에 그 109가 그대로 찍혔다.
+     종이에 큰 숫자로 찍히면 창고는 그걸 믿는다. 그래서 이제:
+       · 핀 합계와 실제 낱장 수가 맞으면 → 그대로 찍는다
+       · 어긋나면 → **실제 낱장 수(qty)** 로 말하고 ⚠ 를 붙여 세어보라고 한다
+     (틀린 숫자를 조용히 찍느니, 세어보라고 말하는 게 낫다.) */
+  let _pinOff = 0;
   const pinRows = pinLines.map(l=>{
     const picks = {}; prLoosePicks(l).forEach(x=>{ picks[x.loc] = (picks[x.loc]||0) + x.pcs; });
     return _mvPin(l).map(g=>{
       const opened = Number(g.pcs)||0;
       const take   = Math.min(opened, picks[g.loc]||0);
-      const leftLive = prPinLeft(l, g.loc);
-      const left  = (leftLive==null) ? Math.max(0, opened-take) : leftLive;
+      const info = prPinInfo(l, g.loc);
+      const left  = (info==null) ? Math.max(0, opened-take) : info.n;
+      const off   = !!(info && info.off);
+      if(off) _pinOff++;
       return `<tr><td style="font-weight:700;">${esc(l.style||'')}</td><td class="tl">${esc(l.color)}</td><td>${esc(l.size)}</td>
         <td style="text-align:center;font-weight:800;">${g.n}</td>
         <td class="tl" style="font-weight:800;font-family:Consolas,monospace;">\u{1F4CD} ${esc(g.loc)}</td>
         <td style="text-align:center;font-weight:800;">${take||''}</td>
-        <td style="text-align:center;font-weight:800;color:#0e7490;">${left}</td></tr>`;
+        <td style="text-align:center;font-weight:800;color:${off?'#b45309':'#0e7490'};">${left}${off?' <span style="font-size:9px;font-weight:900;">⚠ COUNT</span>':''}</td></tr>`;
     }).join('');
   }).join('');
   const _sig = labels=>`<div style="margin-top:24px;display:grid;grid-template-columns:repeat(${labels.length},1fr);gap:26px;page-break-inside:avoid;">${labels.map(lbl=>`<div><div style="border-bottom:1.5px solid #111;height:36px;"></div><div style="display:flex;justify-content:space-between;align-items:baseline;margin-top:5px;"><span style="font-size:11px;font-weight:700;color:#111;">${lbl}</span><span style="font-size:10px;color:#666;">Date: ____________</span></div></div>`).join('')}</div>`;
@@ -2696,6 +2729,7 @@ function buildDocHtml(wh, opts){
       <tbody>${pinRows}</tbody>
     </table>
     <div style="margin-top:6px;padding:7px 12px;background:#ecfeff;border:1px solid #a5f3fc;border-radius:4px;font-size:11px;color:#0e7490;font-weight:700;">Open the box where it stands and leave the loose pieces at that same bin \u2014 that bin is the PC Room for this item. Do not carry anything to the PC Room.</div>
+    ${_pinOff?`<div style="margin-top:5px;padding:7px 12px;background:#fffbeb;border:1px solid #fcd34d;border-radius:4px;font-size:11px;color:#92400e;font-weight:700;">\u26a0 COUNT \u2014 the bin record for this line does not add up. Count what is actually left at the bin after you pull, write it down, and tell the office. Do not trust the printed number.</div>`:''}
     ${_sigC('Opened at the bin by')}` : '';
   const p2Done = hasDone ? `<div style="background:#e2e8f0;color:#334155;padding:6px 20px;font-weight:800;letter-spacing:.5px;font-size:12.5px;margin:${(hasFull||hasMove||hasPin)?'26px':'0'} 0 5px;">\u2714 ALREADY CARRIED TO THE PC ROOM BEFORE THIS CHANGE \u2014 DO NOT MOVE AGAIN</div>
     <table class="inv-tbl" style="opacity:.75;">
@@ -6514,13 +6548,17 @@ async function printSavedPRWh(base, wh){
             const sz = String(L.size||'').trim().toUpperCase();
             const loose = loose0 - alreadyDeductedPr(st, col, sz);   // 이미 뺀 만큼 제외
             if(loose <= 0) continue;
-            const k = pcKey(st, col);
+            const k = pcKey(st, col, wh);
             let row = pcStore.find(r=>r.k===k);
-            if(!row){ row = { k, style: st, color: col, qty: {} }; pcStore.push(row); }
+            if(!row){ row = { k, style: st, color: col, wh, qty: {} }; pcStore.push(row); }
             row.qty = row.qty || {};
             const old = Number(row.qty[sz]) || 0;
             const nv = old - loose;
             if(nv === 0) delete row.qty[sz]; else row.qty[sz] = nv;
+            /* 📍 핀에서도 같이 뺀다 (v986). 이게 빠져 있어서 낱장 수는 줄어드는데 "그 자리에
+               몇 장" 은 그대로 남았고, 그 어긋난 값이 Pull Request 종이에 찍혔다.
+               창고(wh)도 안 넣고 있었다 — CA 낱장을 SC 행에서 빼고 있었다는 뜻이다. */
+            pcLocTake(row, sz, loose);
             await pcSaveRow(row);
             pcLogMove(row, sz, -loose, nv, po + ' auto-deduct');
             cnt++;
@@ -32111,6 +32149,10 @@ function renderSaved(){
     const ka = String((a.meta&&a.meta.date)||a.savedAt||''), kb = String((b.meta&&b.meta.date)||b.savedAt||'');
     return kb.localeCompare(ka) || String(b.savedAt||'').localeCompare(String(a.savedAt||''));
   });
+  /* ⓘ 여기(매니저 오더 목록)는 일부러 `custHue()` 를 그대로 쓴다 — /pic 처럼 겹침을
+     밀어내지 않는다. 이 목록은 거래처가 수십 곳이라 16색으로는 어차피 다 못 채우고,
+     목록이 필터로 바뀔 때마다 같은 거래처 색이 달라져 버린다. 색이 변하는 게 겹치는
+     것보다 나쁘다 — 여기서는 칩 안에 이름이 같이 적혀 있어 색은 훑어보기용이다. */
   const _items = saved.map(s=>{
     const tot = (s.lines||[]).reduce((a,l)=>a+(l.qty||0),0);
     const amt = (s.lines||[]).reduce((a,l)=>a+(l.qty||0)*(l.price||0),0);
