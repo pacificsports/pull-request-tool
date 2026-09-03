@@ -192,7 +192,7 @@ body.po-dragging{user-select:none;}
   </span>
   <select id="lang-sel" onchange="setLang(this.value)" style="font-size:11px;padding:3px 6px;border-radius:5px;border:none;background:#1d3f66;color:#fff;"><option value="ko">한국어</option><option value="en">English</option><option value="es">Español</option></select>
   <button id="wide-btn" class="btn btn-sm" onclick="toggleWide()" title="화면 넓게 / 좁게 — 기본은 넓게 (이 브라우저에만 저장돼)" style="padding:2px 8px;font-size:10px;background:#1d3f66;color:#cfe0f2;border-color:#2b5384;">↔ Wide</button>
-  <span id="app-ver" style="font-size:10px;color:#9fb8d4;">v980</span>
+  <span id="app-ver" style="font-size:10px;color:#9fb8d4;">v981</span>
 </div>
 <script>
 // ↔ 넓게 보기 — 브라우저마다 따로 저장 (v793)
@@ -18828,8 +18828,9 @@ function blPickOpen(){
       <input id="blp-q" class="fi" placeholder="🔍 Search" oninput="blPickPaint()" style="width:100%;box-sizing:border-box;font-size:14px;padding:8px 10px;">
     </div>
     <div id="blp-body" style="padding:6px 14px 14px;max-height:70vh;overflow-y:auto;"></div>
-    <div style="padding:10px 16px;border-top:1px solid #eee;display:flex;gap:8px;align-items:center;">
+    <div style="padding:10px 16px;border-top:1px solid #eee;display:flex;gap:8px;align-items:center;flex-wrap:wrap;">
       <button id="blp-back" class="btn" style="display:none;" onclick="_blpStyle='';blPickPaint()">← Styles</button>
+      <button class="btn" style="background:#0f766e;color:#fff;border-color:#0f766e;font-weight:800;" onclick="blExportFile()" title="Save this whole tool as one offline file — send it to Haiti and it works with no internet">⬇ Download for Haiti</button>
       <button class="btn" style="margin-left:auto;" onclick="document.getElementById('modal-blpick').remove()">Close</button>
     </div></div>`;
   document.body.appendChild(div);
@@ -18899,6 +18900,183 @@ function blPickStyle(st){ _blpStyle = String(st); lblUseBump('S|'+_blpStyle);
 function blPickColor(st, c){ lblUseBump('C|'+st+'|'+c);
   const m=document.getElementById('modal-blpick'); if(m) m.remove();
   bxQrOpen(st, c); }
+/* ═══ ⬇ 아이티로 보낼 오프라인 파일 만들기 (v981) ═══
+   아이티 공장은 인터넷이 못 미더워서 라벨 도구가 **혼자 돌아가야** 한다.
+   그런데 손으로 베껴 만든 파일은 시스템이 바뀔 때마다 조용히 어긋난다 —
+   스타일이 하나 늘거나 색 이름이 바뀌면 아이티 라벨만 옛날 것이 된다.
+
+   그래서 베끼지 않는다. 지금 화면이 쓰는 **그 함수를 `toString()` 으로 그대로 담고**,
+   스타일·색 목록도 지금 값을 그대로 박아 넣는다. 그러면 이 파일에서 나온 ZPL 은
+   시스템에서 뽑은 것과 글자 하나까지 같다. 새로 뽑을 때마다 자동으로 최신이 된다.
+
+   파일 안에서 바깥으로 나가는 통신은 Browser Print(localhost:9100) 하나뿐이다. */
+function blExportData(){
+  const out = {};
+  (typeof skuStyles === 'function' ? skuStyles() : []).forEach(stRaw=>{
+    const st = String(stRaw);
+    const cols = ((typeof skuColors === 'function') ? skuColors(st) : [])
+      .map(c=>String(c).toUpperCase()).filter((c,i,a)=>a.indexOf(c)===i).sort();
+    if(!cols.length) return;
+    const m = (typeof STYLE_MASTER !== 'undefined') ? STYLE_MASTER[st] : null;
+    let sizes = [];
+    try{ sizes = (typeof pcSizesFor==='function' ? (pcSizesFor(st)||[]) : []).map(x=>String(x).toUpperCase()); }catch(e){}
+    if(!sizes.length) sizes = ['S','M','L','XL','2XL','3XL'];
+    out[st] = { cat:(m&&m[0])||'Other', fab:lblFabric(st), kid:lblIsKid(st),
+                ppb:(m&&m[2])||72, ppbBig:(m&&m[3])||(m&&m[2])||48, sizes, colors:cols };
+  });
+  return out;
+}
+function blExportFile(){
+  let html;
+  try{ html = blExportHtml(); }
+  catch(e){ showToast('⚠ Could not build the file: ' + (e.message||e)); return; }
+  const name = 'pacific-box-labels-' + ctnDate() + '.html';
+  try{
+    const url = URL.createObjectURL(new Blob([html], {type:'text/html;charset=utf-8'}));
+    const a = document.createElement('a');
+    a.href = url; a.download = name; document.body.appendChild(a); a.click();
+    setTimeout(()=>{ try{ document.body.removeChild(a); URL.revokeObjectURL(url); }catch(e){} }, 1500);
+  }catch(e){ showToast('⚠ Download failed: '+(e.message||e)); return; }
+  const data = blExportData();
+  const nSt = Object.keys(data).length;
+  const nCo = Object.keys(data).reduce((a,k)=>a+data[k].colors.length,0);
+  showToast('⬇ ' + name + ' — ' + nSt + ' styles · ' + nCo.toLocaleString() + ' colours');
+}
+function blExportHtml(){
+  const DATA = blExportData();
+  /* 시스템에서 쓰는 그 함수들을 원문 그대로 — 여기 목록에 없는 걸 참조하면 파일이 깨지므로
+     라벨 한 장을 만드는 데 실제로 필요한 것만, 의존 순서대로 담는다. */
+  const fns = [pbSafe, pbQrModules, blDpiFromName, bq2Dots, bq2Mag, ctnDate, ctnRand, ctnIsNew, ctnNew, fbQrText, buildBoxQr2x2Zpl, blGetPrinters]
+    .map(f=>f.toString()).join('\n\n');
+  const made = new Date().toLocaleString();
+  const S = String.fromCharCode(60);      // '<' — 이 문자열이 스크립트 태그로 잘리지 않게
+  return '<!DOCTYPE html>\n<html lang="en">\n<head>\n<meta charset="utf-8">\n'
++ '<meta name="viewport" content="width=device-width,initial-scale=1">\n'
++ '<title>Pacific Sports — Box Labels (offline)</title>\n'
++ '<style>\n'
++ '*{box-sizing:border-box}body{margin:0;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Arial,sans-serif;background:#eef2f7;color:#101a2c}\n'
++ '.wrap{max-width:640px;margin:0 auto;padding:12px}\n'
++ '.top{background:#4c1d95;color:#fff;padding:12px 16px;border-radius:12px 12px 0 0;font-weight:800;font-size:16px;display:flex;gap:10px;align-items:center;flex-wrap:wrap}\n'
++ '.top .made{margin-left:auto;font-size:10.5px;font-weight:600;opacity:.85}\n'
++ '.panel{background:#fff;border-radius:0 0 12px 12px;padding:12px 14px 16px}\n'
++ '.fi{width:100%;font-size:15px;padding:9px 11px;border:1px solid #cbd5e1;border-radius:9px;font-family:inherit}\n'
++ '.sec{font-size:11.5px;font-weight:900;letter-spacing:.09em;margin:14px 0 6px;padding-bottom:4px}\n'
++ '.grid{display:grid;grid-template-columns:1fr 1fr;gap:8px}\n'
++ '.card{position:relative;cursor:pointer;border-radius:11px;padding:11px 13px;min-height:56px;border:1.5px solid}\n'
++ '.card b{display:block;font-size:22px;font-weight:900;letter-spacing:-.5px;line-height:1.05;padding-right:20px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}\n'
++ '.card i{display:block;font-style:normal;font-size:10.5px;font-weight:700;color:#7b8794;letter-spacing:.04em;margin-top:3px}\n'
++ '.card s{position:absolute;top:8px;right:9px;font-size:15px;text-decoration:none}\n'
++ '.btn{font:inherit;font-weight:800;font-size:14px;padding:10px 15px;border-radius:10px;border:1px solid #cbd5e1;background:#fff;cursor:pointer}\n'
++ '.go{background:#6d28d9;color:#fff;border-color:#6d28d9}\n'
++ '.row{display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-top:10px}\n'
++ 'table{width:100%;border-collapse:collapse;margin-top:8px}td,th{padding:5px 4px;font-size:13px;text-align:center}\n'
++ 'th{font-size:10px;color:#64748b;letter-spacing:.05em}\n'
++ 'input[type=number]{width:70px;font-size:16px;padding:7px;text-align:center;border:1.5px solid #cbd5e1;border-radius:8px;font-weight:800;font-family:inherit}\n'
++ '#msg{font-size:12.5px;font-weight:700;min-height:18px;margin-top:8px}\n'
++ '.note{font-size:11.5px;color:#64748b;line-height:1.55}\n'
++ '</style>\n</head>\n<body>\n<div class="wrap">\n'
++ '<div class="top">🏷 Box Labels <span style="font-weight:600;font-size:12px;opacity:.85">offline</span><span class="made">built ' + made.replace(/[<>&]/g,'') + '</span></div>\n'
++ '<div class="panel">\n'
++ '<div class="note" style="margin-bottom:9px;">Works with no internet. Needs Zebra Browser Print running on this computer. Load 2&quot;&nbsp;x&nbsp;2&quot; label stock.</div>\n'
++ '<div class="row"><b style="font-size:12px">🖨</b><select id="prn" class="fi" style="flex:1"><option>Loading printers…</option></select></div>\n'
++ '<input id="q" class="fi" placeholder="🔍 Search" style="margin-top:10px">\n'
++ '<div id="body"></div>\n'
++ '<div class="row"><button class="btn" id="back" style="display:none" onclick="pick(\'\')">← Styles</button></div>\n'
++ '<div id="msg"></div>\n'
++ '</div></div>\n'
++ S + 'script>\n'
++ 'const FB_QR_HOST = ' + JSON.stringify(FB_QR_HOST) + ';\n'
++ 'const CTN_ABC = ' + JSON.stringify(CTN_ABC) + ';\n'
++ 'const DATA = ' + JSON.stringify(DATA) + ';\n'
++ 'let _blDpiVal = 203;\n'
++ 'function blDpi(){ return _blDpiVal; }\n'
++ 'function blPrinterKey(){ return "bl_printer_full"; }\n'
++ 'function esc(v){ return String(v==null?"":v).replace(/[&<>"\']/g, c=>({"&":"&amp;","<":"&lt;",">":"&gt;","\\"":"&quot;","\'":"&#39;"}[c])); }\n'
++ 'function msg(t,ok){ const e=document.getElementById("msg"); if(e){ e.textContent=t; e.style.color= ok===false?"#b91c1c":(ok?"#166534":"#475569"); } }\n'
++ fns + '\n'
++ 'let PRN=[];\n'
++ 'async function loadPrinters(){\n'
++ '  const sel=document.getElementById("prn");\n'
++ '  try{ PRN=await blGetPrinters(); }catch(e){ PRN=[]; }\n'
++ '  if(!PRN.length){ sel.innerHTML="' + S + 'option>⚠ No Zebra found — is Browser Print running?' + S + '/option>"; return; }\n'
++ '  const want=(function(){ try{ return localStorage.getItem(blPrinterKey()); }catch(e){ return null; } })();\n'
++ '  sel.innerHTML=PRN.map(p=>"' + S + 'option value=\\""+esc(p.uid||p.name)+"\\""+(((p.uid&&p.uid===want)||p.name===want)?" selected":"")+">"+esc(p.name||p.uid)+"' + S + '/option>").join("");\n'
++ '  sel.onchange=()=>{ try{ localStorage.setItem(blPrinterKey(), sel.value); }catch(e){} syncDpi(); };\n'
++ '  syncDpi();\n'
++ '}\n'
++ 'function curPrinter(){ const v=(document.getElementById("prn")||{}).value; return PRN.find(p=>(p.uid&&p.uid===v)||p.name===v) || PRN[0]; }\n'
++ 'function syncDpi(){ const p=curPrinter(); const d=blDpiFromName(p&&p.name); if(d) _blDpiVal=d; }\n'
++ 'async function sendZpl(zpl,n){\n'
++ '  const p=curPrinter(); if(!p){ msg("⚠ No printer — start Zebra Browser Print and reload.",false); return false; }\n'
++ '  try{ const r=await fetch("http://localhost:9100/write",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({device:p,data:zpl})});\n'
++ '    if(!r.ok) throw new Error("HTTP "+r.status);\n'
++ '    msg("✓ "+n+" label(s) sent → "+(p.name||p.uid), true); return true;\n'
++ '  }catch(e){ msg("⚠ Print failed: "+(e.message||e),false); return false; }\n'
++ '}\n'
++ 'const FAV="lbl_fav_off", USE="lbl_use_off";\n'
++ 'function ld(k){ try{ return JSON.parse(localStorage.getItem(k)||"{}")||{}; }catch(e){ return {}; } }\n'
++ 'function sv(k,v){ try{ localStorage.setItem(k,JSON.stringify(v)); }catch(e){} }\n'
++ 'function favHas(k){ return !!ld(FAV)[k]; }\n'
++ 'function favTgl(k){ const f=ld(FAV); if(f[k]) delete f[k]; else f[k]=1; sv(FAV,f); paint(); }\n'
++ 'function useN(k){ return Number(ld(USE)[k])||0; }\n'
++ 'function useBump(k){ const u=ld(USE); u[k]=(Number(u[k])||0)+1; sv(USE,u); }\n'
++ 'let CUR="";\n'
++ 'function card(key,big,sub,kid,click){ const f=favHas(key);\n'
++ '  return "' + S + 'div class=\\"card\\" style=\\"background:"+(kid?"#fdf6e9":"#f4f8fd")+";border-color:"+(kid?"#e8d9b8":"#cfe0f2")+"\\" onclick=\\""+click+"\\">' + S + 'b>"+esc(big)+"' + S + '/b>"+(sub?("' + S + 'i>"+esc(sub)+"' + S + '/i>"):"")+"' + S + 's onclick=\\"event.stopPropagation();favTgl(\'"+key+"\')\\" style=\\"color:"+(f?"#c8951f":"#cfd6de")+"\\">"+(f?"★":"☆")+"' + S + '/s>' + S + '/div>"; }\n'
++ 'function sec(title,cards,color){ if(!cards.length) return "";\n'
++ '  return "' + S + 'div class=\\"sec\\" style=\\"color:"+(color||"#c8951f")+";border-bottom:2px solid "+(color||"#c8951f")+"33\\">"+esc(title)+"' + S + '/div>' + S + 'div class=\\"grid\\">"+cards.join("")+"' + S + '/div>"; }\n'
++ 'function paint(){\n'
++ '  const b=document.getElementById("body"), q=(document.getElementById("q").value||"").trim().toUpperCase();\n'
++ '  document.getElementById("back").style.display = CUR ? "" : "none";\n'
++ '  if(!CUR){\n'
++ '    const all=Object.keys(DATA).filter(st=>!q||st.indexOf(q)>=0||(DATA[st].fab||"").indexOf(q)>=0);\n'
++ '    const c=st=>card("S|"+st,st,DATA[st].fab,DATA[st].kid,"pick(\'"+st+"\')");\n'
++ '    const fav=all.filter(st=>favHas("S|"+st));\n'
++ '    const used=all.filter(st=>!favHas("S|"+st)&&useN("S|"+st)>0).sort((x,y)=>useN("S|"+y)-useN("S|"+x)).slice(0,6);\n'
++ '    const seen=new Set(fav.concat(used)), byCat={};\n'
++ '    all.forEach(st=>{ if(seen.has(st)) return; (byCat[DATA[st].cat]=byCat[DATA[st].cat]||[]).push(st); });\n'
++ '    let h="' + S + 'div class=\\"sec\\" style=\\"color:#94a3b8;border:0\\">1 · TAP THE STYLE' + S + '/div>"+sec("★ FAVORITES",fav.map(c))+sec("USED MOST ON THIS COMPUTER",used.map(c),"#0f766e");\n'
++ '    Object.keys(byCat).sort().forEach(k=>{ h+=sec(k.toUpperCase(),byCat[k].sort().map(c),"#334155"); });\n'
++ '    b.innerHTML = all.length?h:"' + S + 'p class=\\"note\\">No styles found.' + S + '/p>"; return;\n'
++ '  }\n'
++ '  const d=DATA[CUR], cols=d.colors.filter(x=>!q||x.indexOf(q)>=0);\n'
++ '  const c=x=>card("C|"+CUR+"|"+x,x,"",d.kid,"pickColor(\'"+x.replace(/\'/g,"")+"\')");\n'
++ '  const fav=cols.filter(x=>favHas("C|"+CUR+"|"+x));\n'
++ '  const used=cols.filter(x=>!favHas("C|"+CUR+"|"+x)&&useN("C|"+CUR+"|"+x)>0).sort((x,y)=>useN("C|"+CUR+"|"+y)-useN("C|"+CUR+"|"+x)).slice(0,6);\n'
++ '  const seen=new Set(fav.concat(used));\n'
++ '  b.innerHTML="' + S + 'div class=\\"sec\\" style=\\"color:#94a3b8;border:0\\">2 · TAP THE COLOUR · "+cols.length+" on file' + S + '/div>"\n'
++ '    +sec("★ FAVORITES",fav.map(c))+sec("USED MOST ON THIS COMPUTER",used.map(c),"#0f766e")\n'
++ '    +sec("ALL COLOURS",cols.filter(x=>!seen.has(x)).map(c),"#334155");\n'
++ '}\n'
++ 'function pick(st){ CUR=st; useBump("S|"+st); document.getElementById("q").value=""; paint(); window.scrollTo(0,0); }\n'
++ 'function pickColor(col){ useBump("C|"+CUR+"|"+col); sheet(CUR,col); }\n'
++ 'const BIG=["3XL","4XL","5XL","6XL"];\n'
++ 'function ppbFor(st,sz){ const d=DATA[st]; return BIG.indexOf(sz)>=0 ? d.ppbBig : d.ppb; }\n'
++ 'function sheet(st,col){\n'
++ '  const d=DATA[st];\n'
++ '  const rows=d.sizes.map(sz=>"' + S + 'tr>' + S + 'td style=\\"font-weight:800\\">"+esc(sz)+"' + S + '/td>' + S + 'td>' + S + 'input type=number min=0 value=0 id=\\"n_"+sz+"\\">' + S + '/td>' + S + 'td>' + S + 'input type=number min=1 value=\\""+ppbFor(st,sz)+"\\" id=\\"p_"+sz+"\\">' + S + '/td>' + S + '/tr>").join("");\n'
++ '  document.getElementById("body").innerHTML="' + S + 'div class=\\"sec\\" style=\\"color:#94a3b8;border:0\\">3 · HOW MANY OF EACH SIZE' + S + '/div>"\n'
++ '   +"' + S + 'div style=\\"font-size:20px;font-weight:900\\">"+esc(st)+" · "+esc(col)+"' + S + '/div>"\n'
++ '   +"' + S + 'table>' + S + 'tr>' + S + 'th>SIZE' + S + '/th>' + S + 'th>STICKERS' + S + '/th>' + S + 'th>PCS / BOX' + S + '/th>' + S + '/tr>"+rows+"' + S + '/table>"\n'
++ '   +"' + S + 'div class=\\"row\\">' + S + 'button class=\\"btn go\\" onclick=\\"doPrint(\'"+st+"\',\'"+col.replace(/\'/g,"")+"\')\\">⬛ Print' + S + '/button>' + S + 'button class=\\"btn\\" onclick=\\"paint()\\">← Colours' + S + '/button>' + S + '/div>";\n'
++ '  document.getElementById("back").style.display="";\n'
++ '  window.scrollTo(0,0);\n'
++ '}\n'
++ 'async function doPrint(st,col){\n'
++ '  syncDpi();\n'
++ '  const parts=[]; let n=0;\n'
++ '  DATA[st].sizes.forEach(sz=>{\n'
++ '    const k=parseInt((document.getElementById("n_"+sz)||{}).value)||0;\n'
++ '    const p=parseInt((document.getElementById("p_"+sz)||{}).value)||0;\n'
++ '    if(k>0&&p>0){ for(let i=0;i' + S + 'k;i++){ parts.push(buildBoxQr2x2Zpl({styleNum:st,color:col,size:sz,qty:p}, ctnNew())); n++; } }\n'
++ '  });\n'
++ '  if(!n){ msg("⚠ Enter how many stickers.",false); return; }\n'
++ '  await sendZpl(parts.filter(Boolean).join("\\n"), n);\n'
++ '}\n'
++ 'document.getElementById("q").oninput=paint;\n'
++ 'paint(); loadPrinters();\n'
++ S + '/script>\n</body>\n</html>\n';
+}
 async function skuMoveOpen(style, color){
   const ex = document.getElementById('modal-skumove'); if(ex) ex.remove();
   const CU = String(color).toUpperCase();
