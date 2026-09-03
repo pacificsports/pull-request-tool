@@ -192,7 +192,7 @@ body.po-dragging{user-select:none;}
   </span>
   <select id="lang-sel" onchange="setLang(this.value)" style="font-size:11px;padding:3px 6px;border-radius:5px;border:none;background:#1d3f66;color:#fff;"><option value="ko">한국어</option><option value="en">English</option><option value="es">Español</option></select>
   <button id="wide-btn" class="btn btn-sm" onclick="toggleWide()" title="화면 넓게 / 좁게 — 기본은 넓게 (이 브라우저에만 저장돼)" style="padding:2px 8px;font-size:10px;background:#1d3f66;color:#cfe0f2;border-color:#2b5384;">↔ Wide</button>
-  <span id="app-ver" style="font-size:10px;color:#9fb8d4;">v975</span>
+  <span id="app-ver" style="font-size:10px;color:#9fb8d4;">v976</span>
 </div>
 <script>
 // ↔ 넓게 보기 — 브라우저마다 따로 저장 (v793)
@@ -25320,7 +25320,14 @@ function trPLHtml(D){
     const pPcs = p.lines.reduce((s,l)=>s+trLinePcs(l),0);
     const pBox = p.lines.reduce((s,l)=>s+calcBoxes(l),0);
     return `<div style="margin-bottom:18px;page-break-inside:avoid;">
-      <div style="background:#f3e8ff;padding:8px 12px;border:1px solid #d8b4fe;border-radius:4px;margin-bottom:6px;font-weight:700;color:#7b1fa2;font-size:14px;">📦 ${esc(p.label)}${(()=>{ const q=hodgePalTxt(p.label,'SC'); return q?' <span style="font-family:Consolas,monospace;color:#000;border:2px solid #000;border-radius:4px;padding:1px 9px;">'+q+'</span>':''; })()} — ${p.lines.length} lines · ${pPcs.toLocaleString()} pcs · ${pBox.toLocaleString()} boxes</div>
+      <div style="background:#f3e8ff;padding:8px 12px;border:1px solid #d8b4fe;border-radius:4px;margin-bottom:6px;font-weight:700;color:#7b1fa2;font-size:14px;">📦 ${esc(p.label)}${(()=>{
+        /* SC → 3rd party 로 나갈 때는 팔레트마다 새 H bin 번호를 받아 둔다(p.hbin).
+           종이에 그게 안 찍히면 Hodge 쪽에서 어느 팔레트를 어느 칸에 넣어야 할지 알 수 없다.
+           예전에는 hodgePalTxt() 만 봤는데 그건 반대 방향(3P → SC, 이미 있는 H 칸)용이라
+           나가는 화물에서는 늘 비어 있었다. (v976) */
+        const hb = String((p&&p.hbin)||'').trim();
+        const q = hb ? ('PALLET # ' + hb.toUpperCase()) : hodgePalTxt(p.label,'SC');
+        return q?' <span style="font-family:Consolas,monospace;color:#000;border:2px solid #000;border-radius:4px;padding:1px 9px;">'+esc(q)+'</span>':''; })()} — ${p.lines.length} lines · ${pPcs.toLocaleString()} pcs · ${pBox.toLocaleString()} boxes</div>
       <table style="width:100%;border-collapse:collapse;font-size:11px;">
         <thead><tr style="background:#f3f4f6;">
           <th style="padding:6px 8px;text-align:left;border:1px solid #ccc;">Style</th>
@@ -28753,13 +28760,23 @@ function cmOpenPay(base, wh){
     </div>
     <div style="padding:0 16px 14px;display:flex;gap:8px;justify-content:flex-end;">
       <button class="btn btn-sm" onclick="document.getElementById('modal-cmpay').remove()">Cancel</button>
-      <button class="btn btn-sm" style="background:#065f46;color:#fff;border-color:#065f46;font-weight:800;" onclick="cmSubmitPay()">💰 Record</button>
+      <button id="cmpay-go" class="btn btn-sm" style="background:#065f46;color:#fff;border-color:#065f46;font-weight:800;" onclick="cmSubmitPay()">💰 Record</button>
     </div>
   </div>`;
   document.body.appendChild(div);
   initModalDrag(div);
 }
+/* 💰 입금 기록 (v976 에서 이중 기록 방지).
+   실제로 세 건이 두 번씩 들어갔다 — 26-5233 $482.64 · 26-5100 $3,455 · 26-5032 $76.50.
+   전부 같은 금액·같은 수표번호·같은 사람이고 시각이 **0.1초** 차이였다. 사람이 두 번 친 게
+   아니라 Record 버튼이 한 번의 더블클릭에 두 번 먹은 것이다. 버튼을 잠그지도 않았고
+   같은 입금인지 보지도 않았다. 그래서 두 겹으로 막는다:
+     1) 누르는 즉시 버튼을 잠근다 (실패하면 다시 푼다)
+     2) 같은 인보이스에 금액·비고가 같은 입금이 2분 안에 이미 있으면 물어본다
+        — 같은 수표를 정말 두 번 받는 일은 없다시피 하니 기본은 "아니오" 쪽이 안전하다 */
+let _cmPayBusy = false;
 async function cmSubmitPay(){
+  if(_cmPayBusy) return;
   const c = window._cmPayCtx; if(!c) return;
   const rec = savedCache.find(s=>s.base===c.base); if(!rec) return;
   const iv = rec.inv[c.wh];
@@ -28767,11 +28784,27 @@ async function cmSubmitPay(){
   if(!(amt > 0)){ showToast('⚠ Check the amount'); return; }
   const note = String((($('cmpay-note')||{}).value)||'').trim();
   iv.payments = Array.isArray(iv.payments) ? iv.payments : [];
+  const now = Date.now();
+  const twin = iv.payments.find(p =>
+        (Number(p.amt)||0) === amt
+     && String(p.note||'') === note
+     && Math.abs(now - (Date.parse(p.at)||0)) <= 120000);
+  if(twin && !confirm('⚠ 이 인보이스(' + (iv.invNo||'') + ')에 방금 같은 입금이 들어갔습니다.\n\n'
+      + '  $' + amt.toFixed(2) + (note ? ('  ·  ' + note) : '') + '\n'
+      + '  ' + new Date(twin.at).toLocaleTimeString() + '\n\n'
+      + '같은 수표를 두 번 받은 게 아니라면 취소하세요.\n한 번 더 기록할까요?')) return;
+  _cmPayBusy = true;
+  const go = document.getElementById('cmpay-go');
+  if(go){ go.disabled = true; go.style.opacity = '.5'; go.textContent = '저장 중…'; }
+  const unlock = () => { _cmPayBusy = false;
+    const g = document.getElementById('cmpay-go');
+    if(g){ g.disabled = false; g.style.opacity = '1'; g.textContent = '💰 Record'; } };
   iv.payments.push({ amt: amt, at: new Date().toISOString(), by: (SESS&&SESS.email)||'', ...(note?{note}:{}) });
   try{
     const r = await sbFetch('/rest/v1/pr_orders?base=eq.'+encodeURIComponent(c.base), {method:'PATCH', headers:{Prefer:'return=minimal'}, body:JSON.stringify({inv:rec.inv, updated_at:new Date().toISOString()})});
     if(!r.ok) throw new Error('HTTP '+r.status);
-  }catch(e){ iv.payments.pop(); showToast('⚠ Save failed: '+(e.message||e)); return; }
+  }catch(e){ iv.payments.pop(); unlock(); showToast('⚠ Save failed: '+(e.message||e)); return; }
+  _cmPayBusy = false;
   logHist(c.base, 'Payment recorded $' + amt.toFixed(2) + ' — ' + c.wh + ' (' + (iv.invNo||'') + ')' + (note?' · '+note:''));
   const m = document.getElementById('modal-cmpay'); if(m) m.remove();
   showToast('💰 Payment recorded — balance $' + invBalance(rec, c.wh).toFixed(2));
