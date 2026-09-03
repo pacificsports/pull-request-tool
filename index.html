@@ -192,7 +192,7 @@ body.po-dragging{user-select:none;}
   </span>
   <select id="lang-sel" onchange="setLang(this.value)" style="font-size:11px;padding:3px 6px;border-radius:5px;border:none;background:#1d3f66;color:#fff;"><option value="ko">한국어</option><option value="en">English</option><option value="es">Español</option></select>
   <button id="wide-btn" class="btn btn-sm" onclick="toggleWide()" title="화면 넓게 / 좁게 — 기본은 넓게 (이 브라우저에만 저장돼)" style="padding:2px 8px;font-size:10px;background:#1d3f66;color:#cfe0f2;border-color:#2b5384;">↔ Wide</button>
-  <span id="app-ver" style="font-size:10px;color:#9fb8d4;">v979</span>
+  <span id="app-ver" style="font-size:10px;color:#9fb8d4;">v980</span>
 </div>
 <script>
 // ↔ 넓게 보기 — 브라우저마다 따로 저장 (v793)
@@ -18788,54 +18788,117 @@ async function skuDeleteColor(style, color){
    따라가지 않는 것: 이미 나간 오더/패킹리스트, MAS 아이템 코드 — 화면에서 경고로 알려준다. */
 let _mvRows = [], _mvGrp = [], _mvPc = [], _mvTx = [], _mvCtx = null, _mvMode = 'loc';
 
-/* ═══ 🏷 Box Labels — 스타일·색을 골라 바로 라벨 인쇄 (v978) ═══
-   ⬛ QR 스티커 창(bxQrOpen)은 이미 있었지만 Full Box 탭에서 그 색 줄을 찾아 들어가야만
-   열렸다. 라벨만 몇 장 뽑고 싶을 때 그게 제일 번거로웠다 — 여기서는 스타일과 색만
-   고르면 바로 그 창이 열린다. */
+/* ═══ 🏷 Box Labels (v980) ═══
+   v978 에서는 색을 칩 92개로 한 번에 깔았다 — 하윤이 보고 "이런 식 말고 우리가 지금
+   쓰는 그대로" 라고 했고 맞는 말이다. 아이티 라벨 도구가 이미 검증된 모양을 갖고 있다:
+   큰 카드로 ① 스타일 → ② 색, ★ 즐겨찾기와 "이 컴퓨터에서 많이 쓴 것" 이 맨 위,
+   그 아래 카테고리별. 창고에서 장갑 낀 손으로도 눌리는 크기가 핵심이다.
+   고른 뒤에는 원래 쓰던 ⬛ QR 스티커 창(bxQrOpen)이 그대로 열린다 — 인쇄는 손 안 댔다. */
+const LBL_FAV_K = 'psi_lbl_fav', LBL_USE_K = 'psi_lbl_use';
+function lblLoad(k){ try{ return JSON.parse(localStorage.getItem(k)||'{}')||{}; }catch(e){ return {}; } }
+function lblSave(k,v){ try{ localStorage.setItem(k, JSON.stringify(v)); }catch(e){} }
+function lblFavHas(k){ return !!lblLoad(LBL_FAV_K)[k]; }
+function lblFavTgl(k){ const f=lblLoad(LBL_FAV_K); if(f[k]) delete f[k]; else f[k]=1; lblSave(LBL_FAV_K,f); blPickPaint(); }
+function lblUseBump(k){ const u=lblLoad(LBL_USE_K); u[k]=(Number(u[k])||0)+1; lblSave(LBL_USE_K,u); }
+function lblUseN(k){ return Number(lblLoad(LBL_USE_K)[k])||0; }
+/* 카드 밑에 적히는 원단 이름 — "Adult 30/1 CVC Short Sleeve Tee" → "30/1 CVC".
+   품목 종류(S/S·L/S·Tank)는 카테고리 제목에 이미 있으니 여기서는 뺀다. */
+function lblFabric(st){
+  const m = (typeof STYLE_MASTER!=='undefined') ? STYLE_MASTER[String(st)] : null;
+  if(!m) return '';
+  let t = String(m[5]||m[4]||'').replace(/^(Adult|Youth|Kids|Juvy|Toddler)\s+/i,'');
+  for(let i=0;i<2;i++) t = t.replace(/\s*(V-Neck|Hoodie|Ringer|Raglan)?\s*(Short Sleeve|Long Sleeve)?\s*(Tee|Tank Top|Tank|Performance)?$/i,'').trim();
+  return t.toUpperCase();
+}
+function lblIsKid(st){ const m=(typeof STYLE_MASTER!=='undefined')?STYLE_MASTER[String(st)]:null; return !!(m && /youth|kid|juvy|tod/i.test(String(m[0]||''))); }
+let _blpStyle = '';
 function blPickOpen(){
   const ex = document.getElementById('modal-blpick'); if(ex) ex.remove();
-  if(typeof skuLoaded !== 'undefined' && !skuLoaded && typeof skuFetch === 'function'){
-    skuFetch().then(()=>{ const m=document.getElementById('modal-blpick'); if(m){ m.remove(); blPickOpen(); } });
-  }
+  _blpStyle = '';
+  if(typeof skuLoaded !== 'undefined' && !skuLoaded && typeof skuFetch === 'function') skuFetch().then(()=>blPickPaint());
   const div = document.createElement('div'); div.id = 'modal-blpick';
-  div.style.cssText = 'position:fixed;inset:0;background:rgba(15,23,42,.6);z-index:265;display:flex;align-items:flex-start;justify-content:center;padding:26px 12px;overflow-y:auto;';
+  div.style.cssText = 'position:fixed;inset:0;background:rgba(15,23,42,.6);z-index:265;display:flex;align-items:flex-start;justify-content:center;padding:20px 10px;overflow-y:auto;';
   div.onclick = e => { if(e.target === div) div.remove(); };
-  const styles = (typeof skuStyles === 'function') ? skuStyles() : [];
-  div.innerHTML = `<div style="background:#fff;border-radius:14px;max-width:520px;width:100%;overflow:hidden;box-shadow:0 12px 40px rgba(15,23,42,.35);">
+  div.innerHTML = `<div style="background:#fff;border-radius:14px;max-width:620px;width:100%;overflow:hidden;box-shadow:0 12px 40px rgba(15,23,42,.35);">
     <div style="background:#4c1d95;color:#fff;padding:11px 16px;display:flex;align-items:center;gap:10px;">
-      <span style="font-weight:800;font-size:15px;">🏷 Box Labels</span>
+      <span id="blp-title" style="font-weight:800;font-size:15px;">🏷 Box Labels</span>
       <button onclick="document.getElementById('modal-blpick').remove()" style="margin-left:auto;background:rgba(255,255,255,.2);color:#fff;border:none;border-radius:8px;padding:5px 11px;font-weight:800;cursor:pointer;">✕</button>
     </div>
-    <div style="padding:14px 16px;display:flex;flex-direction:column;gap:10px;">
-      <div style="font-size:11.5px;color:#64748b;line-height:1.55;">Pick the style and colour — the sticker window opens next, where you set how many of each size. Same 2×2 stickers as the Full Box ⬛ QR button.</div>
-      <div>
-        <div style="font-size:11px;font-weight:800;color:#64748b;margin-bottom:3px;">STYLE #</div>
-        <input id="blp-style" class="fi" list="blp-styles" placeholder="e.g. 8368" oninput="blPickPaint()" style="width:100%;box-sizing:border-box;font-size:15px;font-weight:800;padding:8px 10px;">
-        <datalist id="blp-styles">${styles.map(x=>'<option value="'+esc(String(x))+'">').join('')}</datalist>
-      </div>
-      <div id="blp-colors" style="display:flex;flex-wrap:wrap;gap:5px;"></div>
-      <div id="blp-msg" style="font-size:11.5px;color:#94a3b8;"></div>
+    <div style="padding:10px 14px 4px;">
+      <input id="blp-q" class="fi" placeholder="🔍 Search" oninput="blPickPaint()" style="width:100%;box-sizing:border-box;font-size:14px;padding:8px 10px;">
     </div>
-    <div style="padding:10px 16px;border-top:1px solid #eee;display:flex;justify-content:flex-end;">
-      <button class="btn" onclick="document.getElementById('modal-blpick').remove()">Close</button>
+    <div id="blp-body" style="padding:6px 14px 14px;max-height:70vh;overflow-y:auto;"></div>
+    <div style="padding:10px 16px;border-top:1px solid #eee;display:flex;gap:8px;align-items:center;">
+      <button id="blp-back" class="btn" style="display:none;" onclick="_blpStyle='';blPickPaint()">← Styles</button>
+      <button class="btn" style="margin-left:auto;" onclick="document.getElementById('modal-blpick').remove()">Close</button>
     </div></div>`;
   document.body.appendChild(div);
-  const f = document.getElementById('blp-style'); if(f){ try{ f.focus(); }catch(e){} }
   blPickPaint();
 }
-function blPickPaint(){
-  const st = String((document.getElementById('blp-style')||{}).value||'').trim();
-  const box = document.getElementById('blp-colors'), msg = document.getElementById('blp-msg');
-  if(!box) return;
-  if(!st){ box.innerHTML=''; if(msg) msg.textContent='Type or pick a style number.'; return; }
-  const cols = (typeof skuColors === 'function') ? skuColors(st) : [];
-  if(!cols.length){ box.innerHTML=''; if(msg) msg.textContent='No colours on file for #'+st+'.'; return; }
-  if(msg) msg.textContent = cols.length + ' colour(s) — pick one';
-  box.innerHTML = cols.slice().sort((a,b)=>String(a).localeCompare(String(b))).map(c=>{
-    const CU = String(c).toUpperCase();
-    return `<span onclick="document.getElementById('modal-blpick').remove();bxQrOpen('${esc(st)}','${esc(CU)}')" style="cursor:pointer;background:#faf5ff;border:1px solid #ddd6fe;color:#5b21b6;border-radius:20px;padding:4px 11px;font-size:12px;font-weight:800;">${esc(CU)}</span>`;
-  }).join('');
+function blpCard(key, big, sub, kid, onclick){
+  const fav = lblFavHas(key);
+  const bg = kid ? '#fdf6e9' : '#f4f8fd', bd = kid ? '#e8d9b8' : '#cfe0f2';
+  return `<div onclick="${onclick}" style="position:relative;cursor:pointer;background:${bg};border:1.5px solid ${bd};border-radius:11px;padding:11px 13px;min-height:56px;">
+    <div style="font-size:22px;font-weight:900;color:#101a2c;line-height:1.05;letter-spacing:-.5px;padding-right:20px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${esc(big)}</div>
+    ${sub?`<div style="font-size:10.5px;font-weight:700;color:#7b8794;letter-spacing:.04em;margin-top:3px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${esc(sub)}</div>`:''}
+    <span onclick="event.stopPropagation();lblFavTgl('${esc(key)}')" title="Favourite" style="position:absolute;top:8px;right:9px;font-size:15px;line-height:1;color:${fav?'#c8951f':'#cfd6de'};">${fav?'★':'☆'}</span>
+  </div>`;
 }
+function blpSection(title, cards, color){
+  if(!cards.length) return '';
+  return `<div style="font-size:11.5px;font-weight:900;letter-spacing:.09em;color:${color||'#c8951f'};margin:14px 0 6px;padding-bottom:4px;border-bottom:2px solid ${color||'#c8951f'}33;">${esc(title)}</div>
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;">${cards.join('')}</div>`;
+}
+function blPickPaint(){
+  const body = document.getElementById('blp-body'); if(!body) return;
+  const q = String((document.getElementById('blp-q')||{}).value||'').trim().toUpperCase();
+  const back = document.getElementById('blp-back'), ttl = document.getElementById('blp-title');
+  if(back) back.style.display = _blpStyle ? '' : 'none';
+  if(ttl) ttl.textContent = _blpStyle ? ('🏷 Box Labels · #' + _blpStyle) : '🏷 Box Labels';
+
+  if(!_blpStyle){
+    const all = (typeof skuStyles === 'function' ? skuStyles() : []).map(String)
+      .filter(st => !q || st.toUpperCase().indexOf(q)>=0 || lblFabric(st).indexOf(q)>=0);
+    const card = st => blpCard('S|'+st, st, lblFabric(st), lblIsKid(st), `blPickStyle('${esc(st)}')`);
+    const fav = all.filter(st=>lblFavHas('S|'+st));
+    const used = all.filter(st=>!lblFavHas('S|'+st) && lblUseN('S|'+st)>0)
+                    .sort((a,b)=>lblUseN('S|'+b)-lblUseN('S|'+a)).slice(0,6);
+    const seen = new Set(fav.concat(used));
+    const byCat = {};
+    all.forEach(st=>{ if(seen.has(st)) return;
+      const m=(typeof STYLE_MASTER!=='undefined')?STYLE_MASTER[st]:null;
+      const c=(m&&m[0])||'Other'; (byCat[c]=byCat[c]||[]).push(st); });
+    let html = blpSection('★ FAVORITES', fav.map(card))
+      + (fav.length?`<div style="font-size:11px;font-weight:800;color:#94a3b8;letter-spacing:.06em;margin-top:12px;">1 · TAP THE STYLE</div>`:'')
+      + blpSection('USED MOST ON THIS COMPUTER', used.map(card), '#0f766e');
+    Object.keys(byCat).sort().forEach(c=>{ html += blpSection(c.toUpperCase(), byCat[c].sort().map(card), '#334155'); });
+    if(!all.length) html = '<div style="padding:26px;text-align:center;color:#94a3b8;">No styles'+(q?' for "'+esc(q)+'"':'')+'.</div>';
+    else if(!fav.length) html = `<div style="font-size:11px;font-weight:800;color:#94a3b8;letter-spacing:.06em;margin:2px 0 -6px;">1 · TAP THE STYLE</div>` + html;
+    body.innerHTML = html; body.scrollTop = 0;
+    return;
+  }
+  const st = _blpStyle;
+  const cols = ((typeof skuColors === 'function') ? skuColors(st) : []).map(c=>String(c).toUpperCase())
+    .filter(c => !q || c.indexOf(q)>=0);
+  const kid = lblIsKid(st);
+  const card = c => blpCard('C|'+st+'|'+c, c, '', kid, `blPickColor('${esc(st)}','${esc(c)}')`);
+  const fav = cols.filter(c=>lblFavHas('C|'+st+'|'+c));
+  const used = cols.filter(c=>!lblFavHas('C|'+st+'|'+c) && lblUseN('C|'+st+'|'+c)>0)
+                   .sort((a,b)=>lblUseN('C|'+st+'|'+b)-lblUseN('C|'+st+'|'+a)).slice(0,6);
+  const seen = new Set(fav.concat(used));
+  const rest = cols.filter(c=>!seen.has(c)).sort();
+  body.innerHTML = `<div style="font-size:11px;font-weight:800;color:#94a3b8;letter-spacing:.06em;margin:2px 0 0;">2 · TAP THE COLOUR &nbsp;<span style="color:#cbd5e1;">·</span>&nbsp; ${cols.length} on file</div>`
+    + blpSection('★ FAVORITES', fav.map(card))
+    + blpSection('USED MOST ON THIS COMPUTER', used.map(card), '#0f766e')
+    + blpSection('ALL COLOURS', rest.map(card), '#334155')
+    + (cols.length?'':'<div style="padding:26px;text-align:center;color:#94a3b8;">No colours on file for #'+esc(st)+'.</div>');
+  body.scrollTop = 0;
+}
+function blPickStyle(st){ _blpStyle = String(st); lblUseBump('S|'+_blpStyle);
+  const q=document.getElementById('blp-q'); if(q) q.value=''; blPickPaint(); }
+function blPickColor(st, c){ lblUseBump('C|'+st+'|'+c);
+  const m=document.getElementById('modal-blpick'); if(m) m.remove();
+  bxQrOpen(st, c); }
 async function skuMoveOpen(style, color){
   const ex = document.getElementById('modal-skumove'); if(ex) ex.remove();
   const CU = String(color).toUpperCase();
