@@ -192,7 +192,7 @@ body.po-dragging{user-select:none;}
   </span>
   <select id="lang-sel" onchange="setLang(this.value)" style="font-size:11px;padding:3px 6px;border-radius:5px;border:none;background:#1d3f66;color:#fff;"><option value="ko">한국어</option><option value="en">English</option><option value="es">Español</option></select>
   <button id="wide-btn" class="btn btn-sm" onclick="toggleWide()" title="화면 넓게 / 좁게 — 기본은 넓게 (이 브라우저에만 저장돼)" style="padding:2px 8px;font-size:10px;background:#1d3f66;color:#cfe0f2;border-color:#2b5384;">↔ Wide</button>
-  <span id="app-ver" style="font-size:10px;color:#9fb8d4;">v986</span>
+  <span id="app-ver" style="font-size:10px;color:#9fb8d4;">v987</span>
 </div>
 <script>
 // ↔ 넓게 보기 — 브라우저마다 따로 저장 (v793)
@@ -8502,6 +8502,19 @@ function calcPartialBoxesFromLines(lines, whTag){
   });
   return Object.values(byBox).sort((a,b)=>(a.wh+'').localeCompare(b.wh+'') || Number(a.boxNum)-Number(b.boxNum));
 }
+/* 🏷 낱장만 나가는 오더에 라벨이 몇 장 필요한가 (v987).
+   박스 번호가 안 적혀 있으면 몇 박스인지 아무도 모른다 — 낱장 총합을 박스 용량으로 나눠
+   짐작한다. 종이에 찍히는 값이 아니라 라벨 매수 기본값일 뿐이라 사람이 고칠 수 있다. */
+function blBoxGuess(lines){
+  let pcs = 0, ppb = 0;
+  (lines||[]).forEach(l=>{
+    const cap = Number(l.ppb)||72;
+    const loose = (Number(l.qty)||0) % cap;
+    if(loose > 0){ pcs += loose; ppb = Math.max(ppb, cap); }
+  });
+  if(pcs <= 0) return 0;
+  return Math.max(1, Math.ceil(pcs / (ppb||72)));
+}
 function calcPartialBoxList(){
   const rec = (typeof savedCache!=='undefined' && savedCache) ? savedCache.find(s=>s.base===plBase) : null;
   return calcPartialBoxesFromLines(plHealWh(rec, (plDrafts[plWh]||{}).lines||[]), plWh);
@@ -8510,7 +8523,7 @@ function openBoxLabelModalPL(mode){
   window._blMode = (mode==='full') ? 'full' : 'box';
   const rec = savedCache.find(s=>s.base===plBase);
   const _bl = (window._blMode==='full') ? calcFullBoxesFromLines((plDrafts[plWh]||{}).lines, plWh) : calcPartialBoxList();
-  openBoxLabelModal(_bl, { customer_po: (rec&&rec.meta&&rec.meta.po)||'', customer_name: (rec&&rec.meta&&rec.meta.cust)||'' });
+  openBoxLabelModal(_bl, { customer_po: (rec&&rec.meta&&rec.meta.po)||'', customer_name: (rec&&rec.meta&&rec.meta.cust)||'', boxGuess: blBoxGuess((plDrafts[plWh]||{}).lines||[]) });
 }
 function openBoxLabelForRecWh(base, wh, mode){
   const rec = getSaved().find(s=>s.base===base); if(!rec) return;
@@ -8520,19 +8533,20 @@ function openBoxLabelForRecWh(base, wh, mode){
   const src = (Array.isArray(i.lines) && i.lines.length) ? i.lines : (rec.lines||[]).filter(l=>l.wh===wh && (l.qty||0)>0);
   const boxes = (window._blMode==='full') ? calcFullBoxesFromLines(src, wh) : calcPartialBoxesFromLines(src, wh);
   // full box\uAC00 \uC5C6\uC5B4\uB3C4 \uBAA8\uB4C8\uC740 \uB744\uC6B4\uB2E4 \u2014 Customer + PO# \uB77C\uBCA8\uC740 \uC5EC\uC804\uD788 \uD504\uB9B0\uD2B8 \uAC00\uB2A5 (v701)
-  openBoxLabelModal(boxes, { customer_po: (rec.meta&&rec.meta.po)||'', customer_name: (rec.meta&&rec.meta.cust)||'' });
+  openBoxLabelModal(boxes, { customer_po: (rec.meta&&rec.meta.po)||'', customer_name: (rec.meta&&rec.meta.cust)||'', boxGuess: blBoxGuess(src) });
 }
 function openBoxLabelForRec(base, mode){
   window._blMode = (mode==='full') ? 'full' : 'box';
   const rec = savedCache.find(s=>s.base===base); if(!rec) return;
-  let boxes = [];
+  let boxes = [], guess = 0;
   (rec.whs||[]).filter(w=>w!=='BO' && w!=='NA').forEach(w=>{
     const src = (rec.pl && rec.pl[w] && Array.isArray(rec.pl[w].lines) && rec.pl[w].lines.length)
       ? rec.pl[w].lines
       : (rec.lines||[]).filter(l=>l.wh===w);
     boxes = boxes.concat((window._blMode==='full') ? calcFullBoxesFromLines(src, w) : calcPartialBoxesFromLines(src, w));
+    guess += blBoxGuess(src);
   });
-  openBoxLabelModal(boxes, { customer_po: (rec.meta&&rec.meta.po)||'', customer_name: (rec.meta&&rec.meta.cust)||'' });
+  openBoxLabelModal(boxes, { customer_po: (rec.meta&&rec.meta.po)||'', customer_name: (rec.meta&&rec.meta.cust)||'', boxGuess: guess });
 }
 // 🏷 Full Box Label (2x1 inch) — 목적: 거래처와 PO# 가 멀리서도 잘 보이게. 나머지는 하단에 작게 (v375)
 // dpi: 203(기본) 또는 300 — 라벨 모달에서 선택, 좌표/폰트 전체 스케일
@@ -9151,13 +9165,28 @@ function openBoxLabelModal(boxes, order){
     + (boxes.length ? '<div style="padding:5px 12px;border-bottom:1px solid #eee;background:#f8fafc;display:flex;align-items:center;gap:9px;">'
       + '<button class="btn btn-sm" id="bl-toggle-all" onclick="blToggleAll()" style="font-size:11px;white-space:nowrap;font-weight:800;">\u2610 Uncheck all</button>'
       + '<span id="bl-toggle-hint" style="font-size:10.5px;color:#94a3b8;line-height:1.35;">tick only the boxes you want a label for</span></div>' : '')
-    + '<div style="overflow-y:auto;flex:1;">' + (boxes.length ? boxListHtml : '<div style="padding:20px;text-align:center;color:#94a3b8;font-size:12px;">No full boxes on this order — use the 🏷 Customer + PO# label below.</div>') + '</div>'
+    /* 박스가 하나도 안 잡힐 때 — 왜 없는지 정확히 말해준다 (v987).
+       예전엔 어느 모드든 "No full boxes on this order" 라고만 했다. 그런데 낱장(partial)
+       라벨이 안 나오는 진짜 이유는 대개 **PARTIAL BOX# 칸이 비어 있어서**다:
+       `calcPartialBoxesFromLines()` 는 `l.pbox` 가 있어야 박스를 만든다.
+       빈에서 까서 보내는 오더(J&A PO RGR9578 처럼 5줄이 전부 낱장)는 풀박스가 0개라,
+       사람이 박스 번호를 안 적으면 찍을 라벨이 하나도 없다. "full box 가 없다"는 말은
+       맞지만 할 일을 안 알려준다 — 어디를 채우면 되는지 말해준다. */
+    + '<div style="overflow-y:auto;flex:1;">' + (boxes.length ? boxListHtml
+      : (window._blMode==='full'
+        ? '<div style="padding:18px 16px;text-align:center;color:#94a3b8;font-size:12px;line-height:1.6;">No full boxes on this order — every size is a partial quantity.<br>Use the 🏷 Customer + PO# label below.</div>'
+        : '<div style="padding:16px;color:#92400e;background:#fffbeb;font-size:12px;line-height:1.65;">'
+          + '<b>No box labels yet — the <span style="font-family:Consolas,monospace;">PARTIAL BOX#</span> column is empty on this order.</b><br>'
+          + 'A box label has to say what went into that box. Open the order (✏️ <b>Open/Edit</b>), put a box number (1, 2, 3…) on each line, then come back here.<br>'
+          + '<span style="color:#b45309;">Shipping right now? 🏷 <b>Customer + PO# label</b> below is already ticked with a suggested count — just press Print.</span></div>')) + '</div>'
     + '<div style="padding:9px 14px;border-top:1px solid #eee;background:#fff7ed;display:flex;align-items:center;gap:8px;flex-wrap:wrap;">'
-    + '<label style="display:flex;align-items:center;gap:8px;cursor:pointer;flex:1;min-width:0;"><input type="checkbox" id="bl-idlbl-cb" style="width:16px;height:16px;accent-color:#7c2d12;cursor:pointer;">'
+    + '<label style="display:flex;align-items:center;gap:8px;cursor:pointer;flex:1;min-width:0;"><input type="checkbox" id="bl-idlbl-cb"' + (boxes.length ? '' : ' checked') + ' style="width:16px;height:16px;accent-color:#7c2d12;cursor:pointer;">'
     + '<span style="font-size:11.5px;font-weight:800;color:#7c2d12;white-space:nowrap;">🏷 Customer + PO# label</span>'
     + '<span style="font-size:10.5px;color:#9a3412;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">' + esc((order&&order.customer_name)||'') + ' · PO ' + esc((order&&order.customer_po)||'') + '</span></label>'
     + '<span style="font-size:10.5px;color:#9a3412;">× </span>'
-    + '<input id="bl-idqty" type="number" min="1" max="200" placeholder="qty" title="How many Customer + PO# labels to print when checked (blank = 1)" style="width:52px;font-size:12px;padding:4px 6px;text-align:center;font-weight:800;border:1.5px solid #fdba74;border-radius:6px;box-sizing:border-box;">'
+    /* 찍을 박스가 하나도 없으면 몇 장이 필요한지 미리 넣어준다 (v987) —
+       빈칸이면 Print 를 눌러도 아무 일이 안 일어나서 "왜 안 나오지" 가 됐다. */
+    + '<input id="bl-idqty" type="number" min="1" max="200" placeholder="qty"' + ((!boxes.length && order && order.boxGuess>0) ? (' value="'+order.boxGuess+'"') : '') + ' title="How many Customer + PO# labels to print when checked (blank = 1)" style="width:52px;font-size:12px;padding:4px 6px;text-align:center;font-weight:800;border:1.5px solid #fdba74;border-radius:6px;box-sizing:border-box;">'
     + '</div>'
     + (window._blMode==='full' ? '<div style="padding:9px 14px;border-top:1px solid #eee;background:#f5f3ff;display:flex;align-items:center;gap:8px;flex-wrap:wrap;">'
       + '<label style="display:flex;align-items:center;gap:8px;cursor:pointer;flex:1;min-width:0;"><input type="checkbox" id="bl-fbqr-cb" onchange="blQrExclusive(this);blCountPaint()" style="width:16px;height:16px;accent-color:#6d28d9;cursor:pointer;">'
