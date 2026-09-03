@@ -192,7 +192,7 @@ body.po-dragging{user-select:none;}
   </span>
   <select id="lang-sel" onchange="setLang(this.value)" style="font-size:11px;padding:3px 6px;border-radius:5px;border:none;background:#1d3f66;color:#fff;"><option value="ko">한국어</option><option value="en">English</option><option value="es">Español</option></select>
   <button id="wide-btn" class="btn btn-sm" onclick="toggleWide()" title="화면 넓게 / 좁게 — 기본은 넓게 (이 브라우저에만 저장돼)" style="padding:2px 8px;font-size:10px;background:#1d3f66;color:#cfe0f2;border-color:#2b5384;">↔ Wide</button>
-  <span id="app-ver" style="font-size:10px;color:#9fb8d4;">v974</span>
+  <span id="app-ver" style="font-size:10px;color:#9fb8d4;">v975</span>
 </div>
 <script>
 // ↔ 넓게 보기 — 브라우저마다 따로 저장 (v793)
@@ -3671,19 +3671,38 @@ function computeOrderDiff(oldRec, newRec){
     const a = String(om[k]||'').trim(), b = String(nm[k]||'').trim();
     if(a !== b) ch.push({ item:'Order Info', field: FIELDS[k], from: a || '—', to: b || '—', kind:'meta', label: FIELDS[k] });
   });
-  const key = l => [l.style||'', l.color||'', l.size||''].filter(Boolean).join(' ');
-  const oldL = (oldRec.lines||[]).filter(l=>(l.qty||0)>0), newL = (newRec.lines||[]).filter(l=>(l.qty||0)>0);
-  const omap = {}; oldL.forEach(l=>{ omap[key(l)] = l; });
-  const nmap = {}; newL.forEach(l=>{ nmap[key(l)] = l; });
-  newL.forEach(l=>{
-    const o = omap[key(l)];
-    if(!o){ ch.push({ item: key(l), field:'Line ADDED', from:'—', to:(l.qty||0)+' pcs @ $'+(l.price||0)+' ('+(l.wh||'')+')', kind:'line', label:'Line ADDED' }); return; }
-    if((o.qty||0) !== (l.qty||0)) ch.push({ item: key(l), field:'Quantity (pcs)', from: String(o.qty||0), to: String(l.qty||0), kind:'qty', label: key(l)+' — Qty' });
-    if((Number(o.price)||0) !== (Number(l.price)||0)) ch.push({ item: key(l), field:'Unit Price', from: '$'+(Number(o.price)||0), to: '$'+(Number(l.price)||0), kind:'price', label: key(l)+' — Unit Price' });
-    if((o.wh||'') !== (l.wh||'')) ch.push({ item: key(l), field:'Warehouse', from: o.wh||'—', to: l.wh||'—', kind:'wh', label: key(l)+' — Warehouse' });
-    if(String(o.pbox||'') !== String(l.pbox||'')) ch.push({ item: key(l), field:'P.Box# (internal packing)', from: String(o.pbox||'')||'—', to: String(l.pbox||'')||'—', kind:'pbox', label: key(l)+' — P.Box#' });
+  /* ⚠ 품목 × 창고 단위로 비교한다 (v975).
+     예전엔 style|color|size 만 키로 썼다. 한 품목이 SC 15 / CA 25 로 갈려 있으면
+     두 줄이 서로를 덮어써서, 실제로는 "SC 15 → 0" 인 변화가 메일에
+     "15 → 25, 창고 SC → CA" 라는 엉뚱한 문장으로 나갔다. 단가도 $0 → $2.89 로
+     억지로 맞춰졌다. 리비전 종이는 v967 에서 이미 창고별로 고쳤는데,
+     메일·변경목록을 만드는 이 함수만 줄 단위로 남아 있었다. */
+  const agg = ls => {
+    const m = {};
+    (ls||[]).forEach(l=>{
+      if(!l) return;
+      const it = [l.style||'', l.color||'', l.size||''].filter(Boolean).join(' ');
+      if(!it) return;
+      const w = (String(l.wh||'SC').trim().toUpperCase()) || 'SC';
+      const k = it + '\u0001' + w;
+      const o = m[k] || (m[k] = { item: it, wh: w, qty: 0, price: Number(l.price)||0, pbox: String(l.pbox||'') });
+      o.qty += Number(l.qty)||0;
+      if(!o.price && Number(l.price)) o.price = Number(l.price);
+      if(!o.pbox && l.pbox) o.pbox = String(l.pbox);
+    });
+    return m;
+  };
+  const A = agg((oldRec.lines||[]).filter(l=>(l.qty||0)>0));
+  const B = agg((newRec.lines||[]).filter(l=>(l.qty||0)>0));
+  const lbl = o => o.item + ' (' + o.wh + ')';
+  [...new Set([...Object.keys(A), ...Object.keys(B)])].sort().forEach(k=>{
+    const a = A[k], b = B[k];
+    if(!a && b){ ch.push({ item: lbl(b), field:'Line ADDED', from:'—', to: b.qty + ' pcs @ $' + b.price, kind:'line', label:'Line ADDED' }); return; }
+    if(a && !b){ ch.push({ item: lbl(a), field:'Line REMOVED', from: a.qty + ' pcs', to:'0 pcs', kind:'line', label:'Line REMOVED' }); return; }
+    if(a.qty !== b.qty) ch.push({ item: lbl(b), field:'Quantity (pcs)', from: String(a.qty), to: String(b.qty), kind:'qty', label: lbl(b)+' — Qty' });
+    if((Number(a.price)||0) !== (Number(b.price)||0)) ch.push({ item: lbl(b), field:'Unit Price', from: '$'+(Number(a.price)||0), to: '$'+(Number(b.price)||0), kind:'price', label: lbl(b)+' — Unit Price' });
+    if(String(a.pbox||'') !== String(b.pbox||'')) ch.push({ item: lbl(b), field:'P.Box# (internal packing)', from: String(a.pbox||'')||'—', to: String(b.pbox||'')||'—', kind:'pbox', label: lbl(b)+' — P.Box#' });
   });
-  oldL.forEach(l=>{ if(!nmap[key(l)]) ch.push({ item: key(l), field:'Line REMOVED', from:(l.qty||0)+' pcs', to:'—', kind:'line', label:'Line REMOVED' }); });
   return ch;
 }
 function notifyModified(rec, changes){
