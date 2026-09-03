@@ -192,7 +192,7 @@ body.po-dragging{user-select:none;}
   </span>
   <select id="lang-sel" onchange="setLang(this.value)" style="font-size:11px;padding:3px 6px;border-radius:5px;border:none;background:#1d3f66;color:#fff;"><option value="ko">한국어</option><option value="en">English</option><option value="es">Español</option></select>
   <button id="wide-btn" class="btn btn-sm" onclick="toggleWide()" title="화면 넓게 / 좁게 — 기본은 넓게 (이 브라우저에만 저장돼)" style="padding:2px 8px;font-size:10px;background:#1d3f66;color:#cfe0f2;border-color:#2b5384;">↔ Wide</button>
-  <span id="app-ver" style="font-size:10px;color:#9fb8d4;">v977</span>
+  <span id="app-ver" style="font-size:10px;color:#9fb8d4;">v978</span>
 </div>
 <script>
 // ↔ 넓게 보기 — 브라우저마다 따로 저장 (v793)
@@ -250,6 +250,7 @@ try{ applyWide(localStorage.getItem('psx_wide') !== '0'); }catch(e){ applyWide(t
   <button id="nav-cust" class="nav-btn" onclick="showView('cust')">👥 Customers</button>
   <button id="nav-tx" class="nav-btn" onclick="showView('tx')">💳 Transactions</button>
   <button id="nav-act" class="nav-btn" onclick="showView('act')">📜 Activity</button>
+  <button id="nav-lbl" class="nav-btn" onclick="blPickOpen()" title="Print box QR stickers for any style / colour — pick the style, the colour, then the sizes">🏷 Box Labels</button>
   <button id="nav-loan" class="nav-btn" onclick="showView('loan')" style="display:none;">💰 Loan</button>
 </div>
 <button id="stkpk-btn" onclick="stockPeekToggle()" title="Peek at stock while entering the order (split view · Esc to close)" style="display:none;position:fixed;right:16px;bottom:18px;z-index:70;background:#0f2a4a;color:#fff;border:none;border-radius:24px;padding:10px 16px;font-weight:800;font-size:13px;box-shadow:0 4px 14px rgba(15,42,74,.35);cursor:pointer;">📦 Stock</button>
@@ -10880,6 +10881,24 @@ function pchkSetPackWh(w){ window._packWh=(w==='CA'?'CA':'SC'); window._packSel=
 function pchkShortDt(d){ const m=tdMD(d); return m || String(d||''); }
 /* 값에 이미 'PO' 가 들어 있으면 앞에 또 붙이지 않는다 — 'PO PO SAMPLE' 이 된다 */
 function pchkPoNum(v){ const t=String(v==null?'':v).trim(); if(!t) return '—'; return t.replace(/^PO[#\s:.-]*/i,'').trim() || t; }
+/* ═══ 🎨 거래처 색 (v978) ═══
+   하루에 여러 거래처가 나가면 /pic 목록에서 어느 PO 가 누구 건지 한눈에 안 들어온다.
+   특히 LTL 은 받는 곳마다 BOL 이 따로 나가는데, 흰 카드가 줄줄이 있으면 섞어서 고르기 쉽다.
+   그래서 이름에서 고정 색을 뽑는다 — 어느 화면에서 보든 같은 거래처는 늘 같은 색이다.
+   (무작위가 아니라 이름 해시라서 새로고침해도, 다른 사람 화면에서도 똑같다.) */
+const CUST_HUES = ['#1d4ed8','#b91c1c','#047857','#7c3aed','#b45309','#0e7490','#be185d','#4d7c0f',
+                   '#4338ca','#c2410c','#0f766e','#9333ea','#a16207','#0369a1','#9f1239','#15803d'];
+function custHue(name){
+  let t = String(name==null?'':name).trim();
+  try{ if(typeof custCanon==='function') t = custCanon(t) || t; }catch(e){}
+  t = t.toUpperCase();
+  if(!t) return '#64748b';
+  let h = 5381;
+  for(let i=0;i<t.length;i++) h = ((h*33) ^ t.charCodeAt(i)) >>> 0;
+  return CUST_HUES[h % CUST_HUES.length];
+}
+function custHueSoft(name){ return custHue(name) + '14'; }   // 같은 색의 아주 옅은 배경 (8자리 hex alpha)
+
 let _packListT;
 function pchkPackListDeb(){ clearTimeout(_packListT); _packListT=setTimeout(pchkPackList, 300); }
 async function pchkPackList(){
@@ -10900,11 +10919,26 @@ async function pchkPackList(){
   window._packSel=window._packSel||{};
   window._packRowInfo=window._packRowInfo||{};
   window._packPacked = {};
-  el.innerHTML=rows.map(r=>{ const packed=Array.isArray(r.packed_whs)&&r.packed_whs.includes(_wh);
+  /* 거래처별로 묶어서 보여준다 (v978) — 카드마다 그 거래처 색 띠가 붙고,
+     묶음 머리에 "이 거래처 전부 선택" 이 있어서 LTL 묶음이 저절로 거래처별로 만들어진다. */
+  const _grp = {};
+  rows.forEach(r=>{ const k = String(r.cust||'(no name)').trim() || '(no name)'; (_grp[k] = _grp[k] || []).push(r); });
+  window._packGrp = _grp;
+  const _order = Object.keys(_grp).sort((a,b)=>a.localeCompare(b));
+  el.innerHTML = _order.map(cn=>{
+    const hue = custHue(cn), list = _grp[cn];
+    const allSel = list.every(r=>window._packSel[r.base]);
+    const nBoxLeft = list.filter(r=>!(Array.isArray(r.packed_whs)&&r.packed_whs.includes(_wh))).length;
+    const head = `<div style="display:flex;align-items:center;gap:8px;margin:2px 0 6px;padding:5px 10px;border-radius:9px;background:${hue};color:#fff;">
+      <span style="font-size:13.5px;font-weight:800;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${esc(cn)}</span>
+      <span style="font-size:11px;font-weight:700;opacity:.9;white-space:nowrap;">${list.length} PO${nBoxLeft!==list.length?' · '+nBoxLeft+' to pack':''}</span>
+      <span onclick="pchkPackSelCust('${esc(cn.replace(/'/g,''))}',${allSel?'false':'true'})" style="margin-left:auto;flex:none;cursor:pointer;font-size:10.5px;font-weight:800;background:rgba(255,255,255,.22);border-radius:20px;padding:3px 10px;white-space:nowrap;">${allSel?'✕ 선택 해제':'☑ 이 거래처 '+list.length+'개 선택'}</span>
+    </div>`;
+    return head + list.map(r=>{ const packed=Array.isArray(r.packed_whs)&&r.packed_whs.includes(_wh);
     if(packed) window._packPacked[r.base]=1;
     window._packRowInfo[r.base]={cust:String(r.cust||''), po:String(r.po||''), wh:_wh};
     const sel=!!window._packSel[r.base];
-    return `<div style="display:flex;flex-wrap:wrap;width:100%;align-items:center;gap:8px;background:${sel?'#eff6ff':'#fff'};border:1px solid ${sel?'#93c5fd':'#e5e7eb'};border-radius:11px;padding:10px 12px;margin-bottom:8px;">
+    return `<div style="display:flex;flex-wrap:wrap;width:100%;align-items:center;gap:8px;background:${sel?'#eff6ff':'#fff'};border:1px solid ${sel?'#93c5fd':'#e5e7eb'};border-left:6px solid ${hue};border-radius:11px;padding:10px 12px;margin-bottom:8px;">
     <input type="checkbox" ${sel?'checked':''} onclick="event.stopPropagation();pchkPackSelTgl('${esc(r.base)}',this.checked)" title="Select for LTL batch" style="width:22px;height:22px;flex-shrink:0;accent-color:#374151;cursor:pointer;">
     <button onclick="pchkPackEdit('${esc(r.base)}','${esc(String(r.cust||'').replace(/'/g,''))}','${esc(String(r.po||'').replace(/'/g,''))}','${_wh}')" style="flex:1;display:flex;flex-wrap:wrap;align-items:center;gap:6px;text-align:left;background:none;border:none;cursor:pointer;padding:0;min-width:0;">
     <span style="font-size:10px;font-weight:800;color:#fff;background:${c};border-radius:8px;padding:2px 8px;white-space:nowrap;flex:none;">${_wh}</span>
@@ -10919,10 +10953,18 @@ async function pchkPackList(){
       ${r.ship_from_ca?'<div style="font-size:10.5px;font-weight:800;color:#b45309;background:#fff7ed;border:1px solid #fed7aa;border-radius:6px;padding:2px 7px;margin-top:3px;display:inline-block;">🚚 SC→CA · ships from CA</div>':''}
     </div>
   </button>${pcrTapHtml(r.base,_wh)}</div>`; }).join('');
+  }).join('');
   pchkPackSelBar();
   tdBannerPaint(rows.map(r=>String(r.base)), _wh);
 }
 function pchkPackSelTgl(base, on){ window._packSel=window._packSel||{}; if(on) window._packSel[base]=1; else delete window._packSel[base]; pchkPackSelBar(); }
+/* 한 거래처의 PO 를 통째로 켜고 끈다 — LTL 묶음을 거래처별로 만드는 가장 빠른 길 */
+function pchkPackSelCust(cust, on){
+  const list = ((window._packGrp||{})[cust]) || [];
+  window._packSel = window._packSel || {};
+  list.forEach(r=>{ if(on) window._packSel[r.base]=1; else delete window._packSel[r.base]; });
+  pchkPackList();
+}
 function pchkPackSelClear(){ window._packSel={}; pchkPackList(); }
 function pchkPackSelBar(){
   const el=document.getElementById('pack-ltl-actions'); if(!el) return;
@@ -11525,6 +11567,26 @@ async function bulkFindPending(wh, mode, bases){
 async function pchkLtlBatchSave(){
   const wh=window._packWh||'SC'; const rows=window._ltlRows||[]; const msg=document.getElementById('ltl-msg'); const btn=document.getElementById('ltl-save');
   const M=(window._packMode==='UPS')?'UPS':'LTL';   // 📦 UPS = 여러 PO를 합쳐 박스를 줄여 보내는 배치 (v775)
+  /* ⚠ 거래처가 섞인 묶음 (v978).
+     묶음 하나는 팔레트 수도 하나, 총 박스도 하나로 저장된다. 그런데 LTL BOL 은
+     **받는 곳마다** 따로 나가고, UPS 배치는 아예 박스를 같이 담는다 —
+     거래처가 둘이면 어느 팔레트가 누구 건지 기록에 안 남고 Inform Customer 메일에
+     남의 PO 가 섞인다. 지금까지 아무도 안 막고 있었다. */
+  (function(){ })();
+  const _byCust = {};
+  rows.forEach(r=>{ const k = String(r.cust||'(no name)').trim(); (_byCust[k] = _byCust[k] || {po:0, box:0}); _byCust[k].po++; _byCust[k].box += Number(r.boxes)||0; });
+  const _custs = Object.keys(_byCust);
+  if(_custs.length > 1){
+    const lines = _custs.map(c=>'   · ' + c + ' — ' + _byCust[c].po + ' PO · ' + _byCust[c].box + ' box').join('\n');
+    const why = (M==='UPS')
+      ? 'UPS 배치는 여러 PO 를 **같은 박스에 합쳐** 보냅니다. 받는 곳이 다르면 한 박스에 담을 수 없습니다.'
+      : 'LTL BOL 은 **받는 곳마다 따로** 나갑니다. 한 묶음에 두 곳을 넣으면 어느 팔레트가 누구 건지 남지 않습니다.';
+    if(!confirm('⚠ 이 묶음에 거래처가 ' + _custs.length + '곳입니다.\n\n' + lines + '\n\n' + why
+        + '\n\n거래처별로 따로 만드는 것을 권합니다 — 취소하고 한 거래처씩 골라 주세요.\n\n그래도 한 묶음으로 저장할까요?')) {
+      if(msg){ msg.style.color='#b45309'; msg.textContent='취소했습니다 — 거래처별로 나눠서 만들어 주세요.'; }
+      return;
+    }
+  }
   if(btn){ btn.disabled=true; btn.textContent='Saving…'; }
   const now=new Date().toISOString();
   // UPS 는 PO별 박스수가 정의되지 않으므로(박스를 공유) PO별로는 추정치를 남기고, 합친 실제 박스는 bulk shipment 에 기록한다
@@ -18709,6 +18771,54 @@ async function skuDeleteColor(style, color){
    따라가지 않는 것: 이미 나간 오더/패킹리스트, MAS 아이템 코드 — 화면에서 경고로 알려준다. */
 let _mvRows = [], _mvGrp = [], _mvPc = [], _mvTx = [], _mvCtx = null, _mvMode = 'loc';
 
+/* ═══ 🏷 Box Labels — 스타일·색을 골라 바로 라벨 인쇄 (v978) ═══
+   ⬛ QR 스티커 창(bxQrOpen)은 이미 있었지만 Full Box 탭에서 그 색 줄을 찾아 들어가야만
+   열렸다. 라벨만 몇 장 뽑고 싶을 때 그게 제일 번거로웠다 — 여기서는 스타일과 색만
+   고르면 바로 그 창이 열린다. */
+function blPickOpen(){
+  const ex = document.getElementById('modal-blpick'); if(ex) ex.remove();
+  if(typeof skuLoaded !== 'undefined' && !skuLoaded && typeof skuFetch === 'function'){
+    skuFetch().then(()=>{ const m=document.getElementById('modal-blpick'); if(m){ m.remove(); blPickOpen(); } });
+  }
+  const div = document.createElement('div'); div.id = 'modal-blpick';
+  div.style.cssText = 'position:fixed;inset:0;background:rgba(15,23,42,.6);z-index:265;display:flex;align-items:flex-start;justify-content:center;padding:26px 12px;overflow-y:auto;';
+  div.onclick = e => { if(e.target === div) div.remove(); };
+  const styles = (typeof skuStyles === 'function') ? skuStyles() : [];
+  div.innerHTML = `<div style="background:#fff;border-radius:14px;max-width:520px;width:100%;overflow:hidden;box-shadow:0 12px 40px rgba(15,23,42,.35);">
+    <div style="background:#4c1d95;color:#fff;padding:11px 16px;display:flex;align-items:center;gap:10px;">
+      <span style="font-weight:800;font-size:15px;">🏷 Box Labels</span>
+      <button onclick="document.getElementById('modal-blpick').remove()" style="margin-left:auto;background:rgba(255,255,255,.2);color:#fff;border:none;border-radius:8px;padding:5px 11px;font-weight:800;cursor:pointer;">✕</button>
+    </div>
+    <div style="padding:14px 16px;display:flex;flex-direction:column;gap:10px;">
+      <div style="font-size:11.5px;color:#64748b;line-height:1.55;">Pick the style and colour — the sticker window opens next, where you set how many of each size. Same 2×2 stickers as the Full Box ⬛ QR button.</div>
+      <div>
+        <div style="font-size:11px;font-weight:800;color:#64748b;margin-bottom:3px;">STYLE #</div>
+        <input id="blp-style" class="fi" list="blp-styles" placeholder="e.g. 8368" oninput="blPickPaint()" style="width:100%;box-sizing:border-box;font-size:15px;font-weight:800;padding:8px 10px;">
+        <datalist id="blp-styles">${styles.map(x=>'<option value="'+esc(String(x))+'">').join('')}</datalist>
+      </div>
+      <div id="blp-colors" style="display:flex;flex-wrap:wrap;gap:5px;"></div>
+      <div id="blp-msg" style="font-size:11.5px;color:#94a3b8;"></div>
+    </div>
+    <div style="padding:10px 16px;border-top:1px solid #eee;display:flex;justify-content:flex-end;">
+      <button class="btn" onclick="document.getElementById('modal-blpick').remove()">Close</button>
+    </div></div>`;
+  document.body.appendChild(div);
+  const f = document.getElementById('blp-style'); if(f){ try{ f.focus(); }catch(e){} }
+  blPickPaint();
+}
+function blPickPaint(){
+  const st = String((document.getElementById('blp-style')||{}).value||'').trim();
+  const box = document.getElementById('blp-colors'), msg = document.getElementById('blp-msg');
+  if(!box) return;
+  if(!st){ box.innerHTML=''; if(msg) msg.textContent='Type or pick a style number.'; return; }
+  const cols = (typeof skuColors === 'function') ? skuColors(st) : [];
+  if(!cols.length){ box.innerHTML=''; if(msg) msg.textContent='No colours on file for #'+st+'.'; return; }
+  if(msg) msg.textContent = cols.length + ' colour(s) — pick one';
+  box.innerHTML = cols.slice().sort((a,b)=>String(a).localeCompare(String(b))).map(c=>{
+    const CU = String(c).toUpperCase();
+    return `<span onclick="document.getElementById('modal-blpick').remove();bxQrOpen('${esc(st)}','${esc(CU)}')" style="cursor:pointer;background:#faf5ff;border:1px solid #ddd6fe;color:#5b21b6;border-radius:20px;padding:4px 11px;font-size:12px;font-weight:800;">${esc(CU)}</span>`;
+  }).join('');
+}
 async function skuMoveOpen(style, color){
   const ex = document.getElementById('modal-skumove'); if(ex) ex.remove();
   const CU = String(color).toUpperCase();
@@ -19857,7 +19967,7 @@ function bxLocModal(style, color, size, wh, loc){
   div.style.cssText = 'position:fixed;inset:0;background:rgba(15,23,42,.55);z-index:99;display:flex;align-items:center;justify-content:center;padding:20px;';
   div.onclick = e=>{ if(e.target===div){ div.remove(); window._blmCtx = null; } };
   div.innerHTML = `<div style="background:#fff;border-radius:12px;max-width:560px;width:100%;overflow:hidden;">
-    <div style="background:${bxSpecLoc(loc,wh)?'#b45309':(wh==='CA'?'#9a3412':'#1d4ed8')};color:#fff;padding:10px 16px;font-weight:800;"><div style="display:flex;align-items:center;gap:8px;"><span>${bxSpecLoc(loc,wh)?bxSpecMeta(bxSpecLoc(loc,wh)).icon:'📍'} ${esc(loc)} · [${wh}] ${esc(String(style))} ${esc(String(color))} ${esc(String(size))}</span><button class="btn btn-sm" style="margin-left:auto;background:rgba(255,255,255,.18);color:#fff;border-color:rgba(255,255,255,.55);font-weight:800;white-space:nowrap;flex:none;" onclick="bxBinHist('${esc(String(style))}','${esc(String(color))}','${esc(String(size))}','${wh}','${esc(String(loc))}')" title="Movement history for THIS bin — what came in and where each box went">📜 Bin history</button></div>
+    <div style="background:${bxSpecLoc(loc,wh)?'#b45309':(wh==='CA'?'#9a3412':'#1d4ed8')};color:#fff;padding:10px 16px;font-weight:800;"><div style="display:flex;align-items:center;gap:8px;"><span>${bxSpecLoc(loc,wh)?bxSpecMeta(bxSpecLoc(loc,wh)).icon:'📍'} ${esc(loc)} · [${wh}] ${esc(String(style))} ${esc(String(color))} ${esc(String(size))}</span><button class="btn btn-sm" style="margin-left:auto;background:rgba(255,255,255,.18);color:#fff;border-color:rgba(255,255,255,.55);font-weight:800;white-space:nowrap;flex:none;" onclick="bxBinHist('${esc(String(style))}','${esc(String(color))}','${esc(String(size))}','${wh}','${esc(String(loc))}')" title="Movement history for THIS bin — what came in and where each box went">📜 Bin history</button><button class="btn btn-sm" style="margin-left:6px;background:rgba(255,255,255,.18);color:#fff;border-color:rgba(255,255,255,.55);font-weight:800;white-space:nowrap;flex:none;" onclick="document.getElementById('modal-bxloc').remove();window._blmCtx=null;skuMoveOpen('${esc(String(style))}','${esc(String(color))}')" title="Wrong style number on these boxes? Move them to the right one — pick this bin in the next window">🔀 Fix style #</button></div>
       <div style="font-weight:400;font-size:11px;opacity:.9;">Currently ${list.length} box(es) · ${pcs} pcs/box${bxSpecLoc(loc,wh)?' &nbsp;·&nbsp; ⚠ '+esc(bxSpecMeta(bxSpecLoc(loc,wh)).note):''}${(()=>{ const rsv=(typeof reservedBoxes==='function')?reservedBoxes(style,color,size,wh):0; if(rsv<=0) return ''; const r=reserveFor(style,color,size,wh); return ' &nbsp;·&nbsp; 🔒 '+rsv+' RESERVED'+(r&&r.cust?(' ('+esc(r.cust)+')'):'')+' — locked'; })()}</div></div>
     <div style="padding:14px 16px;display:flex;flex-direction:column;gap:12px;">
       <div style="display:flex;align-items:center;gap:8px;font-size:12px;background:#f8fafc;border:1px solid var(--border);border-radius:8px;padding:8px 10px;">
@@ -19894,6 +20004,19 @@ function bxLocModal(style, color, size, wh, loc){
         <input id="blm-outn" class="fi num" type="number" min="1" max="${list.length}" value="1" style="width:60px;" ${_dis}> box(es)
         <button class="btn btn-sm" ${_dis}style="background:#dc2626;color:#fff;border-color:#dc2626;white-space:nowrap;flex:none;${_disCss}" onclick="bxLocOutDo()" title="${_locked?esc(_lockTtl):'Takes boxes out of stock without a PO — for samples, returns, or anything that left the building outside an order'}">− Ship</button>
         <span class="muted" style="font-size:10.5px;">Removes boxes from stock without a PO (samples / returns) · oldest first · restorable from 📜</span>
+      </div>
+      <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-top:9px;padding-top:9px;border-top:1px dashed var(--border);">
+        <span style="font-weight:800;min-width:60px;color:#b91c1c;">Damage</span>
+        <input id="blm-dmgn" class="fi num" type="number" min="1" max="${list.length}" value="1" style="width:60px;" ${_dis}> box(es)
+        <select id="blm-dmgwhy" class="fi" style="font-size:12px;padding:4px 8px;max-width:180px;" ${_dis}>
+          <option value="WATER">Water / rain</option>
+          <option value="3P HANDLING">3rd party handling</option>
+          <option value="CRUSHED">Crushed / torn</option>
+          <option value="STAINED">Stained / dirty</option>
+          <option value="OTHER">Other…</option>
+        </select>
+        <button class="btn btn-sm" ${_dis}style="background:#b91c1c;color:#fff;border-color:#b91c1c;font-weight:800;white-space:nowrap;flex:none;${_disCss}" onclick="bxLocDmgDo()" title="${_locked?esc(_lockTtl):'Damaged goods — off the books with a reason on the record'}">🔨 Write off</button>
+        <span class="muted" style="font-size:10.5px;">Damaged stock · the reason is saved · counts into 🔨 Damaged on the dashboard · restorable from 📜</span>
       </div>
     </div>
     <div style="padding:10px 16px;border-top:1px solid var(--border);display:flex;justify-content:flex-end;">
@@ -20091,6 +20214,120 @@ async function bxLocOutDo(){
   showToast('📦→ Shipped: '+n+' box(es) @'+c.loc);
   renderBoxRoom();
   bxLocModal(c.style, c.color, c.size, c.wh, c.loc);
+}
+/* ═══ 🔨 파손 처리 (v978) ═══
+   비를 맞거나 3P 가 잘못 다뤄서 못 파는 물건이 나온다. 그냥 박스 수를 줄이면
+   **왜 줄었는지가 어디에도 안 남는다**. 그래서 Ship out 과 똑같은 길
+   (status OUT + out_po)을 쓰되 사유를 out_po 에 박는다. 그러면 공짜로 셋이 따라온다:
+     · 📜 Bin history 에 언제·누가·왜가 남고 거기서 되돌릴 수 있다
+     · 대시보드 🔨 Damaged 에서 사유별로 합계가 나온다
+     · 나중에 원가가 붙으면 손실 금액이 그대로 계산된다 */
+async function bxLocDmgDo(){
+  const c = window._blmCtx; if(!c) return;
+  const list = bxLocList(c.style, c.color, c.size, c.wh, c.loc);
+  const n = Math.min(parseInt(($('blm-dmgn')||{}).value)||0, list.length);
+  if(!n){ showToast('⚠ Enter a quantity'); return; }
+  const _rblk = reserveBlock(c.style,c.color,c.size,c.wh,n); if(_rblk){ alert(_rblk); return; }
+  const why = String((($('blm-dmgwhy')||{}).value)||'OTHER');
+  let free = '';
+  if(why === 'OTHER'){
+    free = window.prompt('What happened? (saved on the record)', '');
+    if(free === null) return;
+    free = String(free).trim().replace(/\s+/g,' ');
+    if(!free){ showToast('⚠ Type a reason'); return; }
+  }
+  const label = why + (free ? ': ' + free : '');
+  const take = list.slice(0, n);
+  const pcs = take.reduce((a,b)=>a+(Number(b.pcs)||0),0);
+  if(!confirm('🔨 Write off ' + n + ' box(es) · ' + pcs.toLocaleString() + ' pcs\n\n'
+    + c.style + ' ' + c.color + ' ' + c.size + '   @' + c.loc + ' [' + c.wh + ']\n'
+    + 'Reason: ' + label + '\n\n'
+    + 'They come off the books now. You can put them back from 📜 Bin history.')) return;
+  try{ await bxPatch(take.map(b=>b.id), {status:'OUT', out_at:new Date().toISOString(), out_by:(SESS&&SESS.email)||'', out_po:'DAMAGE — ' + label}); }
+  catch(e){ showToast('⚠ Failed: '+(e.message||e)); return; }
+  const ids = new Set(take.map(b=>b.id));
+  bxStore = bxStore.filter(b=>!ids.has(b.id));
+  _dmg.at = 0;                                   // 대시보드 숫자 다시 받게
+  showToast('🔨 Damaged: '+n+' box(es) · '+pcs.toLocaleString()+' pcs — '+label);
+  renderBoxRoom(); try{ renderKpi(); }catch(e){}
+  bxLocModal(c.style, c.color, c.size, c.wh, c.loc);
+}
+/* 파손 집계 — out_po 가 'DAMAGE — …' 인 박스들. bxStore 는 IN 만 들고 있어서 따로 받아온다. */
+let _dmg = { rows:[], boxes:0, pcs:0, at:0, loading:false };
+async function dmgFetch(force){
+  if(_dmg.loading) return _dmg;
+  if(!force && _dmg.at && (Date.now()-_dmg.at) < 120000) return _dmg;
+  _dmg.loading = true;
+  try{
+    const r = await sbFetch('/rest/v1/pr_boxes?select=id,style,color,size,pcs,wh,loc,out_at,out_by,out_po&status=eq.OUT&out_po=like.DAMAGE*&order=out_at.desc&limit=5000');
+    if(r.ok){
+      const j = await r.json();
+      _dmg.rows = j; _dmg.boxes = j.length;
+      _dmg.pcs = j.reduce((a,x)=>a+(Number(x.pcs)||0),0);
+    }
+  }catch(e){}
+  _dmg.at = Date.now();          // 실패해도 시각을 찍는다 — 안 그러면 계속 다시 부른다
+  _dmg.loading = false;
+  return _dmg;
+}
+function dmgReason(po){ const m = String(po||'').match(/^DAMAGE\s*[—-]\s*(.*)$/); const t = m ? String(m[1]||'').trim() : ''; return t || 'OTHER'; }
+function dmgReasonHead(po){ return dmgReason(po).split(':')[0].trim() || 'OTHER'; }
+function dmgYtd(){
+  const y = String(new Date().getFullYear());
+  const rs = (_dmg.rows||[]).filter(x=>String(x.out_at||'').slice(0,4)===y);
+  return { boxes: rs.length, pcs: rs.reduce((a,x)=>a+(Number(x.pcs)||0),0), year:y };
+}
+function dmgListOpen(){
+  const ex = document.getElementById('modal-dmg'); if(ex) ex.remove();
+  const rows = (_dmg.rows||[]).slice();
+  const byM = {}, byWhy = {};
+  rows.forEach(x=>{
+    const m = String(x.out_at||'').slice(0,7) || '(no date)';
+    const w = dmgReasonHead(x.out_po);
+    (byM[m] = byM[m] || {boxes:0,pcs:0,why:{}});
+    byM[m].boxes++; byM[m].pcs += Number(x.pcs)||0;
+    byM[m].why[w] = (byM[m].why[w]||0) + 1;
+    (byWhy[w] = byWhy[w] || {boxes:0,pcs:0});
+    byWhy[w].boxes++; byWhy[w].pcs += Number(x.pcs)||0;
+  });
+  const y = dmgYtd();
+  const whyRows = Object.keys(byWhy).sort((a,b)=>byWhy[b].pcs-byWhy[a].pcs)
+    .map(w=>`<tr><td class="tl" style="font-weight:800;">${esc(w)}</td><td style="text-align:right;">${byWhy[w].boxes.toLocaleString()}</td><td style="text-align:right;font-weight:800;">${byWhy[w].pcs.toLocaleString()}</td></tr>`).join('');
+  const mRows = Object.keys(byM).sort().reverse().map(m=>{
+    const d = byM[m];
+    const tags = Object.keys(d.why).sort((a,b)=>d.why[b]-d.why[a])
+      .map(w=>`<span style="display:inline-block;background:#fef2f2;border:1px solid #fecaca;color:#b91c1c;border-radius:20px;padding:0 7px;font-size:10px;font-weight:800;margin-right:3px;">${esc(w)} ${d.why[w]}</span>`).join('');
+    return `<tr><td class="tl" style="font-weight:800;font-family:Consolas,monospace;">${esc(m)}</td><td style="text-align:right;">${d.boxes.toLocaleString()}</td><td style="text-align:right;font-weight:800;">${d.pcs.toLocaleString()}</td><td class="tl">${tags}</td></tr>`;
+  }).join('');
+  const recent = rows.slice(0,40).map(x=>`<tr>
+    <td class="tl" style="font-family:Consolas,monospace;font-size:11px;">${esc(String(x.out_at||'').slice(0,10))}</td>
+    <td class="tl" style="font-weight:800;">${esc(String(x.style))} ${esc(String(x.color||'').toUpperCase())} ${esc(String(x.size||'').toUpperCase())}</td>
+    <td>${esc(x.wh||'')}</td><td style="text-align:right;">${(Number(x.pcs)||0).toLocaleString()}</td>
+    <td class="tl" style="color:#b91c1c;font-weight:700;">${esc(dmgReason(x.out_po))}</td>
+    <td class="tl" style="font-size:10.5px;color:var(--text2);">${esc(String(x.out_by||'').split('@')[0])}</td></tr>`).join('');
+  const div = document.createElement('div'); div.id='modal-dmg';
+  div.style.cssText='position:fixed;inset:0;background:rgba(15,23,42,.6);z-index:260;display:flex;align-items:flex-start;justify-content:center;padding:24px 12px;overflow-y:auto;';
+  div.onclick=e=>{ if(e.target===div) div.remove(); };
+  div.innerHTML = `<div style="background:#fff;border-radius:14px;max-width:860px;width:100%;overflow:hidden;box-shadow:0 12px 40px rgba(15,23,42,.35);">
+    <div style="background:#b91c1c;color:#fff;padding:11px 16px;display:flex;align-items:center;gap:10px;">
+      <span style="font-weight:800;font-size:15px;">🔨 Damaged stock</span>
+      <span style="font-size:11.5px;opacity:.9;">${y.year}: ${y.boxes.toLocaleString()} box · ${y.pcs.toLocaleString()} pcs &nbsp;·&nbsp; all time: ${_dmg.boxes.toLocaleString()} box · ${_dmg.pcs.toLocaleString()} pcs</span>
+      <button onclick="document.getElementById('modal-dmg').remove()" style="margin-left:auto;background:rgba(255,255,255,.2);color:#fff;border:none;border-radius:8px;padding:5px 11px;font-weight:800;cursor:pointer;">✕</button>
+    </div>
+    <div style="padding:12px 16px;max-height:72vh;overflow-y:auto;">
+      ${rows.length ? `
+      <div style="display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1.4fr);gap:14px;">
+        <div><div style="font-size:11px;font-weight:800;color:#64748b;margin-bottom:5px;">BY REASON</div>
+          <table class="etbl"><thead><tr><th class="tl">Reason</th><th>Box</th><th>Pcs</th></tr></thead><tbody>${whyRows}</tbody></table></div>
+        <div><div style="font-size:11px;font-weight:800;color:#64748b;margin-bottom:5px;">BY MONTH</div>
+          <table class="etbl"><thead><tr><th class="tl">Month</th><th>Box</th><th>Pcs</th><th class="tl">Reasons</th></tr></thead><tbody>${mRows}</tbody></table></div>
+      </div>
+      <div style="font-size:11px;font-weight:800;color:#64748b;margin:14px 0 5px;">MOST RECENT</div>
+      <table class="etbl"><thead><tr><th class="tl">Date</th><th class="tl">Item</th><th>WH</th><th>Pcs</th><th class="tl">Reason</th><th class="tl">By</th></tr></thead><tbody>${recent}</tbody></table>
+      <div style="font-size:10.5px;color:#94a3b8;margin-top:9px;">A write-off can be undone from 📜 Bin history on that bin. Cost of the loss will appear here once the costing system is in.</div>
+      ` : '<div style="padding:30px;text-align:center;color:#94a3b8;">Nothing written off as damaged yet.</div>'}
+    </div></div>`;
+  document.body.appendChild(div);
 }
 // 📦→🧺 박스 하나(들)를 열어 PC Room 으로 — 재고 차감 + PC 수량 증가 + 작업지시서 인쇄
 // 🧺 빠른 박스 열기 — By Location 줄에서 바로: 모달(기본 1박스) → Confirm → 인쇄+차감+PC추가 (v369)
@@ -31034,7 +31271,13 @@ function renderKpi(){
     ${whTile('🏭 3rd Party Warehouse (SC)', wSc3P, '#92400e', '#fffbeb', '#fbbf24', "showView('box');bxOpenLoc('SC','3p')")}
     ${whTile('📍 CA Warehouse', wCaOwn, '#9a3412', '#fff', '', "showView('box');bxOpenLoc('CA','own')")}
     ${whTile('🔒 3rd Party Warehouse (CA)', wCa3P, '#5b21b6', '#faf5ff', '#c4b5fd', "showView('box');bxOpenLoc('CA','3p')")}
-    ${lblTile('🔒 Reserved Boxes', `${rt.boxes.toLocaleString()}<span style="font-size:10px;font-weight:700;color:var(--text2);"> boxes</span>`, `${(rt.items||0).toLocaleString()} item(s)${rt.refill>0?` · <span style="color:#dc2626;font-weight:800;">⚠ refill ${rt.refill}</span>`:''}`, '#7c3aed', '#faf5ff', '#c4b5fd', 'openReserveList()')}
+    ${(()=>{  /* 🔒 예약 칸을 반으로 줄이고 그 옆에 🔨 파손을 붙인다 (v978) — 대시보드에 빈 자리가 없었다 */
+      if(!_dmg.at && !_dmg.loading) dmgFetch().then(()=>{ try{ renderKpi(); }catch(e){} });
+      const dy = dmgYtd();
+      return `<div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;align-items:stretch;">
+        ${lblTile('🔒 Reserved', `${rt.boxes.toLocaleString()}<span style="font-size:9px;font-weight:700;color:var(--text2);"> box</span>`, `${(rt.items||0).toLocaleString()} item${rt.refill>0?` · <span style="color:#dc2626;font-weight:800;">⚠${rt.refill}</span>`:''}`, '#7c3aed', '#faf5ff', '#c4b5fd', 'openReserveList()')}
+        ${lblTile('🔨 Damaged', `${dy.boxes.toLocaleString()}<span style="font-size:9px;font-weight:700;color:var(--text2);"> box</span>`, `${dy.pcs.toLocaleString()} pcs · ${esc(dy.year)}`, '#b91c1c', '#fef2f2', '#fca5a5', 'dmgListOpen()')}
+      </div>`; })()}
   </div>`;
   slots.forEach(el=>{ el.innerHTML = _kpiHtml; });   // Orders · Full Box · PC Room 모두 같은 그리드
   try{ newsPaint(); newsBoot(); }catch(e){}
@@ -31377,7 +31620,7 @@ function renderSaved(){
       <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;">
       <span class="n" style="color:var(--text2);font-weight:700;">${fmtD(s.meta.date || s.savedAt)}</span>
       <span class="muted" style="font-size:11px;${stuck?'color:#dc2626;font-weight:800;':''}">⏱ ${ageLabel}</span>
-      <span style="background:#111;color:#fff;font-weight:400;font-size:12.5px;padding:2px 10px;border-radius:5px;">${esc(s.meta.cust||'')}</span>
+      <span style="background:${custHue(s.meta.cust)};color:#fff;font-weight:400;font-size:12.5px;padding:2px 10px;border-radius:5px;">${esc(s.meta.cust||'')}</span>
       <span style="background:#111;color:#fff;font-family:Consolas,monospace;font-weight:400;font-size:12px;padding:2px 10px;border-radius:5px;">PO ${esc(s.meta.po||'')}</span>
       ${s.meta && s.meta._from ? `<span title="Created from ${esc(s.meta._from.base)} (${esc(s.meta._from.src||'')})" style="background:#f5f3ff;color:#6d28d9;border:1px solid #ddd6fe;font-size:10.5px;font-weight:800;padding:2px 8px;border-radius:20px;white-space:nowrap;cursor:pointer;" onclick="openOrderSummary('${esc(s.meta._from.base)}')">↩ ${esc(s.meta._from.src||'')} of ${esc(s.meta._from.base)}</span>` : ''}
       ${recIsReplace(s) ? `<span title="Defect replacement (free · no invoice)${s.meta._replaceOf.reason?' — '+esc(s.meta._replaceOf.reason):''}" style="background:#fff1f2;color:#be123c;border:1.5px solid #fda4af;font-size:10.5px;font-weight:900;padding:2px 9px;border-radius:20px;white-space:nowrap;cursor:pointer;" onclick="openOrderSummary('${esc(s.meta._replaceOf.base)}')">🔁 REPLACE of PO ${esc(s.meta._replaceOf.po)}</span>` : ''}
