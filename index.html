@@ -192,7 +192,7 @@ body.po-dragging{user-select:none;}
   </span>
   <select id="lang-sel" onchange="setLang(this.value)" style="font-size:11px;padding:3px 6px;border-radius:5px;border:none;background:#1d3f66;color:#fff;"><option value="ko">한국어</option><option value="en">English</option><option value="es">Español</option></select>
   <button id="wide-btn" class="btn btn-sm" onclick="toggleWide()" title="화면 넓게 / 좁게 — 기본은 넓게 (이 브라우저에만 저장돼)" style="padding:2px 8px;font-size:10px;background:#1d3f66;color:#cfe0f2;border-color:#2b5384;">↔ Wide</button>
-  <span id="app-ver" style="font-size:10px;color:#9fb8d4;">v1010</span>
+  <span id="app-ver" style="font-size:10px;color:#9fb8d4;">v1011</span>
 </div>
 <script>
 // ↔ 넓게 보기 — 브라우저마다 따로 저장 (v793)
@@ -11973,11 +11973,22 @@ function scanExpInbound(rec){
     (m[k] = m[k] || {style:l.style, color:l.color, size:l.size, qty:0}).qty += n; });
   return Object.values(m);
 }
+/* 트럭에 실리는 건 재고 줄만이 아니다 (v1011).
+   SC 에서 싼 거래처 오더 박스(Ship-from-CA)도 같은 트럭에 탄다 — Liquid PO#91379 26박스 같은 것.
+   그 박스는 PC Room 라벨(`/box/pb/거래처/PO/…`)이라 품목 줄과 안 맞으므로 **PO 단위**로 센다.
+   그래서 기대 목록에 `PO|<번호>` 줄을 따로 넣고, 스캔 쪽에서도 PO 로 모아 센다. */
+function scanPoKey(po){ return 'PO|' + String(po||'').trim().toUpperCase(); }
 function scanExpTransfer(rec){
   const m = {};
   (rec.lines||[]).forEach(l=>{ const n = Array.isArray(l.ids) ? l.ids.length : (Number(l.boxes)||1);
     const k = scanKeyOf(l.style,l.color,l.size);
     (m[k] = m[k] || {style:l.style, color:l.color, size:l.size, qty:0}).qty += n; });
+  (((rec.meta||{}).orderShip)||[]).forEach(o=>{
+    if(!o) return;
+    const q = Number(o.boxes)||0; if(q<=0) return;
+    const k = scanPoKey(o.po);
+    (m[k] = m[k] || {k, style:'PO '+String(o.po||''), color:String(o.cust||''), size:'', qty:0, isPo:true}).qty += q;
+  });
   return Object.values(m);
 }
 /* ═══ 오더 대조는 '장수' 단위다 (v858) ═══
@@ -12016,6 +12027,8 @@ function scanTally(){
     return t;
   }
   _scan.seen.forEach(v=>{ t[v.key] = (t[v.key]||0) + 1; });
+  /* 🧺 우리가 싼 오더 박스는 PO 로 모아 한 박스씩 센다 (v1011) — 트럭 대조에서 빠지면 안 된다 */
+  try{ (_scan.pbox||new Map()).forEach(b=>{ const k = scanPoKey(b && b.po); t[k] = (t[k]||0) + 1; }); }catch(e){}
   Object.keys(_scan.manual||{}).forEach(k=>{ t[k] = (t[k]||0) + (Number(_scan.manual[k])||0); });
   Object.keys(_scan.photo||{}).forEach(k=>{ t[k] = (t[k]||0) + (Number(_scan.photo[k])||0); });
   return t;
@@ -12023,14 +12036,15 @@ function scanTally(){
 function scanReconcile(){
   const tally = scanTally(), rows = [], used = {};
   (_scan.exp||[]).forEach(e=>{
-    const k = scanKeyOf(e.style,e.color,e.size); used[k] = 1;
+    const k = e.k || scanKeyOf(e.style,e.color,e.size); used[k] = 1;
     const got = Number(tally[k])||0;
     rows.push({ k, style:e.style, color:e.color, size:e.size, exp:e.qty, got, diff:got-e.qty,
       st: got===e.qty ? 'match' : (got===0 ? 'missing' : (got<e.qty ? 'short' : 'over')) });
   });
   Object.keys(tally).forEach(k=>{ if(used[k]) return;
     const p = k.split('|');
-    rows.push({ k, style:p[0], color:p[1], size:p[2], exp:0, got:tally[k], diff:tally[k], st:'extra' });
+    if(k.indexOf('PO|')===0) rows.push({ k, style:'PO '+(p[1]||''), color:'not on this truck', size:'', exp:0, got:tally[k], diff:tally[k], st:'extra' });
+    else rows.push({ k, style:p[0], color:p[1], size:p[2], exp:0, got:tally[k], diff:tally[k], st:'extra' });
   });
   const ord = {short:0, missing:1, over:2, extra:3, match:4};
   rows.sort((a,b)=> (ord[a.st]-ord[b.st]) || String(a.style).localeCompare(String(b.style),undefined,{numeric:true}) || String(a.color).localeCompare(String(b.color)));
@@ -12066,7 +12080,13 @@ const SCAN_BAD_MAX = 80;   // 안 맞는 줄이 이보다 많으면 앞에서부
 function scanResultPayload(){
   const rows = scanReconcile();
   const bad  = rows.filter(r=>r.st!=='match');
-  return {
+  /* meta.scan 은 통째로 덮어써진다. 나갈 때 센 것과 받을 때 센 것을 둘 다 남기려면
+     이쪽에서 두 칸을 들고 다시 넣어 줘야 한다 (v1011). 맨 위 칸은 늘 '방금 센 것' 이라
+     예전 화면(배너)들은 그대로 돌아간다. */
+  const phase = String((_scan&&_scan.phase)||'IN');
+  const prev  = (_scan&&_scan.prevScan) || null;
+  const prevPh = (prev && prev.phases) || (prev ? { [String(prev.phase||'IN')]: prev } : {});
+  const mine = {
     at: new Date().toISOString(),
     by: String(_pchkWho||'').trim(),
     wh: String(_pchkWh||''),
@@ -12080,6 +12100,10 @@ function scanResultPayload(){
       exp:Number(r.exp)||0, got:Number(r.got)||0, st:String(r.st||'')
     }))
   };
+  mine.phase = phase;
+  const phases = Object.assign({}, prevPh);
+  phases[phase] = mine;
+  return Object.assign({}, mine, { phases });
 }
 async function scanSendReport(){
   if(!_scan) return;
@@ -12145,6 +12169,18 @@ function scanReportBannerHtml(scan, opts){
       <span class="muted" style="font-size:10.5px;margin-left:6px;">fills the column only — you still choose what to receive</span></div>`:''}
   </div>`;
 }
+/* 트럭 한 대에 대조가 두 번 붙는다 — 나갈 때(SC) 와 받을 때(CA). 둘 다 보여준다 (v1011).
+   옛 기록(phases 가 없던 시절)은 그냥 한 장으로 그린다. */
+function trScanBannersHtml(meta){
+  const sc = (meta||{}).scan; if(!sc) return '';
+  const ph = sc.phases;
+  if(!ph) return scanReportBannerHtml(sc);
+  const lab = (t, col) => '<div style="font-size:11px;font-weight:800;color:'+col+';margin:2px 0 3px;">'+t+'</div>';
+  let out = '';
+  if(ph.OUT) out += lab('📤 Counted at SC — going out', '#b45309') + scanReportBannerHtml(ph.OUT);
+  if(ph.IN)  out += lab('📥 Counted at CA — arriving',  '#0e7490') + scanReportBannerHtml(ph.IN);
+  return out;
+}
 // ═══ 화면 1: Receive / Transfer 고르기 ═══
 async function scanOpen(){
   pchkWhoLoad();
@@ -12181,18 +12217,35 @@ async function scanPick(mode){
     el.innerHTML = `<div style="background:#fff;border-radius:12px;padding:22px;text-align:center;color:#94a3b8;font-size:13px;">${M==='IN'?'No incoming shipment waiting.':'No transfer in transit.'}</div>`;
     return;
   }
-  el.innerHTML = rows.map(rec=>{
+  /* 🚚 트럭은 두 번 센다 (v1011): SC 에서 실을 때(LOADING) 한 번, CA 에서 받을 때(TRANSIT) 한 번.
+     둘을 섞어 놓으면 직원이 어느 걸 눌러야 하는지 모른다 — 아예 묶음을 갈라 놓는다. */
+  const card = rec=>{
     const exp = (M==='IN') ? scanExpInbound(rec) : scanExpTransfer(rec);
     const boxes = exp.reduce((a,x)=>a+x.qty,0);
+    const nPo = exp.filter(x=>x.isPo).length;
     const route = (M==='TR' && rec.meta && rec.meta.route) ? String(rec.meta.route) : '';
+    const out = (M==='TR' && String(rec.status||'')==='LOADING');
+    const col = out ? '#b45309' : '#0e7490';
+    const done = (function(){ try{ const sc=(rec.meta||{}).scan; const ph=(sc&&sc.phases)||{};
+      const mine = out ? ph.OUT : ph.IN; return mine ? (mine.ok ? '✔ counted, matched' : '⚠ counted, '+(mine.badCount||0)+' off') : ''; }catch(e){ return ''; } })();
     return `<button onclick="scanStart('${M}','${esc(String(rec.id))}')" style="display:block;width:100%;text-align:left;background:#fff;border:1px solid #cbd5e1;border-radius:12px;padding:14px;margin-bottom:9px;">
-      <div style="font-size:16px;font-weight:800;color:#0f2a4a;">${esc(rec.ref||String(rec.id).slice(0,8))} <span style="font-size:10.5px;font-weight:800;color:#0e7490;background:#ecfeff;border-radius:20px;padding:2px 8px;">${esc(String(rec.status||''))}</span></div>
-      <div style="font-size:12px;color:#64748b;margin-top:3px;">${exp.length} line · <b>${boxes.toLocaleString()}</b> box expected${route?' · '+esc(route):''}</div>
+      <div style="font-size:16px;font-weight:800;color:#0f2a4a;">${esc(rec.ref||String(rec.id).slice(0,8))} <span style="font-size:10.5px;font-weight:800;color:${col};background:${out?'#fffbeb':'#ecfeff'};border-radius:20px;padding:2px 8px;">${out?'LOADING · scan out':esc(String(rec.status||''))}</span></div>
+      <div style="font-size:12px;color:#64748b;margin-top:3px;">${exp.length} line · <b>${boxes.toLocaleString()}</b> box expected${nPo?` · <b style="color:#a21caf;">${nPo} customer order</b>`:''}${route?' · '+esc(route):''}</div>
+      ${done?`<div style="font-size:11.5px;font-weight:800;color:${done.indexOf('✔')===0?'#166534':'#b45309'};margin-top:3px;">${esc(done)}</div>`:''}
       <div style="display:flex;gap:6px;margin-top:8px;">
-        <span onclick="event.stopPropagation();scanStart('${M}','${esc(String(rec.id))}')" title="Scan each box QR with the handheld" style="flex:1;text-align:center;background:#0e7490;color:#fff;border-radius:8px;padding:8px;font-size:12.5px;font-weight:800;">📷 Scan</span>
+        <span onclick="event.stopPropagation();scanStart('${M}','${esc(String(rec.id))}')" title="Scan each box QR with the handheld" style="flex:1;text-align:center;background:${col};color:#fff;border-radius:8px;padding:8px;font-size:12.5px;font-weight:800;">📷 ${out?'Scan going out':'Scan'}</span>
       </div>
     </button>`;
-  }).join('');
+  };
+  const hd = (t, sub, col) => `<div style="margin:4px 2px 7px;font-size:12px;font-weight:800;color:${col};">${t}<span style="font-weight:600;color:#94a3b8;"> — ${sub}</span></div>`;
+  if(M === 'TR'){
+    const loading = rows.filter(r=>String(r.status||'')==='LOADING');
+    const transit = rows.filter(r=>String(r.status||'')!=='LOADING');
+    el.innerHTML = (loading.length ? hd('📤 Going out', 'count it before the truck leaves', '#b45309') + loading.map(card).join('') : '')
+      + (transit.length ? hd('📥 Arriving', 'count it as you unload', '#0e7490') + transit.map(card).join('') : '');
+  } else {
+    el.innerHTML = rows.map(card).join('');
+  }
 }
 // ═══ 화면 2: 스캔 세션 ═══
 async function scanStart(mode, id){
@@ -12203,8 +12256,14 @@ async function scanStart(mode, id){
   }catch(e){}
   if(!rec){ showToast('⚠ Not found'); return; }
   window._scanSent = 0;   // 새 건을 열면 "보냄" 표시는 초기화 (v924)
-  _scan = { mode, id, ref: rec.ref||'', title: (mode==='TR'?'🚚 Transfer ':'🇭🇹 Receive ')+(rec.ref||''),
-    exp: (mode==='TR') ? scanExpTransfer(rec) : scanExpInbound(rec), seen: new Map(), manual: {} };
+  /* 나가는 트럭(LOADING)인지 들어오는 트럭(TRANSIT)인지 — 보고가 서로를 덮지 않게 (v1011) */
+  const phase = (mode==='TR' && String(rec.status||'')==='LOADING') ? 'OUT' : 'IN';
+  const ttl = (mode!=='TR') ? ('🇭🇹 Receive '+(rec.ref||''))
+            : ((phase==='OUT' ? '📤 Going out ' : '📥 Arriving ')+(rec.ref||''));
+  _scan = { mode, id, ref: rec.ref||'', title: ttl, phase,
+    prevScan: (rec.meta && rec.meta.scan) || null,
+    exp: (mode==='TR') ? scanExpTransfer(rec) : scanExpInbound(rec),
+    seen: new Map(), pbox: new Map(), manual: {} };
   scanSession();
 }
 function scanStartOrder(base, wh, label){
@@ -24856,6 +24915,7 @@ async function trBuilderOpen(existingId, route){
           <span id="ship-bol-list" style="display:inline-flex;flex-wrap:wrap;align-items:center;">${trBolListHtml()}</span>
         </div>
       </div>
+      <div id="ship-scan"></div>
       <div style="display:flex;gap:10px;margin-bottom:12px;flex-wrap:wrap;align-items:center;">
         <button class="btn" style="background:#1565c0;color:#fff;border-color:#1565c0;" onclick="trScOpen()">${trSrcIsSpec(_shipRoute)?('🏭 Pick from '+trKindShort(trSrcKind(_shipRoute))):('📦 Pick from '+trSrcKind(_shipRoute)+' Inventory')}</button>
         <button class="btn" onclick="trManualLine()">+ Add manual line</button>
@@ -25893,6 +25953,8 @@ function trSummary(){
   set('ship-line-count', _shipPallets.reduce((s,p)=>s+p.lines.length,0));
   set('ship-box-count', _shipPallets.reduce((s,p)=>s+p.lines.reduce((ss,l)=>ss+trLineBoxes(l),0),0) + _ob);
   set('ship-pcs-count', (_shipPallets.reduce((s,p)=>s+p.lines.reduce((ss,l)=>ss+trLinePcs(l),0),0) + _op).toLocaleString());
+  /* 창고가 /pic 에서 센 결과를 이 화면 맨 위에 붙인다 (v1011) */
+  try{ const b = document.getElementById('ship-scan'); if(b) b.innerHTML = trScanBannersHtml(_shipMeta); }catch(e){}
 }
 // ── SC Inventory Selector (bin 그룹) ──
 let _scvCache = [], _scvSel = {}, _scvTarget = null, _scvLimit = 40, _scvDebT = null;
@@ -27266,7 +27328,7 @@ async function trRecvOpen(id){
     <div style="background:#0f766e;color:#fff;padding:10px 16px;font-weight:800;">📦 ${trIsSpecKind(_rvDest)?('3rd Party Arrival — assign '+(_rvDest==='LK'?'SPECIAL':'H')+' bin'):(trIsSpecKind(_rvSrc)?(_rvDest+' Arrival — recall from 3rd Party'):(_rvDest+' Arrival'))}${_rvRoute!=='SC2CA'?' · '+TR_ROUTES[_rvRoute].label:''}
       <button class="btn btn-sm" style="float:right;background:transparent;color:#99f6e4;border-color:#2dd4bf;" onclick="document.getElementById('modal-trr').remove();">✕</button></div>
     <div style="padding:12px 16px;overflow-y:auto;flex:1;">
-      ${scanReportBannerHtml(M.scan)}
+      ${trScanBannersHtml(M)}
       <div style="margin-bottom:10px;padding:10px 14px;background:#ecfdf5;border-radius:8px;font-size:12px;display:flex;gap:16px;flex-wrap:wrap;align-items:center;">
         <div><b>Shipment:</b> ${esc(rec.ref||'')}</div>
         <div><b>Ship Date:</b> ${esc(M.ship_date||'—')}</div>
