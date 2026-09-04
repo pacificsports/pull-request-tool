@@ -192,7 +192,7 @@ body.po-dragging{user-select:none;}
   </span>
   <select id="lang-sel" onchange="setLang(this.value)" style="font-size:11px;padding:3px 6px;border-radius:5px;border:none;background:#1d3f66;color:#fff;"><option value="ko">한국어</option><option value="en">English</option><option value="es">Español</option></select>
   <button id="wide-btn" class="btn btn-sm" onclick="toggleWide()" title="화면 넓게 / 좁게 — 기본은 넓게 (이 브라우저에만 저장돼)" style="padding:2px 8px;font-size:10px;background:#1d3f66;color:#cfe0f2;border-color:#2b5384;">↔ Wide</button>
-  <span id="app-ver" style="font-size:10px;color:#9fb8d4;">v1014</span>
+  <span id="app-ver" style="font-size:10px;color:#9fb8d4;">v1015</span>
 </div>
 <script>
 // ↔ 넓게 보기 — 브라우저마다 따로 저장 (v793)
@@ -12052,9 +12052,12 @@ function scanTally(){
      그걸 이송 재고 줄(1362 BLACK PEARL …)에 얹거나 'not on the list' 로 튕겼다.
      이제 **그 트럭이 싣기로 한 PO** 목록(_scan.poSet)에 있는 카톤이면 PO 쪽으로 보낸다. */
   const _poSet = (_scan && _scan.poSet) || null;
+  const _poItems = (_scan && _scan.poItems) || null;      /* style|color|size → PO (그 오더에만 있는 품목) */
   _scan.seen.forEach(v=>{
     const po = String((v && v.po) || '').trim().toUpperCase();
-    const k = (_poSet && po && _poSet.has(po)) ? scanPoKey(po) : v.key;
+    let k = v.key;
+    if(_poSet && po && _poSet.has(po)) k = scanPoKey(po);                       // 라벨에 PO 가 찍혀 있으면 그대로
+    else if(_poItems && _poItems[v.key]) k = scanPoKey(_poItems[v.key]);        // 아니면 품목으로 알아본다
     t[k] = (t[k]||0) + 1;
   });
   try{ (_scan.pbox||new Map()).forEach(b=>{ const k = scanPoKey(b && b.po); t[k] = (t[k]||0) + 1; }); }catch(e){}
@@ -12316,7 +12319,37 @@ async function scanStart(mode, id){
     prevScan: (rec.meta && rec.meta.scan) || null,
     exp: (mode==='TR') ? scanExpTransfer(rec) : scanExpInbound(rec),
     seen: new Map(), pbox: new Map(), manual: {} };
+  if(mode === 'TR' && poSet.size) scanLoadPoItems(rec);
   scanSession();
+}
+/* ═══ 오더 박스를 품목으로 알아본다 (v1015) ═══
+   [왜 필요한가] 오더용 **풀박스 카톤**은 라벨이 재고 카톤과 똑같고 PO 가 안 찍혀 있는 것도 많다.
+   실제로 SC-CA-260904-0758 에서 Liquid PO#91379 의 1348 NAVY HTR·TAN 카톤 23개가
+   전부 'not on this list' 로 튕겼다 — 라벨만 봐서는 오더 것인지 알 수가 없다.
+   [어떻게] 그 트럭에 실린 오더의 품목 목록을 받아 와서, **그 트럭의 재고 줄에는 없고
+   오더에만 있는 품목**이면 그 카톤을 그 PO 것으로 센다. 재고 줄에도 있는 품목은 건드리지 않는다
+   (그건 어느 쪽인지 라벨로 구분이 안 되므로 사람이 봐야 한다). */
+async function scanLoadPoItems(rec){
+  try{
+    const os = (((rec||{}).meta)||{}).orderShip || [];
+    const bases = [...new Set(os.map(o=>String((o&&o.base)||'')).filter(Boolean))];
+    if(!bases.length) return;
+    const byBase = await pchkFetchLines(bases);
+    /* 트럭 자체 재고 줄의 품목 — 여기 있는 건 오더로 넘기지 않는다 */
+    const stock = new Set();
+    ((rec.lines)||[]).forEach(l=>{ try{ stock.add(scanKeyOf(l.style,l.color,l.size)); }catch(e){} });
+    const map = {};
+    os.forEach(o=>{
+      const po = String((o&&o.po)||'').trim().toUpperCase(); if(!po) return;
+      (byBase[String(o.base)]||[]).forEach(l=>{
+        if(!(Number(l.qty)||0)) return;
+        let k; try{ k = scanKeyOf(l.style,l.color,l.size); }catch(e){ return; }
+        if(stock.has(k)) return;
+        map[k] = po;
+      });
+    });
+    if(_scan && Object.keys(map).length){ _scan.poItems = map; scanRender(); }
+  }catch(e){}
 }
 function scanStartOrder(base, wh, label){
   _scan = { mode:'PO', id:base, wh:wh, ref:label||base, title:'📦 Order '+(label||base), back:'PACK',
