@@ -192,7 +192,7 @@ body.po-dragging{user-select:none;}
   </span>
   <select id="lang-sel" onchange="setLang(this.value)" style="font-size:11px;padding:3px 6px;border-radius:5px;border:none;background:#1d3f66;color:#fff;"><option value="ko">한국어</option><option value="en">English</option><option value="es">Español</option></select>
   <button id="wide-btn" class="btn btn-sm" onclick="toggleWide()" title="화면 넓게 / 좁게 — 기본은 넓게 (이 브라우저에만 저장돼)" style="padding:2px 8px;font-size:10px;background:#1d3f66;color:#cfe0f2;border-color:#2b5384;">↔ Wide</button>
-  <span id="app-ver" style="font-size:10px;color:#9fb8d4;">v1001</span>
+  <span id="app-ver" style="font-size:10px;color:#9fb8d4;">v1002</span>
 </div>
 <script>
 // ↔ 넓게 보기 — 브라우저마다 따로 저장 (v793)
@@ -29560,6 +29560,31 @@ function cmAddrRow(name){
     + fld('zip','Zip','70px','text-align:center;')
     + '</div>';
 }
+/* 💳 신용카드 거래처 · 🌐 웹사이트 거래처 · terms · 신용한도 · 이메일 — 여기서 바로 (v1002).
+   💳 를 켜면 terms 가 'cc' 가 되고 신용한도 칸은 사라진다 (카드는 한도를 안 잡는다).
+   이메일만 조용히 저장하고, 나머지는 위 KPI 숫자를 바꾸므로 화면을 다시 그린다. */
+function cmFlagsRow(name, cs, isCC, lim, em){
+  const k = esc(custKey(name));
+  const tt = cs.termType || '';
+  const chip = (on, color, label, onch, title) =>
+    '<label title="'+title+'" style="display:inline-flex;align-items:center;gap:5px;font-size:11px;font-weight:800;cursor:pointer;'
+    + 'border:1px solid '+(on?color:'#cbd5e1')+';background:'+(on?color+'14':'#fff')+';color:'+(on?color:'#64748b')+';'
+    + 'border-radius:7px;padding:3px 9px;">'
+    + '<input type="checkbox" '+(on?'checked':'')+' onchange="'+onch+'" style="width:13px;height:13px;accent-color:'+color+';cursor:pointer;">'+label+'</label>';
+  return '<div style="display:flex;gap:6px;align-items:center;margin-top:6px;flex-wrap:wrap;">'
+    + chip(isCC, '#065f46', '💳 Credit Card', "cmSet('"+k+"','termType',this.checked?'cc':'')", 'Credit-card customer — no credit limit, invoices are marked CC')
+    + chip(!!cs.webCust, '#0e7490', '🌐 Website', "cmSet('"+k+"','webCust',this.checked)", 'Website customer — new orders auto-tick 🌐 Website Customer')
+    + (isCC ? '' : '<select class="fi" onchange="cmSet(\''+k+'\',\'termType\',this.value)" style="width:96px;font-size:11px;padding:3px 6px;" title="Payment terms — becomes the default on this customer\'s new invoices">'
+        + [['','— terms —'],['30','Net 30'],['45','Net 45'],['60','Net 60']].map(o=>'<option value="'+o[0]+'" '+(tt===o[0]?'selected':'')+'>'+o[1]+'</option>').join('') + '</select>')
+    + (isCC ? '' : '<span style="display:inline-flex;align-items:center;gap:3px;"><span style="font-size:11px;font-weight:800;color:#64748b;">$</span>'
+        + '<input class="fi num" value="'+(lim?lim.toLocaleString():'')+'" placeholder="No limit" title="Credit limit — blank or 0 means unlimited"'
+        + ' oninput="this.value=this.value.replace(/[^0-9]/g,\'\').replace(/\\B(?=(\\d{3})+(?!\\d))/g,\',\')"'
+        + ' onchange="cmSet(\''+k+'\',\'creditLimit\',this.value)" style="width:92px;text-align:right;font-family:Consolas,monospace;font-weight:700;font-size:11px;padding:3px 6px;"></span>')
+    + '<span style="display:inline-flex;align-items:center;gap:4px;"><span style="font-size:11px;color:#94a3b8;">📧</span>'
+      + '<input class="fi" value="'+esc(em)+'" placeholder="customer email" title="Where order confirmations and packing lists go"'
+      + ' onchange="cmSetQuiet(\''+k+'\',\'email\',this.value)" style="width:230px;font-size:11px;padding:3px 6px;"></span>'
+    + '</div>';
+}
 function cmDetailHtml(list){
   if(!list.length) return '<div class="muted" style="padding:14px;">No customers yet</div>';
   if(!_cmSel || !list.some(m=>m.name===_cmSel)) _cmSel = list[0].name;
@@ -29622,6 +29647,7 @@ function cmDetailPane(name){
           + (mas ? '<b style="color:#0f766e;font-family:Consolas,monospace;">MAS '+esc(mas)+'</b>' : '<span style="color:#b45309;font-weight:700;">MAS # 없음</span>')
           + (em ? ' · '+esc(em) : '') + (cs.webCust ? ' · <b style="color:#0e7490;">🌐 Website</b>' : '') + '</div>'
         + cmAddrRow(name)
+        + cmFlagsRow(name, cs, isCC, lim, em)
       + '</div>'
       + '<div style="margin-left:auto;display:flex;gap:5px;flex-wrap:wrap;">'
         + '<button class="btn btn-sm" onclick="openCustPrices(\''+nm+'\')" title="This customer\'s price list">💲 Prices</button>'
@@ -30144,6 +30170,12 @@ async function cmDelete(name){
   }catch(e){ showToast('⚠ Delete failed on server: '+e.message); }
   showToast('🗑 Deleted: '+name);
   renderCustomers();
+}
+/* 글자 칸(이메일 등)은 저장만 하고 화면을 다시 그리지 않는다 — 다시 그리면 자리가 튄다 (v1002) */
+async function cmSetQuiet(k, field, val){
+  const cur = custStore[k] || {};
+  cur[field] = String(val||'').trim();
+  try{ await saveCustomer(k, cur); showToast('💾 Saved'); }catch(e){ showToast('⚠ Not saved'); }
 }
 async function cmSet(k, field, val){
   const cur = custStore[k] || {};
