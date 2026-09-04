@@ -192,7 +192,7 @@ body.po-dragging{user-select:none;}
   </span>
   <select id="lang-sel" onchange="setLang(this.value)" style="font-size:11px;padding:3px 6px;border-radius:5px;border:none;background:#1d3f66;color:#fff;"><option value="ko">한국어</option><option value="en">English</option><option value="es">Español</option></select>
   <button id="wide-btn" class="btn btn-sm" onclick="toggleWide()" title="화면 넓게 / 좁게 — 기본은 넓게 (이 브라우저에만 저장돼)" style="padding:2px 8px;font-size:10px;background:#1d3f66;color:#cfe0f2;border-color:#2b5384;">↔ Wide</button>
-  <span id="app-ver" style="font-size:10px;color:#9fb8d4;">v999</span>
+  <span id="app-ver" style="font-size:10px;color:#9fb8d4;">v1000</span>
 </div>
 <script>
 // ↔ 넓게 보기 — 브라우저마다 따로 저장 (v793)
@@ -427,6 +427,8 @@ try{ applyWide(localStorage.getItem('psx_wide') !== '0'); }catch(e){ applyWide(t
   <div id="cust-view" style="display:none;">
   <div class="card">
     <div class="card-title"><span>👥 Customer Management</span>
+      <button class="btn btn-sm" id="cm-view-detail" onclick="cmSetView('detail')" title="One customer at a time — sales, A/R aging, what they buy">📋 Detail</button>
+      <button class="btn btn-sm" id="cm-view-list" onclick="cmSetView('list')" title="Every customer on one wide table — inline editing">📊 List</button>
       <input class="fi" id="cm-search" placeholder="🔍 Search customer" oninput="renderCustomers()" style="margin-left:auto;width:200px;font-size:12px;padding:5px 10px;">
       <button class="btn btn-sm" id="cm-sort-az" onclick="cmSort='az';renderCustomers();">A-Z</button>
       <button class="btn btn-sm" id="cm-sort-sales" onclick="cmSort='sales';renderCustomers();">💰 Total Sales</button>
@@ -29471,8 +29473,168 @@ function printStatement(cust){
   </body></html>`);
   w2.document.close();
 }
+/* ═══════════ 👥 Customer Management — Detail View (v1000) ═══════════
+   IMS(AR → Customer Management)의 화면을 그대로 옮겨 왔다. 왼쪽에 거래처 목록,
+   오른쪽에 그 거래처 하나만: 매출·미수·평균 결제일수·마지막 입금 → A/R 나이 →
+   무엇을 사가는지(스타일·SKU) → 최근 인보이스·입금.
+   숫자는 전부 psflowx 의 진짜 오더에서 나온다 (IMS 쪽 orders 는 테스트 데이터라 안 쓴다).
+   예전 넓은 표는 📊 List 로 그대로 남아 있다 — 한 번에 여러 줄 고칠 때는 그쪽이 빠르다. */
+let _cmView = (function(){ try{ return localStorage.getItem('psi_cm_view')==='list' ? 'list' : 'detail'; }catch(e){ return 'detail'; } })();
+let _cmSel  = (function(){ try{ return localStorage.getItem('psi_cm_sel') || ''; }catch(e){ return ''; } })();
+function cmSetView(v){ _cmView = (v==='list') ? 'list' : 'detail'; try{ localStorage.setItem('psi_cm_view', _cmView); }catch(e){} renderCustomers(); }
+function cmSelect(name){ _cmSel = String(name||''); try{ localStorage.setItem('psi_cm_sel', _cmSel); }catch(e){} renderCustomers(); }
+function cmMoney(n){ return '$' + Number(n||0).toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2}); }
+function cmMoney0(n){ return '$' + Math.round(Number(n)||0).toLocaleString(); }
+/* 이 거래처가 실제로 사간 것 — 인보이스에 찍힌 줄로 센다 (주문만 하고 안 나간 건 빼고) */
+function cmBought(name){
+  const key = custGroupName(name);
+  const byStyle = {}, bySku = {};
+  (savedCache||[]).forEach(r=>{
+    if(!r.meta || custGroupName(r.meta.cust) !== key) return;
+    if(typeof recIsReplace==='function' && recIsReplace(r)) return;
+    (r.whs||[]).forEach(wh=>salesLines(r, wh).forEach(l=>{
+      const q = Number(l.qty)||0; if(q <= 0) return;
+      const amt = q * (Number(l.price)||0);
+      const st = String(l.style||'').trim() || '—';
+      const sk = st + ' · ' + String(l.color||'').toUpperCase() + ' · ' + String(l.size||'').toUpperCase();
+      (byStyle[st] = byStyle[st] || {k:st, qty:0, amt:0, orders:new Set()});
+      byStyle[st].qty += q; byStyle[st].amt += amt; byStyle[st].orders.add(r.base);
+      (bySku[sk] = bySku[sk] || {k:sk, qty:0, amt:0, orders:new Set()});
+      bySku[sk].qty += q; bySku[sk].amt += amt; bySku[sk].orders.add(r.base);
+    }));
+  });
+  const srt = o => Object.values(o).sort((a,b)=>b.qty-a.qty);
+  return { styles: srt(byStyle), skus: srt(bySku) };
+}
+/* MAS 200 번호 — 공용 customers 표에 연결돼 있으면 그 줄의 customer_no */
+function cmMasNo(name){
+  try{
+    const cs = custStore[custKey(custGroupName(name))] || {};
+    const list = _imsCustList || [];
+    let hit = cs.imsId ? list.find(c=>c.id===cs.imsId) : null;
+    if(!hit) hit = list.find(c=>_imsNorm(c.name)===_imsNorm(custGroupName(name)));
+    return hit ? (hit.customer_no || '') : '';
+  }catch(e){ return ''; }
+}
+function cmKpi(label, value, sub, bg, bd, fg){
+  return '<div style="background:'+bg+';border:1px solid '+bd+';border-radius:8px;padding:10px;text-align:center;">'
+    + '<div style="font-size:9px;font-weight:800;color:'+fg+';letter-spacing:.06em;margin-bottom:4px;">'+esc(label)+'</div>'
+    + '<div style="font-size:16px;font-weight:900;color:'+fg+';font-family:Consolas,monospace;line-height:1.2;">'+value+'</div>'
+    + '<div style="font-size:9.5px;color:#6b7280;margin-top:2px;">'+(sub||'&nbsp;')+'</div></div>';
+}
+function cmDetailHtml(list){
+  if(!list.length) return '<div class="muted" style="padding:14px;">No customers yet</div>';
+  if(!_cmSel || !list.some(m=>m.name===_cmSel)) _cmSel = list[0].name;
+  const side = list.map(m=>{
+    const on = m.name === _cmSel;
+    return '<div onclick="cmSelect(\''+esc(m.name).replace(/'/g,"\\'")+'\')" style="padding:8px 11px;border-bottom:1px solid #eef2f7;cursor:pointer;'
+      + (on ? 'background:#0f2a4a;color:#fff;' : '') + '">'
+      + '<div style="font-weight:'+(on?'800':'700')+';font-size:12px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">'+esc(m.name)+'</div>'
+      + '<div style="font-size:10px;color:'+(on?'#cbd5e1':'#94a3b8')+';">'+m.orders+' orders · '+cmMoney0(m.sales)+'</div></div>';
+  }).join('');
+  return '<div style="display:flex;gap:12px;align-items:flex-start;">'
+    + '<div style="width:250px;flex-shrink:0;background:#fff;border:1px solid #e2e8f0;border-radius:9px;overflow:hidden;max-height:calc(100vh - 250px);overflow-y:auto;">'+side+'</div>'
+    + '<div style="flex:1;min-width:0;background:#fff;border:1px solid #e2e8f0;border-radius:9px;">'+cmDetailPane(_cmSel)+'</div>'
+    + '</div>';
+}
+function cmDetailPane(name){
+  const k = custKey(name);
+  const cs = custStore[k] || {};
+  const rows = (typeof custARRows==='function') ? custARRows(name) : [];
+  const b = (typeof agingBuckets==='function') ? agingBuckets(rows) : {cur:0,d30:0,d60:0,d90:0,d120:0,over:0};
+  const invTotal = rows.reduce((a,r)=>a+r.tot, 0);
+  const out = rows.reduce((a,r)=>a+r.bal, 0);
+  const openOrd = (typeof custOpenOrdersAmt==='function') ? custOpenOrdersAmt(name) : 0;
+  /* 평균 결제일수 — 인보이스 날짜에서 입금 날짜까지 며칠 걸렸나 */
+  let dsoSum = 0, dsoN = 0, lastPay = null;
+  rows.forEach(r=>(r.pays||[]).forEach(p=>{
+    const at = String(p.at||'').slice(0,10); if(!at) return;
+    if(!lastPay || at > lastPay.at) lastPay = { at, amt: Number(p.amt)||0 };
+    const d = Math.floor((new Date(at+'T12:00:00') - new Date(r.dt+'T12:00:00'))/864e5);
+    if(d >= 0 && d < 400){ dsoSum += d; dsoN++; }
+  }));
+  const dso = dsoN ? Math.round(dsoSum/dsoN) : 0;
+  const isCC = (cs.termType || (typeof custLastTermType==='function' ? custLastTermType(name).termType : '') || '') === 'cc';
+  const lim = isCC ? 0 : (Number(cs.creditLimit)||0);
+  const room = lim > 0 ? (lim - out - openOrd) : null;
+  const mas = cmMasNo(name);
+  const em = cs.email || ((typeof custEmailFor==='function') ? custEmailFor(name) : '') || '';
+  const bought = cmBought(name);
+  const bk = (label, v, hot)=>'<div style="flex:1;min-width:84px;text-align:center;padding:7px 4px;border-radius:8px;background:'
+    + (v>0.005?(hot?'#fef2f2':'#fffbeb'):'#f8fafc')+';border:1px solid '+(v>0.005?(hot?'#fca5a5':'#fcd34d'):'#e2e8f0')+';">'
+    + '<div style="font-size:9.5px;font-weight:800;color:'+(v>0.005?(hot?'#b91c1c':'#92400e'):'#94a3b8')+';">'+label+'</div>'
+    + '<div style="font-family:Consolas,monospace;font-weight:800;font-size:12px;color:'+(v>0.005?(hot?'#b91c1c':'#78350f'):'#94a3b8')+';">'+cmMoney(v)+'</div></div>';
+  const topTbl = (title, arr, unit) => '<div style="flex:1;min-width:0;">'
+    + '<div style="font-size:11px;font-weight:800;color:#0f2a4a;margin:0 0 5px;">'+title+'</div>'
+    + (arr.length ? '<table class="etbl" style="font-size:11px;"><thead><tr><th class="tl">'+unit+'</th><th>Pcs</th><th>Amount</th><th>Orders</th></tr></thead><tbody>'
+        + arr.slice(0,10).map(x=>'<tr><td class="tl" style="font-weight:700;">'+esc(x.k)+'</td>'
+          + '<td style="font-family:Consolas,monospace;">'+x.qty.toLocaleString()+'</td>'
+          + '<td style="font-family:Consolas,monospace;">'+cmMoney0(x.amt)+'</td>'
+          + '<td>'+x.orders.size+'</td></tr>').join('')
+        + '</tbody></table>' : '<div class="muted" style="font-size:11px;padding:8px 2px;">nothing shipped yet</div>')
+    + '</div>';
+  const nm = esc(name).replace(/'/g,"\\'");
+  return '<div style="padding:14px 16px;">'
+    /* 머리 */
+    + '<div style="display:flex;align-items:flex-start;gap:10px;border-bottom:2px solid #e2e8f0;padding-bottom:11px;margin-bottom:12px;flex-wrap:wrap;">'
+      + '<div style="min-width:0;">'
+        + '<div style="font-size:18px;font-weight:900;color:#0f2a4a;">'+esc(name)
+          + '<button class="btn btn-sm" style="border:none;padding:0 5px;font-size:12px;color:#64748b;font-weight:400;" onclick="cmRename(\''+nm+'\')" title="Rename this customer (updates all their orders)">✎</button></div>'
+        + '<div style="font-size:11px;color:#64748b;margin-top:2px;">'
+          + (mas ? '<b style="color:#0f766e;font-family:Consolas,monospace;">MAS '+esc(mas)+'</b>' : '<span style="color:#b45309;font-weight:700;">MAS # 없음</span>')
+          + (em ? ' · '+esc(em) : '') + (cs.webCust ? ' · <b style="color:#0e7490;">🌐 Website</b>' : '') + '</div>'
+      + '</div>'
+      + '<div style="margin-left:auto;display:flex;gap:5px;flex-wrap:wrap;">'
+        + '<button class="btn btn-sm" onclick="openCustPrices(\''+nm+'\')" title="This customer\'s price list">💲 Prices</button>'
+        + '<button class="btn btn-sm" onclick="openCustAddr(\''+nm+'\')" title="Bill-to address">📍 Address</button>'
+        + '<button class="btn btn-sm" onclick="openCustShipTos(\''+nm+'\')" title="Ship-to addresses">🚚 Ship To</button>'
+        + '<button class="btn btn-sm" style="'+((cs.ups&&(cs.ups.account||cs.ups.mode))?'background:#7c2d12;color:#fff;border-color:#7c2d12;':'')+'" onclick="openCustUps(\''+nm+'\')" title="UPS account &amp; billing">🏷 UPS</button>'
+        + '<button class="btn btn-sm" onclick="printStatement(\''+nm+'\')" title="Print a statement">🖨 Statement</button>'
+      + '</div></div>'
+    /* KPI */
+    + '<div style="display:grid;grid-template-columns:repeat(4,1fr);gap:8px;margin-bottom:9px;">'
+      + cmKpi('TOTAL SALES', cmMoney0(invTotal), rows.length+' invoices', '#eff6ff', '#bfdbfe', '#1d4ed8')
+      + cmKpi('OUTSTANDING', cmMoney0(out), out>0.005?'미수금':'완납', out>0.005?'#fef2f2':'#f0fdf4', out>0.005?'#fecaca':'#bbf7d0', out>0.005?'#dc2626':'#15803d')
+      + cmKpi('AVG DAYS TO PAY', dso ? (dso+' d') : '—', dsoN?(dsoN+' payments'):'no payments yet', '#fff7ed', '#fed7aa', '#c2410c')
+      + cmKpi('LAST PAYMENT', lastPay ? esc(lastPay.at) : '—', lastPay ? cmMoney(lastPay.amt) : '', '#f5f3ff', '#ddd6fe', '#6d28d9')
+    + '</div>'
+    + '<div style="display:grid;grid-template-columns:repeat(4,1fr);gap:8px;margin-bottom:12px;">'
+      + cmKpi('OPEN ORDERS', openOrd>0.005?cmMoney0(openOrd):'—', 'received, not invoiced', '#fffbeb', '#fde68a', '#b45309')
+      + cmKpi('CREDIT LIMIT', isCC ? 'CC' : (lim?cmMoney0(lim):'—'), isCC?'credit card terms':'', '#f8fafc', '#e2e8f0', '#334155')
+      + cmKpi('AVAILABLE', room===null ? '—' : ((room<0?'−':'')+cmMoney0(Math.abs(room))), room===null?'no limit set':(room<0?'🔒 over limit':'room to order'), room!==null&&room<0?'#fef2f2':'#f8fafc', room!==null&&room<0?'#fecaca':'#e2e8f0', room!==null&&room<0?'#b91c1c':'#334155')
+      + cmKpi('TERMS', esc(cs.termType==='cc'?'Credit Card':(cs.termType?('Net '+cs.termType):'—')), '', '#f8fafc', '#e2e8f0', '#334155')
+    + '</div>'
+    /* A/R 나이 */
+    + '<div style="font-size:11px;font-weight:800;color:#0f2a4a;margin-bottom:5px;">📅 A/R Aging</div>'
+    + '<div style="display:flex;gap:6px;margin-bottom:14px;flex-wrap:wrap;">'
+      + bk('CURRENT', b.cur, false) + bk('1-30 DAYS', b.d30, false) + bk('31-60 DAYS', b.d60, false)
+      + bk('61-90 DAYS', b.d90, true) + bk('91-120 DAYS', b.d120, true) + bk('120+ DAYS', b.over, true)
+      + '<div style="flex:1;min-width:96px;text-align:center;padding:7px 4px;border-radius:8px;background:#0f2a4a;color:#fff;">'
+        + '<div style="font-size:9.5px;font-weight:800;">TOTAL DUE</div>'
+        + '<div style="font-family:Consolas,monospace;font-weight:800;font-size:12px;">'+cmMoney(out)+'</div></div>'
+    + '</div>'
+    /* 무엇을 사가나 */
+    + '<div style="display:flex;gap:14px;margin-bottom:14px;flex-wrap:wrap;">'
+      + topTbl('🏆 Top styles', bought.styles, 'Style') + topTbl('🎨 Top style · color · size', bought.skus, 'SKU')
+    + '</div>'
+    /* 최근 인보이스 */
+    + '<div style="font-size:11px;font-weight:800;color:#0f2a4a;margin-bottom:5px;">🧾 Recent invoices</div>'
+    + (rows.length ? '<table class="etbl" style="font-size:11px;margin-bottom:12px;"><thead><tr><th class="tl">Invoice #</th><th>Date</th><th>Due</th><th class="tl">PO</th><th>WH</th><th>Total</th><th>Balance</th><th></th></tr></thead><tbody>'
+        + rows.slice(0,5).map(r=>'<tr><td class="tl" style="font-family:Consolas,monospace;font-weight:700;">'+(esc(r.invNo)||'—')+'</td>'
+          + '<td>'+esc(r.dt)+'</td><td style="'+(r.bal>0.005&&r.past>0?'color:#b91c1c;font-weight:800;':'')+'">'+esc(r.dueS)+'</td>'
+          + '<td class="tl">'+esc(r.po)+'</td><td>'+esc(r.wh)+'</td>'
+          + '<td style="font-family:Consolas,monospace;">'+cmMoney(r.tot)+'</td>'
+          + '<td style="font-family:Consolas,monospace;font-weight:800;color:'+(r.bal>0.005?'#b91c1c':'#166534')+';">'+cmMoney(r.bal)+'</td>'
+          + '<td>'+(r.bal>0.005?'<button class="btn btn-sm" style="font-size:10px;padding:1px 7px;background:#065f46;color:#fff;border-color:#065f46;font-weight:800;" onclick="cmOpenPay(\''+esc(r.base)+'\',\''+esc(r.wh)+'\')">💰 Paid</button>':'<span style="color:#166534;font-weight:800;">✓</span>')+'</td></tr>').join('')
+        + '</tbody></table>' : '<div class="muted" style="font-size:11px;padding:6px 2px;margin-bottom:12px;">No invoices yet</div>')
+    + '<button class="btn btn-sm" onclick="cmToggleAR(\''+nm+'\')">'+(cmOpenAR===name?'▲ Hide':'▼ Show')+' full A/R detail &amp; payment history</button>'
+    + (cmOpenAR===name ? '<div style="margin-top:10px;border:1.5px solid #cbd5e1;border-radius:10px;background:#f8fafc;">'+custARDetailHtml(name)+'</div>' : '')
+    + '</div>';
+}
 function renderCustomers(){
   const el = $('cust-body'); if(!el) return;
+  /* 공용 customers 표(=MAS 번호가 사는 곳)를 한 번만 읽어 온다 (v1000) */
+  if(!_imsCustList && typeof loadImsCustomers==='function'){ loadImsCustomers().then(()=>{ if($('cust-body')) renderCustomers(); }); }
   if(!savedCache.length && !Object.values(custStore).some(c=>c&&c.name)){ el.innerHTML = '<div class="muted" style="padding:14px;">⏳ Loading order data... (may take a few seconds on slow connections)</div>'; return; }
   const q = (($('cm-search')||{}).value || '').trim().toLowerCase();
   const map = {};
@@ -29498,6 +29660,8 @@ function renderCustomers(){
   const _az = $('cm-sort-az'), _ss = $('cm-sort-sales');
   if(_az) _az.style.cssText = cmSort==='az' ? 'background:var(--header);color:#fff;border-color:var(--header);' : '';
   if(_ss) _ss.style.cssText = cmSort==='sales' ? 'background:var(--header);color:#fff;border-color:var(--header);' : '';
+  ['detail','list'].forEach(v=>{ const b=$('cm-view-'+v); if(b) b.style.cssText = (_cmView===v) ? 'background:var(--header);color:#fff;border-color:var(--header);font-weight:800;' : ''; });
+  if(_cmView === 'detail'){ el.innerHTML = cmDetailHtml(list); return; }
   el.innerHTML = `<div id="cust-topscroll" style="overflow-x:auto;overflow-y:hidden;height:14px;margin-bottom:2px;"><div style="height:1px;"></div></div>
   <div id="cust-xwrap" style="overflow-x:auto;"><table class="etbl">
     <thead><tr><th class="tl" style="position:sticky;left:0;z-index:6;background:var(--header);">Customer</th><th class="tl">Address</th><th class="tl">Ship To</th><th>Orders</th><th>Total Sales</th><th>Outstanding</th><th>Open Orders</th><th>Credit Limit</th><th>Available</th><th>Terms</th><th>📧 Email</th><th></th></tr></thead>
@@ -30110,7 +30274,7 @@ let _imsPS = {};                  // groupKey -> { custId, rows: {style: row} }
 function _imsNorm(s){ return String(s||'').toUpperCase().replace(/[.,]/g,'').replace(/\s+/g,' ').trim(); }
 async function loadImsCustomers(){
   if(_imsCustList) return _imsCustList;
-  try{ const r = await sbFetch('/rest/v1/customers?select=id,name&order=name&limit=1000'); if(r.ok) _imsCustList = await r.json(); }catch(e){}
+  try{ const r = await sbFetch('/rest/v1/customers?select=id,name,customer_no&order=name&limit=1000'); if(r.ok) _imsCustList = await r.json(); }catch(e){}
   return _imsCustList || [];
 }
 async function imsCustomerFor(cust){
