@@ -192,7 +192,7 @@ body.po-dragging{user-select:none;}
   </span>
   <select id="lang-sel" onchange="setLang(this.value)" style="font-size:11px;padding:3px 6px;border-radius:5px;border:none;background:#1d3f66;color:#fff;"><option value="ko">한국어</option><option value="en">English</option><option value="es">Español</option></select>
   <button id="wide-btn" class="btn btn-sm" onclick="toggleWide()" title="화면 넓게 / 좁게 — 기본은 넓게 (이 브라우저에만 저장돼)" style="padding:2px 8px;font-size:10px;background:#1d3f66;color:#cfe0f2;border-color:#2b5384;">↔ Wide</button>
-  <span id="app-ver" style="font-size:10px;color:#9fb8d4;">v994</span>
+  <span id="app-ver" style="font-size:10px;color:#9fb8d4;">v995</span>
 </div>
 <script>
 // ↔ 넓게 보기 — 브라우저마다 따로 저장 (v793)
@@ -25039,6 +25039,74 @@ async function trDelPallet(pid){
   await trSaveDraftLines();
   trRenderPallets();
 }
+/* ═══ ✂ 이 팔레트만 떼어 새 shipment 로 (v995) ═══
+   [왜] 트럭 하나로 만들다가 "팔레트 2만 지금 보내자" 가 된다. 예전엔 방법이 없어서
+   ① 라인을 다 지워 재고를 되돌리고 ② 새 초안에서 다시 뽑아야 했다 — 박스가 두 번 움직인다.
+   [지금] **재고는 한 톨도 안 움직인다.** 그 팔레트의 라인 기록(박스 id 포함)을 새 pr_transfers
+   행으로 옮겨 적고, 원래 초안에서 뺀다. 박스는 이미 TRANSFER bin 에 있고 그대로 있는다.
+   [같이 따라가는 것] 그 팔레트에 붙은 Ship-from-CA 오더 · 3자 창고 bin 번호(H*) · 지정 박스 태그.
+   [안 따라가는 것] BOL 첨부 · seal · PRO 번호 — 트럭이 달라지면 새로 받는 종이다. */
+async function trSplitPallet(pid){
+  const p = _shipPallets.find(x=>x.id===pid); if(!p) return;
+  if(_shipPallets.length < 2){ alert('팔레트가 하나뿐입니다 — 이미 이 shipment 전체가 이 팔레트입니다.'); return; }
+  trCaptureInfo();
+  const myOrders = ((_shipMeta.orderShip)||[]).filter(o=>o.pallet===p.label);
+  if(!p.lines.length && !myOrders.length){ alert('이 팔레트는 비어 있습니다 — 뗄 것이 없습니다.'); return; }
+  if(!_shipId && !(await _trEnsureRow())) return;
+  const nB = p.lines.reduce((s,l)=>s+trLineBoxes(l),0) + myOrders.reduce((s,o)=>s+(Number(o.boxes)||0),0);
+  const nP = p.lines.reduce((s,l)=>s+trLinePcs(l),0) + myOrders.reduce((s,o)=>s+(Number(o.pcs)||0),0);
+  let newRef = trGenShipNo(_shipRoute);
+  if(newRef === _shipNo) newRef += '-2';
+  if(!confirm('✂ ' + p.label + ' 만 떼어 새 shipment 로 만듭니다.\n\n'
+    + '   ' + p.lines.length + ' line(s) · ' + nB + ' box(es) · ' + nP.toLocaleString() + ' pcs'
+    + (myOrders.length ? ('\n   + Ship-from-CA 오더 ' + myOrders.length + ' 건') : '')
+    + (p.hbin ? ('\n   + 3자 창고 bin ' + p.hbin) : '')
+    + '\n\n새 shipment #   ' + newRef
+    + '\n\n재고는 움직이지 않습니다 — 실려 있던 박스가 그대로 새 shipment 로 옮겨갑니다.')) return;
+  const newLines = p.lines.map(l=>Object.assign({}, l, {pallet:'Pallet 1'}, p.hbin?{ca_bin:p.hbin}:{}));
+  const _desig = ((_shipMeta.designatedByPallet)||{})[p.label];
+  const newMeta = {
+    route:_shipRoute,
+    ship_date:_shipMeta.ship_date||'', eta:_shipMeta.eta||'',
+    seal:'', carrier:_shipMeta.carrier||'', driver:_shipMeta.driver||'', phone:_shipMeta.phone||'',
+    truck:'', pro:'',
+    notes: ('split from ' + (_shipNo||'?') + ' · ' + p.label) + (_shipMeta.notes ? (' · ' + _shipMeta.notes) : ''),
+    bolFiles: [],
+    orderShip: myOrders.map(o=>Object.assign({}, o, {pallet:'Pallet 1'})),
+    designatedByPallet: _desig ? {'Pallet 1': _desig} : undefined
+  };
+  if(p.hbin) newMeta._hbins = {'Pallet 1': p.hbin};
+  let newId = null;
+  try{
+    const r = await sbFetch('/rest/v1/pr_transfers', {method:'POST', headers:{Prefer:'return=representation'},
+      body: JSON.stringify([{ ref:newRef, status:'LOADING', lines:newLines, meta:newMeta, created_by:(SESS&&SESS.email)||'' }])});
+    if(r.ok) newId = ((await r.json())[0]||{}).id;
+  }catch(e){}
+  if(!newId){ showToast('⚠ 새 shipment 를 못 만들었습니다 — 아무것도 바뀌지 않았습니다'); return; }
+  /* 원래 초안에서 뺀다. 박스 PATCH 는 하지 않는다 — 새 행이 같은 박스 id 를 들고 있다. */
+  _shipPallets = _shipPallets.filter(x=>x.id!==pid);
+  const gone = new Set(myOrders.map(o=>o.base));
+  _shipMeta.orderShip = ((_shipMeta.orderShip)||[]).filter(o=>!gone.has(o.base));
+  try{ if(_shipMeta.designatedByPallet) delete _shipMeta.designatedByPallet[p.label]; }catch(e){}
+  try{ delete trHbinMap()[p.label]; }catch(e){}
+  if(!trSrcAutoPallet(_shipRoute)){
+    const old = _shipPallets.map(x=>x.label);
+    _shipPallets.forEach((x,i)=>x.label = 'Pallet '+(i+1));
+    const rn = {}; old.forEach((o,i)=>{ rn[o] = _shipPallets[i].label; });
+    ((_shipMeta.orderShip)||[]).forEach(o=>{ if(rn[o.pallet]) o.pallet = rn[o.pallet]; });
+    if(_shipMeta.designatedByPallet){
+      const d2 = {}; Object.keys(_shipMeta.designatedByPallet).forEach(k=>{ d2[rn[k]||k] = _shipMeta.designatedByPallet[k]; });
+      _shipMeta.designatedByPallet = d2;
+    }
+  }
+  await trPatchRec(_shipId, { ref:_shipNo, meta:_shipMeta, lines:trLinesFlat() });
+  trRenderPallets();
+  if(typeof trBarUpd==='function') trBarUpd();
+  showToast('✂ ' + p.label + ' → ' + newRef);
+  if(confirm('✅ ' + newRef + ' 이 만들어졌습니다.\n\n지금 그 shipment 를 열까요?\n(취소 = ' + (_shipNo||'') + ' 화면에 그대로 남습니다)')){
+    await trBuilderOpen(newId, _shipRoute);
+  }
+}
 async function _trAddLine(pid, line){
   const shipId = await _trEnsureRow(); if(!shipId) return false;
   if(!line.is_manual && (line.ids||[]).length){
@@ -25660,6 +25728,7 @@ function trRenderPallets(){
         ${_spSrc?'':`<button class="btn btn-sm" style="margin-left:auto;background:#1565c0;color:#fff;border-color:#1565c0;" onclick="trScOpen('${p.id}')">+ ${esc(_srcLbl)} Inventory</button>`}
         ${_noPR?'':`<button class="btn btn-sm" style="background:#166534;color:#fff;border-color:#166534;" onclick="trPRPallet('${p.id}')" title="Print the Pull Request for this pallet only">🖨 Pull Request</button>`}
         <button class="btn btn-sm" onclick="trManualLine('${p.id}')">+ Manual</button>
+        ${_shipPallets.length>1 ? `<button class="btn btn-sm" style="background:#fff7ed;color:#c2410c;border-color:#fdba74;font-weight:800;" onclick="trSplitPallet('${p.id}')" title="\uc774 \ud314\ub808\ud2b8\ub9cc \ub5bc\uc5b4 \uc0c8 shipment \ub85c \u2014 \uc7ac\uace0\ub294 \uadf8\ub300\ub85c, \uc2e4\ub9b0 \ubc15\uc2a4\ub9cc \uc0c8 shipment \ub85c \uc606\uaca8\uac04\ub2e4">\u2702 \ub530\ub85c \ubcf4\ub0b4\uae30</button>` : ''}
         <button class="btn btn-sm" style="background:#fee2e2;color:#c62828;border-color:#fecaca;" onclick="trDelPallet('${p.id}')">✕ ${_spSrc?'Remove this bin':'Delete pallet'}</button>
       </div>
       <div style="overflow-x:auto;">
