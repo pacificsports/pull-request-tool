@@ -192,7 +192,7 @@ body.po-dragging{user-select:none;}
   </span>
   <select id="lang-sel" onchange="setLang(this.value)" style="font-size:11px;padding:3px 6px;border-radius:5px;border:none;background:#1d3f66;color:#fff;"><option value="ko">한국어</option><option value="en">English</option><option value="es">Español</option></select>
   <button id="wide-btn" class="btn btn-sm" onclick="toggleWide()" title="화면 넓게 / 좁게 — 기본은 넓게 (이 브라우저에만 저장돼)" style="padding:2px 8px;font-size:10px;background:#1d3f66;color:#cfe0f2;border-color:#2b5384;">↔ Wide</button>
-  <span id="app-ver" style="font-size:10px;color:#9fb8d4;">v998</span>
+  <span id="app-ver" style="font-size:10px;color:#9fb8d4;">v999</span>
 </div>
 <script>
 // ↔ 넓게 보기 — 브라우저마다 따로 저장 (v793)
@@ -24243,6 +24243,8 @@ async function bxAgingExcel(){
 
 // ═══ Cost & Margin editor (v571) — owner/accounting 전용. styles 테이블의 사이즈별 원가+최소마진 편집 ═══
 let _costRows = [], _costEdits = {};
+/* DB 에서 쓰기가 막혀 있다고 확인된 컬럼 — 한 번 걸리면 기억해서 그 칸만 빼고 저장한다 (v999) */
+const COST_BLOCKED = {};
 let _costTab = 'ADULT';        // ADULT | KIDS  (v963)
 const COST_ADULT_SIZES = [['XS','cost_xs'],['S','cost_s'],['M','cost_m'],['L','cost_l'],['XL','cost_xl'],['2XL','cost_2xl'],['3XL','cost_3xl'],['4XL','cost_4xl'],['5XL','cost_5xl']];
 /* ── 아동 계열은 사이즈 체계가 달라서 성인 칸에 넣을 수가 없었다 (v963).
@@ -24458,8 +24460,27 @@ async function costSave(){
       patch[col]=(v===''||v==null)?null:Number(v); });
     patch.cost_updated_at = new Date().toISOString();
     patch.cost_updated_by = (SESS&&SESS.email)||'';
+    const _put = async (body)=>sbFetch('/rest/v1/styles?style_number=eq.'+encodeURIComponent(sn),
+        {method:'PATCH', headers:{Prefer:'return=minimal'}, body:JSON.stringify(body)});
     try{
-      const r=await sbFetch('/rest/v1/styles?style_number=eq.'+encodeURIComponent(sn), {method:'PATCH', headers:{Prefer:'return=minimal'}, body:JSON.stringify(patch)});
+      let r = await _put(patch);
+      /* 🔒 컬럼 하나가 DB 에서 안 열려 있으면(403 · permission denied) 그 줄 전체가 통째로 실패한다.
+         나머지 값까지 같이 못 들어가는 건 손해다 — 막힌 칸만 빼고 한 번 더 넣어 본다 (v999).
+         무엇이 못 들어갔는지는 아래 blocked 로 사람에게 그대로 알려준다. */
+      if(!r.ok && r.status===403){
+        let tx=''; try{ tx=await r.clone().text(); }catch(_){}
+        if(/permission denied/i.test(tx)){
+          const keep = Object.assign({}, patch);
+          Object.keys(keep).forEach(c=>{ if(COST_BLOCKED[c]) delete keep[c]; });
+          if(Object.keys(keep).length !== Object.keys(patch).length && Object.keys(keep).length > 2){
+            const r2 = await _put(keep); if(r2.ok) r = r2;          /* 이미 아는 막힌 칸만 빼고 */
+          } else if(patch.min_margin_pct !== undefined){
+            const t2 = Object.assign({}, patch); delete t2.min_margin_pct;
+            const r2 = await _put(t2);                              /* 제일 흔한 범인부터 */
+            if(r2.ok){ COST_BLOCKED.min_margin_pct = 1; r = r2; }
+          }
+        }
+      }
       if(r.ok){ ok++; okSns.push(sn); } else { fail++; if(!firstErr){ let tx=''; try{ tx=await r.text(); }catch(_){} firstErr='HTTP '+r.status+' '+String(tx).slice(0,140); } }
     }catch(err){ fail++; if(!firstErr) firstErr=String(err.message||err); }
   }
@@ -24470,8 +24491,15 @@ async function costSave(){
   try{ await loadPriceList(); }catch(e){}   // 주문화면 최소가 경고가 새 원가를 쓰도록 갱신
   await costFetch(); costRender((document.getElementById('cost-search')||{}).value||'');
   if(btn){ btn.textContent='💾 Save changes'; btn.disabled=!Object.keys(_costEdits).length; }
-  showToast(fail ? ('⚠ Saved '+ok+', failed '+fail+(firstErr?(' — '+firstErr):'')) : ('✅ Saved '+ok+' style(s)'));
-  return { ok, fail, firstErr };
+  const blocked = Object.keys(COST_BLOCKED);
+  if(blocked.length){
+    /* 막힌 칸은 편집분을 들고 있어 봐야 다음에도 막힌다 — 화면에는 그대로 두되 사실을 말해 준다 */
+    showToast('⚠ ' + blocked.join(', ') + ' is not writable in the database (permission denied). '
+      + 'Everything else was saved. Ask for: grant update (' + blocked.join(', ') + ') on public.styles to authenticated;');
+  } else {
+    showToast(fail ? ('⚠ Saved '+ok+', failed '+fail+(firstErr?(' — '+firstErr):'')) : ('✅ Saved '+ok+' style(s)'));
+  }
+  return { ok, fail, firstErr, blocked };
 }
 /* ✕ 를 누르면 저장하고 닫는다 (v964). 저장이 실패하면 닫지 않는다 —
    창이 닫히면서 값이 사라지는 게 제일 나쁘다. */
@@ -24484,8 +24512,11 @@ async function costCloseSave(){
   try{ res = await costSave(); }catch(e){ res = { ok:0, fail:n, firstErr:String(e&&e.message||e) }; }
   if(x){ x.disabled=false; x.textContent='✕'; }
   if(res && res.fail){
-    showToast('⚠ '+res.fail+' style(s) did not save — the window stays open so nothing is lost');
-    return;                      // 안 닫는다
+    /* 못 닫고 갇히면 안 된다 (v999) — 사실을 말해 주고, 그래도 닫을지 사람이 정한다 */
+    if(confirm(res.fail + ' style(s) did not save.\n\n'
+      + (res.firstErr ? (res.firstErr + '\n\n') : '')
+      + 'Close anyway and discard those changes?\n\nCancel = stay open and keep them.')) close();
+    return;
   }
   close();
 }
