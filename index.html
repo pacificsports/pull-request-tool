@@ -192,7 +192,7 @@ body.po-dragging{user-select:none;}
   </span>
   <select id="lang-sel" onchange="setLang(this.value)" style="font-size:11px;padding:3px 6px;border-radius:5px;border:none;background:#1d3f66;color:#fff;"><option value="ko">한국어</option><option value="en">English</option><option value="es">Español</option></select>
   <button id="wide-btn" class="btn btn-sm" onclick="toggleWide()" title="화면 넓게 / 좁게 — 기본은 넓게 (이 브라우저에만 저장돼)" style="padding:2px 8px;font-size:10px;background:#1d3f66;color:#cfe0f2;border-color:#2b5384;">↔ Wide</button>
-  <span id="app-ver" style="font-size:10px;color:#9fb8d4;">v992</span>
+  <span id="app-ver" style="font-size:10px;color:#9fb8d4;">v993</span>
 </div>
 <script>
 // ↔ 넓게 보기 — 브라우저마다 따로 저장 (v793)
@@ -19170,7 +19170,8 @@ function blPickOpen(){
     <div id="blp-body" style="padding:6px 14px 14px;max-height:70vh;overflow-y:auto;"></div>
     <div style="padding:10px 16px;border-top:1px solid #eee;display:flex;gap:8px;align-items:center;flex-wrap:wrap;">
       <button id="blp-back" class="btn" style="display:none;" onclick="_blpStyle='';blPickPaint()">← Styles</button>
-      <button class="btn" style="background:#0f766e;color:#fff;border-color:#0f766e;font-weight:800;" onclick="blExportFile()" title="Save this whole tool as one offline file — send it to Haiti and it works with no internet">⬇ Download for Haiti</button>
+      <button class="btn" style="background:#7c2d12;color:#fff;border-color:#7c2d12;font-weight:800;" onclick="haitiOpen()" title="공장이 쓰는 6×4 카톤 라벨 도구를 여기서 그대로 — 글자 자동 맞춤·배운 색 기억까지 똑같이 (데이터는 psflowx 최신)">📄 Carton Label 6×4</button>
+      <button class="btn" style="background:#0f766e;color:#fff;border-color:#0f766e;font-weight:800;" onclick="blExportFile()" title="같은 도구를 파일 하나로 저장 — 아이티에 보내면 인터넷 없이 돌아간다">⬇ Download for Haiti</button>
       <button class="btn" style="margin-left:auto;" onclick="document.getElementById('modal-blpick').remove()">Close</button>
     </div></div>`;
   document.body.appendChild(div);
@@ -19296,189 +19297,110 @@ function blPickColor(st, c){
    시스템에서 뽑은 것과 글자 하나까지 같다. 새로 뽑을 때마다 자동으로 최신이 된다.
 
    파일 안에서 바깥으로 나가는 통신은 Browser Print(localhost:9100) 하나뿐이다. */
-function blExportData(){
-  const out = {};
-  (typeof skuStyles === 'function' ? skuStyles() : []).forEach(stRaw=>{
+/* ═══════════ 🇭🇹 카톤 라벨 (6×4) — 아이티 도구를 그대로 (v993) ═══════════
+   [무엇이 잘못됐었나] v981 은 "다운로드" 를 누르면 psflowx 안의 ZPL 함수 몇 개를 긁어
+   **새 페이지를 만들어** 줬다. 그래서 공장이 실제로 쓰는 도구와 딴판인 파일이 나왔고,
+   받아서 아이티에 보낼 수가 없었다.
+
+   [지금 방식] 공장이 쓰는 그 파일(`haiti-label-template.html`)을 **틀 그대로** 쓴다.
+   4,100줄 중 우리가 건드리는 건 데이터 **4줄**뿐이다:
+     STYLES · COLORS · STYLECOLORS · STYLESIZES
+   나머지(내장 폰트 · QR 라이브러리 · 6×4 라벨 · 글자 자동 맞춤 · 배운 색 기억 ·
+   즐겨찾기 · 서명란)는 한 글자도 안 건드린다. 그래서 화면도 결과물도 공장 것과 똑같고,
+   데이터만 psflowx 의 지금 값으로 최신이 된다.
+
+   [어디에 쓰나] ① SC·CA 직원은 psflowx 안에서 바로 열어 쓴다(`haitiOpen`)
+                ② 아이티로 보낼 땐 같은 내용을 파일로 내려받는다(`blExportFile`)
+   둘이 **같은 함수**를 쓰므로 화면과 보내는 파일이 절대 어긋나지 않는다. */
+const HAITI_TPL_URL = 'haiti-label-template.html';
+let _haitiTpl = null;
+async function haitiTpl(){
+  if(_haitiTpl) return _haitiTpl;
+  const r = await fetch(HAITI_TPL_URL + '?v=' + Date.now(), {cache:'no-store'});
+  if(!r.ok) throw new Error('템플릿을 못 받았습니다 (HTTP ' + r.status + ')');
+  const t = await r.text();
+  if(t.indexOf('__PSFLOWX_DATA_STYLES__') < 0) throw new Error('템플릿에 데이터 자리가 없습니다');
+  _haitiTpl = t;
+  return t;
+}
+/* 틀에 들어갈 데이터 — 파일이 원래 쓰던 모양 그대로 맞춘다 */
+function haitiData(){
+  const STYLES = {}, STYLESIZES = {}, STYLECOLORS = {};
+  const colorSet = new Set();
+  const M = (typeof STYLE_MASTER !== 'undefined') ? STYLE_MASTER : {};
+  Object.keys(M).forEach(st=>{
+    const m = M[st];
+    STYLES[st] = { cat:m[0]||'', ppb1:m[2]||0, ppb2:(m[3]==null?0:m[3]),
+                   fab:(typeof lblFabric==='function' ? lblFabric(st) : ''),
+                   idesc:m[4]||'', wdesc:m[5]||'' };
+    let sz = [];
+    try{ sz = (typeof bxStyleSizes==='function') ? (bxStyleSizes(st)||[]) : []; }catch(e){}
+    if(sz.length) STYLESIZES[st] = sz.map(x=>String(x).toUpperCase());
+  });
+  /* 색은 SKU 마스터가 정본 — 화면에서 숨긴 색(is_active=false)은 뺀다 */
+  const sty = (typeof skuStyles === 'function') ? skuStyles() : [];
+  sty.forEach(stRaw=>{
     const st = String(stRaw);
     const cols = ((typeof skuColors === 'function') ? skuColors(st) : [])
-      .map(c=>String(c).toUpperCase()).filter((c,i,a)=>a.indexOf(c)===i).sort();
-    if(!cols.length) return;
-    const m = (typeof STYLE_MASTER !== 'undefined') ? STYLE_MASTER[st] : null;
-    let sizes = [];
-    try{ sizes = (typeof pcSizesFor==='function' ? (pcSizesFor(st)||[]) : []).map(x=>String(x).toUpperCase()); }catch(e){}
-    if(!sizes.length) sizes = ['S','M','L','XL','2XL','3XL'];
-    out[st] = { cat:(m&&m[0])||'Other', fab:lblFabric(st), kid:lblIsKid(st),
-                ppb:(m&&m[2])||72, ppbBig:(m&&m[3])||(m&&m[2])||48, sizes, colors:cols };
+      .map(c=>String(c).trim().toUpperCase()).filter(Boolean);
+    const uniq = cols.filter((c,i,a)=>a.indexOf(c)===i).sort();
+    if(!uniq.length) return;
+    STYLECOLORS[st] = uniq;
+    uniq.forEach(c=>colorSet.add(c));
   });
-  return out;
+  return { STYLES, COLORS:[...colorSet].sort(), STYLECOLORS, STYLESIZES };
 }
-function blExportFile(){
-  let html;
-  try{ html = blExportHtml(); }
-  catch(e){ showToast('⚠ Could not build the file: ' + (e.message||e)); return; }
-  const name = 'pacific-box-labels-' + ctnDate() + '.html';
+/* 틀 + 지금 데이터 → 완성된 도구 한 장 */
+async function haitiHtml(){
+  const tpl = await haitiTpl();
+  const D = haitiData();
+  let out = tpl;
+  ['STYLES','COLORS','STYLECOLORS','STYLESIZES'].forEach(k=>{
+    out = out.replace('/*__PSFLOWX_DATA_' + k + '__*/',
+                      'var ' + k + ' = ' + JSON.stringify(D[k]) + ';');
+  });
+  return { html: out, data: D };
+}
+/* ① 화면에서 바로 쓰기 — psflowx 안에서 전체화면으로 연다 */
+async function haitiOpen(){
+  const ex = document.getElementById('modal-haiti'); if(ex) ex.remove();
+  const div = document.createElement('div');
+  div.id = 'modal-haiti';
+  div.style.cssText = 'position:fixed;inset:0;z-index:140;background:#0f2a4a;display:flex;flex-direction:column;';
+  div.innerHTML = '<div style="background:#0f2a4a;color:#fff;padding:9px 14px;display:flex;align-items:center;gap:10px;flex-wrap:wrap;">'
+    + '<span style="font-weight:800;font-size:14px;">📄 Carton Label — 6×4</span>'
+    + '<span id="haiti-note" style="font-size:11.5px;color:#cbd5e1;">불러오는 중…</span>'
+    + '<button class="btn btn-sm" style="margin-left:auto;background:#0f766e;color:#fff;border-color:#0f766e;font-weight:800;" onclick="blExportFile()" title="같은 내용을 파일로 저장 — 아이티에 보낼 때">⬇ 파일로 저장</button>'
+    + '<button class="btn btn-sm" style="background:rgba(255,255,255,.18);color:#fff;border-color:rgba(255,255,255,.35);font-weight:800;" onclick="document.getElementById(\'modal-haiti\').remove()">✕ 닫기</button>'
+    + '</div><div style="flex:1;background:#fff;"><iframe id="haiti-frame" style="width:100%;height:100%;border:0;display:block;"></iframe></div>';
+  document.body.appendChild(div);
+  try{
+    const { html, data } = await haitiHtml();
+    const fr = document.getElementById('haiti-frame'); if(!fr) return;
+    /* srcdoc 대신 blob URL — 35만 자를 속성에 넣으면 브라우저가 버거워한다 */
+    fr.src = URL.createObjectURL(new Blob([html], {type:'text/html;charset=utf-8'}));
+    const n = document.getElementById('haiti-note');
+    if(n) n.textContent = Object.keys(data.STYLES).length + ' styles · '
+        + data.COLORS.length.toLocaleString() + ' colours — psflowx 최신 데이터';
+  }catch(e){
+    const n = document.getElementById('haiti-note');
+    if(n){ n.style.color = '#fca5a5'; n.textContent = '⚠ ' + (e.message||e); }
+  }
+}
+/* ② 아이티로 보낼 파일 — 화면에서 쓰는 것과 완전히 같은 내용 */
+async function blExportFile(){
+  let html, data;
+  try{ const r = await haitiHtml(); html = r.html; data = r.data; }
+  catch(e){ showToast('⚠ 파일을 못 만들었습니다: ' + (e.message||e)); return; }
+  const name = 'haiti-box-label-' + ctnDate() + '.html';
   try{
     const url = URL.createObjectURL(new Blob([html], {type:'text/html;charset=utf-8'}));
     const a = document.createElement('a');
     a.href = url; a.download = name; document.body.appendChild(a); a.click();
     setTimeout(()=>{ try{ document.body.removeChild(a); URL.revokeObjectURL(url); }catch(e){} }, 1500);
-  }catch(e){ showToast('⚠ Download failed: '+(e.message||e)); return; }
-  const data = blExportData();
-  const nSt = Object.keys(data).length;
-  const nCo = Object.keys(data).reduce((a,k)=>a+data[k].colors.length,0);
-  showToast('⬇ ' + name + ' — ' + nSt + ' styles · ' + nCo.toLocaleString() + ' colours');
-}
-function blExportHtml(){
-  const DATA = blExportData();
-  /* 시스템에서 쓰는 그 함수들을 원문 그대로 — 여기 목록에 없는 걸 참조하면 파일이 깨지므로
-     라벨 한 장을 만드는 데 실제로 필요한 것만, 의존 순서대로 담는다. */
-  const fns = [pbSafe, pbQrModules, blDpiFromName, bq2Dots, bq2Mag, ctnDate, ctnRand, ctnIsNew, ctnNew, fbQrText, buildBoxQr2x2Zpl, blGetPrinters]
-    .map(f=>f.toString()).join('\n\n');
-  const made = new Date().toLocaleString();
-  const S = String.fromCharCode(60);      // '<' — 이 문자열이 스크립트 태그로 잘리지 않게
-  return '<!DOCTYPE html>\n<html lang="en">\n<head>\n<meta charset="utf-8">\n'
-+ '<meta name="viewport" content="width=device-width,initial-scale=1">\n'
-+ '<title>Pacific Sports — Box Labels (offline)</title>\n'
-+ '<style>\n'
-+ '*{box-sizing:border-box}body{margin:0;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Arial,sans-serif;background:#eef2f7;color:#101a2c}\n'
-+ '.wrap{max-width:640px;margin:0 auto;padding:12px}\n'
-+ '.top{background:#4c1d95;color:#fff;padding:12px 16px;border-radius:12px 12px 0 0;font-weight:800;font-size:16px;display:flex;gap:10px;align-items:center;flex-wrap:wrap}\n'
-+ '.top .made{margin-left:auto;font-size:10.5px;font-weight:600;opacity:.85}\n'
-+ '.panel{background:#fff;border-radius:0 0 12px 12px;padding:12px 14px 16px}\n'
-+ '.fi{width:100%;font-size:15px;padding:9px 11px;border:1px solid #cbd5e1;border-radius:9px;font-family:inherit}\n'
-+ '.sec{font-size:11.5px;font-weight:900;letter-spacing:.09em;margin:14px 0 6px;padding-bottom:4px}\n'
-+ '.grid{display:grid;grid-template-columns:1fr 1fr;gap:8px}\n'
-+ '.card{position:relative;cursor:pointer;border-radius:11px;padding:11px 13px;min-height:56px;border:1.5px solid}\n'
-+ '.card b{display:block;font-size:22px;font-weight:900;letter-spacing:-.5px;line-height:1.05;padding-right:20px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}\n'
-+ '.card i{display:block;font-style:normal;font-size:10.5px;font-weight:700;color:#7b8794;letter-spacing:.04em;margin-top:3px}\n'
-+ '.card s{position:absolute;top:8px;right:9px;font-size:15px;text-decoration:none}\n'
-+ '.btn{font:inherit;font-weight:800;font-size:14px;padding:10px 15px;border-radius:10px;border:1px solid #cbd5e1;background:#fff;cursor:pointer}\n'
-+ '.go{background:#6d28d9;color:#fff;border-color:#6d28d9}\n'
-+ '.row{display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-top:10px}\n'
-+ 'table{width:100%;border-collapse:collapse;margin-top:8px}td,th{padding:5px 4px;font-size:13px;text-align:center}\n'
-+ 'th{font-size:10px;color:#64748b;letter-spacing:.05em}\n'
-+ 'input[type=number]{width:70px;font-size:16px;padding:7px;text-align:center;border:1.5px solid #cbd5e1;border-radius:8px;font-weight:800;font-family:inherit}\n'
-+ '#msg{font-size:12.5px;font-weight:700;min-height:18px;margin-top:8px}\n'
-+ '.note{font-size:11.5px;color:#64748b;line-height:1.55}\n'
-+ '</style>\n</head>\n<body>\n<div class="wrap">\n'
-+ '<div class="top">🏷 Box Labels <span style="font-weight:600;font-size:12px;opacity:.85">offline</span><span class="made">built ' + made.replace(/[<>&]/g,'') + '</span></div>\n'
-+ '<div class="panel">\n'
-+ '<div class="note" style="margin-bottom:9px;">Works with no internet. Needs Zebra Browser Print running on this computer. Load 2&quot;&nbsp;x&nbsp;2&quot; label stock.</div>\n'
-+ '<div class="row"><b style="font-size:12px">🖨</b><select id="prn" class="fi" style="flex:1"><option>Loading printers…</option></select></div>\n'
-+ '<input id="q" class="fi" placeholder="🔍 Search" style="margin-top:10px">\n'
-+ '<div id="body"></div>\n'
-+ '<div class="row"><button class="btn" id="back" style="display:none" onclick="pick(\'\')">← Styles</button></div>\n'
-+ '<div id="msg"></div>\n'
-+ '</div></div>\n'
-+ S + 'script>\n'
-+ 'const FB_QR_HOST = ' + JSON.stringify(FB_QR_HOST) + ';\n'
-+ 'const CTN_ABC = ' + JSON.stringify(CTN_ABC) + ';\n'
-+ 'const DATA = ' + JSON.stringify(DATA) + ';\n'
-+ 'let _blDpiVal = 203;\n'
-+ 'function blDpi(){ return _blDpiVal; }\n'
-+ 'function blPrinterKey(){ return "bl_printer_full"; }\n'
-+ 'function esc(v){ return String(v==null?"":v).replace(/[&<>"\']/g, c=>({"&":"&amp;","<":"&lt;",">":"&gt;","\\"":"&quot;","\'":"&#39;"}[c])); }\n'
-+ 'function msg(t,ok){ const e=document.getElementById("msg"); if(e){ e.textContent=t; e.style.color= ok===false?"#b91c1c":(ok?"#166534":"#475569"); } }\n'
-+ fns + '\n'
-+ 'let PRN=[];\n'
-+ 'async function loadPrinters(){\n'
-+ '  const sel=document.getElementById("prn");\n'
-+ '  try{ PRN=await blGetPrinters(); }catch(e){ PRN=[]; }\n'
-+ '  if(!PRN.length){ sel.innerHTML="' + S + 'option>⚠ No Zebra found — is Browser Print running?' + S + '/option>"; return; }\n'
-+ '  const want=(function(){ try{ return localStorage.getItem(blPrinterKey()); }catch(e){ return null; } })();\n'
-+ '  sel.innerHTML=PRN.map(p=>"' + S + 'option value=\\""+esc(p.uid||p.name)+"\\""+(((p.uid&&p.uid===want)||p.name===want)?" selected":"")+">"+esc(p.name||p.uid)+"' + S + '/option>").join("");\n'
-+ '  sel.onchange=()=>{ try{ localStorage.setItem(blPrinterKey(), sel.value); }catch(e){} syncDpi(); };\n'
-+ '  syncDpi();\n'
-+ '}\n'
-+ 'function curPrinter(){ const v=(document.getElementById("prn")||{}).value; return PRN.find(p=>(p.uid&&p.uid===v)||p.name===v) || PRN[0]; }\n'
-+ 'function syncDpi(){ const p=curPrinter(); const d=blDpiFromName(p&&p.name); if(d) _blDpiVal=d; }\n'
-+ 'async function sendZpl(zpl,n){\n'
-+ '  const p=curPrinter(); if(!p){ msg("⚠ No printer — start Zebra Browser Print and reload.",false); return false; }\n'
-+ '  try{ const r=await fetch("http://localhost:9100/write",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({device:p,data:zpl})});\n'
-+ '    if(!r.ok) throw new Error("HTTP "+r.status);\n'
-+ '    msg("✓ "+n+" label(s) sent → "+(p.name||p.uid), true); return true;\n'
-+ '  }catch(e){ msg("⚠ Print failed: "+(e.message||e),false); return false; }\n'
-+ '}\n'
-+ 'const FAV="lbl_fav_off";\n'
-+ '/* ★ 즐겨찾기는 순서가 있는 목록. 꾹 눌러서 끌면 순서가 바뀐다. */\n'
-+ 'function favList(){ try{ const v=JSON.parse(localStorage.getItem(FAV)||"[]"); if(Array.isArray(v)) return v.filter(x=>typeof x==="string"); if(v&&typeof v==="object") return Object.keys(v); }catch(e){} return []; }\n'
-+ 'function favSet(l){ try{ localStorage.setItem(FAV, JSON.stringify(l.filter((x,i,a)=>a.indexOf(x)===i))); }catch(e){} }\n'
-+ 'function favHas(k){ return favList().indexOf(k)>=0; }\n'
-+ 'function favTgl(k){ const l=favList(), i=l.indexOf(k); if(i>=0) l.splice(i,1); else l.push(k); favSet(l); paint(); }\n'
-+ 'let DRAG=null;\n'
-+ 'function dragArm(){ const box=document.getElementById("favbox"); if(!box||box._armed) return; box._armed=1;\n'
-+ '  box.addEventListener("pointerdown",e=>{ const card=e.target.closest("[data-fk]"); if(!card||e.target.closest("s")) return;\n'
-+ '    const tm=setTimeout(()=>{ DRAG={box,card,moved:false}; card.style.opacity=".6"; card.style.transform="scale(1.03)"; card.style.boxShadow="0 8px 20px rgba(15,23,42,.22)"; box.style.touchAction="none"; try{ card.setPointerCapture(e.pointerId); }catch(x){} },220);\n'
-+ '    const c=()=>{ clearTimeout(tm); card.removeEventListener("pointerup",c); card.removeEventListener("pointercancel",c); };\n'
-+ '    card.addEventListener("pointerup",c); card.addEventListener("pointercancel",c); });\n'
-+ '  box.addEventListener("pointermove",e=>{ if(!DRAG) return; e.preventDefault(); DRAG.moved=true;\n'
-+ '    const el=document.elementFromPoint(e.clientX,e.clientY); const ov=el&&el.closest?el.closest("[data-fk]"):null;\n'
-+ '    if(!ov||ov===DRAG.card||ov.parentElement!==box) return;\n'
-+ '    const ks=[].slice.call(box.children), a=ks.indexOf(DRAG.card), b=ks.indexOf(ov);\n'
-+ '    box.insertBefore(DRAG.card, a' + String.fromCharCode(60) + 'b ? ov.nextSibling : ov); });\n'
-+ '  const drop=()=>{ if(!DRAG) return; const cd=DRAG.card; cd.style.opacity=""; cd.style.transform=""; cd.style.boxShadow=""; DRAG.box.style.touchAction="";\n'
-+ '    if(DRAG.moved){ const shown=[].slice.call(DRAG.box.children).map(x=>x.getAttribute("data-fk")).filter(Boolean);\n'
-+ '      favSet(shown.concat(favList().filter(k=>shown.indexOf(k)' + String.fromCharCode(60) + '0))); cd._nc=1; setTimeout(()=>{cd._nc=0;},60); }\n'
-+ '    DRAG=null; };\n'
-+ '  box.addEventListener("pointerup",drop); box.addEventListener("pointercancel",drop);\n'
-+ '  box.addEventListener("click",e=>{ const c=e.target.closest("[data-fk]"); if(c&&c._nc){ e.stopPropagation(); e.preventDefault(); } },true);\n'
-+ '}\n'
-+ 'let CUR="";\n'
-+ 'function card(key,big,sub,kid,click,fv){ const f=favHas(key);\n'
-+ '  return "' + S + 'div class=\\"card\\""+(fv?(" data-fk=\\""+key+"\\""):"")+" style=\\"background:"+(kid?"#fdf6e9":"#f4f8fd")+";border-color:"+(kid?"#e8d9b8":"#cfe0f2")+"\\" onclick=\\""+click+"\\">' + S + 'b>"+esc(big)+"' + S + '/b>"+(sub?("' + S + 'i>"+esc(sub)+"' + S + '/i>"):"")+"' + S + 's onclick=\\"event.stopPropagation();favTgl(\'"+key+"\')\\" style=\\"color:"+(f?"#c8951f":"#cfd6de")+"\\">"+(f?"★":"☆")+"' + S + '/s>' + S + '/div>"; }\n'
-+ 'function sec(title,cards,color,drag){ if(!cards.length) return "";\n'
-+ '  return "' + S + 'div class=\\"sec\\" style=\\"color:"+(color||"#c8951f")+";border-bottom:2px solid "+(color||"#c8951f")+"33\\">"+esc(title)+(drag?"' + S + 'span style=\\"float:right;font-weight:700;letter-spacing:0;color:#94a3b8;font-size:10px;text-transform:none\\">press &amp; hold to reorder' + S + '/span>":"")+"' + S + '/div>' + S + 'div"+(drag?" id=\\"favbox\\"":"")+" class=\\"grid\\">"+cards.join("")+"' + S + '/div>"; }\n'
-+ 'function paint(){\n'
-+ '  const b=document.getElementById("body"), q=(document.getElementById("q").value||"").trim().toUpperCase();\n'
-+ '  document.getElementById("back").style.display = CUR ? "" : "none";\n'
-+ '  if(!CUR){\n'
-+ '    const all=Object.keys(DATA).filter(st=>!q||st.indexOf(q)>=0||(DATA[st].fab||"").indexOf(q)>=0);\n'
-+ '    const c=(st,fv)=>card("S|"+st,st,DATA[st].fab,DATA[st].kid,"pick(\'"+st+"\')",fv);\n'
-+ '    const fav=favList().filter(k=>k.indexOf("S|")===0).map(k=>k.slice(2)).filter(st=>all.indexOf(st)>=0);\n'
-+ '    const seen=new Set(fav), byCat={};\n'
-+ '    all.forEach(st=>{ if(seen.has(st)) return; (byCat[DATA[st].cat]=byCat[DATA[st].cat]||[]).push(st); });\n'
-+ '    let h="' + S + 'div class=\\"sec\\" style=\\"color:#94a3b8;border:0\\">1 · TAP THE STYLE' + S + '/div>"+sec("★ FAVORITES",fav.map(st=>c(st,true)),"#c8951f",fav.length>1);\n'
-+ '    Object.keys(byCat).sort().forEach(k=>{ h+=sec(k.toUpperCase(),byCat[k].sort().map(st=>c(st,false)),"#334155"); });\n'
-+ '    b.innerHTML = all.length?h:"' + S + 'p class=\\"note\\">No styles found.' + S + '/p>"; dragArm(); return;\n'
-+ '  }\n'
-+ '  const d=DATA[CUR], cols=d.colors.filter(x=>!q||x.indexOf(q)>=0);\n'
-+ '  const c=(x,fv)=>card("C|"+CUR+"|"+x,x,"",d.kid,"pickColor(\'"+x.replace(/\'/g,"")+"\')",fv);\n'
-+ '  const pre="C|"+CUR+"|";\n'
-+ '  const fav=favList().filter(k=>k.indexOf(pre)===0).map(k=>k.slice(pre.length)).filter(x=>cols.indexOf(x)>=0);\n'
-+ '  const seen=new Set(fav);\n'
-+ '  b.innerHTML="' + S + 'div class=\\"sec\\" style=\\"color:#94a3b8;border:0\\">2 · TAP THE COLOUR · "+cols.length+" on file' + S + '/div>"\n'
-+ '    +sec("★ FAVORITES",fav.map(x=>c(x,true)),"#c8951f",fav.length>1)\n'
-+ '    +sec("ALL COLOURS",cols.filter(x=>!seen.has(x)).map(x=>c(x,false)),"#334155");\n'
-+ '  dragArm();\n'
-+ '}\n'
-+ 'function pick(st){ CUR=st; document.getElementById("q").value=""; paint(); window.scrollTo(0,0); }\n'
-+ 'function pickColor(col){ sheet(CUR,col); }\n'
-+ 'const BIG=["3XL","4XL","5XL","6XL"];\n'
-+ 'function ppbFor(st,sz){ const d=DATA[st]; return BIG.indexOf(sz)>=0 ? d.ppbBig : d.ppb; }\n'
-+ 'function sheet(st,col){\n'
-+ '  const d=DATA[st];\n'
-+ '  const rows=d.sizes.map(sz=>"' + S + 'tr>' + S + 'td style=\\"font-weight:800\\">"+esc(sz)+"' + S + '/td>' + S + 'td>' + S + 'input type=number min=0 value=0 id=\\"n_"+sz+"\\">' + S + '/td>' + S + 'td>' + S + 'input type=number min=1 value=\\""+ppbFor(st,sz)+"\\" id=\\"p_"+sz+"\\">' + S + '/td>' + S + '/tr>").join("");\n'
-+ '  document.getElementById("body").innerHTML="' + S + 'div class=\\"sec\\" style=\\"color:#94a3b8;border:0\\">3 · HOW MANY OF EACH SIZE' + S + '/div>"\n'
-+ '   +"' + S + 'div style=\\"font-size:20px;font-weight:900\\">"+esc(st)+" · "+esc(col)+"' + S + '/div>"\n'
-+ '   +"' + S + 'table>' + S + 'tr>' + S + 'th>SIZE' + S + '/th>' + S + 'th>STICKERS' + S + '/th>' + S + 'th>PCS / BOX' + S + '/th>' + S + '/tr>"+rows+"' + S + '/table>"\n'
-+ '   +"' + S + 'div class=\\"row\\">' + S + 'button class=\\"btn go\\" onclick=\\"doPrint(\'"+st+"\',\'"+col.replace(/\'/g,"")+"\')\\">⬛ Print' + S + '/button>' + S + 'button class=\\"btn\\" onclick=\\"paint()\\">← Colours' + S + '/button>' + S + '/div>";\n'
-+ '  document.getElementById("back").style.display="";\n'
-+ '  window.scrollTo(0,0);\n'
-+ '}\n'
-+ 'async function doPrint(st,col){\n'
-+ '  syncDpi();\n'
-+ '  const parts=[]; let n=0;\n'
-+ '  DATA[st].sizes.forEach(sz=>{\n'
-+ '    const k=parseInt((document.getElementById("n_"+sz)||{}).value)||0;\n'
-+ '    const p=parseInt((document.getElementById("p_"+sz)||{}).value)||0;\n'
-+ '    if(k>0&&p>0){ for(let i=0;i' + S + 'k;i++){ parts.push(buildBoxQr2x2Zpl({styleNum:st,color:col,size:sz,qty:p}, ctnNew())); n++; } }\n'
-+ '  });\n'
-+ '  if(!n){ msg("⚠ Enter how many stickers.",false); return; }\n'
-+ '  await sendZpl(parts.filter(Boolean).join("\\n"), n);\n'
-+ '}\n'
-+ 'document.getElementById("q").oninput=paint;\n'
-+ 'paint(); loadPrinters();\n'
-+ S + '/script>\n</body>\n</html>\n';
+  }catch(e){ showToast('⚠ 저장 실패: ' + (e.message||e)); return; }
+  showToast('⬇ ' + name + ' — ' + Object.keys(data.STYLES).length + ' styles · '
+            + data.COLORS.length.toLocaleString() + ' colours');
 }
 async function skuMoveOpen(style, color){
   const ex = document.getElementById('modal-skumove'); if(ex) ex.remove();
