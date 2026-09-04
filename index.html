@@ -192,7 +192,7 @@ body.po-dragging{user-select:none;}
   </span>
   <select id="lang-sel" onchange="setLang(this.value)" style="font-size:11px;padding:3px 6px;border-radius:5px;border:none;background:#1d3f66;color:#fff;"><option value="ko">한국어</option><option value="en">English</option><option value="es">Español</option></select>
   <button id="wide-btn" class="btn btn-sm" onclick="toggleWide()" title="화면 넓게 / 좁게 — 기본은 넓게 (이 브라우저에만 저장돼)" style="padding:2px 8px;font-size:10px;background:#1d3f66;color:#cfe0f2;border-color:#2b5384;">↔ Wide</button>
-  <span id="app-ver" style="font-size:10px;color:#9fb8d4;">v1006</span>
+  <span id="app-ver" style="font-size:10px;color:#9fb8d4;">v1007</span>
 </div>
 <script>
 // ↔ 넓게 보기 — 브라우저마다 따로 저장 (v793)
@@ -29604,6 +29604,86 @@ function cmFlagsRow(name, cs, isCC, lim){
         + ' onchange="cmSet(\''+k+'\',\'creditLimit\',this.value)" style="width:92px;text-align:right;font-family:Consolas,monospace;font-weight:700;font-size:11px;padding:3px 6px;"></span>')
     + '</div>';
 }
+/* ═══ ⇄ 같은 회사가 두 줄로 갈라졌을 때 합치기 (v1007) ═══
+   `Entertainment Outfitters LLC` 와 `EOI Entertainment Outfitters LLC` 처럼 이름만 다른 같은 곳이 생긴다.
+   [무엇이 움직이나] 오더의 거래처 이름(`meta.cust`)이 전부 남는 쪽 이름으로 바뀌고,
+   설정(주소·이메일·terms·신용한도·UPS·ship-to·MAS 링크)은 **남는 쪽이 이기고 빈 칸만 채워진다** —
+   합친다고 좋은 값을 덮어쓰면 안 되기 때문. 사라지는 쪽 줄은 지운다.
+   ⚠ 이름 바꾸기(✎)로는 안 된다: 옛 줄이 그대로 남아 목록에 계속 보이고, 옛 값이 새 쪽을 덮어쓴다. */
+function cmMergeOpen(from){
+  const ex = document.getElementById('modal-cmerge'); if(ex) ex.remove();
+  const all = {};
+  (savedCache||[]).forEach(r=>{ const c = custGroupName(custCanon(r.meta&&r.meta.cust)); if(c) all[c]=1; });
+  Object.values(custStore||{}).forEach(cs=>{ if(cs&&cs.name) all[custGroupName(cs.name)]=1; });
+  const others = Object.keys(all).filter(x=>custKey(x)!==custKey(from)).sort((a,b)=>a.toLowerCase().localeCompare(b.toLowerCase()));
+  const nOrd = (savedCache||[]).filter(r=>r.meta && custGroupName(r.meta.cust)===custGroupName(from)).length;
+  const div = document.createElement('div');
+  div.id = 'modal-cmerge';
+  div.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,.55);z-index:200;display:flex;align-items:center;justify-content:center;';
+  div.onclick = e=>{ if(e.target===div) div.remove(); };
+  div.innerHTML = '<div style="background:#fff;border-radius:12px;width:470px;max-width:94vw;overflow:hidden;box-shadow:0 20px 60px rgba(0,0,0,.35);">'
+    + '<div style="background:#9a3412;color:#fff;padding:11px 16px;font-weight:800;">⇄ Merge customer</div>'
+    + '<div style="padding:15px 16px;">'
+      + '<div style="font-size:12.5px;color:#334155;margin-bottom:10px;line-height:1.5;">'
+        + '<b>'+esc(from)+'</b> ('+nOrd+' order'+(nOrd===1?'':'s')+') will disappear.<br>'
+        + 'Its orders move to the customer you pick, and that customer keeps its own settings — '
+        + 'only its <b>empty</b> fields are filled in from this one.</div>'
+      + '<div class="ff"><label>Keep this customer</label>'
+        + '<select class="fi" id="cmerge-to" style="width:100%;font-size:13px;">'
+        + others.map(x=>'<option value="'+esc(x)+'">'+esc(x)+'</option>').join('') + '</select></div>'
+    + '</div>'
+    + '<div style="padding:0 16px 15px;display:flex;gap:8px;justify-content:flex-end;">'
+      + '<button class="btn btn-sm" onclick="document.getElementById(\'modal-cmerge\').remove()">Cancel</button>'
+      + '<button class="btn btn-sm" style="background:#9a3412;color:#fff;border-color:#9a3412;font-weight:800;" onclick="cmMergeDo(\''+esc(from).replace(/'/g,"\\'")+'\')">⇄ Merge</button>'
+    + '</div></div>';
+  document.body.appendChild(div);
+}
+async function cmMergeDo(from){
+  const sel = document.getElementById('cmerge-to');
+  const to = sel ? String(sel.value||'').trim() : '';
+  if(!to || custKey(to)===custKey(from)) return;
+  const recs = (savedCache||[]).filter(r=> r.meta && custGroupName(r.meta.cust)===custGroupName(from));
+  if(!confirm('Merge "'+from+'" into "'+to+'"?\n\n'+recs.length+' order(s) will be moved.\nThis cannot be undone automatically.')) return;
+  const m = document.getElementById('modal-cmerge'); if(m) m.remove();
+  showToast('⇄ Merging '+recs.length+' order(s)…');
+  let ok = 0, fail = 0;
+  for(const r of recs){
+    r.meta = r.meta || {}; r.meta.cust = to;
+    try{
+      const res = await sbFetch('/rest/v1/pr_orders?base=eq.'+encodeURIComponent(r.base),
+        {method:'PATCH', headers:{Prefer:'return=minimal'}, body:JSON.stringify({meta:r.meta, updated_at:new Date().toISOString()})});
+      if(res.ok) ok++; else fail++;
+    }catch(e){ fail++; }
+  }
+  if(fail){ showToast('⚠ '+fail+' order(s) did not move — nothing else was changed'); renderCustomers(); return; }
+  /* 설정 합치기 — 남는 쪽이 이기고, 그쪽이 비어 있는 칸만 사라지는 쪽에서 가져온다 */
+  const fk = custKey(from), tk = custKey(to);
+  const src = custStore[fk] || {}, dst = custStore[tk] || {};
+  const has = v => !(v===undefined || v===null || v==='' || (Array.isArray(v) && !v.length));
+  const merged = {};
+  [...new Set(Object.keys(src).concat(Object.keys(dst)))].forEach(key=>{
+    merged[key] = has(dst[key]) ? dst[key] : src[key];
+  });
+  /* ship-to 는 양쪽 것을 다 살린다 — 배송지는 많을수록 좋다 */
+  const sig = x => [x&&x.name, x&&x.addr, x&&x.zip].join('|').toUpperCase();
+  const sts = (dst.shipTos||[]).slice();
+  (src.shipTos||[]).forEach(x=>{ if(!sts.some(y=>sig(y)===sig(x))) sts.push(x); });
+  if(sts.length) merged.shipTos = sts;
+  merged.name = to;
+  delete merged.parent;
+  await saveCustomer(tk, merged);
+  /* 사라지는 쪽을 부모로 가리키던 브랜드는 남는 쪽으로 */
+  for(const k of Object.keys(custStore||{})){
+    const c = custStore[k];
+    if(c && c.parent && custKey(c.parent)===fk){ c.parent = to; await saveCustomer(k, c); }
+  }
+  /* 사라지는 줄 지우기 */
+  delete custStore[fk];
+  try{ await sbFetch('/rest/v1/pr_customers?k=eq.'+encodeURIComponent(fk), {method:'DELETE', headers:{Prefer:'return=minimal'}}); }catch(e){}
+  cmSelect(to);
+  if(typeof renderSaved==='function') renderSaved();
+  showToast('✅ Merged into '+to+' ('+ok+' order'+(ok===1?'':'s')+' moved)');
+}
 function cmDetailHtml(list){
   if(!list.length) return '<div class="muted" style="padding:14px;">No customers yet</div>';
   if(!_cmSel || !list.some(m=>m.name===_cmSel)) _cmSel = list[0].name;
@@ -29680,6 +29760,7 @@ function cmDetailPane(name){
         + '<button class="btn btn-sm" onclick="openCustShipTos(\''+nm+'\')" title="Ship-to addresses">🚚 Ship To</button>'
         + '<button class="btn btn-sm" style="'+((cs.ups&&(cs.ups.account||cs.ups.mode))?'background:#7c2d12;color:#fff;border-color:#7c2d12;':'')+'" onclick="openCustUps(\''+nm+'\')" title="UPS account &amp; billing">🏷 UPS</button>'
         + '<button class="btn btn-sm" onclick="printStatement(\''+nm+'\')" title="Print a statement">🖨 Statement</button>'
+        + '<button class="btn btn-sm" style="background:#fff7ed;color:#9a3412;border-color:#fdba74;font-weight:800;" onclick="cmMergeOpen(\''+nm+'\')" title="Same company under two names? Merge this one into the other — orders and settings move over">⇄ Merge</button>'
       + '</div></div>'
     /* KPI */
     + '<div style="display:grid;grid-template-columns:repeat(4,1fr);gap:8px;margin-bottom:9px;">'
