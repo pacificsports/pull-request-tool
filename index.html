@@ -192,7 +192,7 @@ body.po-dragging{user-select:none;}
   </span>
   <select id="lang-sel" onchange="setLang(this.value)" style="font-size:11px;padding:3px 6px;border-radius:5px;border:none;background:#1d3f66;color:#fff;"><option value="ko">한국어</option><option value="en">English</option><option value="es">Español</option></select>
   <button id="wide-btn" class="btn btn-sm" onclick="toggleWide()" title="화면 넓게 / 좁게 — 기본은 넓게 (이 브라우저에만 저장돼)" style="padding:2px 8px;font-size:10px;background:#1d3f66;color:#cfe0f2;border-color:#2b5384;">↔ Wide</button>
-  <span id="app-ver" style="font-size:10px;color:#9fb8d4;">v1016</span>
+  <span id="app-ver" style="font-size:10px;color:#9fb8d4;">v1017</span>
 </div>
 <script>
 // ↔ 넓게 보기 — 브라우저마다 따로 저장 (v793)
@@ -15253,7 +15253,9 @@ function pchkReqMgrRender(){
   if(!showDone) rows=rows.filter(r=>r.status!=='done');
   if(whF) rows=rows.filter(r=>String(r.wh||'SC').toUpperCase()===whF);
   if(!rows.length){ b.innerHTML='<div style="text-align:center;color:#64748b;padding:34px;">No '+(whF?('['+whF+'] '):'')+'open requests. 🎉</div>'; return; }
-  b.innerHTML=rows.map(r=>{
+  /* 여러 건이 와 있을 때 하나씩 처리하면 손이 너무 많이 간다 — 골라서 한 번에 (v1017) */
+  window._boxreqOpenIds = rows.filter(r=>r.status!=='done').map(r=>r.id);
+  b.innerHTML = pchkReqBarHtml() + rows.map(r=>{
     const done=r.status==='done';
     const rwh=String(r.wh||'SC').toUpperCase();
     const d=r.created_at?new Date(r.created_at):null;
@@ -15268,6 +15270,7 @@ function pchkReqMgrRender(){
     </div>`;
     return `<div style="background:${done?'#f0fdf4':'#fff'};border:1px solid ${done?'#bbf7d0':'#e5e7eb'};border-radius:12px;padding:13px 15px;margin-bottom:10px;">
       <div style="display:flex;align-items:center;gap:9px;flex-wrap:wrap;">
+        ${done?'':`<input type="checkbox" class="brq-ck" data-id="${r.id}" ${((window._boxreqSel||{})[r.id])?'checked':''} onchange="pchkReqSel(${r.id},this.checked)" title="Pick several and print one slip / mark them all done" style="width:17px;height:17px;accent-color:#7c3aed;cursor:pointer;">`}
         <span style="font-size:11px;font-weight:800;padding:2px 9px;border-radius:7px;background:${rwh==='CA'?'#fee2e2':'#dbeafe'};color:${rwh==='CA'?'#9a3412':'#1d4ed8'};">${rwh}</span>
         <b style="font-size:16px;color:#0f2a4a;">${esc(String(r.style))}</b>
         <span style="font-size:14px;">${esc(String(r.color||''))}</span>
@@ -15290,6 +15293,83 @@ function pchkReqMgrRender(){
       </div>`}
     </div>`;
   }).join('');
+}
+/* ═══ 📦 여러 요청을 한 번에 (v1017) ═══
+   창고에서 요청이 서너 개씩 몰려 오면 하나하나 열어 인쇄하고 완료 누르는 게 일이다.
+   골라서 **한 장으로 인쇄**하고 **한 번에 완료** 처리한다. 종이는 요청마다 한 칸씩, bin 위치까지. */
+function pchkReqSelIds(){ const m=window._boxreqSel||{}; return Object.keys(m).filter(k=>m[k]).map(Number); }
+function pchkReqSel(id, on){
+  window._boxreqSel = window._boxreqSel || {};
+  if(on) window._boxreqSel[id] = 1; else delete window._boxreqSel[id];
+  const el=document.getElementById('boxreq-bar'); if(el) el.outerHTML = pchkReqBarHtml();
+}
+function pchkReqSelAll(on){
+  window._boxreqSel = {};
+  if(on) (window._boxreqOpenIds||[]).forEach(id=>{ window._boxreqSel[id]=1; });
+  document.querySelectorAll('.brq-ck').forEach(c=>{ c.checked = !!on; });
+  const el=document.getElementById('boxreq-bar'); if(el) el.outerHTML = pchkReqBarHtml();
+}
+function pchkReqBarHtml(){
+  const ids = pchkReqSelIds();
+  const nOpen = (window._boxreqOpenIds||[]).length;
+  const all = nOpen>0 && ids.length===nOpen;
+  return '<div id="boxreq-bar" style="position:sticky;top:0;z-index:3;background:'+(ids.length?'#f5f3ff':'#fff')+';'
+    + 'border:1px solid '+(ids.length?'#c4b5fd':'#e5e7eb')+';border-radius:11px;padding:9px 13px;margin-bottom:10px;'
+    + 'display:flex;align-items:center;gap:9px;flex-wrap:wrap;">'
+    + '<label style="display:inline-flex;align-items:center;gap:6px;font-size:12.5px;font-weight:800;color:#334155;cursor:pointer;">'
+      + '<input type="checkbox" '+(all?'checked':'')+' onchange="pchkReqSelAll(this.checked)" style="width:16px;height:16px;accent-color:#7c3aed;cursor:pointer;">'
+      + 'Select all open ('+nOpen+')</label>'
+    + (ids.length
+        ? '<span style="font-size:12.5px;font-weight:800;color:#5b21b6;">'+ids.length+' selected</span>'
+          + '<button onclick="pchkReqPrintMany()" style="margin-left:auto;background:#334155;color:#fff;border:none;border-radius:8px;padding:8px 13px;font-size:12.5px;font-weight:800;cursor:pointer;">🖨 Print one slip for all</button>'
+          + '<button onclick="pchkReqDoneMany()" style="background:#16a34a;color:#fff;border:none;border-radius:8px;padding:8px 13px;font-size:12.5px;font-weight:800;cursor:pointer;">✓ Mark all done</button>'
+        : '<span style="margin-left:auto;font-size:11.5px;color:#94a3b8;">Tick the boxes to print or finish several at once</span>')
+    + '</div>';
+}
+function pchkReqPrintMany(){
+  const ids = pchkReqSelIds();
+  if(!ids.length){ showToast('⚠ Pick at least one request'); return; }
+  const rows = ids.map(id=>(window._boxreqRows||[]).find(x=>x.id===id)).filter(Boolean);
+  if(!rows.length) return;
+  const w = window.open('','_blank'); if(!w){ showToast('⚠ Allow popups to print'); return; }
+  const body = rows.map((r,i)=>{
+    const rwh = String(r.wh||'SC').toUpperCase();
+    const bins = pchkReqBins(r.style,r.color,r.size,rwh);
+    const binRows = bins.length
+      ? bins.map(x=>'<tr><td>['+esc(String(x.wh))+'] '+esc(String(x.loc))+'</td><td style="text-align:center;">'+x.n+'</td></tr>').join('')
+      : '<tr><td colspan="2" style="color:#b91c1c;">No full boxes found in stock.</td></tr>';
+    return '<div class="job">'
+      + '<div class="hd"><span class="no">'+(i+1)+'</span> <b>['+esc(rwh)+']</b> '
+        + '<span class="big">'+esc(String(r.style))+' &nbsp; '+esc(String(r.color||''))+' &nbsp; '+esc(String(r.size||''))+'</span></div>'
+      + '<div class="sub">'+(r.requested_by?('requested by '+esc(String(r.requested_by))):'')
+        + (r.left_qty!=null?(' &nbsp;·&nbsp; pcs left on floor now: <b>'+r.left_qty+'</b>'):'')+'</div>'
+      + '<div class="ask">Pull <b>1 full box</b> → PC Room</div>'
+      + '<table><thead><tr><th>📍 Location</th><th>Boxes</th></tr></thead><tbody>'+binRows+'</tbody></table>'
+      + '<div class="sign">pulled from ______________ &nbsp;&nbsp; by ____________</div></div>';
+  }).join('');
+  w.document.write('<html><head><title>Box Pull Requests ('+rows.length+')</title><style>'
+    + 'body{font-family:Arial,sans-serif;padding:22px;color:#111;}'
+    + 'h1{font-size:21px;margin:0 0 3px;} .top{color:#555;font-size:12.5px;margin-bottom:14px;}'
+    + '.job{border:1.5px solid #999;border-radius:8px;padding:12px 14px;margin-bottom:12px;page-break-inside:avoid;}'
+    + '.no{display:inline-block;background:#111;color:#fff;border-radius:50%;width:22px;height:22px;text-align:center;line-height:22px;font-size:13px;font-weight:800;}'
+    + '.hd{font-size:14px;} .big{font-size:21px;font-weight:800;}'
+    + '.sub{color:#555;font-size:12px;margin:3px 0 7px;} .ask{font-size:13px;margin-bottom:6px;}'
+    + 'table{border-collapse:collapse;width:100%;max-width:340px;} td,th{border:1px solid #999;padding:6px 9px;font-size:13px;text-align:left;} th{background:#eee;}'
+    + '.sign{margin-top:9px;font-size:12px;color:#555;}'
+    + '</style></head><body><h1>📦 Box Pull Requests — '+rows.length+' job(s)</h1>'
+    + '<div class="top">'+esc(new Date().toLocaleString())+'</div>'+body
+    + '<script>window.onload=function(){window.print();};<\/script></body></html>');
+  w.document.close();
+}
+async function pchkReqDoneMany(){
+  const ids = pchkReqSelIds();
+  if(!ids.length){ showToast('⚠ Pick at least one request'); return; }
+  if(!confirm('Mark ' + ids.length + ' request(s) done?')) return;
+  let ok=0;
+  for(const id of ids){ try{ await pchkReqDone(id); ok++; }catch(e){} }
+  window._boxreqSel = {};
+  showToast('✓ ' + ok + ' request(s) done');
+  pchkReqMgrRender();
 }
 async function pchkReqDone(id, extra){
   const by=(SESS&&SESS.email)||'';
