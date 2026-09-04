@@ -192,7 +192,7 @@ body.po-dragging{user-select:none;}
   </span>
   <select id="lang-sel" onchange="setLang(this.value)" style="font-size:11px;padding:3px 6px;border-radius:5px;border:none;background:#1d3f66;color:#fff;"><option value="ko">한국어</option><option value="en">English</option><option value="es">Español</option></select>
   <button id="wide-btn" class="btn btn-sm" onclick="toggleWide()" title="화면 넓게 / 좁게 — 기본은 넓게 (이 브라우저에만 저장돼)" style="padding:2px 8px;font-size:10px;background:#1d3f66;color:#cfe0f2;border-color:#2b5384;">↔ Wide</button>
-  <span id="app-ver" style="font-size:10px;color:#9fb8d4;">v1012</span>
+  <span id="app-ver" style="font-size:10px;color:#9fb8d4;">v1013</span>
 </div>
 <script>
 // ↔ 넓게 보기 — 브라우저마다 따로 저장 (v793)
@@ -11978,6 +11978,26 @@ function scanExpInbound(rec){
    그 박스는 PC Room 라벨(`/box/pb/거래처/PO/…`)이라 품목 줄과 안 맞으므로 **PO 단위**로 센다.
    그래서 기대 목록에 `PO|<번호>` 줄을 따로 넣고, 스캔 쪽에서도 PO 로 모아 센다. */
 function scanPoKey(po){ return 'PO|' + String(po||'').trim().toUpperCase(); }
+/* ═══ 나가는 트럭인가 들어오는 트럭인가 (v1013) ═══
+   ⚠ 상태(LOADING/TRANSIT)로 가르면 틀린다 — 3P→SC 는 남의 창고가 싣는 동안 LOADING 이지만
+   우리 입장에선 **들어오는** 트럭이다. 기준은 상태가 아니라 **길**과 **내가 있는 창고**다.
+     · 출발이 3자 창고면      → 우리는 받기만 한다 (IN)
+     · 도착이 3자 창고면      → 우리가 싣는다 (OUT)
+     · 우리 창고끼리(SC↔CA)면 → 내가 출발 창고에 있으면 OUT, 도착 창고에 있으면 IN */
+function scanTrDir(rec){
+  const rt = (typeof TR_ROUTES!=='undefined' && TR_ROUTES[((rec&&rec.meta)||{}).route]) || null;
+  if(!rt) return 'OUT';
+  const spec = k => (k==='3P' || k==='LK');
+  if(spec(rt.from)) return 'IN';
+  if(spec(rt.dest)) return 'OUT';
+  const me = (typeof _pchkWh!=='undefined' && _pchkWh==='CA') ? 'CA' : 'SC';
+  return (rt.from === me) ? 'OUT' : 'IN';
+}
+function scanTrDate(rec){
+  const d = String((((rec&&rec.meta)||{}).ship_date) || (rec&&rec.created_at) || '').slice(0,10);
+  const m = d.match(/^(\d{4})-(\d{2})-(\d{2})$/);
+  return m ? (m[2]+'/'+m[3]) : '';
+}
 function scanExpTransfer(rec){
   const m = {};
   (rec.lines||[]).forEach(l=>{ const n = Array.isArray(l.ids) ? l.ids.length : (Number(l.boxes)||1);
@@ -12223,32 +12243,48 @@ async function scanPick(mode){
   }
   /* 🚚 트럭은 두 번 센다 (v1011): SC 에서 실을 때(LOADING) 한 번, CA 에서 받을 때(TRANSIT) 한 번.
      둘을 섞어 놓으면 직원이 어느 걸 눌러야 하는지 모른다 — 아예 묶음을 갈라 놓는다. */
-  const card = rec=>{
+  const card = (rec, dir)=>{
     const exp = (M==='IN') ? scanExpInbound(rec) : scanExpTransfer(rec);
     const boxes = exp.reduce((a,x)=>a+x.qty,0);
     const nPo = exp.filter(x=>x.isPo).length;
-    const route = (M==='TR' && rec.meta && rec.meta.route) ? String(rec.meta.route) : '';
-    const out = (M==='TR' && String(rec.status||'')==='LOADING');
+    const out = (dir === 'OUT');
     const col = out ? '#b45309' : '#0e7490';
+    const st  = String(rec.status||'');
+    const rt  = (typeof TR_ROUTES!=='undefined' && TR_ROUTES[((rec.meta||{}).route)]) || null;
+    const dt  = (M==='TR') ? scanTrDate(rec) : '';
     const done = (function(){ try{ const sc=(rec.meta||{}).scan; const ph=(sc&&sc.phases)||{};
       const mine = out ? ph.OUT : ph.IN; return mine ? (mine.ok ? '✔ counted, matched' : '⚠ counted, '+(mine.badCount||0)+' off') : ''; }catch(e){ return ''; } })();
+    const tag = (M!=='TR') ? esc(st)
+              : (out ? 'scan before it leaves' : (st==='LOADING' ? 'not shipped yet' : 'on the way'));
     return `<button onclick="scanStart('${M}','${esc(String(rec.id))}')" style="display:block;width:100%;text-align:left;background:#fff;border:1px solid #cbd5e1;border-radius:12px;padding:14px;margin-bottom:9px;">
-      <div style="font-size:16px;font-weight:800;color:#0f2a4a;">${esc(rec.ref||String(rec.id).slice(0,8))} <span style="font-size:10.5px;font-weight:800;color:${col};background:${out?'#fffbeb':'#ecfeff'};border-radius:20px;padding:2px 8px;">${out?'LOADING · scan out':esc(String(rec.status||''))}</span></div>
-      <div style="font-size:12px;color:#64748b;margin-top:3px;">${exp.length} line · <b>${boxes.toLocaleString()}</b> box expected${nPo?` · <b style="color:#a21caf;">${nPo} customer order</b>`:''}${route?' · '+esc(route):''}</div>
+      <div style="display:flex;align-items:center;gap:7px;flex-wrap:wrap;">
+        ${dt?`<span style="font-size:13px;font-weight:800;color:#0f2a4a;font-family:Consolas,monospace;">${esc(dt)}</span>`:''}
+        ${rt?`<span style="background:${rt.bg};color:#fff;font-weight:800;font-size:12px;border-radius:6px;padding:2px 9px;font-family:Consolas,monospace;">${esc(rt.short)}</span>`:''}
+        <span style="font-size:10.5px;font-weight:800;color:${col};background:${out?'#fffbeb':'#ecfeff'};border-radius:20px;padding:2px 8px;">${esc(tag)}</span>
+      </div>
+      <div style="font-size:13px;font-weight:800;color:#334155;margin-top:4px;font-family:Consolas,monospace;">${esc(rec.ref||String(rec.id).slice(0,8))}</div>
+      <div style="font-size:12px;color:#64748b;margin-top:3px;">${exp.length} line · <b>${boxes.toLocaleString()}</b> box${nPo?` · <b style="color:#a21caf;">${nPo} customer order</b>`:''}</div>
       ${done?`<div style="font-size:11.5px;font-weight:800;color:${done.indexOf('✔')===0?'#166534':'#b45309'};margin-top:3px;">${esc(done)}</div>`:''}
       <div style="display:flex;gap:6px;margin-top:8px;">
-        <span onclick="event.stopPropagation();scanStart('${M}','${esc(String(rec.id))}')" title="Scan each box QR with the handheld" style="flex:1;text-align:center;background:${col};color:#fff;border-radius:8px;padding:8px;font-size:12.5px;font-weight:800;">📷 ${out?'Scan going out':'Scan'}</span>
+        <span onclick="event.stopPropagation();scanStart('${M}','${esc(String(rec.id))}')" title="Scan each box QR with the handheld" style="flex:1;text-align:center;background:${col};color:#fff;border-radius:8px;padding:8px;font-size:12.5px;font-weight:800;">📷 ${out?'Scan going out':'Scan arriving'}</span>
       </div>
     </button>`;
   };
-  const hd = (t, sub, col) => `<div style="margin:4px 2px 7px;font-size:12px;font-weight:800;color:${col};">${t}<span style="font-weight:600;color:#94a3b8;"> — ${sub}</span></div>`;
+  const hd = (t, sub, col) => `<div style="margin:6px 2px 7px;font-size:12.5px;font-weight:800;color:${col};">${t}<span style="font-weight:600;color:#94a3b8;"> — ${sub}</span></div>`;
   if(M === 'TR'){
-    const loading = rows.filter(r=>String(r.status||'')==='LOADING');
-    const transit = rows.filter(r=>String(r.status||'')!=='LOADING');
-    el.innerHTML = (loading.length ? hd('📤 Going out', 'count it before the truck leaves', '#b45309') + loading.map(card).join('') : '')
-      + (transit.length ? hd('📥 Arriving', 'count it as you unload', '#0e7490') + transit.map(card).join('') : '');
+    /* 나가는 것 / 들어오는 것 두 칸으로 (v1013). 우리가 싣는 트럭은 떠나고 나면(TRANSIT)
+       이 창고 일이 아니므로 목록에서 내린다 — 받는 창고 화면에 들어오는 것으로 뜬다. */
+    const outs = [], ins = [];
+    rows.forEach(r=>{ const d = scanTrDir(r);
+      if(d === 'OUT'){ if(String(r.status||'')==='LOADING') outs.push(r); }
+      else ins.push(r); });
+    const empty = t => `<div style="background:#fff;border-radius:12px;padding:16px;text-align:center;color:#94a3b8;font-size:12.5px;margin-bottom:10px;">${t}</div>`;
+    el.innerHTML = hd('📤 Outgoing', 'count it before the truck leaves', '#b45309')
+      + (outs.length ? outs.map(r=>card(r,'OUT')).join('') : empty('Nothing waiting to go out.'))
+      + hd('📥 Incoming', 'count it as you unload', '#0e7490')
+      + (ins.length ? ins.map(r=>card(r,'IN')).join('') : empty('Nothing on the way in.'));
   } else {
-    el.innerHTML = rows.map(card).join('');
+    el.innerHTML = rows.map(r=>card(r,'IN')).join('');
   }
 }
 // ═══ 화면 2: 스캔 세션 ═══
@@ -12261,7 +12297,7 @@ async function scanStart(mode, id){
   if(!rec){ showToast('⚠ Not found'); return; }
   window._scanSent = 0;   // 새 건을 열면 "보냄" 표시는 초기화 (v924)
   /* 나가는 트럭(LOADING)인지 들어오는 트럭(TRANSIT)인지 — 보고가 서로를 덮지 않게 (v1011) */
-  const phase = (mode==='TR' && String(rec.status||'')==='LOADING') ? 'OUT' : 'IN';
+  const phase = (mode==='TR') ? scanTrDir(rec) : 'IN';
   const ttl = (mode!=='TR') ? ('🇭🇹 Receive '+(rec.ref||''))
             : ((phase==='OUT' ? '📤 Going out ' : '📥 Arriving ')+(rec.ref||''));
   _scan = { mode, id, ref: rec.ref||'', title: ttl, phase,
