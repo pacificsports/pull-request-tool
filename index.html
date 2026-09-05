@@ -192,7 +192,7 @@ body.po-dragging{user-select:none;}
   </span>
   <select id="lang-sel" onchange="setLang(this.value)" style="font-size:11px;padding:3px 6px;border-radius:5px;border:none;background:#1d3f66;color:#fff;"><option value="ko">한국어</option><option value="en">English</option><option value="es">Español</option></select>
   <button id="wide-btn" class="btn btn-sm" onclick="toggleWide()" title="화면 넓게 / 좁게 — 기본은 넓게 (이 브라우저에만 저장돼)" style="padding:2px 8px;font-size:10px;background:#1d3f66;color:#cfe0f2;border-color:#2b5384;">↔ Wide</button>
-  <span id="app-ver" style="font-size:10px;color:#9fb8d4;">v1018</span>
+  <span id="app-ver" style="font-size:10px;color:#9fb8d4;">v1019</span>
 </div>
 <script>
 // ↔ 넓게 보기 — 브라우저마다 따로 저장 (v793)
@@ -7368,29 +7368,59 @@ function applyCustProfile(){
     showToast('👤 Auto-matched to existing customer: ' + cust + ' → ' + sug);
     return applyCustProfile();
   }
-  const _cs0 = custStore[custKey(cust)] || {};
-  if(_cs0.webCust && $('m-webcust') && !$('m-webcust').checked) $('m-webcust').checked = true;
-  try{ loadImsPricesFor(cust); }catch(e){}
-  const p = custProfileFor(cust);
-  if(!p) return;
+  /* ═══ 거래처 카드에 적어둔 것이 **먼저** 온다 (v1019) ═══
+     예전엔 옛 오더(`custProfileFor`)만 봤다. 그래서 Customers 화면에서 주소를 고쳐도
+     새 오더에는 옛 주소가 계속 들어왔고, 💳 Credit Card 는 아예 자동으로 안 켜졌다.
+     순서: ① 거래처 카드(custStore) → ② 없으면 옛 오더. 사람이 이미 친 칸은 안 건드린다. */
+  const cs = custStore[custKey(cust)] || {};
+  const csg = custStore[custKey(custGroupName(cust))] || {};   /* 브랜드면 모회사 설정도 본다 */
+  const S = k => (cs[k] !== undefined && cs[k] !== '' && cs[k] !== null) ? cs[k] : csg[k];
+  const p = custProfileFor(cust) || {};
   const empty = id => !($(id) && $(id).value.trim());
-  let filled = false;
+  const set = (id, v) => { if($(id) && v) $(id).value = v; };
+  const marks = [];
+
+  /* 🌐 웹사이트 거래처 · 💳 카드 거래처 — 거래처 카드에 켜져 있으면 오더에도 켠다 */
+  if(S('webCust') && $('m-webcust') && !$('m-webcust').checked){ $('m-webcust').checked = true; marks.push('🌐 Website'); }
+  if(String(S('termType')||'') === 'cc' && $('m-cc') && !$('m-cc').checked){ $('m-cc').checked = true; marks.push('💳 Credit Card'); }
+  try{ loadImsPricesFor(cust); }catch(e){}
+
+  let filled = false, src = '';
+  /* 청구지 — 거래처 카드의 bill 이 있으면 그것, 없으면 옛 오더 */
   if(empty('m-bill-addr')){
-    ['billName','billAddr','billCity','billState','billZip'].forEach(k=>{
-      const el = $('m-bill-' + k.replace('bill','').toLowerCase().replace('name','name').replace('addr','addr').replace('city','city').replace('state','state').replace('zip','zip'));
-    });
-    if($('m-bill-name')) $('m-bill-name').value = p.billName||'';
-    $('m-bill-addr').value = p.billAddr||''; $('m-bill-city').value = p.billCity||''; $('m-bill-state').value = p.billState||''; $('m-bill-zip').value = p.billZip||'';
-    filled = filled || !!p.billAddr;
+    const b = (cs.bill && (cs.bill.addr||cs.bill.city)) ? cs.bill
+            : ((csg.bill && (csg.bill.addr||csg.bill.city)) ? csg.bill : null);
+    if(b){
+      set('m-bill-name', b.name||''); set('m-bill-addr', b.addr||'');
+      set('m-bill-city', b.city||''); set('m-bill-state', String(b.state||'').toUpperCase()); set('m-bill-zip', b.zip||'');
+      filled = true; src = 'customer card';
+    } else if(p.billAddr){
+      set('m-bill-name', p.billName||''); set('m-bill-addr', p.billAddr||'');
+      set('m-bill-city', p.billCity||''); set('m-bill-state', p.billState||''); set('m-bill-zip', p.billZip||'');
+      filled = true; src = 'past orders';
+    }
   }
+  /* 배송지 — 저장해둔 ship-to 의 ★ 첫 줄이 있으면 그것, 없으면 옛 오더 */
   if(empty('m-ship-addr')){
-    if($('m-ship-name')) $('m-ship-name').value = p.shipName||'';
-    $('m-ship-addr').value = p.shipAddr||''; $('m-ship-city').value = p.shipCity||''; $('m-ship-state').value = p.shipState||''; $('m-ship-zip').value = p.shipZip||'';
-    filled = filled || !!p.shipAddr;
+    const sts = (Array.isArray(cs.shipTos) && cs.shipTos.length) ? cs.shipTos
+              : ((Array.isArray(csg.shipTos) && csg.shipTos.length) ? csg.shipTos : null);
+    const s2 = sts ? sts[0] : null;
+    if(s2 && (s2.addr || s2.city)){
+      set('m-ship-name', s2.name||''); set('m-ship-addr', s2.addr||'');
+      set('m-ship-city', s2.city||''); set('m-ship-state', String(s2.state||'').toUpperCase()); set('m-ship-zip', s2.zip||'');
+      filled = true; if(!src) src = 'customer card';
+    } else if(p.shipAddr){
+      set('m-ship-name', p.shipName||''); set('m-ship-addr', p.shipAddr||'');
+      set('m-ship-city', p.shipCity||''); set('m-ship-state', p.shipState||''); set('m-ship-zip', p.shipZip||'');
+      filled = true; if(!src) src = 'past orders';
+    }
   }
   if(!$('m-via').value && p.via){ $('m-via').value = normVia(p.via); syncViaBoxes(); filled = true; }
   fillShipPick();
-  if(filled) showToast('👤 ' + cust + ' profile auto-filled (from past orders)');
+  const msg = [];
+  if(filled) msg.push('address filled in' + (src ? (' (' + src + ')') : ''));
+  if(marks.length) msg.push(marks.join(' · '));
+  if(msg.length) showToast('👤 ' + cust + ' — ' + msg.join(' · '));
 }
 function custLastTermType(cust){
   const key = custCanon(cust);
