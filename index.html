@@ -192,7 +192,7 @@ body.po-dragging{user-select:none;}
   </span>
   <select id="lang-sel" onchange="setLang(this.value)" style="font-size:11px;padding:3px 6px;border-radius:5px;border:none;background:#1d3f66;color:#fff;"><option value="ko">한국어</option><option value="en">English</option><option value="es">Español</option></select>
   <button id="wide-btn" class="btn btn-sm" onclick="toggleWide()" title="화면 넓게 / 좁게 — 기본은 넓게 (이 브라우저에만 저장돼)" style="padding:2px 8px;font-size:10px;background:#1d3f66;color:#cfe0f2;border-color:#2b5384;">↔ Wide</button>
-  <span id="app-ver" style="font-size:10px;color:#9fb8d4;">v1019</span>
+  <span id="app-ver" style="font-size:10px;color:#9fb8d4;">v1020</span>
 </div>
 <script>
 // ↔ 넓게 보기 — 브라우저마다 따로 저장 (v793)
@@ -678,7 +678,7 @@ function applyStaticLang(){
 let poLines = [];   // {style,color,size,qty,price,ppb,wh}
 const WH_LIST = ['SC','CA','BO','NA'];
 const WH_ADDR = {
-  SC: '1605 South Guignard Parkway\nSumter SC 29150\nTel: (803) 760-6251',
+  SC: '1605 South Guignard Parkway\nSumter SC 29150\nTel: (803) 773-2177',
   CA: '14129 The Merge Street, Unit B\nEastvale, CA 92880',
   BO: '(Back Order — Warehouse TBD)',
   NA: '(Not Available — will not ship)'
@@ -10334,8 +10334,60 @@ async function sendInvoiceEmail(){
     if(plDrafts[plWh] && em){ plDrafts[plWh].custEmail = em; }
     logHist(plBase, 'Invoice emailed (' + invNo + ') → ' + toList.join(', '));
     showToast('✅ Invoice sent → ' + toList.join(', '));
+    await webOrderPushBack(rec, plWh, d, invNo, tot);
     renderPL(); renderSaved();
   }catch(e){ showToast('❌ Send failed: ' + (e.message||e)); }
+}
+
+/* ═══════════ ↩ 웹사이트로 되돌리기 (v982) ═══════════
+   웹 오더는 여기서 진행되는데, 지금까지 진행 결과가 웹으로 안 돌아갔다.
+   거래처는 자기 My Account 에서 송장번호도 인보이스도 못 봤고,
+   웹은 어쩔 수 없이 자기 포맷으로 인보이스를 따로 그리고 있었다 (그래서 포맷이 달랐다).
+
+   인보이스를 보내는 순간이 유일하게 다 갖춰진 시점이다 —
+   인보이스 번호, 운임, 송장번호, 배송편이 그때 다 있다. 그래서 여기서 한 번에 돌려보낸다.
+   연결고리는 PO Number: 웹 오더를 불러올 때 오더번호(WEB-…)가 거기 들어간다.
+
+   이메일은 이미 나갔다. 그러니 여기서 뭐가 잘못돼도 인보이스 발송을 되돌리지 않는다 —
+   조용히 토스트만 띄우고, 형이 다시 보내면 이 함수도 다시 돈다. */
+async function webOrderPushBack(rec, wh, d, invNo, totAmt){
+  try{
+    const po = String(((rec.meta||{}).po) || '').trim();
+    if(!/^WEB-/i.test(po)) return;                 // 웹에서 온 오더가 아니면 조용히 지나간다
+
+    const trk = (d.trackings || (d.tracking ? [d.tracking] : [])).filter(Boolean);
+    // 웹이 그대로 띄울 수 있게 CSS 까지 넣은 통짜 HTML 로 만든다
+    const html = '<style>' + DOC_CSS + '</style>' + prLogoFix(buildStageDoc(rec, wh, 'invoice', d));
+
+    const body = {
+      invoice_no:    invNo,
+      invoice_html:  html,
+      invoiced_at:   new Date().toISOString(),
+      invoice_total: Number(totAmt) || null
+    };
+    if(trk.length){
+      body.tracking_number = trk.join('\n');
+      body.carrier         = (d.via === 'LTL') ? (d.freightCo || 'LTL') : 'UPS';
+      body.shipped_at      = new Date().toISOString();
+      body.status          = 'shipped';
+    }
+
+    // ⚠ PostgREST 는 한 줄도 안 맞아도 PATCH 에 204 를 준다.
+    //    representation 으로 받아서 실제로 몇 줄이 바뀌었는지 세야 한다.
+    const r = await sbFetch('/rest/v1/web_orders?order_number=eq.' + encodeURIComponent(po),
+      { method:'PATCH', headers:{ Prefer:'return=representation' }, body: JSON.stringify(body) });
+    const rows = r.ok ? await r.json().catch(()=>[]) : [];
+    if(!r.ok || !rows.length){
+      showToast('⚠ 웹사이트 반영 실패 (' + po + ') — 인보이스 메일은 나갔어');
+      logHist(rec.base, '웹사이트 반영 실패 (' + po + ')');
+      return;
+    }
+    logHist(rec.base, '웹사이트로 인보이스 전달 (' + po + ' · ' + invNo
+            + (trk.length ? ' · 송장 ' + trk.length + '건' : '') + ')');
+    showToast('↩ ' + po + ' — 거래처 My Account 에 반영됐어');
+  }catch(e){
+    showToast('⚠ 웹사이트 반영 중 오류 — 인보이스 메일은 나갔어');
+  }
 }
 function invDocData(){
   const d = plDrafts[plWh] || {};
