@@ -192,7 +192,7 @@ body.po-dragging{user-select:none;}
   </span>
   <select id="lang-sel" onchange="setLang(this.value)" style="font-size:11px;padding:3px 6px;border-radius:5px;border:none;background:#1d3f66;color:#fff;"><option value="ko">한국어</option><option value="en">English</option><option value="es">Español</option></select>
   <button id="wide-btn" class="btn btn-sm" onclick="toggleWide()" title="화면 넓게 / 좁게 — 기본은 넓게 (이 브라우저에만 저장돼)" style="padding:2px 8px;font-size:10px;background:#1d3f66;color:#cfe0f2;border-color:#2b5384;">↔ Wide</button>
-  <span id="app-ver" style="font-size:10px;color:#9fb8d4;">v1034</span>
+  <span id="app-ver" style="font-size:10px;color:#9fb8d4;">v1035</span>
 </div>
 <script>
 // ↔ 넓게 보기 — 브라우저마다 따로 저장 (v793)
@@ -1279,15 +1279,31 @@ function updateNumPreview(){
 }
 
 // ═══════════════ 주소 파싱/조합 ═══════════════
+/* 미국 주 이름 → 약자 (v1035). PO 에 'Utah 84088' 처럼 풀이름으로 적혀 오는 곳이 많다. */
+const US_STATE_NAME = {ALABAMA:'AL',ALASKA:'AK',ARIZONA:'AZ',ARKANSAS:'AR',CALIFORNIA:'CA',COLORADO:'CO',CONNECTICUT:'CT',DELAWARE:'DE','DISTRICT OF COLUMBIA':'DC',FLORIDA:'FL',GEORGIA:'GA',HAWAII:'HI',IDAHO:'ID',ILLINOIS:'IL',INDIANA:'IN',IOWA:'IA',KANSAS:'KS',KENTUCKY:'KY',LOUISIANA:'LA',MAINE:'ME',MARYLAND:'MD',MASSACHUSETTS:'MA',MICHIGAN:'MI',MINNESOTA:'MN',MISSISSIPPI:'MS',MISSOURI:'MO',MONTANA:'MT',NEBRASKA:'NE',NEVADA:'NV','NEW HAMPSHIRE':'NH','NEW JERSEY':'NJ','NEW MEXICO':'NM','NEW YORK':'NY','NORTH CAROLINA':'NC','NORTH DAKOTA':'ND',OHIO:'OH',OKLAHOMA:'OK',OREGON:'OR',PENNSYLVANIA:'PA','PUERTO RICO':'PR','RHODE ISLAND':'RI','SOUTH CAROLINA':'SC','SOUTH DAKOTA':'SD',TENNESSEE:'TN',TEXAS:'TX',UTAH:'UT',VERMONT:'VT',VIRGINIA:'VA',WASHINGTON:'WA','WEST VIRGINIA':'WV',WISCONSIN:'WI',WYOMING:'WY'};
+const US_STATE_ABBR = new Set(Object.values(US_STATE_NAME));
 function splitAddr(str){
   // "123 Main St, Los Angeles, CA 90001" → {addr, city, state, zip}
+  /* 🔥 v1035 — 예전 정규식은 zip 앞의 **아무 두 글자**나 주(state)로 집어갔다.
+     'West Jordan, Utah 84088' 에서 UTAH 의 끝 두 글자 'AH' 를 주로 읽고 남은 'Ut' 를
+     city 로 넣어서, 화면에 city='Ut' · state='AH' · addr='… , West Jordan' 이 찍혔다
+     (Lone Rock Clothing PO 39964, 2026-09-08 에 하윤이 잡아냄).
+     이제 ① zip 을 먼저 떼고 ② 주는 **낱말 단위**로만 보고 ③ 풀이름도 약자로 바꾸고
+     ④ 진짜 미국 주일 때만 인정한다. 아니면 주를 비워 두고 city 를 살린다 —
+     엉뚱한 주를 넣느니 비워 두는 게 낫다. */
   let s = String(str||'').replace(/\n/g,', ').replace(/\s+/g,' ').trim();
   const out = {addr:'', city:'', state:'', zip:''};
   if(!s) return out;
-  const m = s.match(/,?\s*([A-Za-z]{2})\.?,?\s+(\d{5}(?:-\d{4})?)\s*$/);
-  if(m){
-    out.state = m[1].toUpperCase(); out.zip = m[2];
-    s = s.slice(0, m.index).replace(/[,\s]+$/,'');
+  const mz = s.match(/(\d{5}(?:-\d{4})?)\s*$/);
+  if(mz){ out.zip = mz[1]; s = s.slice(0, mz.index).replace(/[,\s]+$/,''); }
+  const mFull = s.match(/(?:^|[\s,])((?:NEW|NORTH|SOUTH|WEST|RHODE)\s+[A-Za-z]+|DISTRICT OF COLUMBIA|PUERTO RICO|[A-Za-z]{3,})\.?\s*$/i);
+  const mAbbr = s.match(/(?:^|[\s,])([A-Za-z]{2})\.?\s*$/);
+  if(mFull && US_STATE_NAME[String(mFull[1]).toUpperCase()]){
+    out.state = US_STATE_NAME[String(mFull[1]).toUpperCase()];
+    s = s.slice(0, mFull.index).replace(/[,\s]+$/,'');
+  } else if(mAbbr && US_STATE_ABBR.has(String(mAbbr[1]).toUpperCase())){
+    out.state = String(mAbbr[1]).toUpperCase();
+    s = s.slice(0, mAbbr.index).replace(/[,\s]+$/,'');
   }
   const parts = s.split(',').map(p=>p.trim()).filter(Boolean);
   if(parts.length > 1){ out.city = parts.pop(); out.addr = parts.join(', '); }
@@ -1346,16 +1362,25 @@ function fillAddr(prefix, str){
   if(nameEl){
     const ls = s.split('\n').map(x=>x.trim()).filter(Boolean);
     if(ls.length >= 2 && !/\d/.test(ls[0])){
-      nameEl.value = smartCase(ls[0]);
+      nameEl.value = smartCase(ls[0]); nameEl.dataset.parsed = '1';   // v1035
       s = ls.slice(1).join('\n');
     }
   }
   const a = splitAddr(s);
-  $(`m-${prefix}-addr`).value = smartCase(a.addr);
-  $(`m-${prefix}-city`).value = smartCase(a.city);
-  $(`m-${prefix}-state`).value = a.state;
-  $(`m-${prefix}-zip`).value = a.zip;
+  /* 🏷 이 값들은 **PDF 파서가 넣은 것**이라고 표시해 둔다 (v1035).
+     거래처가 정해지면 `applyCustProfile()` 이 이 표시가 붙은 칸만 우리가 아는 주소로 갈아끼운다.
+     사람이 손으로 친 칸은 표시가 없으니 절대 안 건드린다. */
+  const mk = (id, v)=>{ const el=$(id); if(!el) return; el.value = v; el.dataset.parsed = '1'; };
+  mk(`m-${prefix}-addr`,  smartCase(a.addr));
+  mk(`m-${prefix}-city`,  smartCase(a.city));
+  mk(`m-${prefix}-state`, a.state);
+  mk(`m-${prefix}-zip`,   a.zip);
 }
+/* 사람이 주소칸을 직접 고치면 '파서가 넣은 값' 표시를 뗀다 — 그 뒤로는 자동으로 안 덮인다 (v1035) */
+document.addEventListener('input', function(e){
+  const t = e.target;
+  if(t && t.id && /^m-(bill|ship)-(name|addr|city|state|zip)$/.test(t.id)) delete t.dataset.parsed;
+}, true);
 function joinAddr(prefix){
   const nameEl = $(`m-${prefix}-name`);
   const name = nameEl ? nameEl.value.trim() : '';
@@ -7417,8 +7442,18 @@ function applyCustProfile(){
   const csg = custStore[custKey(custGroupName(cust))] || {};   /* 브랜드면 모회사 설정도 본다 */
   const S = k => (cs[k] !== undefined && cs[k] !== '' && cs[k] !== null) ? cs[k] : csg[k];
   const p = custProfileFor(cust) || {};
-  const empty = id => !($(id) && $(id).value.trim());
-  const set = (id, v) => { if($(id) && v) $(id).value = v; };
+  /* 빈 칸 + **PDF 파서가 넣은 칸**은 우리가 아는 주소로 갈아끼운다 (v1035).
+     예전엔 빈 칸만 채웠다 — PDF 를 먼저 읽어 들이면 파서가 넣은 값(때로 엉망인 값)이
+     자리를 차지해서, 거래처를 골라도 Bill To 가 안 고쳐졌다. */
+  const empty = id => { const el=$(id); if(!el) return false; return !String(el.value||'').trim() || el.dataset.parsed==='1'; };
+  const set = (id, v) => { const el=$(id); if(!el) return; if(v){ el.value = v; delete el.dataset.parsed; } };
+  /* 갈아끼울 때는 5칸을 통째로 — 한 칸만 덮으면 파서가 넣은 엉뚱한 city/state 가 남는다 */
+  const setAddr = (pre, o)=>{
+    [['name',o.name],['addr',o.addr],['city',o.city],['state',o.state],['zip',o.zip]].forEach(([k,v])=>{
+      const el = $('m-'+pre+'-'+k); if(!el) return;
+      el.value = v || ''; delete el.dataset.parsed;
+    });
+  };
   const marks = [];
 
   /* 🌐 웹사이트 거래처 · 💳 카드 거래처 — 거래처 카드에 켜져 있으면 오더에도 켠다 */
@@ -7431,13 +7466,15 @@ function applyCustProfile(){
   if(empty('m-bill-addr')){
     const b = (cs.bill && (cs.bill.addr||cs.bill.city)) ? cs.bill
             : ((csg.bill && (csg.bill.addr||csg.bill.city)) ? csg.bill : null);
-    if(b){
+    if(b && b.addr){
+      setAddr('bill', {name:b.name||cust, addr:b.addr, city:b.city, state:String(b.state||'').toUpperCase(), zip:b.zip});
+      filled = true; src = 'customer card';
+    } else if(b){
       set('m-bill-name', b.name||''); set('m-bill-addr', b.addr||'');
       set('m-bill-city', b.city||''); set('m-bill-state', String(b.state||'').toUpperCase()); set('m-bill-zip', b.zip||'');
       filled = true; src = 'customer card';
     } else if(p.billAddr){
-      set('m-bill-name', p.billName||''); set('m-bill-addr', p.billAddr||'');
-      set('m-bill-city', p.billCity||''); set('m-bill-state', p.billState||''); set('m-bill-zip', p.billZip||'');
+      setAddr('bill', {name:p.billName||cust, addr:p.billAddr, city:p.billCity, state:String(p.billState||'').toUpperCase(), zip:p.billZip});
       filled = true; src = 'past orders';
     }
   }
@@ -7446,13 +7483,15 @@ function applyCustProfile(){
     const sts = (Array.isArray(cs.shipTos) && cs.shipTos.length) ? cs.shipTos
               : ((Array.isArray(csg.shipTos) && csg.shipTos.length) ? csg.shipTos : null);
     const s2 = sts ? sts[0] : null;
-    if(s2 && (s2.addr || s2.city)){
-      set('m-ship-name', s2.name||''); set('m-ship-addr', s2.addr||'');
-      set('m-ship-city', s2.city||''); set('m-ship-state', String(s2.state||'').toUpperCase()); set('m-ship-zip', s2.zip||'');
+    if(s2 && s2.addr){
+      setAddr('ship', {name:s2.name||cust, addr:s2.addr, city:s2.city, state:String(s2.state||'').toUpperCase(), zip:s2.zip});
+      filled = true; if(!src) src = 'customer card';
+    } else if(s2 && s2.city){
+      set('m-ship-name', s2.name||''); set('m-ship-city', s2.city||'');
+      set('m-ship-state', String(s2.state||'').toUpperCase()); set('m-ship-zip', s2.zip||'');
       filled = true; if(!src) src = 'customer card';
     } else if(p.shipAddr){
-      set('m-ship-name', p.shipName||''); set('m-ship-addr', p.shipAddr||'');
-      set('m-ship-city', p.shipCity||''); set('m-ship-state', p.shipState||''); set('m-ship-zip', p.shipZip||'');
+      setAddr('ship', {name:p.shipName||cust, addr:p.shipAddr, city:p.shipCity, state:String(p.shipState||'').toUpperCase(), zip:p.shipZip});
       filled = true; if(!src) src = 'past orders';
     }
   }
