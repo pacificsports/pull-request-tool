@@ -192,7 +192,7 @@ body.po-dragging{user-select:none;}
   </span>
   <select id="lang-sel" onchange="setLang(this.value)" style="font-size:11px;padding:3px 6px;border-radius:5px;border:none;background:#1d3f66;color:#fff;"><option value="ko">한국어</option><option value="en">English</option><option value="es">Español</option></select>
   <button id="wide-btn" class="btn btn-sm" onclick="toggleWide()" title="화면 넓게 / 좁게 — 기본은 넓게 (이 브라우저에만 저장돼)" style="padding:2px 8px;font-size:10px;background:#1d3f66;color:#cfe0f2;border-color:#2b5384;">↔ Wide</button>
-  <span id="app-ver" style="font-size:10px;color:#9fb8d4;">v1033</span>
+  <span id="app-ver" style="font-size:10px;color:#9fb8d4;">v1034</span>
 </div>
 <script>
 // ↔ 넓게 보기 — 브라우저마다 따로 저장 (v793)
@@ -5052,6 +5052,13 @@ async function delSaved(base){
       }
     }
     // PC Room 자동 차감분 복구
+    /* 🔥 2026-09-08 (v1034) — 여기서 남기는 movement note 가 결정적이다.
+       오더를 저장할 때 낱장 차감은 "이 PO 로 이미 얼마를 뺐나" 를 **pr_pcmoves 의 note 로** 센다
+       (`alreadyDeducted()` — note 가 `PO <번호> ` 로 **시작**하고 `auto-deduct` 가 들어 있는 줄만 센다).
+       예전 문구 `Restored (order deleted)` 는 그 조건에 안 맞았다. 그래서 오더를 지웠다가
+       같은 PO 로 다시 저장하면 앱이 "이미 다 뺐다" 고 보고 **낱장을 한 번도 안 뺐다.**
+       실제 사고: PO 80054042 (T-Shirt Tycoon, 1368 NATURAL SC) 에서 150장이 안 빠졌다 (2026-09-08).
+       키의 `|CA` · `|B` 도 이제 제대로 읽는다 — 예전엔 CA 물건을 SC 행에 넣고 B-grade 를 A 로 되돌렸다. */
     const pcl = rec && rec.meta && rec.meta._pcAuto && rec.meta._pcAuto.lines;
     if(pcl && Object.keys(pcl).some(k=>pcl[k]>0) && confirm('🧺 Also restore loose pcs auto-deducted from PC Room for this order?')){
       if(!pcLoaded){
@@ -5062,14 +5069,19 @@ async function delSaved(base){
         const v = Number(pcl[key])||0; if(!v) continue;
         const parts = key.split('|');
         const st = parts[0], col = parts[1], sz = parts[2];
-        const k2 = pcKey(st, col);
-        let row = pcStore.find(x=>x.k===k2);
-        if(!row){ row = { k: k2, style: st, color: col, qty: {} }; pcStore.push(row); }
-        row.qty = row.qty || {};
-        const nv = (Number(row.qty[sz])||0) + v;
-        if(nv === 0) delete row.qty[sz]; else row.qty[sz] = nv;
+        const whv = parts.includes('CA') ? 'CA' : 'SC';
+        const isB = parts.includes('B');
+        const k2 = pcKey(st, col, whv);
+        let row = await pcFetchRowFresh(k2) || pcStore.find(x=>x.k===k2);
+        if(!row){ row = { k: k2, style: st, color: col, wh: whv, qty: {} }; pcStore.push(row); }
+        const fld = isB ? 'bqty' : 'qty';
+        row[fld] = row[fld] || {};
+        const nv = (Number(row[fld][sz])||0) + v;
+        if(nv === 0) delete row[fld][sz]; else row[fld][sz] = nv;
         await pcSaveRow(row);
-        pcLogMove(row, sz, v, nv, 'Restored (order deleted)');
+        /* B-grade 는 일부러 규칙 밖으로 둔다 — A-grade 집계에 섞이면 안 된다 (차감 쪽도 같은 규칙) */
+        pcLogMove(row, sz, v, nv, isB ? ('[B-grade] PO '+poN+' deleted — loose pcs restored')
+                                      : ('PO '+poN+' auto-deduct restore (order deleted)'));
       }
       showToast('↩ PC Room loose pcs restored');
       if(typeof renderPcRoom==='function' && $('pc-body')) renderPcRoom();
@@ -5305,8 +5317,12 @@ async function cancelOrderDo(base){
       const nv = (Number(row[fld][L.size])||0) + L.pcs;
       if(nv === 0) delete row[fld][L.size]; else row[fld][L.size] = nv;
       await pcSaveRow(row);
+      /* note 규칙 (v1034): 저장 때 `alreadyDeducted()` 가 이 줄을 보고 차감을 상쇄한다 —
+         `PO <번호> ` 로 시작 + `auto-deduct` 포함이어야 한다. 안 맞으면 취소했던 PO 를
+         다시 살렸을 때 "이미 뺐다" 고 보고 낱장을 안 뺀다. B-grade 는 일부러 규칙 밖. */
       pcLogMove(row, L.size, L.pcs, Number((row.qty||{})[L.size])||0,
-                (L.isB?'[B-grade] ':'') + 'PO '+poN+' cancelled — loose pcs restored');
+                L.isB ? ('[B-grade] PO '+poN+' cancelled — loose pcs restored')
+                      : ('PO '+poN+' auto-deduct restore (order cancelled)'));
     }
   }catch(e){ err = e.message||String(e); }
 
