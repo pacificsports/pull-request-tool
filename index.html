@@ -192,7 +192,7 @@ body.po-dragging{user-select:none;}
   </span>
   <select id="lang-sel" onchange="setLang(this.value)" style="font-size:11px;padding:3px 6px;border-radius:5px;border:none;background:#1d3f66;color:#fff;"><option value="ko">한국어</option><option value="en">English</option><option value="es">Español</option></select>
   <button id="wide-btn" class="btn btn-sm" onclick="toggleWide()" title="화면 넓게 / 좁게 — 기본은 넓게 (이 브라우저에만 저장돼)" style="padding:2px 8px;font-size:10px;background:#1d3f66;color:#cfe0f2;border-color:#2b5384;">↔ Wide</button>
-  <span id="app-ver" style="font-size:10px;color:#9fb8d4;">v1031</span>
+  <span id="app-ver" style="font-size:10px;color:#9fb8d4;">v1033</span>
 </div>
 <script>
 // ↔ 넓게 보기 — 브라우저마다 따로 저장 (v793)
@@ -15267,9 +15267,55 @@ async function pchkReqList(){
   }).join('');
 }
 // ═══════════ 📦 Box Requests — 매니저 처리 (alarm → 위치 → PC Room → print → done) (v606) ═══════════
+/* 🚨 새 Box Request 공습경보 (v1033)
+   [왜] 창고에서 박스를 요청해도 화면 구석 숫자만 조용히 바뀌어 사무실이 그냥 지나쳤다.
+        딩동 소리(imsChime)는 직원들이 이미 「오더」로 알아듣는 소리라 쓸 수 없다 — 그래서 다른 소리.
+   [무엇] 사이렌 — 두 번 오르내리는 웨일. 음원 파일이 아니라 오실레이터라 용량 0, 인터넷 없이도 운다.
+   [언제] 새로 생긴 요청이 있을 때만. SC·CA 둘 다 같은 소리, 어느 창고인지는 토스트가 말한다.
+   [안 우는 때] 앱을 처음 켤 때(그땐 이미 쌓여 있는 게 정상) · 이미 본 요청 · 되살린 요청(id 가 그대로라서).
+   ⚠ 브라우저는 사람이 한 번은 클릭해야 소리를 내준다 — 매니저 화면은 계속 누르며 쓰는 화면이라 문제되지 않는다. */
+function boxreqSiren(){
+  try{
+    const C=window.AudioContext||window.webkitAudioContext; if(!C) return;
+    window._imsAC = window._imsAC || new C();
+    const ac=window._imsAC; if(ac.state==='suspended') ac.resume();
+    const t0=ac.currentTime+0.05, WAIL=1.7, N=2;
+    for(let i=0;i<N;i++){
+      const s0=t0+i*WAIL;
+      const o=ac.createOscillator(), g=ac.createGain(), f=ac.createBiquadFilter();
+      o.type='sawtooth'; f.type='lowpass'; f.frequency.value=1600; f.Q.value=0.7;
+      o.connect(f); f.connect(g); g.connect(ac.destination);
+      o.frequency.setValueAtTime(360, s0);
+      o.frequency.exponentialRampToValueAtTime(860, s0+WAIL*0.45);
+      o.frequency.exponentialRampToValueAtTime(360, s0+WAIL*0.95);
+      g.gain.setValueAtTime(0.0001, s0);
+      g.gain.exponentialRampToValueAtTime(0.14, s0+0.15);
+      g.gain.setValueAtTime(0.14, s0+WAIL*0.80);
+      g.gain.exponentialRampToValueAtTime(0.0001, s0+WAIL*0.99);
+      o.start(s0); o.stop(s0+WAIL);
+    }
+  }catch(e){}
+}
+function pchkBoxreqAlarm(rows){
+  try{
+    const ids=(rows||[]).map(x=>String(x.id));
+    const seen=window._boxreqSeen;
+    window._boxreqSeen=new Set(ids);
+    if(!seen) return;                                   // 처음 읽은 것 — 울리지 않는다
+    const fresh=(rows||[]).filter(x=>!seen.has(String(x.id)));
+    if(!fresh.length) return;
+    boxreqSiren();
+    const whs=[...new Set(fresh.map(x=>String(x.wh||'SC').toUpperCase()))].join(' + ');
+    const one=fresh[0]||{};
+    const what=[one.style?('#'+one.style):'', one.color||'', one.size||''].filter(Boolean).join(' ');
+    showToast('🚨 '+whs+' BOX REQUEST — '+fresh.length+' new'+(what?(' · '+what):'')
+      +(fresh.length>1?(' (+'+(fresh.length-1)+' more)'):''));
+  }catch(e){}
+}
 async function pchkBoxreqBadge(){
-  try{ const r=await sbFetch('/rest/v1/pr_boxreq?select=wh&status=eq.open'); if(!r.ok) return;
+  try{ const r=await sbFetch('/rest/v1/pr_boxreq?select=id,wh,style,color,size&status=eq.open'); if(!r.ok) return;
     const rows=await r.json(); if(!Array.isArray(rows)) return;
+    pchkBoxreqAlarm(rows);                              // 🚨 새 요청이면 공습경보 (v1033)
     const c={SC:0,CA:0}; rows.forEach(x=>{ const w=String(x.wh||'SC').toUpperCase(); if(w==='CA')c.CA++; else c.SC++; });
     const n=rows.length; window._boxreqOpen=n; window._boxreqPend=c;
     const b=document.getElementById('boxreq-badge'); if(b) b.textContent=n?(' '+n):'';
@@ -22830,23 +22876,42 @@ function bxRptDocHtml(){
   const whCell = r=>r.w==='TOTAL' ? '<td style="padding:6px 10px;text-align:center;color:#9ca3af;">All</td>'
     : r.w==='INC' ? '<td style="padding:6px 10px;text-align:center;color:#0e7490;">\u{1F6A2}</td>'
     : '<td style="padding:6px 10px;text-align:center;font-weight:700;color:'+(r.w==='CA'?'#ea580c':'#1e40af')+';">'+esc(r.w)+'</td>';
-  const mkTable = (rws, szs, valKey, totKey, headBg, accent, gt)=>
-    '<table width="100%" cellpadding="0" cellspacing="0" style="border-collapse:collapse;font-size:12px;border:1px solid #e5e7eb;">'
+  /* 📐 위·아래 두 표의 세로줄을 딱 맞췄다 (v1032).
+     예전엔 브라우저가 칸 안 내용 길이를 보고 폭을 정했다 — Incoming 은 '—' 가 많아
+     숫자 칸이 좁아지고 Color 칸이 넓어져서 위 표와 어긋났다.
+     이제 칸 폭을 % 로 못박고 table-layout:fixed 로 그 폭을 그대로 쓰게 한다.
+     두 표가 같은 사이즈 칸을 쓰므로(v1031) 계산값도 같다 — 그래서 줄이 맞는다.
+     이메일 프로그램이 <colgroup> 을 무시해도 되게 th 에도 width 를 같이 적는다. */
+  const colW = szs=>{
+    const n = Math.max(1, szs.length), wWh = anyWh ? 5 : 0;
+    const sz = Math.max(4.5, Math.min(9, (45 - wWh) / n));
+    return { st:7, col:17, wh:wWh, sz:sz, tot:10,
+             item: Math.max(10, 100 - 7 - 17 - wWh - 10 - sz*n) };
+  };
+  const mkTable = (rws, szs, valKey, totKey, headBg, accent, gt)=>{
+    const W = colW(szs), pc = v=>(Math.round(v*100)/100)+'%';
+    const PZ = 'padding:6px 5px;';                 // 사이즈 칸은 옆여백을 줄인다 — '2,448' 이 안 접히게
+    return '<table width="100%" cellpadding="0" cellspacing="0" style="border-collapse:collapse;font-size:12px;border:1px solid #e5e7eb;table-layout:fixed;">'
+    +'<colgroup><col style="width:'+pc(W.st)+';"><col style="width:'+pc(W.item)+';"><col style="width:'+pc(W.col)+';">'
+    +(anyWh?'<col style="width:'+pc(W.wh)+';">':'')
+    +szs.map(()=>'<col style="width:'+pc(W.sz)+';">').join('')
+    +'<col style="width:'+pc(W.tot)+';"></colgroup>'
     +'<thead><tr style="background:'+headBg+';">'
-    +'<th style="padding:6px 10px;text-align:left;">Style</th><th style="padding:6px 10px;text-align:left;">Item</th><th style="padding:6px 10px;text-align:left;">Color</th>'
-    +(anyWh?'<th style="padding:6px 10px;text-align:center;">WH</th>':'')
-    +szs.map(z=>'<th style="padding:6px 10px;text-align:center;">'+esc(z)+'</th>').join('')
-    +'<th style="padding:6px 10px;text-align:right;">Total</th></tr></thead><tbody>'
+    +'<th width="'+pc(W.st)+'" style="padding:6px 10px;text-align:left;">Style</th><th width="'+pc(W.item)+'" style="padding:6px 10px;text-align:left;">Item</th><th width="'+pc(W.col)+'" style="padding:6px 10px;text-align:left;">Color</th>'
+    +(anyWh?'<th width="'+pc(W.wh)+'" style="padding:6px 5px;text-align:center;">WH</th>':'')
+    +szs.map(z=>'<th width="'+pc(W.sz)+'" style="'+PZ+'text-align:center;">'+esc(z)+'</th>').join('')
+    +'<th width="'+pc(W.tot)+'" style="padding:6px 10px;text-align:right;">Total</th></tr></thead><tbody>'
     +rws.map(r=>'<tr style="border-top:1px solid #f1f5f9;">'
       +'<td style="padding:6px 10px;font-weight:700;">'+esc(r.s)+'</td>'
       +'<td style="padding:6px 10px;color:#475569;">'+esc(bxRptType(r.s))+'</td>'
       +'<td style="padding:6px 10px;">'+esc(r.c)+'</td>'
       +(anyWh?whCell(r):'')
-      +szs.map(z=>'<td style="padding:6px 10px;text-align:center;">'+(rptCellTxt(r,valKey,z) || '<span style="color:#d1d5db;">—</span>')+'</td>').join('')
+      +szs.map(z=>'<td style="'+PZ+'text-align:center;">'+(rptCellTxt(r,valKey,z) || '<span style="color:#d1d5db;">—</span>')+'</td>').join('')
       +'<td style="padding:6px 10px;text-align:right;font-weight:700;color:'+accent+';">'+rptTotTxt(r,valKey,totKey)+'</td></tr>').join('')
     +'</tbody><tfoot><tr style="background:#f8fafc;font-weight:700;border-top:2px solid #e5e7eb;">'
     +'<td colspan="'+(3+(anyWh?1:0)+szs.length)+'" style="padding:8px 10px;text-align:right;">Total:</td>'
     +'<td style="padding:8px 10px;text-align:right;color:'+accent+';white-space:nowrap;">'+gt.toLocaleString()+' pcs</td></tr></tfoot></table>';
+  };
   return '<div style="font-family:\'Pretendard Variable\',Pretendard,Arial,sans-serif;max-width:760px;margin:0 auto;color:#111;font-size:13px;">'
     +'<table width="100%" cellpadding="0" cellspacing="0" style="background:#0f2a4a;">'
     +'<tr><td style="padding:12px 20px;"><span style="color:#fff;font-size:22px;font-weight:900;letter-spacing:2px;font-family:Helvetica,Arial,sans-serif;">PACIFIC SPORTS</span></td>'
