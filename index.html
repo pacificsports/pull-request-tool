@@ -192,7 +192,7 @@ body.po-dragging{user-select:none;}
   </span>
   <select id="lang-sel" onchange="setLang(this.value)" style="font-size:11px;padding:3px 6px;border-radius:5px;border:none;background:#1d3f66;color:#fff;"><option value="ko">한국어</option><option value="en">English</option><option value="es">Español</option></select>
   <button id="wide-btn" class="btn btn-sm" onclick="toggleWide()" title="화면 넓게 / 좁게 — 기본은 넓게 (이 브라우저에만 저장돼)" style="padding:2px 8px;font-size:10px;background:#1d3f66;color:#cfe0f2;border-color:#2b5384;">↔ Wide</button>
-  <span id="app-ver" style="font-size:10px;color:#9fb8d4;">v1027</span>
+  <span id="app-ver" style="font-size:10px;color:#9fb8d4;">v1028</span>
 </div>
 <script>
 // ↔ 넓게 보기 — 브라우저마다 따로 저장 (v793)
@@ -28543,13 +28543,44 @@ function hiPalletRecompute(p){
   p.colorLabel = cols.length===1 ? (cols[0]||'') : (cols.length+' colors');
   p.styleLabel = stys.length===1 ? ('#'+(stys[0]||'')) : (stys.length+' styles');
   p.total=p.items.reduce((a,x)=>a+(Number(x.boxes)||0),0);
-  const cap=hiPalletCap(p.stream==='adult-big');   // 저장된 옛 cap 은 무시 — 늘 현재 설정값 (v937)
-  p.cap=cap; p.cat=HI_STREAM_CAT[p.stream]||'XS–L'; p.age=p.stream==='kids'?'Kids':'Adult';
+  /* 저장된 옛 cap 은 무시 — 늘 현재 설정값 (v937). 스타일 예외가 있으면 그 값 (2026-09-08) */
+  const _st1 = (stys.length===1) ? stys[0] : '';
+  const cap=hiPalletCapFor(_st1, p.stream==='adult-big');
+  p.cap=cap; p.cat=hiPalletCatFor(_st1, p.stream); p.age=p.stream==='kids'?'Kids':'Adult';
   p.fillPct=Math.min(100, Math.round(p.total/cap*100));
   p.full=(cap-p.total)<=0;
   p._ck=cols[0]||''; p._sk=stys[0]||'';
 }
 function hiPalletCap(big){ return big?HI_BIG_CAP:HI_SM_CAP; }
+/* ═══ 스타일별 예외 (2026-09-08, 하윤) ═══
+   기본은 위의 HI_SM_CAP(42) / HI_BIG_CAP(30) 이고, 여기 적은 스타일만 따로 센다.
+     1362 : XS~XL 36장 · 2XL~5XL 30장   ← XL 이 '작은박스' 쪽으로 넘어온다 (bigFrom:'2XL')
+     1348 : 전 사이즈 30장
+   새 규칙은 이 표에 한 줄 추가하면 된다. */
+const HI_STYLE_CAP = {
+  '1362': { sm:36, big:30, bigFrom:'2XL', catSm:'Adult · XS–XL', catBig:'Adult · 2XL–5XL' },
+  '1348': { sm:30, big:30 }
+};
+function hiStyleRule(st){ return HI_STYLE_CAP[String(st||'').trim()] || null; }
+/* 이 스타일에서 이 사이즈가 '큰박스' 인가 — 규칙에 bigFrom 이 있으면 그 경계를 쓴다 */
+function hiItemBigFor(st, sz){
+  const r=hiStyleRule(st);
+  if(r && r.bigFrom) return hiSizeRank(sz) >= hiSizeRank(r.bigFrom);
+  return hiSizeBig(sz);
+}
+function hiPalletCapFor(st, big){
+  const r=hiStyleRule(st);
+  if(r) return big ? (Number(r.big)||HI_BIG_CAP) : (Number(r.sm)||HI_SM_CAP);
+  return hiPalletCap(big);
+}
+function hiPalletCatFor(st, stream){
+  const r=hiStyleRule(st);
+  if(r && stream!=='kids'){
+    if(stream==='adult-big' && r.catBig) return r.catBig;
+    if(stream==='adult-small' && r.catSm) return r.catSm;
+  }
+  return HI_STREAM_CAT[stream]||'XS–L';
+}
 // 순수 계산 — lines:[{st,co,sz,nb}] (co는 base color) → 배치 추천 결과
 function hiSuggestCompute(lines){
   const own = bxStore.filter(b=>bxWh(b)==='SC' && String(b.loc||'').toUpperCase() && String(b.loc||'').toUpperCase()!=='TRANSFER' && !trIs3PLoc(b.loc,'SC'));
@@ -28901,7 +28932,8 @@ function hiRowDel(pi, ii){
 /* 타이핑 중에는 숫자만 갱신한다 — 다시 그리면 커서가 튄다 */
 function hiRowsPaint(skipId){
   (window._hiPlanPallets||[]).forEach((p,i)=>{
-    const cap = p.cap || hiPalletCap(p.stream==='adult-big');
+    const _st1 = (p.items&&p.items.length&&[...new Set(p.items.map(x=>String(x.st)))].length===1) ? String(p.items[0].st) : '';
+    const cap = hiPalletCapFor(_st1, p.stream==='adult-big');
     p.total = (p.items||[]).reduce((a,x)=>a+(Number(x.boxes)||0),0);
     p.cap = cap;
     const over = p.total>cap, full = (cap-p.total)<=0;
@@ -28956,6 +28988,11 @@ function hiQrZplFor(items){
   return {zpl:parts.join('\n'), n};
 }
 async function hiQrPrint(items, label){
+  /* 🖨 이 QR 은 Full Box QR 과 같은 2×2 스티커다 — 프린터도 같은 것을 쓴다 (2026-09-08).
+     예전엔 _blMode 를 안 정해서 직전에 쓰던 모드(대개 'box')를 그대로 물려받았고,
+     그래서 팔렛 QR 이 박스라벨 프린터(192.168.1.62)로 나갔다.
+     'full' 로 고정하면 bl_printer_full 에 저장된 프린터(192.168.1.66)로 간다. */
+  window._blMode='full';
   const list=(items||[]).filter(x=>(Number(x.boxes)||0)>0);
   const tot=list.reduce((a,x)=>a+(Number(x.boxes)||0),0);
   if(!tot){ showToast('⚠ Nothing to print'); return; }
@@ -29053,11 +29090,11 @@ function hiBuildPalletPlan(lines){
   const binNow={};
   (typeof bxStore!=='undefined'?bxStore:[]).forEach(b=>{ if(bxWh(b)!=='SC') return; const L=String(b.loc||'').toUpperCase(); if(!L||L==='TRANSFER'||trIs3PLoc(b.loc,'SC')) return; binNow[L]=(binNow[L]||0)+1; });
   window._hiBinNow=binNow;   // 드래그 후 재계산에서 재사용
-  const rawItems=res.sugg.filter(s=>s.nb>0).map(s=>{ const it={st:s.st, co:s.co, sz:s.sz, boxes:s.nb, big:hiSizeBig(s.sz), loc:s.loc?String(s.loc).toUpperCase():''}; it.kids=hiItemKids(it); return it; });
+  const rawItems=res.sugg.filter(s=>s.nb>0).map(s=>{ const it={st:s.st, co:s.co, sz:s.sz, boxes:s.nb, big:hiItemBigFor(s.st, s.sz), loc:s.loc?String(s.loc).toUpperCase():''}; it.kids=hiItemKids(it); return it; });
   const sortItems=arr=>arr.slice().sort(hiItemSort);
   const addTo=(p,it,take)=>{ const ex=p.items.find(x=>x.st===it.st && x.co===it.co && x.sz===it.sz); if(ex) ex.boxes+=take; else p.items.push({st:it.st, co:it.co, sz:it.sz, boxes:take, big:it.big, kids:it.kids, loc:it.loc}); };
   const out=[];
-  const finalize=(p, S, sOrder)=>{
+  const finalize=(p, S, sOrder, capOv)=>{
     if(!p.items.length) return;
     const locs=[...new Set(p.items.map(x=>x.loc).filter(Boolean))].sort((a,b)=>a.localeCompare(b,undefined,{numeric:true}));
     p.bins=locs.map(L=>({loc:L, now:binNow[L]||0}));
@@ -29067,9 +29104,11 @@ function hiBuildPalletPlan(lines){
     p.colorLabel = cols.length===1 ? cols[0] : (cols.length+' colors');
     p.styleLabel = stys.length===1 ? ('#'+stys[0]) : (stys.length+' styles');
     p.total=p.items.reduce((a,x)=>a+x.boxes,0);
-    p.stream=S.key; p.streamOrder=sOrder; p.cat=S.cat; p.cap=S.cap; p.age=S.age;
-    p.fillPct=Math.min(100, Math.round(p.total/S.cap*100));
-    p.full = (S.cap - p.total) <= 0;
+    const _cap = Number(capOv)||S.cap;
+    p.stream=S.key; p.streamOrder=sOrder; p.age=S.age; p.cap=_cap;
+    p.cat = (stys.length===1) ? hiPalletCatFor(stys[0], S.key) : S.cat;
+    p.fillPct=Math.min(100, Math.round(p.total/_cap*100));
+    p.full = (_cap - p.total) <= 0;
     p._ck=(cols[0]||''); p._sk=(stys[0]||'');
     out.push(p);
   };
@@ -29093,19 +29132,20 @@ function hiBuildPalletPlan(lines){
     const byStyle={};
     streamItems.forEach(it=>{ const st=String(it.st); (byStyle[st]=byStyle[st]||[]).push(it); });
     Object.keys(byStyle).sort((a,b)=>a.localeCompare(b,undefined,{numeric:true})).forEach(st=>{
+      const SCAP = hiPalletCapFor(st, S.key==='adult-big');   // 이 스타일의 팔렛 한 장 크기
       const byColor={};
       byStyle[st].forEach(it=>{ const c=bxBaseColor(it.co); (byColor[c]=byColor[c]||[]).push(it); });
       const remChunks=[];   // 이 스타일 안에서 한 팔렛 못 채우는 칼라 자투리
       Object.keys(byColor).sort((a,b)=>a.localeCompare(b)).forEach(c=>{
         let its=sortItems(byColor[c]);
         let total=its.reduce((a,x)=>a+x.boxes,0);
-        while(total>=S.cap){ const {taken,rest}=carve(its, S.cap); const p={items:[]}; taken.forEach(t=>addTo(p,t,t.boxes)); finalize(p, S, sOrder); its=rest; total-=S.cap; }
+        while(total>=SCAP){ const {taken,rest}=carve(its, SCAP); const p={items:[]}; taken.forEach(t=>addTo(p,t,t.boxes)); finalize(p, S, sOrder, SCAP); its=rest; total-=SCAP; }
         if(total>0) remChunks.push({co:c, st, items:its, total});
       });
       // 이 스타일의 칼라 자투리들 합치기 (같은 스타일끼리만), 여러 팔렛이면 균등 분배
       const poolTotal=remChunks.reduce((a,x)=>a+x.total,0);
       if(poolTotal>0){
-        const k=Math.ceil(poolTotal/S.cap), base=Math.floor(poolTotal/k), extra=poolTotal%k, sizes=[];
+        const k=Math.ceil(poolTotal/SCAP), base=Math.floor(poolTotal/k), extra=poolTotal%k, sizes=[];
         for(let i=0;i<k;i++) sizes.push(base+(i<extra?1:0));
         remChunks.sort((a,b)=> String(a.co).localeCompare(String(b.co)));
         let pi=0, need=sizes[0], pal={items:[]}; const locals=[pal];
@@ -29113,7 +29153,7 @@ function hiBuildPalletPlan(lines){
           if(need<=0){ pi++; pal={items:[]}; locals.push(pal); need=sizes[pi]; }
           const take=Math.min(need, remain); addTo(pal,it,take); need-=take; remain-=take;
         }});});
-        locals.forEach(p=>finalize(p, S, sOrder));
+        locals.forEach(p=>finalize(p, S, sOrder, SCAP));
       }
     });
   });
