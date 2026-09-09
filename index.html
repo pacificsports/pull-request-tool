@@ -246,6 +246,7 @@ try{ applyWide(localStorage.getItem('psx_wide') !== '0'); }catch(e){ applyWide(t
   <button id="nav-orders" class="nav-btn nav-active" onclick="showView('orders')" data-i18n="nav_orders">📝 Orders</button>
   <button id="nav-box" class="nav-btn" onclick="showView('box')">📦 Full Box</button>
   <button id="nav-pc" class="nav-btn" onclick="showView('pc')">🧺 PC Room</button>
+  <button id="nav-web" class="nav-btn" onclick="showView('web')">🌐 Website</button>
   <button id="nav-dash" class="nav-btn" onclick="showView('dash')">📊 Dashboard</button>
   <button id="nav-cust" class="nav-btn" onclick="showView('cust')">👥 Customers</button>
   <button id="nav-tx" class="nav-btn" onclick="showView('tx')">💳 Transactions</button>
@@ -439,6 +440,9 @@ try{ applyWide(localStorage.getItem('psx_wide') !== '0'); }catch(e){ applyWide(t
   </div>
 </div>
 <div id="tx-view" style="display:none;"></div>
+<div id="web-view" style="display:none;">
+  <div id="web-body"><div class="muted" style="padding:16px;">Loading...</div></div>
+</div>
 <div id="pc-view" style="display:none;">
   <div class="kpi-slot"></div>
   <div class="wq-slot"></div>
@@ -507,7 +511,6 @@ try{ applyWide(localStorage.getItem('psx_wide') !== '0'); }catch(e){ applyWide(t
       <button class="btn btn-sm" onclick="bxAuditOpen()" style="background:#0f2a4a;color:#fff;border-color:#0f2a4a;" title="Boxes/qty by location per Style+Color — print or Excel for a physical stock count">🔍 Stock Count</button>
       <button class="btn btn-sm" onclick="bxAgingOpen()" style="background:#7c2d12;color:#fff;border-color:#7c2d12;" title="Inventory aging — how long each box has sat in stock (by receive date), oldest first">⏳ Aging</button>
       <button class="btn btn-sm" id="bx-costbtn" onclick="costOpen()" style="display:none;background:#065f46;color:#fff;border-color:#065f46;" title="Cost per style/size + margin — owner & accounting only. Fill gaps, edit, and see inventory value">💲 Cost</button>
-      <button class="btn btn-sm" onclick="wpOpen()" style="background:#1d4ed8;color:#fff;border-color:#1d4ed8;" title="Website prices — base price ladder and sales. This is what the web shop shows customers">🏷 Web Price</button>
       <button class="btn btn-sm" onclick="pchkOpen()" style="background:#0891b2;color:#fff;border-color:#0891b2;" title="Physical check with photos — take pallet photos, AI reads labels, compares to system">📸 Photo Check</button>
       <button class="btn btn-sm" onclick="pchkReviewOpen()" style="background:#155e75;color:#fff;border-color:#155e75;" title="Review physical checks submitted by staff (staff link: psflowx.com/#check)">🔍 Check reviews<span id="pchk-review-badge" style="font-weight:800;"></span></button>
       <button class="btn btn-sm" onclick="pchkReqMgrOpen()" style="background:#7c3aed;color:#fff;border-color:#7c3aed;" title="Box pull requests from staff (staff link: psflowx.com/pic → Request a Box) — see locations, move a box to PC Room, print">📦 Box requests<span id="boxreq-badge" style="font-weight:800;"></span></button>
@@ -13238,6 +13241,98 @@ function spCombine(A){
             + (unread ? ' · ' + unread + ' unreadable' : ''));
 }
 
+/* ═══════════ 🌐 Website 탭 (v1041) ═══════════
+   웹샵과 관련된 것을 한 자리에 모은다. 예전엔 웹 주문은 대시보드 타일,
+   가입 신청은 그 옆, 가격은 Full Box 툴바에 흩어져 있었다.
+
+   2026-09-09 결정: 관리는 전부 psflowx, 웹사이트는 오더 받는 창구.
+   그래서 웹 관련 일감(주문·가입·가격)은 여기, 화면 꾸미기(사진·설명)만
+   웹사이트에서 — 직원이 실제 화면을 보면서 고치는 게 편하기 때문. */
+const WEB_SHOP = 'https://pacific-sports-shop.pages.dev';
+let _webStat = null;
+
+async function webViewLoad(){
+  const j = async p => { try{ const r = await sbFetch('/rest/v1/'+p); return r.ok ? await r.json() : []; }catch(e){ return []; } };
+  const since = new Date(Date.now() - 30*86400000).toISOString();
+  const [styles, prices, imgs, orders, apps, logins] = await Promise.all([
+    j('styles?select=style_number'),
+    j('style_prices?select=style_number,base_price'),
+    j('product_images?select=style_number'),
+    j('web_orders?select=id,total_amount,status,created_at&created_at=gte.'+encodeURIComponent(since)),
+    j('customer_applications?select=id,status'),
+    j('user_roles?select=id,role')
+  ]);
+  const priced = new Set(prices.filter(p=>p.base_price != null).map(p=>String(p.style_number)));
+  const withImg = new Set(imgs.map(i=>String(i.style_number)));
+  const all = styles.map(s=>String(s.style_number));
+  _webStat = {
+    styles:   all.length,
+    noPrice:  all.filter(s=>!priced.has(s)).length,
+    noPhoto:  all.filter(s=>!withImg.has(s)).length,
+    ord30:    orders.length,
+    amt30:    orders.reduce((a,o)=>a + (Number(o.total_amount)||0), 0),
+    appPend:  apps.filter(a=>!a.status || a.status === 'pending').length,
+    appOk:    apps.filter(a=>a.status === 'approved').length,
+    staff:    logins.length
+  };
+  renderWeb();
+}
+
+function renderWeb(){
+  const el = document.getElementById('web-body'); if(!el) return;
+  if(!_webStat){ el.innerHTML = '<div class="muted" style="padding:16px;">Loading…</div>'; webViewLoad(); return; }
+  const s = _webStat;
+  const CELL = 'border-radius:10px;padding:13px 14px;display:flex;flex-direction:column;justify-content:center;min-height:78px;';
+  const act = (icon, label, sub, color, bg, click, badge) =>
+    '<div onclick="' + click + '" style="' + CELL + 'background:' + bg + ';border:1px solid ' + color + '44;border-left:5px solid ' + color + ';cursor:pointer;"'
+    + ' onmouseover="this.style.filter=\'brightness(.97)\'" onmouseout="this.style.filter=\'\'">'
+    + '<div style="display:flex;align-items:center;gap:8px;">'
+    +   '<span style="font-size:19px;line-height:1;">' + icon + '</span>'
+    +   '<span style="font-size:13px;font-weight:800;color:' + color + ';">' + label + '</span>'
+    +   (badge ? '<span style="margin-left:auto;font-family:Consolas,monospace;font-size:16px;font-weight:900;color:' + color + ';">' + badge + '</span>' : '')
+    + '</div>'
+    + '<div style="font-size:10.5px;color:#64748b;margin-top:5px;line-height:1.35;">' + sub + '</div>'
+    + '</div>';
+  const stat = (label, val, sub, color) =>
+    '<div style="' + CELL + 'background:#fff;border:1px solid var(--border);">'
+    + '<div style="font-size:9.5px;font-weight:800;letter-spacing:.4px;color:#94a3b8;text-transform:uppercase;">' + label + '</div>'
+    + '<div style="font-family:Consolas,monospace;font-size:21px;font-weight:900;color:' + color + ';line-height:1.15;margin-top:3px;">' + val + '</div>'
+    + (sub ? '<div style="font-size:10px;color:#94a3b8;margin-top:2px;">' + sub + '</div>' : '')
+    + '</div>';
+  const money = n => '$' + Number(n||0).toLocaleString(undefined,{maximumFractionDigits:0});
+
+  el.innerHTML =
+      '<div class="card" style="padding:14px 16px;">'
+    +   '<div style="font-size:12px;font-weight:800;color:#0f2a4a;margin-bottom:9px;">여기서 하는 일 — 웹 주문 · 가입 승인 · 웹 가격</div>'
+    +   '<div style="display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:9px;">'
+    +     act('🌐','Web Orders','결제까지 끝난 웹 주문 — 불러와서 평소처럼 진행','#0d9488','#f0fdfa','webOrdersOpen()', (typeof woCount==='function'?woCount():0))
+    +     act('📝','Web Signups','계정 신청 — 서류 확인하고 거래처에 연결해서 승인','#7c3aed','#faf5ff','webAppsOpen()', s.appPend)
+    +     act('🏷','Web Price','손님에게 보이는 기본가와 세일','#1d4ed8','#eff6ff','wpOpen()','')
+    +   '</div>'
+    + '</div>'
+    + '<div class="card" style="padding:14px 16px;">'
+    +   '<div style="font-size:12px;font-weight:800;color:#0f2a4a;margin-bottom:9px;">웹사이트에서 하는 일 — 화면 꾸미기 (새 창으로 열림)</div>'
+    +   '<div style="display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:9px;">'
+    +     act('🖼','사진 관리','스타일별 색 사진 올리기 — 끌어다 놓으면 저장','#0e7490','#ecfeff',"window.open('"+WEB_SHOP+"/admin-photos','_blank')",'')
+    +     act('🎨','스타일 내용 고치기','이름 · 설명 · 스펙 칩 — 상품 화면에서 그 자리에서','#b45309','#fffbeb',"window.open('"+WEB_SHOP+"/epacific-product','_blank')",'')
+    +     act('🛍','웹사이트 열기','손님이 보는 그대로','#334155','#f8fafc',"window.open('"+WEB_SHOP+"/epacific-timeless','_blank')",'')
+    +   '</div>'
+    + '</div>'
+    + '<div class="card" style="padding:14px 16px;">'
+    +   '<div style="font-size:12px;font-weight:800;color:#0f2a4a;margin-bottom:9px;">웹샵 상태 <span style="font-weight:600;color:#94a3b8;">· 최근 30일</span>'
+    +     '<button class="btn btn-sm" onclick="_webStat=null;renderWeb();" style="float:right;">↻ 새로고침</button></div>'
+    +   '<div style="display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:9px;">'
+    +     stat('웹 주문 (30일)', s.ord30.toLocaleString(), money(s.amt30), '#0d9488')
+    +     stat('승인된 웹 거래처', s.appOk.toLocaleString(), (s.appPend ? (s.appPend + '건 대기 중') : '대기 없음'), '#7c3aed')
+    +     stat('가격 없는 스타일', s.noPrice.toLocaleString(), '전체 ' + s.styles + ' 중', s.noPrice ? '#b45309' : '#15803d')
+    +     stat('사진 없는 스타일', s.noPhoto.toLocaleString(), '전체 ' + s.styles + ' 중', s.noPhoto ? '#b45309' : '#15803d')
+    +   '</div>'
+    +   '<div style="font-size:10.5px;color:#94a3b8;margin-top:10px;line-height:1.5;">'
+    +     '가격이 없으면 그 스타일은 웹에서 값이 안 보이고, 사진이 없으면 회색 자리표시로 나온다. 오픈 전에 이 두 숫자를 0 으로 만드는 게 목표.'
+    +   '</div>'
+    + '</div>';
+}
+
 /* ═══════════ 🌐 Web Orders (v798) ═══════════
    웹샵(pacific-sports-shop)에서 손님이 결제하면 web_orders 에 쌓인다.
    지금까지 psflowx 는 그 테이블을 아예 몰랐다 → 주문이 들어와도 아무 데도 안 떴다.
@@ -17616,6 +17711,7 @@ function showView(v){
   if(tv) tv.style.display = v==='tx' ? 'block' : 'none';
   if(bv) bv.style.display = v==='box' ? 'block' : 'none';
   if(av) av.style.display = v==='act' ? 'block' : 'none';
+  const wv = $('web-view'); if(wv) wv.style.display = v==='web' ? 'block' : 'none';
   $('nav-orders').classList.toggle('nav-active', v==='orders');
   $('nav-dash').classList.toggle('nav-active', v==='dash');
   const nc = $('nav-cust'); if(nc) nc.classList.toggle('nav-active', v==='cust');
@@ -17623,9 +17719,11 @@ function showView(v){
   const nt = $('nav-tx'); if(nt) nt.classList.toggle('nav-active', v==='tx');
   const nb = $('nav-box'); if(nb) nb.classList.toggle('nav-active', v==='box');
   const na = $('nav-act'); if(na) na.classList.toggle('nav-active', v==='act');
+  const nw = $('nav-web'); if(nw) nw.classList.toggle('nav-active', v==='web');
   // 📦 Stock peek 버튼은 Orders 탭에서만 (Full Box는 그 자체가 재고화면) · 탭 벗어나면 패널 닫기
   try{ const sb=document.getElementById('stkpk-btn'); if(sb) sb.style.display = (v==='orders') ? 'block' : 'none'; if(v!=='orders'){ const sp=document.getElementById('stock-peek'); if(sp){ sp.remove(); document.body.classList.remove('stkpk-open'); } } }catch(e){}
   if(v==='dash') renderDash();
+  if(v==='web'){ if(typeof webOrdersLoad==='function') webOrdersLoad(true); if(typeof webAppsLoad==='function') webAppsLoad(true); renderWeb(); }
   if(v==='cust') renderCustomers();
   if(v==='pc'){ if(pcLoaded){ if(window._pcDirty !== false) renderPcRoom(); } else loadPcRoom(); if(typeof wqLoad==='function') wqLoad(); if(typeof renderKpi==='function') renderKpi(); }
   if(v==='orders'){ if(typeof wqLoad==='function') wqLoad(); }
