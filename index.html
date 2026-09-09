@@ -2940,6 +2940,89 @@ function revWork(rec, wh, rv){
   });
   return out;
 }
+/* ═══════════ ↳ REV 줄 — 고친 것은 원래 줄을 건드리지 않고 자기 줄로 (v1054) ═══════════
+   예전에는 오더를 고치면 SC/CA 줄이 **그 자리에서** 바뀌었다. 그래서
+     · 창고에 이미 나가 있는 종이가 조용히 낡았다 (아무도 모른다)
+     · "REV 1 only" 버튼 하나가 원래 줄에 얹혀서, 그게 끝난 일인지 알 수가 없었다
+     · 되돌릴 물건은 기록만 남고 아무한테도 안 시켜졌다
+   종이는 이미 나갔고 그건 되돌릴 수 없다. 그러면 **원래 줄은 얼려두고 바뀐 것만
+   자기 줄로 붙이는** 게 현실과 맞다. 몇 번을 고쳐도 R1 · R2 로 쌓일 뿐 안 꼬인다.
+
+   일감을 계산하는 것(revWork)과 종이(buildRevDocHtml)는 v966 것을 그대로 쓴다 —
+   여기서 새로 하는 일은 그걸 **자기 진행상태를 가진 줄**로 만드는 것뿐이다.
+   프린트 기록은 `_printed['SC#R1']` 로 창고 줄과 똑같은 자리에 들어간다. */
+function revRowKey(wh, n){ return String(wh) + '#R' + String(n); }
+
+/* 이 리비전이 이 창고에서 몇 장 늘고 몇 장 줄었나 (줄 제목에 쓴다) */
+function revRowDelta(rec, wh, rv){
+  let plus = 0, minus = 0; const items = [];
+  (((rv && rv.keys) || [])).forEach(k=>{
+    const sn = ((rv.lines) || {})[k]; if(!sn) return;
+    let f = 0, t = 0;
+    if(sn.byWh){ const bw = sn.byWh[wh]; if(!bw) return; f = Number(bw.from)||0; t = Number(bw.to)||0; }
+    else if(sn.qtyFrom != null){ f = (sn.whFrom===wh) ? (Number(sn.qtyFrom)||0) : 0;
+                                 t = (sn.whTo===wh)   ? (Number(sn.qtyTo)||0)   : 0; }
+    const d = t - f; if(!d) return;
+    if(d > 0) plus += d; else minus += (-d);
+    items.push({ k, d, style:sn.style, color:sn.color, size:sn.size });
+  });
+  return { plus, minus, items };
+}
+
+/* 이 창고에 실제 일감이 있는 리비전만 — 종이가 안 나오면 줄도 안 만든다 */
+function revRowsFor(rec, wh){
+  const out = [];
+  (((rec && rec.meta && rec.meta._revs) || [])).forEach(rv=>{
+    let has = false;
+    try{ has = !!buildRevDocHtml(rec, wh, rv.n); }catch(e){ has = false; }
+    if(has) out.push(rv);
+  });
+  return out;
+}
+
+async function revPrintPR(base, wh, n){
+  const rec = savedCache.find(s=>s.base===base); if(!rec) return;
+  if(typeof holdBlocked === 'function' && holdBlocked(rec)){ showToast('\u{1F512} Credit Hold — approve before proceeding'); return; }
+  printRevPR(base, wh, n);
+  try{ await markDocPrinted(base, revRowKey(wh, n), 'pr'); }catch(e){}
+  try{ logHist(base, 'REV ' + n + ' pull request printed — ' + wh); }catch(e){}
+}
+function revLabelClick(base, wh, n, mode){
+  const rec = savedCache.find(s=>s.base===base); if(!rec) return;
+  openBoxLabelForRecWh(base, wh, mode || undefined);
+  if(!mode){ try{ markDocPrinted(base, revRowKey(wh, n), 'label'); }catch(e){} }
+}
+
+function revRowsHtml(rec, wh){
+  const rows = revRowsFor(rec, wh);
+  if(!rows.length) return '';
+  const pby = v => (v && v.by)
+    ? `<span style="font-size:9px;opacity:.9;font-weight:700;" title="${esc(String(v.by))} · ${esc(String(v.at||'').slice(0,16).replace('T',' '))}"> ✓${esc(String(v.by).split('@')[0])} ${String(v.at||'').slice(5,10)}</span>`
+    : '';
+  return rows.map(rv=>{
+    const key = revRowKey(wh, rv.n);
+    const mp  = (rec.meta && rec.meta._printed && rec.meta._printed[key]) || {};
+    const d   = revRowDelta(rec, wh, rv);
+    const chips = (d.plus ? `<span style="background:#1d4ed8;color:#fff;font-weight:900;border-radius:4px;padding:1px 8px;font-size:11px;white-space:nowrap;">➕ ${d.plus.toLocaleString()} pcs</span>` : '')
+                + (d.minus ? `<span style="background:#b45309;color:#fff;font-weight:900;border-radius:4px;padding:1px 8px;font-size:11px;white-space:nowrap;">↩ put back ${d.minus.toLocaleString()} pcs</span>` : '');
+    const what = d.items.slice(0,3).map(x=>esc([x.style, x.color, x.size].filter(Boolean).join(' '))).join(' · ')
+               + (d.items.length > 3 ? (' <span style="color:#94a3b8;">+' + (d.items.length-3) + ' more</span>') : '');
+    const prC = mp.pr ? '#16a34a' : '#b45309';
+    const lbC = mp.label ? '#16a34a' : '#7c3aed';
+    const when = String(rv.at||'').slice(5,10);
+    const who  = String(rv.by||'').split('@')[0];
+    return `<div style="display:flex;align-items:center;gap:6px;flex-wrap:wrap;margin-top:4px;margin-left:26px;padding:5px 8px;background:#fffbeb;border:1px solid #fcd34d;border-left:4px solid #b45309;border-radius:6px;">
+      <span style="font-weight:900;color:#b45309;font-size:11.5px;white-space:nowrap;" title="Changed ${esc(when)} by ${esc(who)} — this is its own piece of work. The original ${wh} row above is untouched.">↳ REV ${rv.n}</span>
+      ${chips}
+      <span style="font-size:11px;color:#475569;font-weight:700;">${what}</span>
+      <button class="btn btn-sm" style="background:${prC};color:#fff;border-color:${prC};font-weight:800;" onclick="revPrintPR('${esc(rec.base)}','${wh}',${rv.n})" oncontextmenu="return docBtnMenu(event,'${esc(rec.base)}','${esc(key)}','pr')" title="Only what changed in REV ${rv.n} — pull AND put-back on one sheet. Give the warehouse this, not the whole order. Right-click: ${mp.pr?'clear':'mark'} done.">\u{1F5A8} Pull Request${pby(mp.pr)}</button>
+      <button class="btn btn-sm" style="background:${lbC};color:#fff;border-color:${lbC};" onclick="revLabelClick('${esc(rec.base)}','${wh}',${rv.n})" oncontextmenu="return docBtnMenu(event,'${esc(rec.base)}','${esc(key)}','label')" title="Right-click: ${mp.label?'clear':'mark'} done">\u{1F3F7} Box Label${pby(mp.label)}</button>
+      <button class="btn btn-sm" style="background:#0f766e;color:#fff;border-color:#0f766e;" onclick="revLabelClick('${esc(rec.base)}','${wh}',${rv.n},'full')" title="Small 2x1 label for individual full boxes">\u{1F3F7} Full Box</button>
+      <span style="margin-left:auto;font-size:10.5px;color:#92400e;font-weight:800;white-space:nowrap;">${mp.pr ? '✓ warehouse has this sheet' : '⚠ not given to the warehouse yet'}</span>
+    </div>`;
+  }).join('');
+}
+
 function revDirChip(n){
   return n > 0
     ? `<span style="display:inline-block;min-width:74px;background:#1d4ed8;color:#fff;font-weight:900;border-radius:4px;padding:1px 7px;font-size:11px;">PULL +${n}</span>`
@@ -3600,6 +3683,17 @@ async function _saveCurrentInner(){
     if(out + openOrd + orderAmt > lim) window.__holdFlag = { at: new Date().toISOString(), outstanding: Math.round(out*100)/100, openOrders: Math.round(openOrd*100)/100, orderAmt: Math.round(orderAmt*100)/100, limit: lim };
   })();
   const rec = { base, meta:getMeta(), lines:poLines, whs:activeWhs(), savedAt:new Date().toISOString(), poPdf: window._poPdfB64 || null };
+  /* ⚠⚠ v1054 — 저장할 때 meta 를 **통째로 갈아치우면 안 된다.**
+     `getMeta()` 는 화면 입력칸 22개만 돌려준다 (거래처·PO·주소·날짜·urgent·cc …).
+     그래서 화면에 칸이 없는 것 — 프린트 기록, 이송 연결, UPS 트래킹, 출고 승인 — 은
+     Modified 를 누를 때마다 통째로 사라졌다.
+     실제로 2026-09-09 PO 91379 에서 `_scToCA`(TRANSIT 중인 SC→CA 이송)와
+     `_shipFromCA` 가 날아가서, 카드에서 보라색 SC→CA IN TRANSIT 딱지가 사라졌다.
+     여태까지는 없어지는 걸 발견할 때마다 한 줄씩 주워담았고(두더지잡기),
+     그래서 18개 중 5개만 살아남아 있었다.
+     → **방향을 뒤집는다.** 기존 meta 를 깔고, 화면이 실제로 가지고 있는 칸만 덮어쓴다.
+     앞으로 플래그를 새로 만들어도 저절로 살아남는다. */
+  if(existing && existing.meta) rec.meta = { ...existing.meta, ...rec.meta };
   // 🔁 record-identity meta the form doesn't carry — must survive save & modify (v476)
   if(window._formReplaceOf && !rec.meta._replaceOf) rec.meta._replaceOf = window._formReplaceOf;
   if(existing && existing.meta){
@@ -34714,12 +34808,7 @@ function renderSaved(){
         <span class="chip chip-${w}" style="min-width:34px;text-align:center;">${w}</span>
         ${(w!=='BO' && w!=='NA' && !consolSC) ? tdBtn(s.base, w) + pcrChip(s.base, w) : ''}
         <button class="btn btn-sm" style="background:${c};color:#fff;border-color:${c};" onclick="docBtnClick('${esc(s.base)}','${w}','pr')" oncontextmenu="return docBtnMenu(event,'${esc(s.base)}','${w}','pr')" title="The WHOLE order for ${w}. Right-click: ${mp.pr?'clear':'mark'} done (green)">🖨 Pull Request${pby(mp.pr)}</button>
-        ${(()=>{ /* 📝 고친 줄만 나오는 종이 — 리비전이 있고 이 창고에 실제 일감이 있을 때만 (v966) */
-          const rv = revOf(s, null); if(!rv) return '';
-          let has=false; try{ has = !!buildRevDocHtml(s, w, rv.n); }catch(e){ has=false; }
-          if(!has) return '';
-          return `<button class="btn btn-sm" style="background:#b45309;color:#fff;border-color:#b45309;font-weight:800;" onclick="printRevPR('${esc(s.base)}','${w}',${rv.n})" title="Only the lines changed in revision ${rv.n} — pull AND put-back together, split by PC Room / Full Box. Give the warehouse this one, not the whole order.">🖨 REV ${rv.n} only</button>`;
-        })()}
+        ${'' /* v1054 — 이 버튼은 아래 ↳ REV 줄로 옮겼다. 원래 줄에 얹혀 있으면 끝난 일인지 알 수가 없었다. */}
         ${w==='BO' ? (()=>{ const days = Math.floor((Date.now() - new Date(s.savedAt||s.meta.date||Date.now()).getTime())/86400000); const c2 = days>=14?'#dc2626':(days>=7?'#ea580c':'#6b7280'); return `<span style="padding:2px 8px;border-radius:20px;font-size:10px;font-weight:800;background:#fff;color:${c2};border:1.5px solid ${c2};white-space:nowrap;${days>=14?'animation:overdue-pulse 1s ease-in-out infinite;':''}">⏳ Day ${days}</span>`; })() : ''}
         ${(w==='BO'||w==='NA') ? `<button class="btn btn-sm" style="background:#f5f3ff;color:#6d28d9;border-color:#c4b5fd;font-weight:700;" onclick="processFromWh('${esc(s.base)}','${w}','SC')" title="Stock arrived — split into a separate order (-${w==='BO'?'B':'N'}) and ship from SC">⚙ Process from SC</button><button class="btn btn-sm" style="background:#fff7ed;color:#c2410c;border-color:#fed7aa;font-weight:700;" onclick="processFromWh('${esc(s.base)}','${w}','CA')" title="Stock arrived — split into a separate order (-${w==='BO'?'B':'N'}) and ship from CA">⚙ Process from CA</button><button class="btn btn-sm" style="background:#fee2e2;color:#b91c1c;border-color:#fca5a5;font-weight:700;" onclick="boAltFromList('${esc(s.base)}')" title="Replace a back-ordered item with an in-stock alternative (style / color / size / qty), then finish the order">⇄ Alternate</button>` : ''}
         ${w!=='BO' && w!=='NA' ? `<button class="btn btn-sm" style="background:${(mp.label||locker)?'#16a34a':'#7c3aed'};color:#fff;border-color:${(mp.label||locker)?'#16a34a':'#7c3aed'};" onclick="docBtnClick('${esc(s.base)}','${w}','label')" oncontextmenu="return docBtnMenu(event,'${esc(s.base)}','${w}','label')" title="Right-click: ${mp.label?'clear':'mark'} done (green)">🏷 Box Label${pby(mp.label)}</button><button class="btn btn-sm" style="background:#0f766e;color:#fff;border-color:#0f766e;" onclick="openBoxLabelForRecWh('${esc(s.base)}','${w}','full')" title="Small 2x1 label for individual full boxes (load 2x1 label stock)">🏷 Full Box</button>
@@ -34743,7 +34832,7 @@ function renderSaved(){
             : `<span class="muted" style="margin-left:auto;font-size:11px;white-space:nowrap;">🚚 ${t('shipped')} ${fmtD((s.pl[w].date) || s.pl[w]._completed)}</span>`)
           : `<span class="muted" style="margin-left:auto;font-size:11px;white-space:nowrap;">📦 Saved ${fmtD(s.pl[w].savedAt)} — not Complete</span>`) : ''}
         ${(()=>{ const ws = whStatus(s, w); return `<span style="${plSaved?'':'margin-left:auto;'}padding:2px 10px;border-radius:20px;font-size:10.5px;font-weight:800;background:${ws.bg};color:${ws.color};white-space:nowrap;">${ws.label}</span>`; })()}
-        </div>`;
+        </div>${revRowsHtml(s, w)}`;
       }).join('')}
       ${['BO','NA'].filter(w=>!whs.includes(w) && s.meta && s.meta._processed && s.meta._processed[w]).map(w=>{ const p = s.meta._processed[w]; return `<div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-top:6px;padding-top:6px;border-top:1px dashed var(--border);opacity:.75;">
         <span class="chip chip-${w}" style="min-width:34px;text-align:center;">${w}</span>
