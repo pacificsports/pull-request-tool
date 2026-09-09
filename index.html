@@ -12703,15 +12703,54 @@ function scanMergedPayload(srv, final){
   /* 👀 내 화면에도 남들이 찍은 게 같이 보여야 한다 (v1049).
      안 그러면 둘이 나눠 찍을 때 각자 화면에선 계속 '모자람' 으로 보여서 또 찍게 된다.
      합친 것에서 내 몫을 뺀 나머지를 들고 있다가 scanReconcile 이 더한다. */
-  try{
-    const myT = scanTally(), others = {};
-    Object.keys(cnt).forEach(k=>{ const d = (Number(cnt[k])||0) - (Number(myT[k])||0); if(d > 0) others[k] = d; });
-    _scan.mates = others;
-    _scan.mateNames = names.filter(x=>x !== who);
-  }catch(e){}
+  try{ const m = scanMatesFrom(srv); _scan.mates = m.others; _scan.mateNames = m.names; }catch(e){}
   const prevPh = (srv && srv.phases) || {};
   const phases = Object.assign({}, prevPh); phases[phase] = mine;
   return Object.assign({}, mine, { phases });
+}
+/* 서버에 올라와 있는 것 중 **내 것을 뺀 나머지** — 내 화면에 같이 보여주려고 쓴다 (v1050).
+   내가 찍은 카톤 번호는 빼서, 같은 박스를 둘이 찍어도 두 번 더해지지 않게 한다. */
+function scanMatesFrom(srv){
+  const who = String(_pchkWho||'').trim() || 'Someone';
+  const myIds = {};
+  try{ Object.keys(scanMyUnits().units).forEach(id=>{ myIds[id] = 1; }); }catch(e){}
+  const others = {}, names = [];
+  const sp = (srv && srv.people) || {};
+  Object.keys(sp).forEach(k=>{
+    if(k === who) return;
+    const q = sp[k]; if(!q) return;
+    names.push(k);
+    if(q.units){
+      Object.keys(q.units).forEach(id=>{ if(myIds[id]) return; const v = q.units[id];
+        if(!v || !v.k) return; others[v.k] = (others[v.k]||0) + (Number(v.n)||0); });
+      Object.keys(q.extra||{}).forEach(x=>{ others[x] = (others[x]||0) + (Number(q.extra[x])||0); });
+    }else{
+      Object.keys(q.cnt||{}).forEach(x=>{ others[x] = (others[x]||0) + (Number(q.cnt[x])||0); });
+    }
+  });
+  return { others, names };
+}
+/* 내가 안 찍고 있어도 10초마다 받아온다 — 옆 사람이 찍는 게 내 화면에서 바로 차오르게 (v1050) */
+let _scanMateT = null;
+function scanMatesWatch(on){
+  if(_scanMateT){ clearInterval(_scanMateT); _scanMateT = null; }
+  if(on) _scanMateT = setInterval(scanMatesPull, 10000);
+}
+async function scanMatesPull(){
+  if(!_scan || (_scan.mode !== 'IN' && _scan.mode !== 'TR')) return;
+  if(_scanAutoBusy) return;                      /* 내가 올리는 중이면 그쪽이 어차피 갱신한다 */
+  try{
+    const r = await scanRpc('pic_scan_one', {p_kind:(_scan.mode==='TR')?'TR':'IN', p_id:String(_scan.id)});
+    if(!r.ok) return;
+    const rec = await r.json();
+    const m = scanMatesFrom((rec && rec.meta && rec.meta.scan) || null);
+    const before = JSON.stringify(_scan.mates || {});
+    _scan.mates = m.others; _scan.mateNames = m.names;
+    if(JSON.stringify(m.others) !== before){
+      try{ scanRender(); }catch(e){}
+      try{ scanCamListSoon(); }catch(e){}
+    }
+  }catch(e){}
 }
 /* 서버 것을 읽어 → 합쳐서 → 올린다. 자동 저장과 Send 버튼이 둘 다 이걸 쓴다. */
 async function scanPush(final){
@@ -12777,6 +12816,7 @@ async function scanStart(mode, id){
     exp: (mode==='TR') ? scanExpTransfer(rec) : scanExpInbound(rec),
     seen: new Map(), pbox: new Map(), manual: {} };
   const _again = scanKeep2Take();   /* 💾 아까 찍다 만 게 있으면 그대로 이어붙인다 (v1044) */
+  try{ scanMatesWatch(true); scanMatesPull(); }catch(e){}   /* 👥 옆 사람 것 실시간으로 (v1050) */
   if(mode === 'TR' && poSet.size) scanLoadPoItems(rec);
   scanSession();
   if(_again) showToast('\uD83D\uDCBE Picked up where you left off — ' + _again + ' box(es) already scanned');
@@ -13036,6 +13076,7 @@ function scanExit(){
     }
   }catch(e){}
   scanStop();
+  try{ scanMatesWatch(false); }catch(e){}
   try{ scanKeepPut(); }catch(e){}   // 💾 나가기 전에 한 번 더 — 되돌아오면 그대로 이어진다 (v984)
   /* 스캔 결과를 Pack 화면으로 들고 나간다 (v864).
      전에는 여기서 _scan 을 그냥 버려서, 포장 화면으로 돌아오면 무엇이 맞고 틀렸는지
