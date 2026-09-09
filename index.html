@@ -2993,6 +2993,21 @@ function revLabelClick(base, wh, n, mode){
   if(!mode){ try{ markDocPrinted(base, revRowKey(wh, n), 'label'); }catch(e){} }
 }
 
+/* ═══ 🚚 물건이 지금 어디 있나 — 종이를 내기 전에 이걸 먼저 본다 (v1055) ═══
+   SC→CA 로 모아서 CA 에서 나가는 오더는, 물건이 다섯 군데 중 하나에 있다:
+     ① SC 빈  ② SC PC Room  ③ 트럭 안(TRANSIT)  ④ CA 도착  ⑤ 나감
+   예전에는 "무엇이 바뀌었나" 만 보고 종이를 냈다. 그래서 ③ 트럭 안에 실려 있는 물건을
+   "SC 빈에 되돌려라" 라고 찍어 내보냈다 — 창고에 없는 물건이다.
+   이제 REV 줄이 이송 상태를 보고 스스로 말한다.
+   되돌릴 물건이 트럭에 있으면 그 줄은 잠긴다 — CA 에서 받은 뒤 CA 에서 처리한다.
+   (하윤 결정 2026-09-09: CA 에서 되돌린 것은 CA 빈에 넣고 CA 재고로 넘긴다.
+    대신 조용히 넘기지 않고 SC→CA 재고 이동으로 기록에 남긴다.) */
+function revTruckState(rec){
+  if(!recShipFromCA(rec)) return { on:false, status:'', ship:'' };
+  const t = (rec.meta && rec.meta._scToCA) || null;
+  return { on:true, status: String((t && t.status) || ''), ship: String((t && t.ship) || '') };
+}
+
 function revRowsHtml(rec, wh){
   const rows = revRowsFor(rec, wh);
   if(!rows.length) return '';
@@ -3007,18 +3022,30 @@ function revRowsHtml(rec, wh){
                 + (d.minus ? `<span style="background:#b45309;color:#fff;font-weight:900;border-radius:4px;padding:1px 8px;font-size:11px;white-space:nowrap;">↩ put back ${d.minus.toLocaleString()} pcs</span>` : '');
     const what = d.items.slice(0,3).map(x=>esc([x.style, x.color, x.size].filter(Boolean).join(' '))).join(' · ')
                + (d.items.length > 3 ? (' <span style="color:#94a3b8;">+' + (d.items.length-3) + ' more</span>') : '');
-    const prC = mp.pr ? '#16a34a' : '#b45309';
-    const lbC = mp.label ? '#16a34a' : '#7c3aed';
+    const tk = revTruckState(rec);
+    /* 되돌릴 물건이 트럭 안이면 이 줄은 잠근다 — SC 창고엔 그 물건이 없다 */
+    const locked = (wh === 'SC' && tk.on && tk.status === 'transit' && d.minus > 0);
+    const note = locked
+      ? `<div style="width:100%;margin-top:4px;padding:5px 9px;background:#f5f3ff;border:1px solid #ddd6fe;border-radius:6px;font-size:11px;font-weight:800;color:#5b21b6;">\u{1F69A} 이 물건은 ${esc(tk.ship||'SC→CA 트럭')} 안에 있어서 SC 에서 되돌릴 수 없다 — CA 에서 받은 뒤 CA 에서 처리한다.</div>`
+      : ((wh === 'SC' && tk.on && tk.status === 'transit' && d.plus > 0)
+        ? `<div style="width:100%;margin-top:4px;padding:5px 9px;background:#fff7ed;border:1px solid #fed7aa;border-radius:6px;font-size:11px;font-weight:800;color:#b45309;">\u{1F69A} ${esc(tk.ship||'SC→CA 트럭')} 는 이미 떠났다 — 이건 그 트럭을 못 탄다. 따로 내보내야 한다.</div>`
+        : ((wh === 'CA' && tk.on && tk.status === 'transit' && d.minus > 0)
+          ? `<div style="width:100%;margin-top:4px;padding:5px 9px;background:#f5f3ff;border:1px solid #ddd6fe;border-radius:6px;font-size:11px;font-weight:800;color:#5b21b6;">\u{1F69A} SC 몫이 아직 ${esc(tk.ship||'트럭')} 안이다 — 도착(Receive) 뒤에 처리한다.</div>`
+          : ''));
+    const prC = locked ? '#cbd5e1' : (mp.pr ? '#16a34a' : '#b45309');
+    const lbC = locked ? '#cbd5e1' : (mp.label ? '#16a34a' : '#7c3aed');
+    const dis = locked ? ' disabled' : '';
     const when = String(rv.at||'').slice(5,10);
     const who  = String(rv.by||'').split('@')[0];
     return `<div style="display:flex;align-items:center;gap:6px;flex-wrap:wrap;margin-top:4px;margin-left:26px;padding:5px 8px;background:#fffbeb;border:1px solid #fcd34d;border-left:4px solid #b45309;border-radius:6px;">
       <span style="font-weight:900;color:#b45309;font-size:11.5px;white-space:nowrap;" title="Changed ${esc(when)} by ${esc(who)} — this is its own piece of work. The original ${wh} row above is untouched.">↳ REV ${rv.n}</span>
       ${chips}
       <span style="font-size:11px;color:#475569;font-weight:700;">${what}</span>
-      <button class="btn btn-sm" style="background:${prC};color:#fff;border-color:${prC};font-weight:800;" onclick="revPrintPR('${esc(rec.base)}','${wh}',${rv.n})" oncontextmenu="return docBtnMenu(event,'${esc(rec.base)}','${esc(key)}','pr')" title="Only what changed in REV ${rv.n} — pull AND put-back on one sheet. Give the warehouse this, not the whole order. Right-click: ${mp.pr?'clear':'mark'} done.">\u{1F5A8} Pull Request${pby(mp.pr)}</button>
-      <button class="btn btn-sm" style="background:${lbC};color:#fff;border-color:${lbC};" onclick="revLabelClick('${esc(rec.base)}','${wh}',${rv.n})" oncontextmenu="return docBtnMenu(event,'${esc(rec.base)}','${esc(key)}','label')" title="Right-click: ${mp.label?'clear':'mark'} done">\u{1F3F7} Box Label${pby(mp.label)}</button>
-      <button class="btn btn-sm" style="background:#0f766e;color:#fff;border-color:#0f766e;" onclick="revLabelClick('${esc(rec.base)}','${wh}',${rv.n},'full')" title="Small 2x1 label for individual full boxes">\u{1F3F7} Full Box</button>
-      <span style="margin-left:auto;font-size:10.5px;color:#92400e;font-weight:800;white-space:nowrap;">${mp.pr ? '✓ warehouse has this sheet' : '⚠ not given to the warehouse yet'}</span>
+      <button class="btn btn-sm"${dis} style="background:${prC};color:#fff;border-color:${prC};font-weight:800;${locked?'cursor:not-allowed;opacity:.6;':''}" onclick="revPrintPR('${esc(rec.base)}','${wh}',${rv.n})" oncontextmenu="return docBtnMenu(event,'${esc(rec.base)}','${esc(key)}','pr')" title="Only what changed in REV ${rv.n} — pull AND put-back on one sheet. Give the warehouse this, not the whole order. Right-click: ${mp.pr?'clear':'mark'} done.">\u{1F5A8} Pull Request${pby(mp.pr)}</button>
+      <button class="btn btn-sm"${dis} style="background:${lbC};color:#fff;border-color:${lbC};${locked?'cursor:not-allowed;opacity:.6;':''}" onclick="revLabelClick('${esc(rec.base)}','${wh}',${rv.n})" oncontextmenu="return docBtnMenu(event,'${esc(rec.base)}','${esc(key)}','label')" title="Right-click: ${mp.label?'clear':'mark'} done">\u{1F3F7} Box Label${pby(mp.label)}</button>
+      <button class="btn btn-sm"${dis} style="background:${locked?'#cbd5e1':'#0f766e'};color:#fff;border-color:${locked?'#cbd5e1':'#0f766e'};${locked?'cursor:not-allowed;opacity:.6;':''}" onclick="revLabelClick('${esc(rec.base)}','${wh}',${rv.n},'full')" title="Small 2x1 label for individual full boxes">\u{1F3F7} Full Box</button>
+      <span style="margin-left:auto;font-size:10.5px;color:${locked?'#5b21b6':'#92400e'};font-weight:800;white-space:nowrap;">${locked ? '\u{1F512} on the truck — wait for CA' : (mp.pr ? '✓ warehouse has this sheet' : '⚠ not given to the warehouse yet')}</span>
+      ${note}
     </div>`;
   }).join('');
 }
