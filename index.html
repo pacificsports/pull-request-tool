@@ -12390,17 +12390,13 @@ async function scanSendReport(){
   /* 창고 안은 신호가 약해서 한 번에 못 갈 때가 많다 — 세 번까지 알아서 다시 보낸다 (v1044).
      세어놓은 건 이 기계에 이미 저장돼 있으니 실패해도 없어지지 않는다. */
   let ok = false, err = '';
-  const payload = scanResultPayload();
   for(let attempt = 1; attempt <= 3 && !ok; attempt++){
     if(attempt > 1){
       if(btn) btn.textContent = 'Sending… (try ' + attempt + ' of 3)';
       await new Promise(r=>setTimeout(r, attempt === 2 ? 1200 : 3000));
     }
-    try{
-      const r = await scanRpc('pic_scan_save', {p_kind:(_scan.mode==='TR')?'TR':'IN', p_id:String(_scan.id), p_result:payload});
-      if(r.ok){ ok = (await r.json()) === true; if(!ok) err = 'not saved'; }
-      else { err = 'HTTP '+r.status; if(r.status < 500) break; }   /* 400번대는 다시 보내도 같다 */
-    }catch(e){ err = String(e && e.message || e); }
+    try{ await scanPush(true); ok = true; }
+    catch(e){ err = String(e && e.message || e); if(/HTTP 4/.test(err)) break; }
   }
   if(btn){ btn.disabled = false; btn.style.opacity = '1'; }
   if(ok){
@@ -12597,6 +12593,90 @@ function scanKeep2Drop(){ try{ const all = scanKeep2Load(); delete all[scanKeep2
    이제 카톤을 찍을 때마다 4초 뒤에 조용히 서버로 올린다. Send 버튼은 그대로 있지만
    그걸 안 눌러도 사무실 화면에 이미 올라와 있다.
    ⚠ Send 를 아직 안 눌렀으면 `partial:true` 를 달아서, 사무실이 "다 센 것" 으로 오해하지 않게 한다. */
+/* ═══ 👥 여러 명이 나눠서 찍어도 안 지워진다 (v1047) ═══
+   예전에는 각자 자기가 센 것 전체를 올렸고 `meta.scan` 은 통째로 덮어써져서
+   **나중에 올린 사람이 앞사람 걸 지웠다.** 800박스를 둘이 나눠 찍으면 한 명 것만 남았다.
+
+   이제 올리기 직전에 서버 것을 다시 읽어서 **사람별 칸(`people`)** 에 내 것만 갈아끼우고,
+   전체는 그 사람들을 합쳐서 만든다:
+     · 줄별 개수 = 사람들 개수의 합
+     · 박스 번호 = 합집합(같은 카톤을 둘이 찍어도 하나로)
+   같은 초에 둘이 동시에 올리면 한쪽이 밀릴 수 있지만, 4초마다 다시 올리므로 곧 맞춰진다.
+   18시간 지난 사람 칸은 버린다 (다음 컨테이너에 딸려오지 않게). */
+function scanMyBoxes(){
+  const bx = [];
+  try{
+    _scan.seen.forEach(v=>{ if(bx.length>=500 || !v) return;
+      bx.push({ id:String(v.ctn||v.sscc||''), s:String(v.style||''), c:String(v.color||''), z:String(v.size||''),
+                ...(v.po?{po:String(v.po)}:{}) }); });
+    (_scan.pbox||new Map()).forEach(b=>{ if(bx.length>=500 || !b) return;
+      bx.push({ id:'PB'+String(b.box||''), s:'(PC Room box)', c:String(b.cust||''), z:'', po:String(b.po||'') }); });
+  }catch(e){}
+  return bx;
+}
+function scanMergedPayload(srv, final){
+  const who   = String(_pchkWho||'').trim() || 'Someone';
+  const phase = String((_scan&&_scan.phase)||'IN');
+  const people = {};
+  const cut = Date.now() - 18*3600*1000;
+  try{ const sp = (srv && srv.people) || {};
+    Object.keys(sp).forEach(k=>{ const q = sp[k]; if(q && Date.parse(q.at) > cut) people[k] = q; }); }catch(e){}
+  people[who] = { at:new Date().toISOString(), by:who, cnt:scanTally(), boxes:scanMyBoxes(), partial: !final };
+  people[who].n = people[who].boxes.length;
+
+  const cnt = {};
+  Object.keys(people).forEach(k=>{ const c = (people[k]&&people[k].cnt)||{};
+    Object.keys(c).forEach(x=>{ cnt[x] = (cnt[x]||0) + (Number(c[x])||0); }); });
+  const bx = [], seenId = {};
+  Object.keys(people).forEach(k=>{ ((people[k]&&people[k].boxes)||[]).forEach(b=>{
+    const id = String((b&&b.id)||''); if(!id || seenId[id]) return; seenId[id] = 1;
+    if(bx.length < 500) bx.push(b); }); });
+
+  const rows = [], used = {};
+  (_scan.exp||[]).forEach(e=>{ const k = e.k || scanKeyOf(e.style,e.color,e.size); used[k] = 1;
+    const got = Number(cnt[k])||0;
+    rows.push({ style:e.style, color:e.color, size:e.size, exp:e.qty, got,
+      st: got===e.qty ? 'match' : (got===0 ? 'missing' : (got<e.qty ? 'short' : 'over')) }); });
+  Object.keys(cnt).forEach(k=>{ if(used[k]) return; const q = k.split('|');
+    const isPo = k.indexOf('PO|')===0;
+    rows.push({ style: isPo ? ('PO '+(q[1]||'')) : q[0], color: isPo ? 'not on this truck' : q[1],
+                size: isPo ? '' : q[2], exp:0, got:cnt[k], st:'extra' }); });
+  const bad = rows.filter(r=>r.st!=='match');
+  const names = Object.keys(people);
+
+  const mine = {
+    at: new Date().toISOString(),
+    by: names.join(' · '),
+    wh: String(_pchkWh||''),
+    exp: rows.reduce((a,r)=>a+(Number(r.exp)||0),0),
+    got: rows.reduce((a,r)=>a+(Number(r.got)||0),0),
+    lines: rows.length,
+    ok: bad.length===0,
+    badCount: bad.length,
+    bad: bad.slice(0, SCAN_BAD_MAX).map(r=>({ style:String(r.style||''), color:String(r.color||''),
+        size:String(r.size||''), exp:Number(r.exp)||0, got:Number(r.got)||0, st:String(r.st||'') })),
+    phase, people,
+    partial: names.some(k=>people[k] && people[k].partial)
+  };
+  if(bx.length){ mine.boxes = bx; mine.boxN = bx.length; }
+  const prevPh = (srv && srv.phases) || {};
+  const phases = Object.assign({}, prevPh); phases[phase] = mine;
+  return Object.assign({}, mine, { phases });
+}
+/* 서버 것을 읽어 → 합쳐서 → 올린다. 자동 저장과 Send 버튼이 둘 다 이걸 쓴다. */
+async function scanPush(final){
+  let srv = null;
+  try{
+    const r = await scanRpc('pic_scan_one', {p_kind:(_scan.mode==='TR')?'TR':'IN', p_id:String(_scan.id)});
+    if(r.ok){ const rec = await r.json(); srv = (rec && rec.meta && rec.meta.scan) || null; }
+  }catch(e){}
+  const payload = scanMergedPayload(srv, final);
+  const r2 = await scanRpc('pic_scan_save', {p_kind:(_scan.mode==='TR')?'TR':'IN', p_id:String(_scan.id), p_result:payload});
+  if(!r2.ok) throw new Error('HTTP '+r2.status);
+  if((await r2.json()) !== true) throw new Error('not saved');
+  return payload;
+}
+
 let _scanAutoT = null, _scanAutoBusy = false;
 function scanAutoSave(){
   if(!_scan || (_scan.mode !== 'IN' && _scan.mode !== 'TR')) return;
@@ -12608,21 +12688,19 @@ async function scanAutoPush(){
   if(!_scan.seen || !_scan.seen.size) return;
   if(_scanAutoBusy){ scanAutoSave(); return; }        /* 아직 보내는 중이면 조금 뒤에 다시 */
   _scanAutoBusy = true;
-  const n = _scan.seen.size;
   try{
-    const payload = scanResultPayload();
-    payload.auto = true;
-    payload.partial = !window._scanSent;              /* Send 를 눌렀으면 '다 센 것' */
-    const r = await scanRpc('pic_scan_save', {p_kind:(_scan.mode==='TR')?'TR':'IN', p_id:String(_scan.id), p_result:payload});
-    scanAutoBadge((r.ok && (await r.json()) === true) ? n : 0);
+    const payload = await scanPush(!!window._scanSent);
+    scanAutoBadge(payload.boxN || _scan.seen.size, payload.people);
   }catch(e){ scanAutoBadge(0); }
   _scanAutoBusy = false;
 }
-function scanAutoBadge(n){
+function scanAutoBadge(n, people){
   const el = document.getElementById('scan-auto'); if(!el) return;
   const t = new Date().toLocaleTimeString([], {hour:'numeric', minute:'2-digit'});
+  let who = '';
+  try{ const ks = Object.keys(people||{}); if(ks.length > 1) who = '<br>\uD83D\uDC65 ' + ks.join(' + ') + ' counting together'; }catch(e){}
   el.innerHTML = n
-    ? '<span style="color:#166534;font-weight:800;">\u2601 ' + n + ' box(es) already with the office</span> \u00b7 ' + t
+    ? '<span style="color:#166534;font-weight:800;">\u2601 ' + n + ' box(es) already with the office</span> \u00b7 ' + t + who
     : '<span style="color:#b45309;font-weight:800;">\u26A0 No signal — saved on this phone only.</span> It will go up by itself when the signal is back.';
 }
 
