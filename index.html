@@ -11372,6 +11372,68 @@ function custHueMap(names){
   return out;
 }
 
+/* ═══════════ ↳ REV 를 창고 화면에도 따로 띄운다 (v1056) ═══════════
+   사무실 카드에서는 REV 가 자기 줄로 나오는데(v1054) 창고 화면에는 안 나왔다.
+   그래서 "이 33장만 오늘 따로 보내" 를 시킬 방법이 없었다 — 오더 하나로 뭉쳐 있으니까.
+
+   ⚠ /pic 은 **로그인 없이** 도는 화면이라 pr_orders 를 직접 못 읽는다 (RLS 가 빈 배열을 준다).
+   pack_orders RPC 도 meta 를 안 준다. 그래서 pack_revs RPC 를 따로 만들었다 —
+   최근 60일 안에 고쳐진 오더의 `_revs` 와 이송 상태만 돌려주는 함수다.
+   기존 pack_orders 는 손대지 않았다. 잘 도는 걸 깨지 않으려고. */
+let _packRevs = {};
+async function pchkRevLoad(){
+  try{
+    const r = await fetch(SB_URL+'/rest/v1/rpc/pack_revs', {method:'POST',
+      headers:{apikey:SB_KEY, Authorization:'Bearer '+SB_KEY, 'Content-Type':'application/json'}, body:'{}'});
+    if(!r.ok) return;
+    const j = await r.json();
+    const m = {};
+    (Array.isArray(j)?j:[]).forEach(x=>{ if(x && x.base) m[String(x.base)] = x; });
+    _packRevs = m;
+  }catch(e){}
+}
+/* 이 오더·이 창고에서 REV 가 시키는 일 — 사무실 카드와 똑같은 계산(revRowDelta)을 쓴다 */
+function pchkRevRows(base, wh){
+  const rec = _packRevs[String(base)]; if(!rec) return [];
+  const out = [];
+  (Array.isArray(rec.revs) ? rec.revs : []).forEach(rv=>{
+    const d = revRowDelta(null, wh, rv);
+    if(!d.plus && !d.minus) return;
+    out.push({ n: rv.n, at: rv.at, d, truck: String(rec.truck||''), ship: String(rec.ship||'') });
+  });
+  return out;
+}
+function pchkRevHtml(base, wh, cust, po){
+  const rows = pchkRevRows(base, wh);
+  if(!rows.length) return '';
+  return rows.map(x=>{
+    const d = x.d;
+    /* 되돌릴 물건이 트럭 안이면 창고가 할 수 있는 게 없다 — 시키지 않는다 */
+    const onTruck = (wh === 'SC' && x.truck === 'transit' && d.minus > 0);
+    const put = (d.minus > 0 && !d.plus);          // 되돌리기만 — 포장하는 일이 아니다
+    const what = d.items.map(i=>[i.style, String(i.color||'').toUpperCase(), String(i.size||'').toUpperCase()].filter(Boolean).join(' ')
+                    + ' ' + (i.d > 0 ? '+' : '−') + Math.abs(i.d)).join(' · ');
+    const bg  = onTruck ? '#f5f3ff' : (put ? '#fff7ed' : '#eff6ff');
+    const bd  = onTruck ? '#c4b5fd' : (put ? '#fdba74' : '#93c5fd');
+    const ink = onTruck ? '#5b21b6' : (put ? '#b45309' : '#1d4ed8');
+    const head = onTruck ? ('\u{1F512} 트럭 안 — ' + (x.ship || 'SC→CA') + ' 도착 후')
+               : (put ? ('↩ 되돌리기 ' + d.minus + '장') : ('➕ 추가로 ' + d.plus + '장'));
+    const sub  = onTruck ? '지금은 아무것도 안 해도 된다'
+               : (put ? 'PC Room 에서 빼서 빈으로 — 포장하는 물건이 아니다'
+                      : '이 오더에 나중에 더해진 몫이다 — 따로 나갈 수 있다');
+    const tap = (onTruck || put) ? '' :
+      ` onclick="pchkPackEdit('${esc(String(base))}','${esc(String(cust||'').replace(/'/g,''))}','${esc(String(po||'').replace(/'/g,''))}','${wh}')" style="cursor:pointer;"`;
+    return `<div${tap ? tap : ' style="cursor:default;"'} class="pchk-rev" data-base="${esc(String(base))}"
+      style="display:flex;flex-wrap:wrap;align-items:center;gap:7px;margin:-4px 0 8px 22px;padding:8px 11px;background:${bg};border:1px solid ${bd};border-left:5px solid ${ink};border-radius:10px;${tap?'cursor:pointer;':''}">
+      <span style="font-size:11px;font-weight:900;color:${ink};white-space:nowrap;">↳ REV ${x.n}</span>
+      <span style="font-size:13px;font-weight:900;color:${ink};white-space:nowrap;">${head}</span>
+      ${tap ? '<span style="margin-left:auto;font-size:11.5px;font-weight:800;color:#b45309;white-space:nowrap;">add boxes ▸</span>' : ''}
+      <div style="flex:1 1 100%;min-width:0;font-size:12.5px;font-weight:800;color:#334155;font-family:Consolas,monospace;">${esc(what)}</div>
+      <div style="flex:1 1 100%;min-width:0;font-size:10.5px;color:#64748b;">${esc(sub)}</div>
+    </div>`;
+  }).join('');
+}
+
 let _packListT;
 function pchkPackListDeb(){ clearTimeout(_packListT); _packListT=setTimeout(pchkPackList, 300); }
 async function pchkPackList(){
@@ -11383,6 +11445,7 @@ async function pchkPackList(){
   const _wh=window._packWh||'SC';
   try{ await tdLoad(); }catch(e){}
   try{ await pcrLoad(); }catch(e){}
+  try{ await pchkRevLoad(); }catch(e){}   /* ↳ REV 도 같이 (v1056) */
   // 이 창고 몫이면서 + 아직 발송(패킹리스트 저장) 안 된 것만 (이미 나간 오더 제외)
   try{ await cxlLoadBases(true); }catch(e){}
   // 취소된 오더는 목록에서 뺀다 — 직원이 취소된 PO 를 싸고 있으면 안 된다 (v863)
@@ -11428,7 +11491,7 @@ async function pchkPackList(){
       <div style="font-size:15px;font-weight:800;color:#111;font-family:Consolas,monospace;letter-spacing:.2px;line-height:1.3;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">PO ${esc(pchkPoNum(r.po))}<span style="font-size:11px;font-weight:700;color:#94a3b8;font-family:system-ui;letter-spacing:0;"> · ${esc(pchkShortDt(r.dt))}</span></div>
       ${r.ship_from_ca?'<div style="font-size:10.5px;font-weight:800;color:#b45309;background:#fff7ed;border:1px solid #fed7aa;border-radius:6px;padding:2px 7px;margin-top:3px;display:inline-block;">🚚 SC→CA · ships from CA</div>':''}
     </div>
-  </button>${pcrTapHtml(r.base,_wh)}</div>`; }).join('');
+  </button>${pcrTapHtml(r.base,_wh)}</div>${pchkRevHtml(r.base,_wh,r.cust,r.po)}`; }).join('');
   }).join('');
   pchkPackSelBar();
   tdBannerPaint(rows.map(r=>String(r.base)), _wh);
