@@ -12603,16 +12603,39 @@ function scanKeep2Drop(){ try{ const all = scanKeep2Load(); delete all[scanKeep2
      · 박스 번호 = 합집합(같은 카톤을 둘이 찍어도 하나로)
    같은 초에 둘이 동시에 올리면 한쪽이 밀릴 수 있지만, 4초마다 다시 올리므로 곧 맞춰진다.
    18시간 지난 사람 칸은 버린다 (다음 컨테이너에 딸려오지 않게). */
-function scanMyBoxes(){
-  const bx = [];
+/* 내가 찍은 것을 **카톤 번호별로** 담는다 (v1048).
+   개수만 보내면 같은 박스를 둘이 찍었을 때 두 번 세진다 — 번호를 달고 보내면 합칠 때 하나로 눌린다.
+   손으로 넣은 수(manual/photo)는 번호가 없으니 따로 담고, 합칠 때 그냥 더한다. */
+function scanMyUnits(){
+  const u = {}, extra = {};
+  const pcs = (typeof scanIsPcs==='function') ? scanIsPcs() : false;
+  const poSet = (_scan && _scan.poSet) || null;
+  const poItems = (_scan && _scan.poItems) || null;
   try{
-    _scan.seen.forEach(v=>{ if(bx.length>=500 || !v) return;
-      bx.push({ id:String(v.ctn||v.sscc||''), s:String(v.style||''), c:String(v.color||''), z:String(v.size||''),
-                ...(v.po?{po:String(v.po)}:{}) }); });
-    (_scan.pbox||new Map()).forEach(b=>{ if(bx.length>=500 || !b) return;
-      bx.push({ id:'PB'+String(b.box||''), s:'(PC Room box)', c:String(b.cust||''), z:'', po:String(b.po||'') }); });
+    _scan.seen.forEach(v=>{
+      if(!v) return;
+      const id = String(v.ctn || v.sscc || ''); if(!id) return;
+      let k = v.key;
+      if(!pcs){
+        const po = String(v.po||'').trim().toUpperCase();
+        if(poSet && po && poSet.has(po)) k = scanPoKey(po);
+        else if(poItems && poItems[v.key]) k = scanPoKey(poItems[v.key]);
+      }
+      u[id] = { k, n: pcs ? (Number(v.qty)||0) : 1, s:String(v.style||''), c:String(v.color||''),
+                z:String(v.size||''), ...(v.po?{po:String(v.po)}:{}) };
+    });
   }catch(e){}
-  return bx;
+  try{
+    (_scan.pbox||new Map()).forEach(b=>{
+      if(!b) return;
+      if(pcs){ (b.items||[]).forEach(i=>{ const k = scanKeyOf(i.style,i.color,i.size);
+                 extra[k] = (extra[k]||0) + (Number(i.qty)||0); }); return; }
+      u['PB'+String(b.box||'')] = { k: scanPoKey(b.po), n:1, s:'(PC Room box)', c:String(b.cust||''), z:'', po:String(b.po||'') };
+    });
+  }catch(e){}
+  Object.keys(_scan.manual||{}).forEach(k=>{ extra[k] = (extra[k]||0) + (Number(_scan.manual[k])||0); });
+  Object.keys(_scan.photo ||{}).forEach(k=>{ extra[k] = (extra[k]||0) + (Number(_scan.photo[k])||0); });
+  return { units:u, extra };
 }
 function scanMergedPayload(srv, final){
   const who   = String(_pchkWho||'').trim() || 'Someone';
@@ -12621,16 +12644,29 @@ function scanMergedPayload(srv, final){
   const cut = Date.now() - 18*3600*1000;
   try{ const sp = (srv && srv.people) || {};
     Object.keys(sp).forEach(k=>{ const q = sp[k]; if(q && Date.parse(q.at) > cut) people[k] = q; }); }catch(e){}
-  people[who] = { at:new Date().toISOString(), by:who, cnt:scanTally(), boxes:scanMyBoxes(), partial: !final };
-  people[who].n = people[who].boxes.length;
+  const mineU = scanMyUnits();
+  people[who] = { at:new Date().toISOString(), by:who, partial: !final,
+                  units: mineU.units, extra: mineU.extra, n: Object.keys(mineU.units).length };
 
+  /* 카톤 번호로 먼저 합친다 — 같은 박스를 둘이 찍어도 한 번만 센다 */
+  const units = {};
+  Object.keys(people).forEach(k=>{
+    const q = people[k]; if(!q) return;
+    if(q.units){ Object.keys(q.units).forEach(id=>{ if(id) units[id] = q.units[id]; }); return; }
+    /* 옛 판(v1047)으로 올라온 칸 — 번호별이 아니라 개수만 있다. 그건 그대로 더한다 */
+    ((q.boxes)||[]).forEach(b=>{ const id=String((b&&b.id)||''); if(id && !units[id]) units[id] = null; });
+  });
   const cnt = {};
-  Object.keys(people).forEach(k=>{ const c = (people[k]&&people[k].cnt)||{};
-    Object.keys(c).forEach(x=>{ cnt[x] = (cnt[x]||0) + (Number(c[x])||0); }); });
-  const bx = [], seenId = {};
-  Object.keys(people).forEach(k=>{ ((people[k]&&people[k].boxes)||[]).forEach(b=>{
-    const id = String((b&&b.id)||''); if(!id || seenId[id]) return; seenId[id] = 1;
-    if(bx.length < 500) bx.push(b); }); });
+  Object.keys(units).forEach(id=>{ const v = units[id]; if(!v || !v.k) return;
+    cnt[v.k] = (cnt[v.k]||0) + (Number(v.n)||0); });
+  Object.keys(people).forEach(k=>{
+    const q = people[k]; if(!q) return;
+    const e = q.units ? (q.extra||{}) : (q.cnt||{});      /* 옛 판은 cnt 를 그대로 쓴다 */
+    Object.keys(e).forEach(x=>{ cnt[x] = (cnt[x]||0) + (Number(e[x])||0); });
+  });
+  const bx = [];
+  Object.keys(units).forEach(id=>{ const v = units[id]; if(bx.length>=500) return;
+    bx.push(v ? { id, s:v.s, c:v.c, z:v.z, ...(v.po?{po:v.po}:{}) } : { id, s:'', c:'', z:'' }); });
 
   const rows = [], used = {};
   (_scan.exp||[]).forEach(e=>{ const k = e.k || scanKeyOf(e.style,e.color,e.size); used[k] = 1;
