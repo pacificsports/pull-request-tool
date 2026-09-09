@@ -507,6 +507,7 @@ try{ applyWide(localStorage.getItem('psx_wide') !== '0'); }catch(e){ applyWide(t
       <button class="btn btn-sm" onclick="bxAuditOpen()" style="background:#0f2a4a;color:#fff;border-color:#0f2a4a;" title="Boxes/qty by location per Style+Color — print or Excel for a physical stock count">🔍 Stock Count</button>
       <button class="btn btn-sm" onclick="bxAgingOpen()" style="background:#7c2d12;color:#fff;border-color:#7c2d12;" title="Inventory aging — how long each box has sat in stock (by receive date), oldest first">⏳ Aging</button>
       <button class="btn btn-sm" id="bx-costbtn" onclick="costOpen()" style="display:none;background:#065f46;color:#fff;border-color:#065f46;" title="Cost per style/size + margin — owner & accounting only. Fill gaps, edit, and see inventory value">💲 Cost</button>
+      <button class="btn btn-sm" onclick="wpOpen()" style="background:#1d4ed8;color:#fff;border-color:#1d4ed8;" title="Website prices — base price ladder and sales. This is what the web shop shows customers">🏷 Web Price</button>
       <button class="btn btn-sm" onclick="pchkOpen()" style="background:#0891b2;color:#fff;border-color:#0891b2;" title="Physical check with photos — take pallet photos, AI reads labels, compares to system">📸 Photo Check</button>
       <button class="btn btn-sm" onclick="pchkReviewOpen()" style="background:#155e75;color:#fff;border-color:#155e75;" title="Review physical checks submitted by staff (staff link: psflowx.com/#check)">🔍 Check reviews<span id="pchk-review-badge" style="font-weight:800;"></span></button>
       <button class="btn btn-sm" onclick="pchkReqMgrOpen()" style="background:#7c3aed;color:#fff;border-color:#7c3aed;" title="Box pull requests from staff (staff link: psflowx.com/pic → Request a Box) — see locations, move a box to PC Room, print">📦 Box requests<span id="boxreq-badge" style="font-weight:800;"></span></button>
@@ -25056,6 +25057,251 @@ async function bxAgingExcel(){
     XLSX.writeFile(wb,'InventoryAging_'+(boxMode?'boxes_':'')+_bxAgeTitle.replace(/[^A-Za-z0-9._-]+/g,'_')+'_'+todayStr()+'.xlsx');
     showToast('✅ Excel downloaded');
   }catch(e){ console.warn('bxAgingExcel',e); showToast('⚠ Excel generation failed'); }
+}
+
+/* ═══════════ 🏷 Web Price (v1040) ═══════════
+   웹사이트에서 손님에게 보이는 가격. 예전엔 웹 admin-prices.html 에서 고쳤는데
+   2026-09-09 결정으로 가격은 전부 psflowx 에서 본다.
+
+   두 가지만 있다:
+     · 기본가(style_prices)  — 로그인한 거래처에게 전용가가 없으면 이 값이 보인다
+     · 세일(sale_prices)     — 스타일/색/사이즈에 걸면 그 위에 덮어씌워진다
+   거래처 전용가(customer_prices)는 Customers 화면에 붙는다 — 여기가 아니다.
+
+   ⚠ 큰사이즈 할증은 웹(pacific-data.js)의 _WEBSTEP 과 같은 값이어야 한다.
+      Base 를 고치면 규칙대로 다시 채우되, 손으로 정한 예외 칸은 안 건드린다. */
+let _wpRows = [], _wpBase = {}, _wpEdits = {}, _wpSales = [], _wpTab = 'BASE';
+const WP_COLS   = ['base_price','price_2xl','price_3xl','price_4xl','price_5xl'];
+const WP_LABEL  = { base_price:'Base', price_2xl:'2XL', price_3xl:'3XL', price_4xl:'4XL', price_5xl:'5XL' };
+const WP_LADDER = { price_2xl:0.60, price_3xl:1.60, price_4xl:3.10, price_5xl:5.60 };
+const WP_SALE_SIZES = ['2T','3T','4T','5T','XS','S','M','L','XL','2XL','3XL','4XL','5XL'];
+
+function wpLadderFor(base){
+  const b = parseFloat(base); if(isNaN(b)) return null;
+  const o = {}; Object.keys(WP_LADDER).forEach(c=>{ o[c] = Math.round((b + WP_LADDER[c]) * 100) / 100; });
+  return o;
+}
+function wpEff(sn, col){
+  const e = _wpEdits[sn];
+  if(e && e[col] !== undefined){ const v = e[col]; return (v === '' || v == null) ? null : Number(v); }
+  const r = _wpBase[sn] || {}; const v = r[col];
+  return (v == null || v === '') ? null : Number(v);
+}
+function wpSet(sn, col, val){
+  (_wpEdits[sn] = _wpEdits[sn] || {})[col] = val;
+  const b = document.getElementById('wp-save'); if(b) b.disabled = false;
+}
+function onwp(sn, col, val){
+  wpSet(sn, col, val);
+  if(col === 'base_price'){
+    /* Base 가 바뀌면 큰사이즈를 규칙대로 다시 채운다 — 규칙과 다른 값이 이미 있으면 그 사람의 뜻이라 그대로 둔다 */
+    const want = wpLadderFor(val);
+    const prev = wpLadderFor((_wpBase[sn] || {}).base_price);
+    if(want) Object.keys(WP_LADDER).forEach(c=>{
+      const inp = document.getElementById('wp-' + sn + '-' + c); if(!inp) return;
+      const cur = String(inp.value || '').trim();
+      const onRule = cur === '' || (prev && Math.abs(parseFloat(cur) - prev[c]) < 0.005);
+      if(onRule){ inp.value = want[c].toFixed(2); wpSet(sn, c, inp.value); }
+    });
+  }
+  wpMarkOff();
+}
+/* 규칙과 다른 칸은 주황 — "여긴 일부러 정한 예외다" 가 눈에 보이게 */
+function wpMarkOff(){
+  let n = 0;
+  (_wpRows||[]).forEach(r=>{
+    const sn = String(r.style_number);
+    const bi = document.getElementById('wp-' + sn + '-base_price'); if(!bi) return;
+    const want = wpLadderFor(bi.value);
+    Object.keys(WP_LADDER).forEach(c=>{
+      const inp = document.getElementById('wp-' + sn + '-' + c); if(!inp) return;
+      const v = String(inp.value || '').trim();
+      const off = want && v !== '' && Math.abs(parseFloat(v) - want[c]) >= 0.005;
+      inp.style.background  = off ? '#fff7ed' : '';
+      inp.style.borderColor = off ? '#f59e0b' : '';
+      inp.title = off ? ('규칙값은 ' + want[c].toFixed(2) + ' — 직접 정한 예외 가격') : '';
+      if(off) n++;
+    });
+  });
+  const el = document.getElementById('wp-off');
+  if(el) el.textContent = n ? ('· 주황 칸 ' + n + '개는 규칙과 다른 예외 가격') : '';
+}
+
+async function wpFetch(){
+  try{
+    const [sr, pr] = await Promise.all([
+      sbFetch('/rest/v1/styles?select=style_number,description,category&order=style_number'),
+      sbFetch('/rest/v1/style_prices?select=*')
+    ]);
+    _wpRows = sr.ok ? (await sr.json()) : [];
+    _wpBase = {};
+    if(pr.ok) (await pr.json()).forEach(r=>{ _wpBase[String(r.style_number)] = r; });
+  }catch(e){ _wpRows = []; _wpBase = {}; }
+}
+
+function wpOpen(){
+  const ex = document.getElementById('modal-wp'); if(ex) ex.remove();
+  const div = document.createElement('div'); div.id = 'modal-wp';
+  div.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,.55);z-index:9999;display:flex;align-items:center;justify-content:center;';
+  div.innerHTML = '<div style="background:#fff;border-radius:12px;width:1080px;max-width:97vw;max-height:92vh;display:flex;flex-direction:column;overflow:hidden;box-shadow:0 20px 60px rgba(0,0,0,.35);">'
+    + '<div style="background:#1d4ed8;color:#fff;padding:11px 16px;font-weight:800;font-size:13.5px;display:flex;align-items:center;gap:10px;">🏷 Web Price'
+    +   '<span style="font-size:11px;font-weight:600;color:#bfdbfe;">웹사이트에서 손님에게 보이는 가격 — 기본가와 세일</span>'
+    +   '<input id="wp-search" placeholder="🔍 style / desc" oninput="wpRender(this.value)" style="margin-left:auto;font-size:12px;padding:5px 10px;border-radius:7px;border:1px solid #93c5fd;width:170px;">'
+    +   '<button class="btn btn-sm" id="wp-save" onclick="wpSave()" style="background:#f59e0b;color:#fff;border-color:#f59e0b;font-weight:800;" disabled>💾 Save changes</button>'
+    +   '<button class="btn btn-sm" style="background:transparent;color:#bfdbfe;border-color:#93c5fd;" onclick="wpClose()">✕</button>'
+    + '</div>'
+    + '<div style="padding:7px 16px 0;display:flex;gap:6px;align-items:center;">'
+    +   '<button class="btn btn-sm" id="wp-tab-BASE" onclick="wpTab(\'BASE\')">기본가 (Website)</button>'
+    +   '<button class="btn btn-sm" id="wp-tab-SALE" onclick="wpTab(\'SALE\')">세일 (Sale)</button>'
+    +   '<span id="wp-note" style="font-size:11px;color:#6b7280;margin-left:6px;"></span>'
+    + '</div>'
+    + '<div id="wp-body" style="flex:1;overflow:auto;padding:0 12px 10px;"><div class="muted" style="padding:16px;">Loading…</div></div>'
+    + '</div>';
+  document.body.appendChild(div); try{ initModalDrag(div); }catch(e){}
+  _wpEdits = {};
+  wpFetch().then(()=>wpRender(''));
+}
+function wpClose(){
+  if(Object.keys(_wpEdits).length && !confirm('저장 안 한 값이 있어. 그냥 닫을까?')) return;
+  const m = document.getElementById('modal-wp'); if(m) m.remove();
+}
+function wpTab(t){
+  _wpTab = t;
+  if(t === 'SALE'){ wpSalesLoad().then(()=>wpRender((document.getElementById('wp-search')||{}).value||'')); return; }
+  wpRender((document.getElementById('wp-search')||{}).value||'');
+}
+
+function wpRender(filter){
+  const body = document.getElementById('wp-body'); if(!body) return;
+  ['BASE','SALE'].forEach(t=>{ const b = document.getElementById('wp-tab-'+t); if(b) b.style.cssText = (_wpTab===t) ? 'background:#1d4ed8;color:#fff;border-color:#1d4ed8;font-weight:800;' : ''; });
+  const note = document.getElementById('wp-note');
+  if(_wpTab === 'SALE'){
+    if(note) note.textContent = '세일은 기본가/거래처가 위에 덮어씌워진다. 색·사이즈를 비우면 그 스타일 전체.';
+    body.innerHTML = wpSaleHtml();
+    return;
+  }
+  if(note) note.innerHTML = '기본가를 고치면 큰사이즈가 규칙대로 따라온다 — <b>2XL = Base+0.60 · 3XL = +1.60 · 4XL = +3.10 · 5XL = +5.60</b> <span id="wp-off" style="color:#b45309;font-weight:700;"></span>';
+  const f = String(filter||'').trim().toLowerCase();
+  const rows = (_wpRows||[]).filter(r=> !f
+    || String(r.style_number).toLowerCase().indexOf(f) >= 0
+    || String(r.description||'').toLowerCase().indexOf(f) >= 0);
+  const head = '<tr><th class="tl" style="position:sticky;left:0;background:#e2e8f0;color:#0f2a4a;z-index:7;">Style</th>'
+    + '<th class="tl">Description</th>'
+    + WP_COLS.map(c=>'<th'+(c==='base_price'?' style="background:#1d4ed8;color:#fff;"':'')+'>'+WP_LABEL[c]+'</th>').join('')
+    + '</tr>';
+  const trs = rows.map(r=>{
+    const sn = String(r.style_number);
+    const cells = WP_COLS.map(c=>{
+      const v = wpEff(sn, c);
+      const empty = (v == null);
+      return '<td style="padding:1px;'+(empty?'background:#fef9c3;':'')+'">'
+        + '<input id="wp-'+esc(sn)+'-'+c+'" class="num" value="'+(v!=null?v.toFixed(2):'')+'" placeholder="—"'
+        + ' oninput="onwp(\''+esc(sn)+'\',\''+c+'\',this.value)"'
+        + ' style="width:62px;text-align:right;font-family:Consolas,monospace;"></td>';
+    }).join('');
+    return '<tr><td class="tl" style="font-weight:800;position:sticky;left:0;background:#fff;z-index:1;">'+esc(sn)+'</td>'
+      + '<td class="tl" style="font-size:11px;color:#6b7280;max-width:280px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;" title="'+esc(r.description||'')+'">'+esc(r.description||'')+'</td>'
+      + cells + '</tr>';
+  }).join('');
+  body.innerHTML = '<table class="etbl" style="width:100%;font-size:12px;"><thead>'+head+'</thead><tbody>'
+    + (trs || '<tr><td class="muted" style="padding:16px;">No styles</td></tr>') + '</tbody></table>';
+  wpMarkOff();
+}
+
+async function wpSave(){
+  const sns = Object.keys(_wpEdits);
+  if(!sns.length){ showToast('바뀐 게 없어'); return; }
+  const rows = sns.map(sn=>{
+    const o = { style_number: sn };
+    WP_COLS.forEach(c=>{ const v = wpEff(sn, c); o[c] = (v == null || isNaN(v)) ? null : v; });
+    return o;
+  });
+  const bad = rows.filter(o=> o.base_price == null);
+  if(bad.length && !confirm(bad.length + '개 스타일은 Base 가 비어 있어 — 그대로 저장할까? (웹에서 가격이 안 보인다)')) return;
+  const btn = document.getElementById('wp-save'); if(btn){ btn.disabled = true; btn.textContent = '저장 중…'; }
+  try{
+    const r = await sbFetch('/rest/v1/style_prices?on_conflict=style_number', {
+      method:'POST', headers:{ Prefer:'resolution=merge-duplicates,return=representation' },
+      body: JSON.stringify(rows) });
+    if(!r.ok) throw new Error(r.status + ' ' + (await r.text()).slice(0,140));
+    (await r.json()).forEach(x=>{ _wpBase[String(x.style_number)] = x; });
+    _wpEdits = {};
+    if(btn){ btn.textContent = '💾 Save changes'; btn.disabled = true; }
+    showToast('✅ 웹 기본가 ' + rows.length + '개 저장했어');
+    wpRender((document.getElementById('wp-search')||{}).value||'');
+  }catch(e){
+    if(btn){ btn.textContent = '💾 Save changes'; btn.disabled = false; }
+    alert('저장 실패 — ' + e.message);
+  }
+}
+
+/* ── 세일 ────────────────────────────────────────── */
+async function wpSalesLoad(){
+  try{ const r = await sbFetch('/rest/v1/sale_prices?select=*&order=style_number'); _wpSales = r.ok ? (await r.json()) : []; }
+  catch(e){ _wpSales = []; }
+}
+function wpSaleHtml(){
+  const styleOpts = '<option value="">스타일 고르기</option>'
+    + (_wpRows||[]).map(s=>'<option value="'+esc(String(s.style_number))+'">'+esc(String(s.style_number))+'</option>').join('');
+  const sizeOpts = '<option value="">모든 사이즈</option>' + WP_SALE_SIZES.map(s=>'<option>'+s+'</option>').join('');
+  const form = '<div style="display:flex;gap:7px;align-items:center;flex-wrap:wrap;padding:12px 4px 10px;border-bottom:1px solid var(--border);">'
+    + '<select id="wp-s-style" onchange="wpSaleColors(this.value)" style="font-size:12px;padding:5px 8px;border-radius:7px;border:1px solid #cbd5e1;">'+styleOpts+'</select>'
+    + '<select id="wp-s-color" style="font-size:12px;padding:5px 8px;border-radius:7px;border:1px solid #cbd5e1;min-width:150px;"><option value="">모든 색상</option></select>'
+    + '<select id="wp-s-size" style="font-size:12px;padding:5px 8px;border-radius:7px;border:1px solid #cbd5e1;">'+sizeOpts+'</select>'
+    + '<select id="wp-s-mode" style="font-size:12px;padding:5px 8px;border-radius:7px;border:1px solid #cbd5e1;"><option value="pct">% 할인</option><option value="amt">세일가 $</option></select>'
+    + '<input id="wp-s-val" class="num" placeholder="값" style="width:80px;text-align:right;font-family:Consolas,monospace;padding:5px 8px;border-radius:7px;border:1px solid #cbd5e1;">'
+    + '<button class="btn btn-sm" onclick="wpSaleAdd()" style="background:#1d4ed8;color:#fff;border-color:#1d4ed8;font-weight:800;">＋ 세일 걸기</button>'
+    + '<span id="wp-s-msg" style="font-size:11.5px;font-weight:700;color:#b91c1c;"></span>'
+    + '</div>';
+  const rows = (_wpSales||[]).map(s=>'<tr>'
+    + '<td class="tl" style="font-weight:800;">'+esc(String(s.style_number))+'</td>'
+    + '<td class="tl">'+(s.color?esc(s.color):'<span style="color:#9ca3af;">모든 색상</span>')+'</td>'
+    + '<td>'+(s.size?esc(s.size):'<span style="color:#9ca3af;">모든 사이즈</span>')+'</td>'
+    + '<td style="text-align:right;font-weight:800;color:#b91c1c;">'+(s.sale_price!=null?('$'+Number(s.sale_price).toFixed(2)):(Number(s.percent_off)+'% OFF'))+'</td>'
+    + '<td style="text-align:right;"><button class="btn btn-sm" onclick="wpSaleDel(\''+esc(String(s.id))+'\')" style="background:#fee2e2;color:#b91c1c;border-color:#fecaca;">삭제</button></td>'
+    + '</tr>').join('');
+  return form + '<table class="etbl" style="width:100%;font-size:12px;margin-top:8px;"><thead><tr>'
+    + '<th class="tl">Style</th><th class="tl">Color</th><th>Size</th><th>세일</th><th></th></tr></thead><tbody>'
+    + (rows || '<tr><td class="muted" colspan="5" style="padding:16px;">걸어놓은 세일이 없어</td></tr>')
+    + '</tbody></table>';
+}
+async function wpSaleColors(style){
+  const sel = document.getElementById('wp-s-color'); if(!sel) return;
+  sel.innerHTML = '<option value="">모든 색상</option>';
+  if(!style) return;
+  try{
+    const r = await sbFetch('/rest/v1/inventory?style_number=eq.' + encodeURIComponent(style) + '&select=color&limit=5000');
+    if(!r.ok) return;
+    const cols = [...new Set((await r.json()).map(x=>x.color).filter(Boolean))].sort();
+    sel.innerHTML = '<option value="">모든 색상</option>' + cols.map(c=>'<option>'+esc(c)+'</option>').join('');
+  }catch(e){}
+}
+async function wpSaleAdd(){
+  const g  = id => (document.getElementById(id)||{}).value || '';
+  const m  = document.getElementById('wp-s-msg'); if(m) m.textContent = '';
+  const st = g('wp-s-style'), cl = g('wp-s-color') || null, sz = g('wp-s-size') || null;
+  const mode = g('wp-s-mode'), v = parseFloat(g('wp-s-val'));
+  if(!st){ if(m) m.textContent = '스타일을 골라줘'; return; }
+  if(!(v > 0)){ if(m) m.textContent = (mode==='pct' ? '할인율(%)을' : '세일가($)를') + ' 넣어줘'; return; }
+  if(mode === 'pct' && v >= 100){ if(m) m.textContent = '할인율은 100% 미만'; return; }
+  const body = { style_number: st, color: cl, size: sz };
+  if(mode === 'pct') body.percent_off = Math.round(v*100)/100; else body.sale_price = Math.round(v*100)/100;
+  try{
+    const r = await sbFetch('/rest/v1/sale_prices', { method:'POST', headers:{ Prefer:'return=representation' }, body: JSON.stringify(body) });
+    if(!r.ok) throw new Error(r.status + ' ' + (await r.text()).slice(0,120));
+    const d = await r.json(); _wpSales.push(d[0]);
+    wpRender('');
+    showToast('✅ 세일 걸었어 — ' + st + (cl?(' · '+cl):'') + (sz?(' · '+sz):''));
+  }catch(e){ if(m) m.textContent = '저장 실패 — ' + e.message; }
+}
+async function wpSaleDel(id){
+  if(!confirm('이 세일을 지울까? (정상가로 돌아가)')) return;
+  try{
+    const r = await sbFetch('/rest/v1/sale_prices?id=eq.' + encodeURIComponent(id), { method:'DELETE' });
+    if(!r.ok) throw new Error(String(r.status));
+    _wpSales = _wpSales.filter(x=>String(x.id) !== String(id));
+    wpRender('');
+  }catch(e){ alert('삭제 실패 — ' + e.message); }
 }
 
 // ═══ Cost & Margin editor (v571) — owner/accounting 전용. styles 테이블의 사이즈별 원가+최소마진 편집 ═══
