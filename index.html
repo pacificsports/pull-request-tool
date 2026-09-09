@@ -12626,8 +12626,8 @@ function scanMyUnits(){
         if(poSet && po && poSet.has(po)) k = scanPoKey(po);
         else if(poItems && poItems[v.key]) k = scanPoKey(poItems[v.key]);
       }
-      u[id] = { k, n: pcs ? (Number(v.qty)||0) : 1, s:String(v.style||''), c:String(v.color||''),
-                z:String(v.size||''), ...(v.po?{po:String(v.po)}:{}) };
+      /* 가볍게 — 한 박스당 글자 하나. 품목은 k 안에 이미 들어 있다 (v1052) */
+      u[id] = pcs ? { k, n:(Number(v.qty)||0) } : k;
     });
   }catch(e){}
   try{
@@ -12635,7 +12635,7 @@ function scanMyUnits(){
       if(!b) return;
       if(pcs){ (b.items||[]).forEach(i=>{ const k = scanKeyOf(i.style,i.color,i.size);
                  extra[k] = (extra[k]||0) + (Number(i.qty)||0); }); return; }
-      u['PB'+String(b.box||'')] = { k: scanPoKey(b.po), n:1, s:'(PC Room box)', c:String(b.cust||''), z:'', po:String(b.po||'') };
+      u['PB'+String(b.box||'')] = scanPoKey(b.po);
     });
   }catch(e){}
   Object.keys(_scan.manual||{}).forEach(k=>{ extra[k] = (extra[k]||0) + (Number(_scan.manual[k])||0); });
@@ -12661,17 +12661,21 @@ function scanMergedPayload(srv, final){
     /* 옛 판(v1047)으로 올라온 칸 — 번호별이 아니라 개수만 있다. 그건 그대로 더한다 */
     ((q.boxes)||[]).forEach(b=>{ const id=String((b&&b.id)||''); if(id && !units[id]) units[id] = null; });
   });
+  const uK = v => (typeof v === 'string') ? v : (v && v.k) || '';
+  const uN = v => (typeof v === 'string') ? 1 : (v ? (Number(v.n)||0) : 0);
   const cnt = {};
-  Object.keys(units).forEach(id=>{ const v = units[id]; if(!v || !v.k) return;
-    cnt[v.k] = (cnt[v.k]||0) + (Number(v.n)||0); });
+  Object.keys(units).forEach(id=>{ const k = uK(units[id]); if(!k) return;
+    cnt[k] = (cnt[k]||0) + uN(units[id]); });
   Object.keys(people).forEach(k=>{
     const q = people[k]; if(!q) return;
     const e = q.units ? (q.extra||{}) : (q.cnt||{});      /* 옛 판은 cnt 를 그대로 쓴다 */
     Object.keys(e).forEach(x=>{ cnt[x] = (cnt[x]||0) + (Number(e[x])||0); });
   });
   const bx = [];
-  Object.keys(units).forEach(id=>{ const v = units[id]; if(bx.length>=500) return;
-    bx.push(v ? { id, s:v.s, c:v.c, z:v.z, ...(v.po?{po:v.po}:{}) } : { id, s:'', c:'', z:'' }); });
+  Object.keys(units).forEach(id=>{ if(bx.length>=500) return;
+    const k = uK(units[id]), q = String(k).split('|');
+    if(String(k).indexOf('PO|')===0) bx.push({ id, s:'(order box)', c:'', z:'', po:q[1]||'' });
+    else bx.push({ id, s:q[0]||'', c:q[1]||'', z:q[2]||'' }); });
 
   const rows = [], used = {};
   (_scan.exp||[]).forEach(e=>{ const k = e.k || scanKeyOf(e.style,e.color,e.size); used[k] = 1;
@@ -12704,8 +12708,15 @@ function scanMergedPayload(srv, final){
      안 그러면 둘이 나눠 찍을 때 각자 화면에선 계속 '모자람' 으로 보여서 또 찍게 된다.
      합친 것에서 내 몫을 뺀 나머지를 들고 있다가 scanReconcile 이 더한다. */
   try{ const m = scanMatesFrom(srv); _scan.mates = m.others; _scan.mateNames = m.names; }catch(e){}
-  const prevPh = (srv && srv.phases) || {};
-  const phases = Object.assign({}, prevPh); phases[phase] = mine;
+  /* ⚠ phases 에 mine 을 통째로 또 넣으면 같은 내용이 두 번 실려 나간다 — 800박스면 그것만으로
+     300KB 가 되어 폰 회선에서 끊겼다 (2026-09-09). 여기엔 요약만 넣는다 (v1052). */
+  const slim = { at:mine.at, by:mine.by, wh:mine.wh, exp:mine.exp, got:mine.got, lines:mine.lines,
+                 ok:mine.ok, badCount:mine.badCount, bad:mine.bad, phase:mine.phase,
+                 partial:mine.partial, boxN:mine.boxN||0 };
+  const prevPh = {};
+  try{ const pp = (srv && srv.phases) || {};
+    Object.keys(pp).forEach(x=>{ if(x !== phase) prevPh[x] = pp[x]; }); }catch(e){}
+  const phases = Object.assign({}, prevPh); phases[phase] = slim;
   return Object.assign({}, mine, { phases });
 }
 /* 서버에 올라와 있는 것 중 **내 것을 뺀 나머지** — 내 화면에 같이 보여주려고 쓴다 (v1050).
@@ -12722,7 +12733,8 @@ function scanMatesFrom(srv){
     names.push(k);
     if(q.units){
       Object.keys(q.units).forEach(id=>{ if(myIds[id]) return; const v = q.units[id];
-        if(!v || !v.k) return; others[v.k] = (others[v.k]||0) + (Number(v.n)||0); });
+        const k = (typeof v === 'string') ? v : (v && v.k); if(!k) return;
+        others[k] = (others[k]||0) + ((typeof v === 'string') ? 1 : (Number(v.n)||0)); });
       Object.keys(q.extra||{}).forEach(x=>{ others[x] = (others[x]||0) + (Number(q.extra[x])||0); });
     }else{
       Object.keys(q.cnt||{}).forEach(x=>{ others[x] = (others[x]||0) + (Number(q.cnt[x])||0); });
@@ -12782,17 +12794,18 @@ async function scanAutoPush(){
     scanAutoBadge(payload.boxN || _scan.seen.size, payload.people);
     /* 남이 찍은 게 새로 들어왔으면 줄 색·개수를 다시 그린다 (v1049) */
     try{ if(_scan && _scan.mateNames && _scan.mateNames.length) scanRender(); }catch(e){}
-  }catch(e){ scanAutoBadge(0); }
+  }catch(e){ scanAutoBadge(0, null, String((e && e.message) || e)); }
   _scanAutoBusy = false;
 }
-function scanAutoBadge(n, people){
+function scanAutoBadge(n, people, why){
   const el = document.getElementById('scan-auto'); if(!el) return;
   const t = new Date().toLocaleTimeString([], {hour:'numeric', minute:'2-digit'});
   let who = '';
   try{ const ks = Object.keys(people||{}); if(ks.length > 1) who = '<br>\uD83D\uDC65 ' + ks.join(' + ') + ' counting together'; }catch(e){}
   el.innerHTML = n
     ? '<span style="color:#166534;font-weight:800;">\u2601 ' + n + ' box(es) already with the office</span> \u00b7 ' + t + who
-    : '<span style="color:#b45309;font-weight:800;">\u26A0 No signal — saved on this phone only.</span> It will go up by itself when the signal is back.';
+    : '<span style="color:#b45309;font-weight:800;">\u26A0 Not sent yet — saved on this phone.</span> It keeps trying by itself.'
+      + (why ? ('<br><span style="color:#94a3b8;">' + esc(String(why).slice(0,60)) + '</span>') : '');
 }
 
 // ═══ 화면 2: 스캔 세션 ═══
