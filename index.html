@@ -25168,12 +25168,17 @@ async function bxAgingExcel(){
 
    ⚠ 큰사이즈 할증은 웹(pacific-data.js)의 _WEBSTEP 과 같은 값이어야 한다.
       Base 를 고치면 규칙대로 다시 채우되, 손으로 정한 예외 칸은 안 건드린다. */
-let _wpRows = [], _wpBase = {}, _wpEdits = {}, _wpSales = [], _wpTab = 'BASE';
+let _wpRows = [], _wpBase = {}, _wpEdits = {}, _wpSales = [], _wpTab = 'ADULT';
 const WP_COLS   = ['base_price','price_2xl','price_3xl','price_4xl','price_5xl'];
 const WP_LABEL  = { base_price:'Base', price_2xl:'2XL', price_3xl:'3XL', price_4xl:'4XL', price_5xl:'5XL' };
 const WP_LADDER = { price_2xl:0.60, price_3xl:1.60, price_4xl:3.10, price_5xl:5.60 };
 const WP_SALE_SIZES = ['2T','3T','4T','5T','XS','S','M','L','XL','2XL','3XL','4XL','5XL'];
 
+/* 아동 계열 판정은 Cost & Margin 과 같은 규칙을 쓴다 — 카테고리에 KID/YOUTH/JUVY/TODDLER */
+function wpIsKid(r){
+  try{ if(typeof costIsKid === 'function') return costIsKid(r); }catch(e){}
+  return /KID|YOUTH|JUVY|TODDLER/.test(String((r && r.category) || '').toUpperCase());
+}
 function wpLadderFor(base){
   const b = parseFloat(base); if(isNaN(b)) return null;
   const o = {}; Object.keys(WP_LADDER).forEach(c=>{ o[c] = Math.round((b + WP_LADDER[c]) * 100) / 100; });
@@ -25249,7 +25254,8 @@ function wpOpen(){
     +   '<button class="btn btn-sm" style="background:transparent;color:#bfdbfe;border-color:#93c5fd;" onclick="wpClose()">✕</button>'
     + '</div>'
     + '<div style="padding:7px 16px 0;display:flex;gap:6px;align-items:center;">'
-    +   '<button class="btn btn-sm" id="wp-tab-BASE" onclick="wpTab(\'BASE\')">기본가 (Website)</button>'
+    +   '<button class="btn btn-sm" id="wp-tab-ADULT" onclick="wpTab(\'ADULT\')">Adult</button>'
+    +   '<button class="btn btn-sm" id="wp-tab-KIDS" onclick="wpTab(\'KIDS\')">Kids · Youth · Juvy · Toddler</button>'
     +   '<button class="btn btn-sm" id="wp-tab-SALE" onclick="wpTab(\'SALE\')">세일 (Sale)</button>'
     +   '<span id="wp-note" style="font-size:11px;color:#6b7280;margin-left:6px;"></span>'
     + '</div>'
@@ -25271,25 +25277,34 @@ function wpTab(t){
 
 function wpRender(filter){
   const body = document.getElementById('wp-body'); if(!body) return;
-  ['BASE','SALE'].forEach(t=>{ const b = document.getElementById('wp-tab-'+t); if(b) b.style.cssText = (_wpTab===t) ? 'background:#1d4ed8;color:#fff;border-color:#1d4ed8;font-weight:800;' : ''; });
+  ['ADULT','KIDS','SALE'].forEach(t=>{ const b = document.getElementById('wp-tab-'+t); if(!b) return;
+    b.style.cssText = (_wpTab===t) ? 'background:#1d4ed8;color:#fff;border-color:#1d4ed8;font-weight:800;' : '';
+    if(t!=='SALE'){ const n = (_wpRows||[]).filter(r=> (t==='KIDS') === wpIsKid(r)).length;
+      b.textContent = (t==='ADULT' ? 'Adult' : 'Kids · Youth · Juvy · Toddler') + ' (' + n + ')'; }
+  });
   const note = document.getElementById('wp-note');
   if(_wpTab === 'SALE'){
     if(note) note.textContent = '세일은 기본가/거래처가 위에 덮어씌워진다. 색·사이즈를 비우면 그 스타일 전체.';
     body.innerHTML = wpSaleHtml();
     return;
   }
-  if(note) note.innerHTML = '기본가를 고치면 큰사이즈가 규칙대로 따라온다 — <b>2XL = Base+0.60 · 3XL = +1.60 · 4XL = +3.10 · 5XL = +5.60</b> <span id="wp-off" style="color:#b45309;font-weight:700;"></span>';
+  const kidTab = (_wpTab === 'KIDS');
+  if(note) note.innerHTML = kidTab
+    ? '아동 계열은 큰사이즈 할증이 없다 — <b>Base 하나</b>만 쓴다.'
+    : '기본가를 고치면 큰사이즈가 규칙대로 따라온다 — <b>2XL = Base+0.60 · 3XL = +1.60 · 4XL = +3.10 · 5XL = +5.60</b> <span id="wp-off" style="color:#b45309;font-weight:700;"></span>';
+  const cols = kidTab ? ['base_price'] : WP_COLS;
   const f = String(filter||'').trim().toLowerCase();
-  const rows = (_wpRows||[]).filter(r=> !f
+  const rows = (_wpRows||[]).filter(r=> kidTab === wpIsKid(r)).filter(r=> !f
     || String(r.style_number).toLowerCase().indexOf(f) >= 0
     || String(r.description||'').toLowerCase().indexOf(f) >= 0);
-  const head = '<tr><th class="tl" style="position:sticky;left:0;background:#e2e8f0;color:#0f2a4a;z-index:7;">Style</th>'
+  const head = '<tr><th class="tl" style="position:sticky;left:0;background:var(--header);color:#fff;z-index:7;">Style</th>'
     + '<th class="tl">Description</th>'
-    + WP_COLS.map(c=>'<th'+(c==='base_price'?' style="background:#1d4ed8;color:#fff;"':'')+'>'+WP_LABEL[c]+'</th>').join('')
+    + '<th>Cat</th>'
+    + cols.map(c=>'<th'+(c==='base_price'?' style="background:#1d4ed8;color:#fff;"':'')+'>'+WP_LABEL[c]+'</th>').join('')
     + '</tr>';
   const trs = rows.map(r=>{
     const sn = String(r.style_number);
-    const cells = WP_COLS.map(c=>{
+    const cells = cols.map(c=>{
       const v = wpEff(sn, c);
       const empty = (v == null);
       return '<td style="padding:1px;'+(empty?'background:#fef9c3;':'')+'">'
@@ -25299,6 +25314,7 @@ function wpRender(filter){
     }).join('');
     return '<tr><td class="tl" style="font-weight:800;position:sticky;left:0;background:#fff;z-index:1;">'+esc(sn)+'</td>'
       + '<td class="tl" style="font-size:11px;color:#6b7280;max-width:280px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;" title="'+esc(r.description||'')+'">'+esc(r.description||'')+'</td>'
+      + '<td style="font-size:10px;color:#9ca3af;">'+esc(r.category||'')+'</td>'
       + cells + '</tr>';
   }).join('');
   body.innerHTML = '<table class="etbl" style="width:100%;font-size:12px;"><thead>'+head+'</thead><tbody>'
