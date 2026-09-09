@@ -12423,6 +12423,27 @@ function scanReportBannerHtml(scan, opts){
   const hidden = Math.max(0, (Number(scan.badCount)||bad.length) - bad.length);
   const when = (function(){ try{ return new Date(scan.at).toLocaleString(); }catch(e){ return String(scan.at||''); } })();
   const who = String(scan.by||'').trim();
+  /* 박스 번호 목록 — v1053 부터는 따로 안 싣고 사람 칸(people.ik/u)에서 만들어 쓴다 */
+  const _bxList = (function(){
+    if(Array.isArray(scan.boxes) && scan.boxes.length) return scan.boxes;
+    const out = [];
+    try{
+      const sp = scan.people || {};
+      Object.keys(sp).forEach(k=>{
+        const q = sp[k]; if(!q) return;
+        const push = (id, key) => {
+          if(out.length >= 500) return;
+          const t = String(key||''), p = t.split('|');
+          out.push(t.indexOf('PO|')===0 ? { id, s:'(order box)', c:'', z:'', po:p[1]||'' }
+                                        : { id, s:p[0]||'', c:p[1]||'', z:p[2]||'' });
+        };
+        if(q.u && q.ik) Object.keys(q.u).forEach(id=>push(id, q.ik[q.u[id]]));
+        else if(q.units) Object.keys(q.units).forEach(id=>{ const v=q.units[id];
+          push(id, (typeof v==='string') ? v : (v && v.k)); });
+      });
+    }catch(e){}
+    return out;
+  })();
   const LBL = {
     short:  r=>'<b>'+(r.exp-r.got)+'</b> short',
     missing:r=>'<b>none</b> arrived',
@@ -12451,9 +12472,9 @@ function scanReportBannerHtml(scan, opts){
         </tr>`).join('')}</tbody></table>
       ${hidden?`<div style="padding:5px 8px;color:#94a3b8;font-size:11px;">… +${hidden} more not listed</div>`:''}
     </div>`:''}
-    ${(scan.boxes&&scan.boxes.length)?`<details style="margin-top:8px;"><summary style="cursor:pointer;font-size:11.5px;font-weight:800;color:#334155;">📋 ${scan.boxes.length} box number(s) recorded — click to see</summary>
+    ${(_bxList.length)?`<details style="margin-top:8px;"><summary style="cursor:pointer;font-size:11.5px;font-weight:800;color:#334155;">📋 ${_bxList.length} box number(s) recorded — click to see</summary>
       <div style="margin-top:6px;background:#fff;border:1px solid #e5e7eb;border-radius:7px;max-height:200px;overflow-y:auto;">
-        <table style="width:100%;border-collapse:collapse;font-size:11px;"><tbody>${scan.boxes.map(b=>`<tr style="border-bottom:1px solid #f1f5f9;">
+        <table style="width:100%;border-collapse:collapse;font-size:11px;"><tbody>${_bxList.map(b=>`<tr style="border-bottom:1px solid #f1f5f9;">
           <td style="padding:3px 8px;font-family:Consolas,monospace;font-weight:700;white-space:nowrap;">${esc(String(b.id||''))}</td>
           <td style="padding:3px 8px;font-weight:700;">${esc(String(b.s||''))}</td>
           <td style="padding:3px 8px;">${esc(String(b.c||''))}</td>
@@ -12612,10 +12633,22 @@ function scanKeep2Drop(){ try{ const all = scanKeep2Load(); delete all[scanKeep2
    개수만 보내면 같은 박스를 둘이 찍었을 때 두 번 세진다 — 번호를 달고 보내면 합칠 때 하나로 눌린다.
    손으로 넣은 수(manual/photo)는 번호가 없으니 따로 담고, 합칠 때 그냥 더한다. */
 function scanMyUnits(){
-  const u = {}, extra = {};
+  /* 압축 (v1053) — 서버 `pic_scan_save` 는 payload 가 **60,000바이트**를 넘으면 'bad payload'(P0001)
+     로 거부한다. 2026-09-09 에 797박스를 찍고 30분간 아무것도 안 올라간 진짜 원인이 이것이었다.
+     품목 이름은 ik[] 에 한 번만 두고 박스는 그 번호만 가리킨다:
+       ik: ["1315|WHITE (SIDE SEAM)|M", ...]  ·  u: { "260908-2J4M6XYN5M": 0, ... }  ·  q: 장수(1 아닐 때만)
+     박스 하나당 80바이트 → 24바이트. 800박스가 20KB 안에 들어온다. */
+  const ik = [], ikIdx = {}, u = {}, q = {}, extra = {};
   const pcs = (typeof scanIsPcs==='function') ? scanIsPcs() : false;
   const poSet = (_scan && _scan.poSet) || null;
   const poItems = (_scan && _scan.poItems) || null;
+  const put = (id, k, n) => {
+    if(!id || !k) return;
+    let i = ikIdx[k];
+    if(i === undefined){ i = ik.length; ik.push(k); ikIdx[k] = i; }
+    u[id] = i;
+    if(n !== 1) q[id] = n;
+  };
   try{
     _scan.seen.forEach(v=>{
       if(!v) return;
@@ -12626,8 +12659,7 @@ function scanMyUnits(){
         if(poSet && po && poSet.has(po)) k = scanPoKey(po);
         else if(poItems && poItems[v.key]) k = scanPoKey(poItems[v.key]);
       }
-      /* 가볍게 — 한 박스당 글자 하나. 품목은 k 안에 이미 들어 있다 (v1052) */
-      u[id] = pcs ? { k, n:(Number(v.qty)||0) } : k;
+      put(id, k, pcs ? (Number(v.qty)||0) : 1);
     });
   }catch(e){}
   try{
@@ -12635,12 +12667,34 @@ function scanMyUnits(){
       if(!b) return;
       if(pcs){ (b.items||[]).forEach(i=>{ const k = scanKeyOf(i.style,i.color,i.size);
                  extra[k] = (extra[k]||0) + (Number(i.qty)||0); }); return; }
-      u['PB'+String(b.box||'')] = scanPoKey(b.po);
+      put('PB'+String(b.box||''), scanPoKey(b.po), 1);
     });
   }catch(e){}
   Object.keys(_scan.manual||{}).forEach(k=>{ extra[k] = (extra[k]||0) + (Number(_scan.manual[k])||0); });
   Object.keys(_scan.photo ||{}).forEach(k=>{ extra[k] = (extra[k]||0) + (Number(_scan.photo[k])||0); });
-  return { units:u, extra };
+  return { ik, u, q, extra, n: Object.keys(u).length };
+}
+/* 사람 칸 하나를 { 박스번호: {k,n} } 로 펼친다 — 압축본(ik/u)과 옛 판 둘 다 읽는다 */
+function scanPersonUnits(q){
+  const out = {};
+  if(!q) return out;
+  if(q.u && q.ik){
+    Object.keys(q.u).forEach(id=>{ const k = q.ik[q.u[id]]; if(!k) return;
+      out[id] = { k, n: (q.q && q.q[id] != null) ? (Number(q.q[id])||0) : 1 }; });
+    return out;
+  }
+  if(q.units){
+    Object.keys(q.units).forEach(id=>{ const v = q.units[id];
+      const k = (typeof v === 'string') ? v : (v && v.k); if(!k) return;
+      out[id] = { k, n: (typeof v === 'string') ? 1 : (Number(v.n)||0) }; });
+    return out;
+  }
+  return out;
+}
+function scanPersonExtra(q){
+  if(!q) return {};
+  if(q.u || q.units) return q.extra || {};
+  return q.cnt || {};        /* v1047 옛 판은 개수만 있었다 */
 }
 function scanMergedPayload(srv, final){
   const who   = String(_pchkWho||'').trim() || 'Someone';
@@ -12651,31 +12705,18 @@ function scanMergedPayload(srv, final){
     Object.keys(sp).forEach(k=>{ const q = sp[k]; if(q && Date.parse(q.at) > cut) people[k] = q; }); }catch(e){}
   const mineU = scanMyUnits();
   people[who] = { at:new Date().toISOString(), by:who, partial: !final,
-                  units: mineU.units, extra: mineU.extra, n: Object.keys(mineU.units).length };
+                  ik:mineU.ik, u:mineU.u, q:mineU.q, extra:mineU.extra, n:mineU.n };
 
   /* 카톤 번호로 먼저 합친다 — 같은 박스를 둘이 찍어도 한 번만 센다 */
   const units = {};
-  Object.keys(people).forEach(k=>{
-    const q = people[k]; if(!q) return;
-    if(q.units){ Object.keys(q.units).forEach(id=>{ if(id) units[id] = q.units[id]; }); return; }
-    /* 옛 판(v1047)으로 올라온 칸 — 번호별이 아니라 개수만 있다. 그건 그대로 더한다 */
-    ((q.boxes)||[]).forEach(b=>{ const id=String((b&&b.id)||''); if(id && !units[id]) units[id] = null; });
-  });
-  const uK = v => (typeof v === 'string') ? v : (v && v.k) || '';
-  const uN = v => (typeof v === 'string') ? 1 : (v ? (Number(v.n)||0) : 0);
+  Object.keys(people).forEach(k=>{ const pu = scanPersonUnits(people[k]);
+    Object.keys(pu).forEach(id=>{ units[id] = pu[id]; }); });
   const cnt = {};
-  Object.keys(units).forEach(id=>{ const k = uK(units[id]); if(!k) return;
-    cnt[k] = (cnt[k]||0) + uN(units[id]); });
-  Object.keys(people).forEach(k=>{
-    const q = people[k]; if(!q) return;
-    const e = q.units ? (q.extra||{}) : (q.cnt||{});      /* 옛 판은 cnt 를 그대로 쓴다 */
-    Object.keys(e).forEach(x=>{ cnt[x] = (cnt[x]||0) + (Number(e[x])||0); });
-  });
-  const bx = [];
-  Object.keys(units).forEach(id=>{ if(bx.length>=500) return;
-    const k = uK(units[id]), q = String(k).split('|');
-    if(String(k).indexOf('PO|')===0) bx.push({ id, s:'(order box)', c:'', z:'', po:q[1]||'' });
-    else bx.push({ id, s:q[0]||'', c:q[1]||'', z:q[2]||'' }); });
+  Object.keys(units).forEach(id=>{ const v = units[id]; if(!v || !v.k) return;
+    cnt[v.k] = (cnt[v.k]||0) + (Number(v.n)||0); });
+  Object.keys(people).forEach(k=>{ const e = scanPersonExtra(people[k]);
+    Object.keys(e).forEach(x=>{ cnt[x] = (cnt[x]||0) + (Number(e[x])||0); }); });
+  const boxN = Object.keys(units).length;
 
   const rows = [], used = {};
   (_scan.exp||[]).forEach(e=>{ const k = e.k || scanKeyOf(e.style,e.color,e.size); used[k] = 1;
@@ -12703,7 +12744,7 @@ function scanMergedPayload(srv, final){
     phase, people,
     partial: names.some(k=>people[k] && people[k].partial)
   };
-  if(bx.length){ mine.boxes = bx; mine.boxN = bx.length; }
+  mine.boxN = boxN;   /* 박스 번호 목록은 people 안의 u/ik 에 이미 있다 — 또 실어 보내지 않는다 (v1053) */
   /* 👀 내 화면에도 남들이 찍은 게 같이 보여야 한다 (v1049).
      안 그러면 둘이 나눠 찍을 때 각자 화면에선 계속 '모자람' 으로 보여서 또 찍게 된다.
      합친 것에서 내 몫을 뺀 나머지를 들고 있다가 scanReconcile 이 더한다. */
@@ -12717,28 +12758,49 @@ function scanMergedPayload(srv, final){
   try{ const pp = (srv && srv.phases) || {};
     Object.keys(pp).forEach(x=>{ if(x !== phase) prevPh[x] = pp[x]; }); }catch(e){}
   const phases = Object.assign({}, prevPh); phases[phase] = slim;
-  return Object.assign({}, mine, { phases });
+  let payload = Object.assign({}, mine, { phases });
+  /* 🚧 60,000바이트 벽 — 넘으면 서버가 통째로 거부한다. 넘칠 것 같으면 단계적으로 덜어낸다.
+     ① 남의 카톤 번호를 개수로 줄이고 ② 그래도 크면 내 것도 ③ 그래도 크면 안 맞는 줄 목록을 줄인다.
+     숫자(줄별 개수·총계)는 어느 단계에서도 안 잃는다. */
+  const _size = o => { try{ return JSON.stringify(o).length; }catch(e){ return 0; } };
+  const _toCnt = k => {
+    const qq = people[k], pu = scanPersonUnits(qq), c = {};
+    Object.keys(pu).forEach(id=>{ const v = pu[id]; c[v.k] = (c[v.k]||0) + (Number(v.n)||0); });
+    const e = scanPersonExtra(qq); Object.keys(e).forEach(x=>{ c[x] = (c[x]||0) + (Number(e[x])||0); });
+    return { at:(qq&&qq.at)||new Date().toISOString(), by:k, partial:!!(qq&&qq.partial), cnt:c, n:(qq&&qq.n)||0 };
+  };
+  try{
+    if(_size(payload) > 58000){
+      const sp = {}; Object.keys(people).forEach(k=>{ sp[k] = (k===who) ? people[k] : _toCnt(k); });
+      payload = Object.assign({}, payload, { people: sp });
+    }
+    if(_size(payload) > 58000){
+      const sp = {}; Object.keys(people).forEach(k=>{ sp[k] = _toCnt(k); });
+      payload = Object.assign({}, payload, { people: sp, trimmed: 'box numbers' });
+    }
+    if(_size(payload) > 58000){
+      payload = Object.assign({}, payload, { bad: (payload.bad||[]).slice(0, 15), trimmed: 'box numbers + lines' });
+    }
+  }catch(e){}
+  return payload;
 }
 /* 서버에 올라와 있는 것 중 **내 것을 뺀 나머지** — 내 화면에 같이 보여주려고 쓴다 (v1050).
    내가 찍은 카톤 번호는 빼서, 같은 박스를 둘이 찍어도 두 번 더해지지 않게 한다. */
 function scanMatesFrom(srv){
   const who = String(_pchkWho||'').trim() || 'Someone';
   const myIds = {};
-  try{ Object.keys(scanMyUnits().units).forEach(id=>{ myIds[id] = 1; }); }catch(e){}
+  try{ Object.keys(scanMyUnits().u).forEach(id=>{ myIds[id] = 1; }); }catch(e){}
   const others = {}, names = [];
   const sp = (srv && srv.people) || {};
   Object.keys(sp).forEach(k=>{
     if(k === who) return;
     const q = sp[k]; if(!q) return;
     names.push(k);
-    if(q.units){
-      Object.keys(q.units).forEach(id=>{ if(myIds[id]) return; const v = q.units[id];
-        const k = (typeof v === 'string') ? v : (v && v.k); if(!k) return;
-        others[k] = (others[k]||0) + ((typeof v === 'string') ? 1 : (Number(v.n)||0)); });
-      Object.keys(q.extra||{}).forEach(x=>{ others[x] = (others[x]||0) + (Number(q.extra[x])||0); });
-    }else{
-      Object.keys(q.cnt||{}).forEach(x=>{ others[x] = (others[x]||0) + (Number(q.cnt[x])||0); });
-    }
+    const pu = scanPersonUnits(q);
+    Object.keys(pu).forEach(id=>{ if(myIds[id]) return; const v = pu[id];
+      others[v.k] = (others[v.k]||0) + (Number(v.n)||0); });
+    const e = scanPersonExtra(q);
+    Object.keys(e).forEach(x=>{ others[x] = (others[x]||0) + (Number(e[x])||0); });
   });
   return { others, names };
 }
