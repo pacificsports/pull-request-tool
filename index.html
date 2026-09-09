@@ -12053,6 +12053,7 @@ function scanKeepDrop(bases){
 }
 function scanKeepPut(){            // 찍을 때마다 부른다 — 박스 수백 개라도 수십 KB 다
   try{ scanKeep2Put(); }catch(e){}   /* 📥 입고 · 🚚 이송 세션도 같이 남긴다 (v1044) */
+  try{ scanAutoSave(); }catch(e){}   /* ☁ 찍는 즉시 사무실로 올린다 (v1046) */
   try{
     if(!_scan || _scan.mode!=='PO') return;
     const bases = scanKeepBases(); if(!bases.length) return;
@@ -12431,7 +12432,9 @@ function scanReportBannerHtml(scan, opts){
   const head = ok ? '#f0fdf4' : '#fef2f2', line = ok ? '#86efac' : '#fca5a5', ink = ok ? '#166534' : '#b91c1c';
   return `<div style="margin-bottom:10px;background:${head};border:1px solid ${line};border-radius:9px;padding:10px 13px;font-size:12px;">
     <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap;">
-      <span style="font-weight:800;color:${ink};">${ok?'✔ Warehouse counted it — everything matches':'⚠ Warehouse counted it — '+(Number(scan.badCount)||bad.length)+' line(s) do not match'}</span>
+      <span style="font-weight:800;color:${scan.partial?'#b45309':ink};">${scan.partial
+          ? '⏳ Still counting in the warehouse — this updates by itself'
+          : (ok?'✔ Warehouse counted it — everything matches':'⚠ Warehouse counted it — '+(Number(scan.badCount)||bad.length)+' line(s) do not match')}</span>
       <span style="color:#64748b;">${who?esc(who)+' · ':''}${esc(when)}</span>
       <span style="margin-left:auto;background:#fff;border:1px solid ${line};border-radius:10px;padding:2px 9px;font-size:11px;">
         list <b>${(Number(scan.exp)||0).toLocaleString()}</b> · counted <b>${(Number(scan.got)||0).toLocaleString()}</b> box</span>
@@ -12588,6 +12591,40 @@ function scanKeep2Take(){   /* 세션을 막 열었을 때 — 남아 있으면 
   }catch(e){ return 0; }
 }
 function scanKeep2Drop(){ try{ const all = scanKeep2Load(); delete all[scanKeep2Key()]; localStorage.setItem(SCAN_KEEP2_K, JSON.stringify(all)); }catch(e){} }
+
+/* ═══ ☁ 찍는 즉시 사무실로 (v1046) ═══
+   폰에만 저장하는 걸로는 부족했다 — 폰을 잃거나 브라우저가 탭을 버리면 그걸로 끝이다.
+   이제 카톤을 찍을 때마다 4초 뒤에 조용히 서버로 올린다. Send 버튼은 그대로 있지만
+   그걸 안 눌러도 사무실 화면에 이미 올라와 있다.
+   ⚠ Send 를 아직 안 눌렀으면 `partial:true` 를 달아서, 사무실이 "다 센 것" 으로 오해하지 않게 한다. */
+let _scanAutoT = null, _scanAutoBusy = false;
+function scanAutoSave(){
+  if(!_scan || (_scan.mode !== 'IN' && _scan.mode !== 'TR')) return;
+  if(_scanAutoT) clearTimeout(_scanAutoT);
+  _scanAutoT = setTimeout(scanAutoPush, 4000);
+}
+async function scanAutoPush(){
+  if(!_scan || (_scan.mode !== 'IN' && _scan.mode !== 'TR')) return;
+  if(!_scan.seen || !_scan.seen.size) return;
+  if(_scanAutoBusy){ scanAutoSave(); return; }        /* 아직 보내는 중이면 조금 뒤에 다시 */
+  _scanAutoBusy = true;
+  const n = _scan.seen.size;
+  try{
+    const payload = scanResultPayload();
+    payload.auto = true;
+    payload.partial = !window._scanSent;              /* Send 를 눌렀으면 '다 센 것' */
+    const r = await scanRpc('pic_scan_save', {p_kind:(_scan.mode==='TR')?'TR':'IN', p_id:String(_scan.id), p_result:payload});
+    scanAutoBadge((r.ok && (await r.json()) === true) ? n : 0);
+  }catch(e){ scanAutoBadge(0); }
+  _scanAutoBusy = false;
+}
+function scanAutoBadge(n){
+  const el = document.getElementById('scan-auto'); if(!el) return;
+  const t = new Date().toLocaleTimeString([], {hour:'numeric', minute:'2-digit'});
+  el.innerHTML = n
+    ? '<span style="color:#166534;font-weight:800;">\u2601 ' + n + ' box(es) already with the office</span> \u00b7 ' + t
+    : '<span style="color:#b45309;font-weight:800;">\u26A0 No signal — saved on this phone only.</span> It will go up by itself when the signal is back.';
+}
 
 // ═══ 화면 2: 스캔 세션 ═══
 async function scanStart(mode, id){
@@ -12968,7 +13005,7 @@ function scanRender(){
                : (bad ? 'Check the pallet once more first. If the pallet is right and the list is wrong, send it — that is exactly what the office needs to know.'
                       : 'Everything on the pallet matches the list.')}
       </div>
-      <div style="font-size:11px;color:#94a3b8;text-align:center;margin-top:6px;">\uD83D\uDCBE Saved on this phone as you scan — you can stop and come back to the same shipment.</div></div>`;
+      <div id="scan-auto" style="font-size:11px;color:#94a3b8;text-align:center;margin-top:6px;line-height:1.5;">\u2601 Every box you scan goes to the office by itself — nothing is lost if you stop.</div></div>`;
     return;
   }
   if(done && _scan && _scan.back==='BATCH'){
