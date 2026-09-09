@@ -13256,13 +13256,13 @@ async function webViewLoad(){
   const since = new Date(Date.now() - 30*86400000).toISOString();
   const [styles, prices, imgs, orders, apps, logins] = await Promise.all([
     j('styles?select=style_number'),
-    j('style_prices?select=style_number,base_price'),
+    j('style_prices?select=*'),
     j('product_images?select=style_number'),
     j('web_orders?select=id,total_amount,status,created_at&created_at=gte.'+encodeURIComponent(since)),
     j('customer_applications?select=id,status'),
     j('user_roles?select=id,role')
   ]);
-  const priced = new Set(prices.filter(p=>p.base_price != null).map(p=>String(p.style_number)));
+  const priced = new Set(prices.filter(p=> p.base_price != null || p.price_toddler != null || p.price_juvy != null || p.price_youth != null || p.price_2t != null).map(p=>String(p.style_number)));
   const withImg = new Set(imgs.map(i=>String(i.style_number)));
   const all = styles.map(s=>String(s.style_number));
   _webStat = {
@@ -25165,6 +25165,15 @@ const WP_COLS   = ['base_price','price_2xl','price_3xl','price_4xl','price_5xl']
 const WP_LABEL  = { base_price:'Base', price_2xl:'2XL', price_3xl:'3XL', price_4xl:'4XL', price_5xl:'5XL' };
 const WP_LADDER = { price_2xl:0.60, price_3xl:1.60, price_4xl:3.10, price_5xl:5.60 };
 const WP_SALE_SIZES = ['2T','3T','4T','5T','XS','S','M','L','XL','2XL','3XL','4XL','5XL'];
+/* 아동 칸은 거래처 가격표(Price Sheet)와 똑같이 둔다 — 나중에 '이 거래처는 거래처가, 저기는 웹 기본가'
+   로 바꿔도 두 표가 그대로 맞아떨어져야 하기 때문. 한 스타일은 이 중 한 칸만 쓴다. */
+const WP_KIDCOL = [['TODDLER','2T-4T','price_toddler'],['JUVY','S-L','price_juvy'],['YOUTH','XS-XL','price_youth'],['KIDS','2T-5T','price_2t'],['KIDS','XS-XL','base_price']];
+const WP_ALLCOLS = WP_COLS.concat(['price_toddler','price_juvy','price_youth','price_2t']);
+function wpKidFlags(r){
+  const c = String((r && r.category) || '').toLowerCase();
+  const tod = c.indexOf('toddler') >= 0, jv = c.indexOf('juvy') >= 0, yt = c.indexOf('youth') >= 0;
+  return { tod, jv, yt, kid: !tod && !jv && !yt };
+}
 
 /* 아동 계열 판정은 Cost & Margin 과 같은 규칙을 쓴다 — 카테고리에 KID/YOUTH/JUVY/TODDLER */
 function wpIsKid(r){
@@ -25284,29 +25293,43 @@ function wpRender(filter){
   if(note) note.innerHTML = kidTab
     ? '아동 계열은 큰사이즈 할증이 없다 — <b>Base 하나</b>만 쓴다.'
     : '기본가를 고치면 큰사이즈가 규칙대로 따라온다 — <b>2XL = Base+0.60 · 3XL = +1.60 · 4XL = +3.10 · 5XL = +5.60</b> <span id="wp-off" style="color:#b45309;font-weight:700;"></span>';
-  const cols = kidTab ? ['base_price'] : WP_COLS;
   const f = String(filter||'').trim().toLowerCase();
   const rows = (_wpRows||[]).filter(r=> kidTab === wpIsKid(r)).filter(r=> !f
     || String(r.style_number).toLowerCase().indexOf(f) >= 0
     || String(r.description||'').toLowerCase().indexOf(f) >= 0);
-  const head = '<tr><th class="tl" style="position:sticky;left:0;background:var(--header);color:#fff;z-index:7;">Style</th>'
-    + '<th class="tl">Description</th>'
-    + '<th>Cat</th>'
-    + cols.map(c=>'<th'+(c==='base_price'?' style="background:#1d4ed8;color:#fff;"':'')+'>'+WP_LABEL[c]+'</th>').join('')
-    + '</tr>';
+  const stTh = '<th class="tl" style="position:sticky;left:0;background:var(--header);color:#fff;z-index:7;">Style</th><th class="tl">Description</th>';
+  const head = kidTab
+    ? '<tr>' + stTh + WP_KIDCOL.map(k=>'<th>'+k[0]+'<br><span style="font-weight:400;font-size:9px;">'+k[1]+'</span></th>').join('') + '<th style="width:99%;"></th></tr>'
+    : '<tr>' + stTh + '<th>Cat</th>'
+      + WP_COLS.map(c=>'<th'+(c==='base_price'?' style="background:#1d4ed8;color:#fff;"':'')+'>'+WP_LABEL[c]+'</th>').join('')
+      + '</tr>';
+  const inpTd = (sn, c, wide) => {
+    const v = wpEff(sn, c);
+    return '<td style="white-space:nowrap;padding:1px 4px;'+(v==null?'background:#fef9c3;':'')+'">'
+      + (wide ? '<span style="color:#94a3b8;">$</span> ' : '')
+      + '<input id="wp-'+esc(sn)+'-'+c+'" class="num" value="'+(v!=null?v.toFixed(2):'')+'" placeholder="—"'
+      + ' oninput="onwp(\''+esc(sn)+'\',\''+c+'\',this.value)"'
+      + ' style="width:'+(wide?64:62)+'px;text-align:right;font-family:Consolas,monospace;"></td>';
+  };
+  const greyTd = '<td style="text-align:center;background:#f3f4f6;color:#d1d5db;">—</td>';
   const trs = rows.map(r=>{
     const sn = String(r.style_number);
-    const cells = cols.map(c=>{
-      const v = wpEff(sn, c);
-      const empty = (v == null);
-      return '<td style="padding:1px;'+(empty?'background:#fef9c3;':'')+'">'
-        + '<input id="wp-'+esc(sn)+'-'+c+'" class="num" value="'+(v!=null?v.toFixed(2):'')+'" placeholder="—"'
-        + ' oninput="onwp(\''+esc(sn)+'\',\''+c+'\',this.value)"'
-        + ' style="width:62px;text-align:right;font-family:Consolas,monospace;"></td>';
-    }).join('');
+    let cells;
+    if(kidTab){
+      /* 한 스타일은 자기 계열 칸 하나만 쓴다 — 나머지는 회색 (Price Sheet 와 같은 규칙) */
+      const k = wpKidFlags(r);
+      cells = (k.tod ? inpTd(sn,'price_toddler',1) : greyTd)
+            + (k.jv  ? inpTd(sn,'price_juvy',1)    : greyTd)
+            + (k.yt  ? inpTd(sn,'price_youth',1)   : greyTd)
+            + (k.kid ? inpTd(sn,'price_2t',1)      : greyTd)
+            + (k.kid ? inpTd(sn,'base_price',1)    : greyTd)
+            + '<td></td>';
+    } else {
+      cells = '<td style="font-size:10px;color:#9ca3af;">'+esc(r.category||'')+'</td>'
+            + WP_COLS.map(c=>inpTd(sn,c,0)).join('');
+    }
     return '<tr><td class="tl" style="font-weight:800;position:sticky;left:0;background:#fff;z-index:1;">'+esc(sn)+'</td>'
       + '<td class="tl" style="font-size:11px;color:#6b7280;max-width:280px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;" title="'+esc(r.description||'')+'">'+esc(r.description||'')+'</td>'
-      + '<td style="font-size:10px;color:#9ca3af;">'+esc(r.category||'')+'</td>'
       + cells + '</tr>';
   }).join('');
   body.innerHTML = '<table class="etbl" style="width:100%;font-size:12px;"><thead>'+head+'</thead><tbody>'
@@ -25319,10 +25342,10 @@ async function wpSave(){
   if(!sns.length){ showToast('바뀐 게 없어'); return; }
   const rows = sns.map(sn=>{
     const o = { style_number: sn };
-    WP_COLS.forEach(c=>{ const v = wpEff(sn, c); o[c] = (v == null || isNaN(v)) ? null : v; });
+    WP_ALLCOLS.forEach(c=>{ const v = wpEff(sn, c); o[c] = (v == null || isNaN(v)) ? null : v; });
     return o;
   });
-  const bad = rows.filter(o=> o.base_price == null);
+  const bad = rows.filter(o=> o.base_price == null && o.price_toddler == null && o.price_juvy == null && o.price_youth == null && o.price_2t == null);
   if(bad.length && !confirm(bad.length + '개 스타일은 Base 가 비어 있어 — 그대로 저장할까? (웹에서 가격이 안 보인다)')) return;
   const btn = document.getElementById('wp-save'); if(btn){ btn.disabled = true; btn.textContent = '저장 중…'; }
   try{
