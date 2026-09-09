@@ -192,7 +192,7 @@ body.po-dragging{user-select:none;}
   </span>
   <select id="lang-sel" onchange="setLang(this.value)" style="font-size:11px;padding:3px 6px;border-radius:5px;border:none;background:#1d3f66;color:#fff;"><option value="ko">한국어</option><option value="en">English</option><option value="es">Español</option></select>
   <button id="wide-btn" class="btn btn-sm" onclick="toggleWide()" title="화면 넓게 / 좁게 — 기본은 넓게 (이 브라우저에만 저장돼)" style="padding:2px 8px;font-size:10px;background:#1d3f66;color:#cfe0f2;border-color:#2b5384;">↔ Wide</button>
-  <span id="app-ver" style="font-size:10px;color:#9fb8d4;">v1037</span>
+  <span id="app-ver" style="font-size:10px;color:#9fb8d4;">v1038</span>
 </div>
 <script>
 // ↔ 넓게 보기 — 브라우저마다 따로 저장 (v793)
@@ -3618,8 +3618,18 @@ async function _saveCurrentInner(){
        구분 근거는 `pcMoveData` 다 — `_old` 가 붙은 것만 예전 이동이고, 없는 것은 이번 편집분이다. */
     const _freshMv = new Set();
     (rec.lines||[]).forEach(L=>(L.pcMoveData||[]).forEach(d=>{ if(d && !d._old && d.id) _freshMv.add(String(d.id)); }));
-    if(pre && Array.isArray(pre.move) && _freshMv.size){
-      pre = Object.assign({}, pre, { move: pre.move.filter(b=>!(b && b.id && _freshMv.has(String(b.id)))) });
+    /* v1038 — 더 확실한 잣대를 하나 더: **박스가 빈에서 나간 시각(`out_at`)**.
+       이 오더를 연 시각보다 나중에 나갔으면 창고가 들고 간 게 아니라 이 화면에서 방금 찍은 것이다.
+       `_old` 표시(v970)는 relink 가 어긋나면 안 붙을 수 있어서, 시각을 같이 본다. 둘 중 하나만 걸려도 제외. */
+    const _mo = window._modOpenedFor;
+    const _openedMs = (_mo && _mo.base === base) ? Number(_mo.at) || 0 : 0;
+    if(pre && Array.isArray(pre.move)){
+      pre = Object.assign({}, pre, { move: pre.move.filter(b=>{
+        if(!b) return false;
+        if(b.id && _freshMv.has(String(b.id))) return false;
+        if(_openedMs && b.out_at && Date.parse(b.out_at) >= _openedMs) return false;
+        return true;
+      }) });
     }
     /* ⚠ 이 경고는 **이번 수정이 실제로 건드리는 품목** 만 세야 한다 (v974).
        v931 에서 만들 때는 Modify 가 오더 전체를 열었으니 오더 전체를 세는 게 맞았다.
@@ -3922,6 +3932,11 @@ async function loadSaved(base){
   window._poPdfB64 = null; // 다른 오더의 PDF가 이 오더에 붙지 않게 (DB의 기존 PO는 유지됨)
   togglePoViewer(false);                                  // 뷰어 닫기 + 본문 밀림 원복 (v391)
   window._forceBase = rec.base; // 편집 중 이름/PO/날짜를 고쳐도 같은 오더로 저장 (새 오더 생성 방지)
+  /* ⏱ 이 오더를 **언제 열었는지** 찍어 둔다 (v1038).
+     저장할 때 "이미 창고가 PC Room 으로 들고 간 박스" 를 가리는 기준이다 —
+     이 시각보다 **나중에** 빈에서 나간 박스는 창고가 들고 간 게 아니라 이 화면에서 방금 찍은 것이다.
+     오더 번호를 같이 적어 둬서, 다른 오더를 열었다 온 오래된 값이 잘못 쓰이지 않게 한다. */
+  window._modOpenedFor = { base: rec.base, at: Date.now() };
   setMeta(rec.meta); poLines = normalizeLines(rec.lines);
   /* 🔒 수정 모드 (v966) — 저장된 오더를 열면 모든 줄을 잠근다.
      예전에는 전부 열린 채로 열려서, 저장하면 이미 창고가 다 뽑아 놓은 줄까지
@@ -5221,7 +5236,7 @@ async function cxlScan(rec){
   if(!poN) return out;
   const grab = async (q)=>{
     try{
-      const r = await sbFetch('/rest/v1/pr_boxes?select=id,style,color,size,pcs,loc,wh&status=eq.OUT&out_po=eq.'+encodeURIComponent(q));
+      const r = await sbFetch('/rest/v1/pr_boxes?select=id,style,color,size,pcs,loc,wh,out_at&status=eq.OUT&out_po=eq.'+encodeURIComponent(q));   /* out_at: 언제 빈에서 나갔나 — v1038 */
       return r.ok ? (await r.json()) : [];
     }catch(e){ return []; }
   };
