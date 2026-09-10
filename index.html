@@ -192,7 +192,7 @@ body.po-dragging{user-select:none;}
   </span>
   <select id="lang-sel" onchange="setLang(this.value)" style="font-size:11px;padding:3px 6px;border-radius:5px;border:none;background:#1d3f66;color:#fff;"><option value="ko">한국어</option><option value="en">English</option><option value="es">Español</option></select>
   <button id="wide-btn" class="btn btn-sm" onclick="toggleWide()" title="화면 넓게 / 좁게 — 기본은 넓게 (이 브라우저에만 저장돼)" style="padding:2px 8px;font-size:10px;background:#1d3f66;color:#cfe0f2;border-color:#2b5384;">↔ Wide</button>
-  <span id="app-ver" style="font-size:10px;color:#9fb8d4;">v1072</span>
+  <span id="app-ver" style="font-size:10px;color:#9fb8d4;">v1073</span>
 </div>
 <script>
 // ↔ 넓게 보기 — 브라우저마다 따로 저장 (v793)
@@ -15319,6 +15319,16 @@ function scanStop(){
   window._scanStream = null;
   const ov = document.getElementById('scan-cam'); if(ov) ov.remove();
   if(window._pfindMode){ pfindDone(); return; }
+  /* ⚠⚠ 여기 v1072 에서 빠뜨렸다 (v1073 에서 고침).
+     실사 스캔의 비교를 `scanExit()` 에만 걸어놨는데, 카메라의 **Done 버튼은
+     `scanStop()` 만 부른다** — `scanExit()` 을 지나가지 않는다.
+     그래서 다 찍고 Done 을 눌러도 줄이 하나도 안 바뀌었다.
+     카메라가 닫히는 길은 두 개(Done · 뒤로가기)이고, 둘 다 여기를 지난다. */
+  if(_scan && _scan.mode === 'PCHK'){
+    try{ pchkScanApply(); }catch(e){}
+    try{ pchkEmpCapture(); }catch(e){}
+    return;                     /* _scan 은 남긴다 — 「Scan more boxes」 로 이어 찍는다 */
+  }
   scanRender();
 }
 
@@ -17130,6 +17140,10 @@ function pchkEmpItem(){ return [_pchkStyle,_pchkColor,_pchkSize].map(s=>String(s
 async function pchkEmpShowBin(){
   pchkEmpGrab();
   const bin=String(_pchkBin||'').trim().toUpperCase(); _pchkBin=bin;
+  /* 새 팔레트를 열면 아까 팔레트의 스캔 결과는 버린다 (v1073).
+     남기면 다른 선반의 숫자가 이 선반의 결과로 보인다 — 실사에서 제일 위험한 착각이다. */
+  if(_scan && _scan.mode === 'PCHK' && String(_scan.id) !== bin){ _scan = null; }
+  window._pchkScanExtra = null; window._pchkScanN = 0; window._pchkScanAt = 0;
   const el=document.getElementById('pchk-bincontents'); if(!el) return;
   if(!bin){ el.innerHTML='<div style="color:#94a3b8;font-size:12px;padding:4px 2px;">Enter a bin first, then press Enter.</div>'; return; }
   el.innerHTML='<div style="color:#64748b;font-size:12px;padding:8px 2px;">Loading pallet contents…</div>';
@@ -17206,9 +17220,16 @@ function pchkEmpScanStart(){
   const rows = pchkBinRowsSorted();
   if(!d || !rows.length){ showToast('⚠ Search a bin first'); return; }
   if(typeof scanCam !== 'function'){ showToast('⚠ Scanner not available'); return; }
-  _scan = { mode:'PCHK', back:'PCHK', id:String(d.bin||''), wh:_pchkWh, ref:String(d.bin||''),
-            title:'📷 Scan boxes — [' + _pchkWh + '] ' + String(d.bin||''),
-            exp:[], seen:new Map(), pbox:new Map(), manual:{} };
+  /* 같은 팔레트를 다시 열면 **이어 찍는다** (v1073). 버튼이 「Scan more boxes」 인데
+     세션을 새로 만들면 아까 찍은 것이 사라져서 말과 동작이 어긋난다.
+     팔레트가 바뀌면 새로 시작한다 — 옛 숫자가 따라오면 그게 더 나쁘다. */
+  const same = _scan && _scan.mode === 'PCHK'
+    && String(_scan.id) === String(d.bin||'') && String(_scan.wh) === String(_pchkWh);
+  if(!same){
+    _scan = { mode:'PCHK', back:'PCHK', id:String(d.bin||''), wh:_pchkWh, ref:String(d.bin||''),
+              title:'📷 Scan boxes — [' + _pchkWh + '] ' + String(d.bin||''),
+              exp:[], seen:new Map(), pbox:new Map(), manual:{} };
+  }
   scanCam();
 }
 /* 카메라를 닫을 때 한 번 — 찍은 것을 줄에 얹는다 */
@@ -17248,6 +17269,9 @@ function pchkScanDetected(){
 function pchkScanClear(){
   const rows = pchkBinRowsSorted();
   rows.forEach((x,i)=>{ const m=_pchkMarks[i]; if(m && m.byScan){ delete _pchkMarks[i]; } });
+  /* 찍은 박스 자체도 버린다 (v1073) — 안 버리면 「Scan more」 를 눌렀을 때
+     방금 지운 것이 그대로 다시 얹힌다. */
+  if(_scan && _scan.mode === 'PCHK'){ try{ _scan.seen = new Map(); }catch(e){} }
   window._pchkScanExtra = null; window._pchkScanN = 0; window._pchkScanAt = 0;
   pchkEmpRenderBinCard();
 }
