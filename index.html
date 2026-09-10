@@ -2951,7 +2951,119 @@ function revWork(rec, wh, rv){
    일감을 계산하는 것(revWork)과 종이(buildRevDocHtml)는 v966 것을 그대로 쓴다 —
    여기서 새로 하는 일은 그걸 **자기 진행상태를 가진 줄**로 만드는 것뿐이다.
    프린트 기록은 `_printed['SC#R1']` 로 창고 줄과 똑같은 자리에 들어간다. */
-function revRowKey(wh, n){ return String(wh) + '#R' + String(n); }
+/* 문서번호에도 쓰이는 열쇠라 '#' 대신 '-' 를 쓴다 — 0903LG91379SC-R1 처럼 읽힌다 (v1058) */
+function revRowKey(wh, n){ return String(wh) + '-R' + String(n); }
+function revIsKey(k){ return /-R\d+$/.test(String(k||'')); }
+function revParentWh(k){ return String(k||'').replace(/-R\d+$/, ''); }
+function revNumOf(k){ const m = String(k||'').match(/-R(\d+)$/); return m ? Number(m[1]) : 0; }
+/* v1054 초기엔 '#R1' 이었다 — 그때 찍은 프린트 기록도 계속 읽는다 */
+function revPrnOf(rec, wh, n){
+  const P = (rec && rec.meta && rec.meta._printed) || {};
+  return P[revRowKey(wh, n)] || P[String(wh) + '#R' + String(n)] || {};
+}
+
+/* ═══════════ 🔗 같이 보낼까 · 📦 따로 보낼까 (v1058) ═══════════
+   고친 몫을 원래 출고에 합쳐 보낼 수도 있고, 따로 내보낼 수도 있다.
+   합치는 게 기본이다 — 아무것도 안 누르면 예전과 똑같이 돈다 (지금 잘 도는 걸 깨지 않으려고).
+   `📦 따로` 를 누른 것만 자기 패킹리스트·인보이스·트래킹을 갖는다.
+
+   구현은 이미 있는 것을 그대로 빌린다: 🚚 Ship from CA 가 SC 몫을 CA 문서 하나로 묶는
+   `_consol` 방식과 같은 자리에 끼운다. 즉 `rec.whs` 는 손대지 않고
+   패킹리스트 화면에서만 'SC-R1' 같은 칸을 하나 더 만든다.
+   → 창고 목록을 도는 다른 모든 코드(배치바·MAS·pack_orders …)는 이걸 아예 못 보므로 안전하다.
+   저장은 `rec.pl['SC-R1']` / `rec.inv['SC-R1']` 로 들어간다 (savePL 이 원래부터 열쇠를 그대로 쓴다). */
+function revSepOn(rec, key){
+  return !!(rec && rec.meta && rec.meta._revSep && rec.meta._revSep[String(key)]);
+}
+/* 손님에게 더 나가는 몫이 있는 REV 만 따로 문서를 가질 수 있다 (되돌리기는 문서가 없다) */
+function revSepKeys(rec){
+  const out = [];
+  const sep = (rec && rec.meta && rec.meta._revSep) || {};
+  Object.keys(sep).forEach(k=>{
+    if(!sep[k] || !revIsKey(k)) return;
+    if(revPlLines(rec, revParentWh(k), revNumOf(k)).length) out.push(k);
+  });
+  return out.sort();
+}
+/* 이 REV 가 이 창고에서 늘린 줄만 — 그게 따로 나가는 물건이다 */
+function revPlLines(rec, wh, n){
+  const rv = revOf(rec, n); if(!rv) return [];
+  const out = [];
+  (rv.keys||[]).forEach(k=>{
+    const sn = (rv.lines||{})[k]; if(!sn) return;
+    const bw = sn.byWh && sn.byWh[wh]; if(!bw) return;
+    const d = (Number(bw.to)||0) - (Number(bw.from)||0);
+    if(d <= 0) return;
+    const L = (rec.lines||[]).find(l => (String(l.wh||'SC').trim().toUpperCase()||'SC')===wh
+      && String(l.style||'')===String(sn.style||'')
+      && String(l.color||'')===String(sn.color||'')
+      && String(l.size||'')===String(sn.size||''));
+    out.push({ style: sn.style||'', desc: sn.desc||((L&&L.desc)||''), color: sn.color||'', size: sn.size||'',
+               qty: d, price: (L&&Number(L.price))||0, ppb: Number(sn.ppb)||((L&&L.ppb)||72),
+               pbox: sn.pbox||((L&&L.pbox)||''), wh: wh });
+  });
+  return out;
+}
+/* 따로 나가기로 한 몫은 원래 창고 문서에서 빼야 한다 — 안 그러면 손님에게 두 번 청구된다 */
+function revSplitCut(rec, whs){
+  const cut = {};
+  revSepKeys(rec).forEach(key=>{
+    const pw = revParentWh(key);
+    if(!(whs||[]).includes(pw)) return;
+    revPlLines(rec, pw, revNumOf(key)).forEach(x=>{
+      const k = [x.style, x.color, x.size, pw].join('');
+      cut[k] = (cut[k]||0) + (Number(x.qty)||0);
+    });
+  });
+  return cut;
+}
+function revApplyCut(lines, cut){
+  if(!cut || !Object.keys(cut).length) return lines;
+  return (lines||[]).map(l=>{
+    const k = [l.style||'', l.color||'', l.size||'', (String(l.wh||'SC').trim().toUpperCase()||'SC')].join('');
+    if(!cut[k]) return l;
+    return Object.assign({}, l, { qty: Math.max(0, (Number(l.qty)||0) - cut[k]) });
+  }).filter(l=>(Number(l.qty)||0) > 0);
+}
+/* 패킹리스트 화면이 쓰는 칸 목록 — 진짜 창고 + 따로 나가는 REV */
+function plWhList(rec){
+  const whs = (rec && rec.whs) || [];
+  const consol = recShipFromCA(rec) && whs.includes('CA');
+  return (consol ? whs.filter(w=>w==='CA') : whs.slice()).concat(revSepKeys(rec));
+}
+function plWhLabel(rec, key){
+  if(!revIsKey(key)) return (recShipFromCA(rec) && key==='CA' && (rec.whs||[]).includes('CA')) ? 'CA (SC+CA)' : key;
+  return revParentWh(key) + ' · REV ' + revNumOf(key);
+}
+async function revSepToggle(base, key, on){
+  const rec = savedCache.find(s=>s.base===base); if(!rec) return;
+  const pw = revParentWh(key), n = revNumOf(key);
+  const pcs = revPlLines(rec, pw, n).reduce((a2,x)=>a2+(Number(x.qty)||0), 0);
+  if(on){
+    if(!confirm('📦 REV ' + n + ' 을 따로 내보낸다 (' + pcs.toLocaleString() + '장)\n\n'
+      + '• 자기 패킹리스트 · 인보이스 · 트래킹을 갖는다\n'
+      + '• 원래 ' + pw + ' 문서에서는 이 ' + pcs.toLocaleString() + '장이 빠진다\n\n'
+      + '진행할까요?')) return;
+  } else {
+    const saved = !!((rec.pl||{})[key] && rec.pl[key].savedAt);
+    if(saved && !confirm('🔗 REV ' + n + ' 을 원래 ' + pw + ' 출고에 합친다.\n\n'
+      + '⚠ 이 REV 로 이문서가 이미 저장되어 있습니다. 합치면 그 문서는 안 쓰이고,\n'
+      + '   이 ' + pcs.toLocaleString() + '장은 ' + pw + ' 문서로 돌아갑니다. (문서는 지우지 않습니다)\n\n'
+      + '진행할까요?')) return;
+  }
+  const sep = Object.assign({}, (rec.meta && rec.meta._revSep) || {});
+  if(on) sep[key] = { at:new Date().toISOString(), by:(SESS&&SESS.email)||'' }; else delete sep[key];
+  rec.meta = Object.assign({}, rec.meta||{}, { _revSep: sep });
+  try{
+    await sbFetch('/rest/v1/pr_orders?base=eq.'+encodeURIComponent(base), {method:'PATCH',
+      headers:{Prefer:'return=minimal'}, body:JSON.stringify({meta:rec.meta, updated_at:new Date().toISOString()})});
+  }catch(e){ showToast('❌ '+e.message); return; }
+  try{ logHist(base, 'REV ' + n + (on ? ' ships separately' : ' combined back into ' + pw) + ' — ' + pw); }catch(e){}
+  renderSaved();
+  showToast(on ? ('📦 REV ' + n + ' — 따로 내보낵니다') : ('🔗 REV ' + n + ' — ' + pw + ' 에 합커습니다'));
+}
+
+
 
 /* 이 리비전이 이 창고에서 몇 장 늘고 몇 장 줄었나 (줄 제목에 쓴다) */
 function revRowDelta(rec, wh, rv){
@@ -3016,7 +3128,7 @@ function revRowsHtml(rec, wh){
     : '';
   return rows.map(rv=>{
     const key = revRowKey(wh, rv.n);
-    const mp  = (rec.meta && rec.meta._printed && rec.meta._printed[key]) || {};
+    const mp  = revPrnOf(rec, wh, rv.n);
     const d   = revRowDelta(rec, wh, rv);
     const chips = (d.plus ? `<span style="background:#1d4ed8;color:#fff;font-weight:900;border-radius:4px;padding:1px 8px;font-size:11px;white-space:nowrap;">➕ ${d.plus.toLocaleString()} pcs</span>` : '')
                 + (d.minus ? `<span style="background:#b45309;color:#fff;font-weight:900;border-radius:4px;padding:1px 8px;font-size:11px;white-space:nowrap;">↩ put back ${d.minus.toLocaleString()} pcs</span>` : '');
@@ -3044,7 +3156,18 @@ function revRowsHtml(rec, wh){
       <button class="btn btn-sm"${dis} style="background:${prC};color:#fff;border-color:${prC};font-weight:800;${locked?'cursor:not-allowed;opacity:.6;':''}" onclick="revPrintPR('${esc(rec.base)}','${wh}',${rv.n})" oncontextmenu="return docBtnMenu(event,'${esc(rec.base)}','${esc(key)}','pr')" title="Only what changed in REV ${rv.n} — pull AND put-back on one sheet. Give the warehouse this, not the whole order. Right-click: ${mp.pr?'clear':'mark'} done.">\u{1F5A8} Pull Request${pby(mp.pr)}</button>
       <button class="btn btn-sm"${dis} style="background:${lbC};color:#fff;border-color:${lbC};${locked?'cursor:not-allowed;opacity:.6;':''}" onclick="revLabelClick('${esc(rec.base)}','${wh}',${rv.n})" oncontextmenu="return docBtnMenu(event,'${esc(rec.base)}','${esc(key)}','label')" title="Right-click: ${mp.label?'clear':'mark'} done">\u{1F3F7} Box Label${pby(mp.label)}</button>
       <button class="btn btn-sm"${dis} style="background:${locked?'#cbd5e1':'#0f766e'};color:#fff;border-color:${locked?'#cbd5e1':'#0f766e'};${locked?'cursor:not-allowed;opacity:.6;':''}" onclick="revLabelClick('${esc(rec.base)}','${wh}',${rv.n},'full')" title="Small 2x1 label for individual full boxes">\u{1F3F7} Full Box</button>
-      <span style="margin-left:auto;font-size:10.5px;color:${locked?'#5b21b6':'#92400e'};font-weight:800;white-space:nowrap;">${locked ? '\u{1F512} on the truck — wait for CA' : (mp.pr ? '✓ warehouse has this sheet' : '⚠ not given to the warehouse yet')}</span>
+      ${(()=>{ /* 🔗 같이 / 📦 따로 — 손님에게 더 나가는 몫이 있을 때만 물어볼 일이 있다 (v1058) */
+        if(locked || !d.plus) return '';
+        if(!revPlLines(rec, wh, rv.n).length) return '';
+        const sep = revSepOn(rec, key);
+        const pi  = (rec.pl && rec.pl[key]) || {};
+        const ivp = rec.inv && rec.inv[key] && rec.inv[key].printed;
+        if(!sep) return `<button class="btn btn-sm" style="background:#fff;color:#0f766e;border-color:#5eead4;font-weight:800;" onclick="revSepToggle('${esc(rec.base)}','${esc(key)}',true)" title="Give this REV its own packing list, invoice and tracking. Right now it goes out inside the ${wh} shipment.">📦 따로 보내기</button>`;
+        return `<button class="btn btn-sm" style="background:${pi._completed?'#16a34a':(pi.savedAt?'#0e7490':'#f59e0b')};color:#fff;border-color:${pi._completed?'#16a34a':(pi.savedAt?'#0e7490':'#f59e0b')};" onclick="openPLWh('${esc(rec.base)}','${esc(key)}')" oncontextmenu="return plBtnMenu(event,'${esc(rec.base)}','${esc(key)}')" title="This REV's own packing list">📦 Packing List</button>`
+          + (pi.savedAt ? `<button class="btn btn-sm" style="background:${ivp?'#16a34a':'#dc2626'};color:#fff;border-color:${ivp?'#16a34a':'#dc2626'};" onclick="openInvoiceWh('${esc(rec.base)}','${esc(key)}')" oncontextmenu="return docBtnMenu(event,'${esc(rec.base)}','${esc(key)}','inv')" title="This REV's own invoice">🧾 Invoice</button>` : '')
+          + `<button class="btn btn-sm" style="background:#fff;color:#b45309;border-color:#fed7aa;font-weight:800;" onclick="revSepToggle('${esc(rec.base)}','${esc(key)}',false)" title="Put it back into the ${wh} shipment — one packing list again">🔗 ${wh} 에 합치기</button>`;
+      })()}
+      <span style="margin-left:auto;font-size:10.5px;color:${locked?'#5b21b6':'#92400e'};font-weight:800;white-space:nowrap;">${locked ? '\u{1F512} on the truck — wait for CA' : (revSepOn(rec,key) ? '\u{1F4E6} 따로 나감니다' : (mp.pr ? '✓ warehouse has this sheet' : '⚠ not given to the warehouse yet'))}</span>
       ${note}
     </div>`;
   }).join('');
@@ -6974,29 +7097,35 @@ function openPLInner(base){
   plBase = base; plWh = _consol ? 'CA' : ((rec.whs||[])[0] || 'SC'); plShowInv = false;
   plDrafts = {};
   const _upsM = rec.meta && rec.meta._ups;
-  (rec.whs||[]).forEach(w=>{
+  plWhList(rec).forEach(w=>{
     const i = plInfo(rec,w);
+    const _isRev = revIsKey(w);
+    const _pw = _isRev ? revParentWh(w) : w;
     // 통합 발송이면 CA 드래프트는 SC+CA 라인 전부, SC 드래프트는 (고객문서 안 만드므로) 자기 몫만
-    const _lineWhs = (_consol && w==='CA') ? ['SC','CA'] : [w];
+    const _lineWhs = (_consol && w==='CA') ? ['SC','CA'] : [_pw];
+    /* 📦 따로 나가는 REV 는 자기 몫만 담는다. 원래 창고 문서에서는 그만큼 빠진다 (v1058) */
+    const _cut = _isRev ? null : revSplitCut(rec, _lineWhs);
     const baseLines = (Array.isArray(i.lines) && i.lines.length)
       ? plHealWh(rec, JSON.parse(JSON.stringify(i.lines)))     // 저장된 PL 에 wh 가 없으면 여기서 되찾는다
-      : (rec.lines||[]).filter(l=>_lineWhs.includes(l.wh) && (l.qty||0)>0).map(l=>({style:l.style||'', desc:l.desc||'', color:l.color||'', size:l.size||'', qty:l.qty||0, price:l.price||0, ppb:l.ppb||72, pbox:l.pbox||'', wh:l.wh||''}));  // wh 필수 — 통합 문서에서 SC/CA partial box 를 구분하려면 있어야 한다
+      : (_isRev
+          ? revPlLines(rec, _pw, revNumOf(w))
+          : revApplyCut((rec.lines||[]).filter(l=>_lineWhs.includes(l.wh) && (l.qty||0)>0).map(l=>({style:l.style||'', desc:l.desc||'', color:l.color||'', size:l.size||'', qty:l.qty||0, price:l.price||0, ppb:l.ppb||72, pbox:l.pbox||'', wh:l.wh||''})), _cut));  // wh 필수 — 통합 문서에서 SC/CA partial box 를 구분하려면 있어야 한다
     // 저장된 PL tracking (있으면 우선). 없고 이 창고에서 UPS 라벨을 만들었으면 그 tracking#/Via/Method 자동 채움
     let _tr = (i.trackings&&i.trackings.length?i.trackings:(i.tracking?[i.tracking]:[])).filter(Boolean);
     let _via = normVia(i.via||((rec.meta&&rec.meta.via)||''));
     let _method = i.method||'';
-    const _uwLabel = upsForWh(rec, w);   // 창고별/레거시 모두 지원 — 이 창고에서 만든 UPS 라벨
+    const _uwLabel = _isRev ? null : upsForWh(rec, w);   // 창고별/레거시 모두 지원 — 이 창고에서 만든 UPS 라벨 (REV 문서는 자기 트래킹을 직접 넣는다)
     if(!_tr.length && _uwLabel && (_uwLabel.tracking||[]).length){
       _tr = _uwLabel.tracking.slice();
       _via = 'UPS';
       _method = ({'03':'Ground','12':'3rd Day','02':'2nd Day','01':'Next Day'})[_uwLabel.service] || _method;
     }
-    plDrafts[w] = { custEmail:i.custEmail||((rec.meta&&rec.meta.custEmail)||'')||custEmailFor(rec.meta&&rec.meta.cust), serial:i.serial||nextSerial(w), via:_via, method:_method, freightCo:i.freightCo||'', trackings:(_tr.length?_tr:['']), date:i.date||((rec.meta&&rec.meta.futureShip)||'')||todayStr(), note:i.note||'', lines: baseLines, files: Array.isArray(i.files)?JSON.parse(JSON.stringify(i.files)):[] };
+    plDrafts[w] = { custEmail:i.custEmail||((rec.meta&&rec.meta.custEmail)||'')||custEmailFor(rec.meta&&rec.meta.cust), serial:i.serial||(_isRev ? (nextSerial(_pw) + '-R' + revNumOf(w)) : nextSerial(w)), via:_via, method:_method, freightCo:i.freightCo||'', trackings:(_tr.length?_tr:['']), date:i.date||((rec.meta&&rec.meta.futureShip)||'')||todayStr(), note:i.note||'', lines: baseLines, files: Array.isArray(i.files)?JSON.parse(JSON.stringify(i.files)):[] };
     const iv = (rec.inv && rec.inv[w]) || {};
     // 배송비 자동 프리필: 고객이 승인한 금액이 있으면 그걸 최우선(=청구=승인 일치), 없으면 라벨 정가
     let _fr = Number(iv.freight)||0;
-    const _uw = upsForWh(rec, w);
-    const _appr = rec.meta && rec.meta._shipApproval;
+    const _uw = _isRev ? null : upsForWh(rec, w);
+    const _appr = _isRev ? null : (rec.meta && rec.meta._shipApproval);
     if(_fr===0 && !(iv.savedAt)){
       // 🎁 free 배송(우리 부담) 또는 고객 UPS# 청구면 인보이스 배송비 0 — 라벨의 실제 billing이 최우선
       if(_uw && (_uw.billing==='free' || _uw.billing==='receiver')) _fr = 0;
@@ -7022,14 +7151,14 @@ async function openPLWh(base, wh){
   if(_r0 && holdBlocked(_r0)){ showToast('🔒 Credit Hold — approve before proceeding'); return; }
   await openPL(base);
   const rec = getSaved().find(s=>s.base===base);
-  if(rec && (rec.whs||[]).includes(wh)){ plWh = wh; renderPL(); }
+  if(rec && plWhList(rec).includes(wh)){ plWh = wh; renderPL(); }
 }
 async function openInvoiceWh(base, wh){
   const rec0 = getSaved().find(s=>s.base===base);
   if(rec0 && recIsReplace(rec0) && !confirm('🔁 This is a Replacement (R) order — normally free with no invoice.\n\nCreate an invoice anyway? (override)')) return;
   await openPL(base);
   const rec = getSaved().find(s=>s.base===base);
-  if(rec && (rec.whs||[]).includes(wh)) plWh = wh;
+  if(rec && plWhList(rec).includes(wh)) plWh = wh;
   plShowInv = true;
   renderPL();
 }
@@ -10769,14 +10898,13 @@ function renderPL(){
   if(th) th.style.display = plShowInv ? 'none' : '';
   // 🚚 CA 통합 발송이면 고객문서 탭은 CA 하나만 (SC는 내부 pull request만) — CA 몫이 있을 때만
   const _consolPL = recShipFromCA(rec) && (rec.whs||[]).includes('CA');
-  const _plWhs = _consolPL ? (rec.whs||[]).filter(w=>w==='CA') : (rec.whs||[]);
-  if(_consolPL) plWh = 'CA';
-  else if(!(rec.whs||[]).includes(plWh)) plWh = (rec.whs||[])[0];
+  const _plWhs = plWhList(rec);
+  if(!_plWhs.includes(plWh)) plWh = _plWhs[0];
   const d = plDrafts[plWh] || {};
   $('pl-area').innerHTML = `
     <div class="doc-tabs" style="margin-top:0;">${_plWhs.map(w=>
       `<div class="doc-tab ${w===plWh?'active':''}" onclick="plFieldsToDraft();plWh='${w}';renderPL();">
-        ${(_consolPL&&w==='CA')?'CA (SC+CA)':w} <span style="font-family:Consolas,monospace;font-size:10px;">${plNum(rec.base,w)}</span>${plInfo(rec,w).savedAt?' ✓':''}
+        ${esc(plWhLabel(rec,w))} <span style="font-family:Consolas,monospace;font-size:10px;">${plNum(rec.base,w)}</span>${plInfo(rec,w).savedAt?' ✓':''}
       </div>`).join('')}
     </div>
     <div class="doc-view">
