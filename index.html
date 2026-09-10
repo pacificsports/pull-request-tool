@@ -192,7 +192,7 @@ body.po-dragging{user-select:none;}
   </span>
   <select id="lang-sel" onchange="setLang(this.value)" style="font-size:11px;padding:3px 6px;border-radius:5px;border:none;background:#1d3f66;color:#fff;"><option value="ko">한국어</option><option value="en">English</option><option value="es">Español</option></select>
   <button id="wide-btn" class="btn btn-sm" onclick="toggleWide()" title="화면 넓게 / 좁게 — 기본은 넓게 (이 브라우저에만 저장돼)" style="padding:2px 8px;font-size:10px;background:#1d3f66;color:#cfe0f2;border-color:#2b5384;">↔ Wide</button>
-  <span id="app-ver" style="font-size:10px;color:#9fb8d4;">v1068</span>
+  <span id="app-ver" style="font-size:10px;color:#9fb8d4;">v1069</span>
 </div>
 <script>
 // ↔ 넓게 보기 — 브라우저마다 따로 저장 (v793)
@@ -17386,7 +17386,7 @@ async function pchkEmpSaveCheck(){
   const staff_check=rows.map((x,i)=>{ const m=_pchkMarks[i]||{}; return { style:x.style, color:x.color, size:x.size, sys:Number(x.n)||0, mark:m.mark||null, count:(m.count!==undefined&&String(m.count).trim()!=='')?Number(m.count):null }; });
   const btn=document.getElementById('pchk-analyze'); if(btn){ btn.disabled=true; btn.textContent='💾 Saving…'; }
   const _boxN=(_pchkExtraBox||[]).length;
-  const row={ wh:_pchkWh, bin, submitter:(_pchkWho||'').trim()||null, note:pchkEmpItem()||null, detected:[], staff_check, photos:pchkAllPhotos(), extra_box:_boxN, status:'pending' };
+  const row={ wh:_pchkWh, bin:bxLocOut(bin), submitter:(_pchkWho||'').trim()||null, note:pchkEmpItem()||null, detected:[], staff_check, photos:pchkAllPhotos(), extra_box:_boxN, status:'pending' };
   try{
     const _res=await picRpc('pic_pchk_add', { b: row });   /* v1068 */
     if(_res !== 'ok') throw new Error('check save refused (' + _res + ')');
@@ -17401,7 +17401,7 @@ async function pchkEmpSaveCheck(){
 async function pchkEmpSave(detected){
   const btn=document.getElementById('pchk-analyze'); if(btn){ btn.disabled=true; btn.textContent='💾 Saving…'; btn.style.opacity='.7'; }
   const item=pchkEmpItem();
-  const row={ wh:_pchkWh, bin:_pchkBin, submitter:(_pchkWho||'').trim()||null, note:item||null, detected:detected||[], photos:pchkAllPhotos(), extra_box:(_pchkExtraBox||[]).length, status:'pending' };
+  const row={ wh:_pchkWh, bin:bxLocOut(_pchkBin), submitter:(_pchkWho||'').trim()||null, note:item||null, detected:detected||[], photos:pchkAllPhotos(), extra_box:(_pchkExtraBox||[]).length, status:'pending' };
   try{
     const _res=await picRpc('pic_pchk_add', { b: row });   /* v1068 */
     if(_res !== 'ok') throw new Error('check save refused (' + _res + ')');
@@ -21830,12 +21830,40 @@ function bxLocsLabel(list, max){
   const m = max || 4;
   return locs.slice(0,m).join(', ') + (locs.length>m ? ' +'+(locs.length-m)+' more' : '');
 }
+/* ═══════════ 📍 bin 이름은 한 가지 모양으로만 저장한다 (v1069) ═══════════
+   ⚠⚠ 실제로 같은 선반이 두 개로 갈라져 있었다: `1G-13`(22박스) 와 `1G13`(1박스).
+   누군가 대시를 빼고 쳤을 뿐인데 시스템은 다른 선반으로 봤다 — 재고가 두 줄로
+   나뉘고, 실사도 따로 잡히고, 물건 찾으러 가면 한쪽만 보인다.
+
+   `binNorm()` 은 예전부터 있었고 사진 실사 비교에는 쓰고 있었다(그래서 /pic 은
+   맞게 나왔다). 그런데 **저장할 때는 아무도 안 썼다.** 그게 갈라짐의 원인이다.
+
+   그래서 pr_boxes 로 나가는 쓰기 두 군데(PATCH·INSERT)에서 loc 을 여기서
+   정규화한다. bin 을 만지는 35개 호출이 전부 이 둘을 지나가므로, 화면이 몇 개든
+   앞으로 갈라질 수가 없다. 입력칸마다 고치는 것보다 이게 확실하다.
+
+   ⓘ 직원은 여전히 `1A-1` 로 쳐도 된다 — 저장될 때 `1A1` 이 된다.
+     그래서 선반에 붙은 종이(1A-1)를 다시 붙이러 다닐 필요가 없다.
+   ⓘ 2026-09-10 에 저장된 값도 한 번 정리했다 (pr_boxes 38,679행 ·
+     pr_boxmoves · pr_physcheck). 원본은 `bin_dash_backup_20260910` 테이블. */
+function bxLocOut(v){
+  if(v == null) return v;                    /* null 은 그대로 (loc 비우기) */
+  const t = String(v).trim();
+  if(!t) return t;
+  return (typeof binNorm === 'function') ? binNorm(t) : t.toUpperCase().replace(/[^A-Z0-9]/g,'');
+}
 async function bxPatch(ids, body){
   const q = ids.length===1 ? 'id=eq.'+ids[0] : 'id=in.(' + ids.join(',') + ')';
-  const r = await sbFetch('/rest/v1/pr_boxes?'+q, {method:'PATCH', headers:{Prefer:'return=minimal'}, body:JSON.stringify(body)});
+  const b2 = Object.assign({}, body);
+  if(Object.prototype.hasOwnProperty.call(b2, 'loc')) b2.loc = bxLocOut(b2.loc);
+  const r = await sbFetch('/rest/v1/pr_boxes?'+q, {method:'PATCH', headers:{Prefer:'return=minimal'}, body:JSON.stringify(b2)});
   if(!r.ok) throw new Error('HTTP '+r.status);
 }
 async function bxInsert(rows){
+  rows = (rows||[]).map(x=>{
+    if(!x || !Object.prototype.hasOwnProperty.call(x,'loc')) return x;
+    const y = Object.assign({}, x); y.loc = bxLocOut(y.loc); return y;
+  });
   for(let i=0;i<rows.length;i+=500){
     const r = await sbFetch('/rest/v1/pr_boxes', {method:'POST', headers:{Prefer:'return=minimal'}, body:JSON.stringify(rows.slice(i,i+500))});
     if(!r.ok){ let t=''; try{ t = await r.text(); }catch(e){} throw new Error('HTTP '+r.status+' '+t.slice(0,300)); }
@@ -21945,6 +21973,46 @@ async function bxQrOpen(style, color){
   bxQrAddRow();
   const el = document.getElementById('bxqr-next');
   if(el) el.textContent = '♾ ' + ctnDate() + '-…  (numbers never run out)';
+}
+/* ═══════════ ⬛ bin 안의 박스 전부에 QR 스티커 (v1069) ═══════════
+   [stated] 하윤: "location bin 에 들어가있는 아이템들에 QR code 붙일수있게
+   저기서 QR code 프린트할수있게 하자"
+
+   기존 `bxQrOpen(style, color)` 은 스타일+색 하나씩만 뽑을 수 있었다. bin 하나에
+   보통 여러 스타일·색이 섞여 있어서, 그걸로는 창을 몇 번씩 열어야 했다.
+
+   여기서는 그 bin 의 줄(`_bxLocGroups[loc].rows`)을 그대로 쓴다 —
+   스타일·색·사이즈·박스수·장수(ppb)가 이미 다 들어 있다. 박스 하나에 스티커 하나.
+   코드는 `buildBoxQr2x2Zpl` 그대로라 **창고가 이미 스캔하는 것과 똑같은 QR** 이다
+   (공장 카톤 QR 과 같은 형식 — 스캔 화면이 그대로 알아본다).
+
+   ⚠ 장수(ppb)가 0 인 줄은 건너뛴다. QR 에 장수가 안 들어가면 스캔해도
+   몇 장인지 모르는 스티커가 되어 오히려 대조를 망친다.
+   ⚠ 몇 장 나오는지 먼저 물어본다 — bin 하나가 40박스면 스티커 40장이다. */
+async function bxQrBinPrint(wh, locEnc){
+  const loc = decodeURIComponent(String(locEnc||''));
+  const g = (window._bxLocGroups||{})[loc];
+  const rows = (g && Array.isArray(g.rows)) ? g.rows : [];
+  if(!rows.length){ showToast('⚠ Open the bin first — nothing loaded for ' + loc); return; }
+  const good = rows.filter(r=>(Number(r.ppb)||0) > 0 && (Number(r.n)||0) > 0);
+  const skipped = rows.length - good.length;
+  const total = good.reduce((a,r)=>a+(Number(r.n)||0), 0);
+  if(!total){ showToast('⚠ ' + loc + ' — no box has a pcs/box value, so no sticker can be made'); return; }
+  const lines = good.map(r=>r.style + ' ' + r.color + ' ' + r.size + ' ×' + r.n).join('\n');
+  if(!confirm('⬛ ' + total + ' QR sticker(s) for bin ' + loc + ' (' + wh + ')\n\n' + lines
+    + (skipped ? ('\n\n⚠ ' + skipped + ' line(s) skipped — no pcs/box value') : '')
+    + '\n\n⚠ Load 2" x 2" label stock first.')) return;
+  try{ await blDpiSync(); }catch(e){}
+  const parts = [];
+  good.forEach(r=>{
+    for(let k=0; k<(Number(r.n)||0); k++){
+      parts.push(buildBoxQr2x2Zpl({ styleNum:r.style, color:r.color, size:r.size, qty:Number(r.ppb)||0 }, ctnNew()));
+    }
+  });
+  const ok = await sendToZebraBrowserPrint(parts.filter(Boolean).join('\n'), total);
+  if(!ok) return;
+  showToast('⬛ ' + total + ' QR sticker(s) — bin ' + loc);
+  try{ logHist && logHist('', 'QR stickers printed — bin ' + loc + ' (' + wh + '), ' + total + ' sticker(s)'); }catch(e){}
 }
 async function bxQrPrint(){
   const jobs = bxQrJobs();
@@ -25186,6 +25254,7 @@ function bxRenderByLoc(el, q){
         <span style="font-weight:400;white-space:nowrap;" title="Stock count date for this whole bin">${stBadge('BXBIN', wh, loc)}</span>
         ${(()=>{ const bc=(window._pchkBinChk||{})[String(wh).toUpperCase()+'|'+String(loc).toUpperCase()]; if(!bc) return ''; return `${bc.confId?`<span style="font-size:9px;font-weight:800;color:#0891b2;white-space:nowrap;" title="Photo-check confirmed">✓ confirmed</span>`:''} <button class="btn btn-sm" style="border:none;padding:0 4px;" onclick="event.preventDefault();event.stopPropagation();pchkBinPhotoHistory('${wh}','${esc(loc)}')" title="Photo check history (${bc.n})">📷${bc.n>1?' '+bc.n:''}</button>`; })()}
         <button class="btn btn-sm" style="border:none;padding:0 4px;" onclick="event.preventDefault();bxLocPrintBin('${wh}','${esc(loc)}')" title="Print this bin's contents">🖨</button>
+        <button class="btn btn-sm" style="border:none;padding:0 4px;color:#6d28d9;" onclick="event.preventDefault();event.stopPropagation();bxQrBinPrint('${wh}','${esc(encodeURIComponent(loc))}')" title="Print a QR sticker for every box in this bin (2x2 label stock)">⬛</button>
       </summary>
       <div class="bxl-inner">${_open ? bxLocInner(loc, rows, wh) : ''}</div></details>`;
   }).join('');
