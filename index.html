@@ -192,7 +192,7 @@ body.po-dragging{user-select:none;}
   </span>
   <select id="lang-sel" onchange="setLang(this.value)" style="font-size:11px;padding:3px 6px;border-radius:5px;border:none;background:#1d3f66;color:#fff;"><option value="ko">한국어</option><option value="en">English</option><option value="es">Español</option></select>
   <button id="wide-btn" class="btn btn-sm" onclick="toggleWide()" title="화면 넓게 / 좁게 — 기본은 넓게 (이 브라우저에만 저장돼)" style="padding:2px 8px;font-size:10px;background:#1d3f66;color:#cfe0f2;border-color:#2b5384;">↔ Wide</button>
-  <span id="app-ver" style="font-size:10px;color:#9fb8d4;">v1067</span>
+  <span id="app-ver" style="font-size:10px;color:#9fb8d4;">v1068</span>
 </div>
 <script>
 // ↔ 넓게 보기 — 브라우저마다 따로 저장 (v793)
@@ -11493,6 +11493,31 @@ function pchkEmpGate(){
    이유만 만든다. 대신 배포 전에 anon 으로 직접 확인했다:
    틀린 암호 → null, 가짜 토큰 → false, pic_gate 직접 읽기 → 빈 배열. */
 function picTok(){ try{ return localStorage.getItem('pchk_tok')||''; }catch(e){ return ''; } }
+/* ═══ 🔒 /pic 는 이제 테이블을 직접 만지지 않는다 (v1068) ═══
+   ⚠⚠ 예전에는 pr_pack \u00b7 pr_physcheck \u00b7 pr_bulkship 세 테이블이 anon 에게 통째로
+   열려 있었다. /pic 이 로그인 없이 도는 화면이라 그렇게 해둔 것이지만, anon 키는
+   이 파일 안에 박혀 있어서 누구나 복사할 수 있다 \u2014 즉 밖에서 곧바로
+     DELETE /rest/v1/pr_pack?...    (포장 기록 전부 삭제)
+     POST   /rest/v1/pr_bulkship    (없는 트럭 묶음 조작)
+   가 가능한 상태였다. 실제로 당한 흔적은 없었지만 '가능한' 것 자체가 문제다.
+
+   이제는 창고가 실제로 하는 일만 함수 6개로 열어두고, 테이블은 잠근다.
+   함수는 1단계(v1066)에서 받은 기기 토큰을 받아야 일한다. 토큰이 없으면
+   읽기는 빈 배열, 쓰기는 -1/denied 를 준다.
+
+   ⓘ 서버가 강제하는 것 (클라이언트가 못 정한다):
+     \u00b7 pr_bulkship.status \u2192 항상 'PENDING' (SHIPPED 로 만들 수 없다)
+     \u00b7 pr_physcheck.status \u2192 항상 'pending'
+     \u00b7 id / created_at / shipped_at / shipped_by \u2192 클라이언트 값 무시
+   ⓘ pic_pack_upsert 는 **보낸 칸만** 덮어쓴다 \u2014 undo(unpackWrite)는 cust/po 를
+     아예 안 보내므로, 전부 덮어쓰면 되돌리기 한 번에 거래처와 PO 가 지워진다. */
+async function picRpc(fn, args){
+  const r = await fetch(SB_URL + '/rest/v1/rpc/' + fn, { method:'POST',
+    headers:{ apikey:SB_KEY, Authorization:'Bearer ' + SB_KEY, 'Content-Type':'application/json' },
+    body: JSON.stringify(Object.assign({ tok: picTok() }, args || {})) });
+  if(!r.ok) throw new Error(fn + ' HTTP ' + r.status);
+  return await r.json();
+}
 async function picUnlockSrv(v){
   try{
     const r = await fetch(SB_URL + '/rest/v1/rpc/pic_unlock', { method:'POST',
@@ -12066,11 +12091,10 @@ async function unpackWrite(pairs){
     updated_by:(function(){ try{ return (_pchkWho||'').trim() || null; }catch(e){ return null; } })(),
     updated_at:new Date().toISOString() }));
   try{
-    const r = await fetch(SB_URL + '/rest/v1/pr_pack?on_conflict=base,wh', { method:'POST',
-      headers:{ apikey:SB_KEY, Authorization:'Bearer ' + SB_KEY, 'Content-Type':'application/json',
-                Prefer:'resolution=merge-duplicates,return=minimal' },
-      body: JSON.stringify(rows) });
-    if(!r.ok) throw new Error('HTTP ' + r.status);
+    /* v1068 \u2014 이 호출은 cust/po 를 일부러 안 보낸다. 함수가 보낸 칸만 덮어쓰므로
+       거래처와 PO 는 그대로 남는다 (예전 PostgREST 업서트와 같은 동작). */
+    const _n = await picRpc('pic_pack_upsert', { rows_in: rows });
+    if(!(Number(_n) > 0)) throw new Error('undo refused (' + _n + ')');
     return true;
   }catch(e){ showToast('⚠ Could not undo: ' + (e.message||e)); return false; }
 }
@@ -12197,7 +12221,7 @@ async function pchkLtlBatch(mode){
   // 기존 pr_pack(있으면 우선) + pcs 기반 박스 추정(pack_est RPC · anon 접근 가능)
   let packMap={}, estMap={};
   const inList='('+bases.join(',')+')';
-  try{ const r=await fetch(SB_URL+'/rest/v1/pr_pack?wh=eq.'+encodeURIComponent(wh)+'&base=in.'+encodeURIComponent(inList)+'&select=base,total_boxes,via,boxes',{headers:{apikey:SB_KEY,Authorization:'Bearer '+SB_KEY}}); if(r.ok){ (await r.json()).forEach(p=>{ packMap[p.base]=p; }); } }catch(e){}
+  try{ (await picRpc('pic_pack_get', { p_wh: wh, p_bases: bases })).forEach(p=>{ packMap[p.base]=p; }); }catch(e){}   /* v1068 */
   try{ const r=await fetch(SB_URL+'/rest/v1/rpc/pack_est',{method:'POST',headers:{apikey:SB_KEY,Authorization:'Bearer '+SB_KEY,'Content-Type':'application/json'},body:JSON.stringify({p_bases:bases})}); if(r.ok){ const j=await r.json(); if(Array.isArray(j)) j.forEach(e=>{ estMap[e.base]=e; }); } }catch(e){}
   window._ltlLines=await pchkFetchLines(bases);   // 📋 기대 내용 (v769)
   // 각 PO 박스수 프리필: 저장된 pr_pack > pcs 추정(창고별)
@@ -12348,11 +12372,7 @@ async function bulkFindPending(wh, mode, bases){
   try{
     const want = new Set((bases||[]).map(String));
     if(!want.size) return out;
-    const r = await fetch(SB_URL+'/rest/v1/pr_bulkship?wh=eq.'+encodeURIComponent(wh)
-      + '&status=eq.PENDING&select=id,ref,pos,created_at&order=created_at.desc&limit=50',
-      {headers:{apikey:SB_KEY,Authorization:'Bearer '+SB_KEY}});
-    if(!r.ok) return out;
-    const rows = await r.json();
+    const rows = await picRpc('pic_bulk_pending', { p_wh: wh });   /* v1068 */
     if(!Array.isArray(rows)) return out;
     rows.forEach(b=>{
       if(String(b.ref||'').indexOf(mode+'-')!==0) return;      // 같은 방식끼리만
@@ -12398,8 +12418,8 @@ async function pchkLtlBatchSave(){
      예전 (오더 하나짜리) 팔레트 값은 지운다. 안 그러면 같은 오더에 팔레트가 두 군데 남는다 (v983). */
   const payload=rows.map(r=>({ base:r.base, wh, via:M, cust:r.cust||null, po:r.po||null, total_boxes:Number(r.boxes)||0, boxes:(M==='UPS'&&r.base===leadBase)?upsBoxes:[], pallets:null, pallet_dims:null, updated_by:_pchkWho||null, updated_at:now }));
   try{
-    const r=await fetch(SB_URL+'/rest/v1/pr_pack?on_conflict=base,wh',{method:'POST',headers:{apikey:SB_KEY,Authorization:'Bearer '+SB_KEY,'Content-Type':'application/json',Prefer:'resolution=merge-duplicates,return=minimal'},body:JSON.stringify(payload)});
-    if(!r.ok){ const t=await r.text(); throw new Error('HTTP '+r.status+' '+t.slice(0,120)); }
+    const _n=await picRpc('pic_pack_upsert', { rows_in: payload });   /* v1068 */
+    if(!(Number(_n) > 0)) throw new Error('packing save refused (' + _n + ')');
     const estTot=rows.reduce((s,x)=>s+(Number(x.boxes)||0),0);
     const tot = M==='UPS' ? (window._upsTotal!=null?Number(window._upsTotal)||0:estTot) : estTot;
     const nPal = M==='UPS' ? 0 : (Number(window._ltlPallets)||0);
@@ -12431,19 +12451,16 @@ async function pchkLtlBatchSave(){
         return;
       }
     }
+    /* v1068 \u2014 고치기와 새로 만들기를 함수 한 번으로 합쳤다.
+       p_id 를 주면 그 PENDING 묶음을 고치고, 못 고치면(이미 나갔거나 없음) 새로 만든다.
+       예전에는 PATCH 가 조용히 실패해도 updated=false 로 넘어가 새 묶음이 하나 더 생겼다. */
     let updated=false;
-    if(dup.same){
-      try{
-        const pr=await fetch(SB_URL+'/rest/v1/pr_bulkship?id=eq.'+encodeURIComponent(dup.same.id),
-          {method:'PATCH',headers:{apikey:SB_KEY,Authorization:'Bearer '+SB_KEY,'Content-Type':'application/json',Prefer:'return=minimal'},
-           body:JSON.stringify({ pos:bulk.pos, total_boxes:bulk.total_boxes, pallets:bulk.pallets,
-                                 pallet_dims:bulk.pallet_dims, note:bulk.note, created_by:bulk.created_by })});
-        updated=pr.ok;
-      }catch(e){}
-    }
-    if(!updated){
-      try{ await fetch(SB_URL+'/rest/v1/pr_bulkship',{method:'POST',headers:{apikey:SB_KEY,Authorization:'Bearer '+SB_KEY,'Content-Type':'application/json',Prefer:'return=minimal'},body:JSON.stringify([bulk])}); }catch(e){}
-    }
+    try{
+      const res = await picRpc('pic_bulk_save', { b: bulk, p_id: (dup.same ? dup.same.id : null) });
+      updated = (res === 'updated');
+      if(res === 'denied' || res === 'bad') throw new Error('bulk save refused (' + res + ')');
+    }catch(e){ if(msg){ msg.style.color='#dc2626'; msg.textContent='Could not save the grouping: ' + (e.message||e); }
+      if(btn){ btn.disabled=false; btn.textContent='\U0001f4be Save & create bulk shipment'; } return; }
     if(msg){ msg.style.color='#16a34a'; msg.innerHTML= updated
       ? '✅ 이미 있던 묶음 <b>'+esc(dup.same.ref)+'</b> 을 최신 내용으로 고쳤습니다 — 새로 만들지 않았습니다.<br>'+rows.length+' PO · '+tot+' box(es).'
       : (M==='UPS'
@@ -15509,7 +15526,8 @@ async function pchkPackEdit(base, cust, po, wh){
   _packBase=base; _packCust=cust; _packPo=po; _packBoxes=[]; _packTotal=''; _packBoxWh=(wh==='CA'?'CA':'SC'); _packVia='UPS';
   _packPallets=''; _packPalDims=[];   // 🎚 v983
   // 이 창고(base+wh)의 기존 저장분 로드
-  try{ const r=await fetch(SB_URL+'/rest/v1/pr_pack?base=eq.'+encodeURIComponent(base)+'&wh=eq.'+encodeURIComponent(_packBoxWh)+'&select=total_boxes,boxes,via,pallets,pallet_dims', {headers:{apikey:SB_KEY,Authorization:'Bearer '+SB_KEY}}); const j=await r.json(); if(Array.isArray(j)&&j[0]){ _packBoxes=Array.isArray(j[0].boxes)?j[0].boxes:[]; _packTotal=(j[0].total_boxes!=null?String(j[0].total_boxes):''); _packVia=(j[0].via==='LTL'?'LTL':'UPS');
+  try{ const j=await picRpc('pic_pack_get', { p_wh: _packBoxWh, p_bases: [String(base)] });   /* v1068 */
+    if(Array.isArray(j)&&j[0]){ _packBoxes=Array.isArray(j[0].boxes)?j[0].boxes:[]; _packTotal=(j[0].total_boxes!=null?String(j[0].total_boxes):''); _packVia=(j[0].via==='LTL'?'LTL':'UPS');
     _packPallets=(j[0].pallets!=null?String(j[0].pallets):''); _packPalDims=Array.isArray(j[0].pallet_dims)?j[0].pallet_dims:[]; } }catch(e){}
   window._ltlLines=await pchkFetchLines([base]);   // 📋 기대 내용 (v769)
   pchkPackRender();
@@ -15859,8 +15877,8 @@ async function pchkPackSave(){
   const palDims=(_packVia==='LTL'&&nPal>0)?(_packPalDims||[]).slice(0,nPal):null;
   const row={ base:_packBase, wh:_packBoxWh, via:_packVia, cust:_packCust||null, po:_packPo||null, total_boxes: total, boxes:boxes, pallets:nPal, pallet_dims:palDims, updated_by:_pchkWho||null, updated_at:new Date().toISOString() };
   try{
-    const r=await fetch(SB_URL+'/rest/v1/pr_pack?on_conflict=base,wh',{method:'POST',headers:{apikey:SB_KEY,Authorization:'Bearer '+SB_KEY,'Content-Type':'application/json',Prefer:'resolution=merge-duplicates,return=minimal'},body:JSON.stringify([row])});
-    if(!r.ok){ const t=await r.text(); throw new Error('HTTP '+r.status+' '+t.slice(0,120)); }
+    const _n=await picRpc('pic_pack_upsert', { rows_in: [row] });   /* v1068 */
+    if(!(Number(_n) > 0)) throw new Error('packing save refused (' + _n + ')');
     const _linked = await packLinkBoxes();   // 📦 스캔한 박스번호를 이 오더에 붙여둔다 (v865)
     try{ scanKeepDrop([_packBase]); }catch(e){}   // 💾 포장까지 저장했으면 찍어둔 건 끝 (v984)
     if(msg){msg.style.color='#16a34a';msg.textContent=(_packVia==='LTL'?('✅ Saved — '+(total||0)+' box(es)'+(nPal>0?' on '+nPal+' pallet(s)':'')+', LTL.'):'✅ Saved — manager can print the UPS label.')
@@ -17370,8 +17388,8 @@ async function pchkEmpSaveCheck(){
   const _boxN=(_pchkExtraBox||[]).length;
   const row={ wh:_pchkWh, bin, submitter:(_pchkWho||'').trim()||null, note:pchkEmpItem()||null, detected:[], staff_check, photos:pchkAllPhotos(), extra_box:_boxN, status:'pending' };
   try{
-    const r=await fetch(SB_URL+'/rest/v1/pr_physcheck',{method:'POST',headers:{apikey:SB_KEY,Authorization:'Bearer '+SB_KEY,'Content-Type':'application/json',Prefer:'return=minimal'},body:JSON.stringify([row])});
-    if(!r.ok){ const t=await r.text(); throw new Error('HTTP '+r.status+' '+t.slice(0,140)); }
+    const _res=await picRpc('pic_pchk_add', { b: row });   /* v1068 */
+    if(_res !== 'ok') throw new Error('check save refused (' + _res + ')');
   }catch(e){ if(btn){ btn.disabled=false; btn.textContent='💾 Save check'; } showToast('⚠ Save failed: '+(e.message||e)); return; }
   const offN=staff_check.filter(s=>s.mark==='off').length, okN=staff_check.filter(s=>s.mark==='ok').length;
   _pchkDone.unshift({ wh:_pchkWh, bin, item:pchkEmpItem(), who:(_pchkWho||'').trim()||null, summary:(_boxN?('📦 +'+_boxN+' extra box'):(offN?('⚠ '+offN+' off'):(okN?('✓ '+okN+' ok'):'saved'))), t:new Date().toISOString() }); pchkDoneSave();
@@ -17385,8 +17403,8 @@ async function pchkEmpSave(detected){
   const item=pchkEmpItem();
   const row={ wh:_pchkWh, bin:_pchkBin, submitter:(_pchkWho||'').trim()||null, note:item||null, detected:detected||[], photos:pchkAllPhotos(), extra_box:(_pchkExtraBox||[]).length, status:'pending' };
   try{
-    const r=await fetch(SB_URL+'/rest/v1/pr_physcheck',{method:'POST',headers:{apikey:SB_KEY,Authorization:'Bearer '+SB_KEY,'Content-Type':'application/json',Prefer:'return=minimal'},body:JSON.stringify([row])});
-    if(!r.ok){ const t=await r.text(); throw new Error('HTTP '+r.status+' '+t.slice(0,140)); }
+    const _res=await picRpc('pic_pchk_add', { b: row });   /* v1068 */
+    if(_res !== 'ok') throw new Error('check save refused (' + _res + ')');
   }catch(e){ if(btn){ btn.disabled=false; btn.textContent='🔍 Analyze & save'; btn.style.opacity='1'; } showToast('⚠ Save failed: '+(e.message||e)); return; }
   const total=(detected||[]).reduce((a,d)=>a+(Number(d.count)||0),0);
   _pchkDone.unshift({ wh:_pchkWh, bin:_pchkBin, item, who:(_pchkWho||'').trim()||null, total, t:new Date().toISOString() }); pchkDoneSave();
@@ -17434,8 +17452,8 @@ function pchkDoneRender(){
 }
 async function pchkDoneFetch(){
   try{
-    const r=await fetch(SB_URL+'/rest/v1/pr_physcheck?select=id,wh,bin,submitter,note,staff_check,status,created_at&order=created_at.desc&limit=80',{headers:{apikey:SB_KEY,Authorization:'Bearer '+SB_KEY}});
-    if(!r.ok) return; const rows=await r.json(); if(!Array.isArray(rows)) return;
+    const rows=await picRpc('pic_pchk_recent', {});   /* v1068 */
+    if(!Array.isArray(rows)) return;
     window._pchkDoneSrv=rows;
     const wrap=document.getElementById('pchk-done-wrap'); if(wrap) wrap.innerHTML=pchkDoneInner();
   }catch(e){}
