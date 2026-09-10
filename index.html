@@ -192,7 +192,7 @@ body.po-dragging{user-select:none;}
   </span>
   <select id="lang-sel" onchange="setLang(this.value)" style="font-size:11px;padding:3px 6px;border-radius:5px;border:none;background:#1d3f66;color:#fff;"><option value="ko">한국어</option><option value="en">English</option><option value="es">Español</option></select>
   <button id="wide-btn" class="btn btn-sm" onclick="toggleWide()" title="화면 넓게 / 좁게 — 기본은 넓게 (이 브라우저에만 저장돼)" style="padding:2px 8px;font-size:10px;background:#1d3f66;color:#cfe0f2;border-color:#2b5384;">↔ Wide</button>
-  <span id="app-ver" style="font-size:10px;color:#9fb8d4;">v1071</span>
+  <span id="app-ver" style="font-size:10px;color:#9fb8d4;">v1072</span>
 </div>
 <script>
 // ↔ 넓게 보기 — 브라우저마다 따로 저장 (v793)
@@ -12535,6 +12535,9 @@ function scanKeepDrop(bases){
   }catch(e){}
 }
 function scanKeepPut(){            // 찍을 때마다 부른다 — 박스 수백 개라도 수십 KB 다
+  /* 📷 실사(PCHK)는 출고가 아니라 그 자리에서 세는 일이다. 이어서 하려고
+     남겨둘 것이 없고, 남기면 다음 팔레트를 셀 때 옛 숫자가 따라온다 (v1072). */
+  if(_scan && _scan.mode === 'PCHK') return;
   try{ scanKeep2Put(); }catch(e){}   /* 📥 입고 · 🚚 이송 세션도 같이 남긴다 (v1044) */
   try{ scanAutoSave(); }catch(e){}   /* ☁ 찍는 즉시 사무실로 올린다 (v1046) */
   try{
@@ -13650,6 +13653,7 @@ function scanExit(){
     }
   }catch(e){}
   const back = _scan && _scan.back;
+  if(back==='PCHK'){ try{ pchkScanApply(); }catch(e){} _scan=null; pchkEmpCapture(); return; }   // 📷 실사 화면으로 (v1072)
   if(back==='BATCH'){ _scan=null; pchkLtlBatch(window._packMode||'LTL'); return; }   // LTL/UPS 배치 화면에서 들어왔으면 그리로 복귀
   if(back==='PACK'){ _scan=null; pchkPackRender(); return; }                         // 한 오더 Pack 화면에서 들어왔으면 그리로 (v860)
   if(_scan && _scan.mode==='PO'){ _scan=null; pchkPackOpen(); } else { _scan=null; scanOpen(); } }
@@ -17159,8 +17163,113 @@ function pchkStyleNorm(s){ const m=String(s||'').match(/\d+/); return m?m[0]:Str
 // 직원 눈-체크 상태 (줄 index 기준)
 let _pchkMarks={};
 function pchkBinRowsSorted(){ const d=window._pchkBinData; if(!d) return []; return (d.rows||[]).filter(x=>String(x.wh||'').toUpperCase()===_pchkWh).sort((a,b)=>String(a.style).localeCompare(String(b.style))||String(a.color).localeCompare(String(b.color))||bxSizeCmp(a.size,b.size)); }
-function pchkEmpMark(i,val){ const m=_pchkMarks[i]=_pchkMarks[i]||{}; m.mark=(m.mark===val?null:val); pchkEmpRenderBinCard(); }
+/* ═══════════ 📷 실사 — 박스 QR 을 찍어서 줄을 자동으로 맞춘다 (v1072) ═══════════
+   [stated] 하윤: "bin search 하면 저렇케 뭐가 있다가 나오잖아. 거기에 scan 버튼
+   만들어서 scan 해서 매칭하게 하자. QR Code scan (우리가 지금 물건 나가고 들어올때
+   사용하는거처럼) 자동으로 매칭되는거지 스캔하면"
+
+   손으로 ✓/✗ 를 누르는 방식은 그대로 남긴다 — QR 없는 옛 카톤이 아직 있고,
+   그것 때문에 bin 단위 QR 스티커(v1069)를 만든 것이다. 스캔은 그 위에 얹는 것이다.
+
+   ⭐ 카메라는 출고·입고에서 쓰는 것을 **그대로** 쓴다 (`scanCam`) — 줌·플래시·
+   한 프레임 여러 개 읽기가 다 붙어 있고, 창고가 이미 아는 손놀림이다.
+   `_scan.mode='PCHK'` 만 새로 두었고, `scanAccept` 는 손대지 않았다:
+   그 함수는 SSCC 로 중복을 걸러 `_scan.seen` 에 담을 뿐이라 실사에도 그대로 맞다.
+   → **같은 박스를 두 번 찍어도 두 번 세지 않는다.** 팔레트를 돌면서 마음껏 찍어도 된다.
+
+   ⚠ 스캔이 0인 줄은 건드리지 않는다. QR 이 없는 박스일 수도 있어서
+   "안 찍혔다" 를 "없다" 로 바꿔버리면 멀쩡한 재고를 없는 것으로 만든다.
+   판단은 사람이 한다 — 화면에는 「안 찍힘」 으로만 남는다. */
+/* ⚠⚠ 여기서 `scanKeyOf()` 를 쓰면 안 된다. 그 함수는 출고 대조용이라
+   `BLACK (SIDE SEAM)` 과 `BLACK` 을 **같은 것으로 흡수**한다. 그런데 실사 표에는
+   그 둘이 서로 다른 줄로 들어 있다 (실제로 1G13 에 BLACK 과 BLACK (SIDE SEAM) 이
+   따로 있었다). 흡수하면 두 줄이 한 줄로 뭉개져서 엉뚱한 줄에 ✓ 가 찍힌다.
+   실사는 색을 **정확히** 봐야 한다 — 그래서 `pchkNorm`(대문자·공백정리만) 을 쓴다.
+   매니저 확인 화면(`pchkRenderMatch`)도 같은 규칙이라 두 화면이 어긋나지 않는다. */
+function pchkScanKeyOf(style, color, size){
+  const N = (typeof pchkNorm === 'function') ? pchkNorm
+          : (v=>String(v||'').toUpperCase().replace(/\s+/g,' ').trim());
+  return N(style) + '|' + N(color) + '|' + N(size);
+}
+/* 찍은 박스를 스타일|색|사이즈로 묶는다. 값은 박스 '개수' 다 — 실사는 박스를 센다 */
+function pchkScanTally(){
+  const t = {};
+  try{ (_scan && _scan.seen ? _scan.seen : new Map()).forEach(b=>{
+    if(!b) return;
+    const k = pchkScanKeyOf(b.style, b.color, b.size);   /* b.key 는 흡수된 키라 쓰지 않는다 */
+    (t[k] = t[k] || { n:0, style:b.style||'?', color:b.color||'?', size:b.size||'?' }).n++;
+  }); }catch(e){}
+  return t;
+}
+function pchkEmpScanStart(){
+  const d = window._pchkBinData;
+  const rows = pchkBinRowsSorted();
+  if(!d || !rows.length){ showToast('⚠ Search a bin first'); return; }
+  if(typeof scanCam !== 'function'){ showToast('⚠ Scanner not available'); return; }
+  _scan = { mode:'PCHK', back:'PCHK', id:String(d.bin||''), wh:_pchkWh, ref:String(d.bin||''),
+            title:'📷 Scan boxes — [' + _pchkWh + '] ' + String(d.bin||''),
+            exp:[], seen:new Map(), pbox:new Map(), manual:{} };
+  scanCam();
+}
+/* 카메라를 닫을 때 한 번 — 찍은 것을 줄에 얹는다 */
+function pchkScanApply(){
+  if(!_scan || _scan.mode !== 'PCHK') return;
+  const rows = pchkBinRowsSorted();
+  const tally = pchkScanTally();
+  const used = {};
+  rows.forEach((x,i)=>{
+    const k = pchkScanKeyOf(x.style, x.color, x.size);
+    const got = tally[k] ? tally[k].n : 0;
+    if(!got) return;                       /* 안 찍힌 줄은 사람 판단에 맡긴다 */
+    used[k] = true;
+    const m = _pchkMarks[i] = _pchkMarks[i] || {};
+    m.count = String(got);
+    m.mark  = (got === (Number(x.n)||0)) ? 'ok' : 'off';
+    m.byScan = true;
+  });
+  /* 표에 없는 박스가 찍혔다 — 실사에서 제일 중요한 발견이다.
+     시스템이 다른 자리에 있다고 아는 물건이 이 팔레트에 있다는 뜻이다. */
+  window._pchkScanExtra = Object.keys(tally).filter(k=>!used[k]).map(k=>tally[k]);
+  window._pchkScanAt = Date.now();
+  window._pchkScanN = Object.keys(tally).reduce((a,k)=>a+tally[k].n, 0);
+}
+/* 저장할 때 `detected` 로 같이 보낸다 — 매니저 확인 화면(pchkRenderMatch)이
+   시스템 수량과 나란히 비교해 준다. 새로 만들 것이 없다. */
+function pchkScanDetected(){
+  const out = [];
+  try{
+    const rows = pchkBinRowsSorted();
+    rows.forEach((x,i)=>{ const m=_pchkMarks[i]||{}; if(!m.byScan) return;
+      out.push({ style:x.style, color:x.color, size:x.size, count:Number(m.count)||0 }); });
+    (window._pchkScanExtra||[]).forEach(e=>out.push({ style:e.style, color:e.color, size:e.size, count:Number(e.n)||0 }));
+  }catch(e){}
+  return out;
+}
+function pchkScanClear(){
+  const rows = pchkBinRowsSorted();
+  rows.forEach((x,i)=>{ const m=_pchkMarks[i]; if(m && m.byScan){ delete _pchkMarks[i]; } });
+  window._pchkScanExtra = null; window._pchkScanN = 0; window._pchkScanAt = 0;
+  pchkEmpRenderBinCard();
+}
+function pchkEmpMark(i,val){ const m=_pchkMarks[i]=_pchkMarks[i]||{}; m.mark=(m.mark===val?null:val); m.byScan=false; pchkEmpRenderBinCard(); }
 function pchkEmpCount(i,val){ const m=_pchkMarks[i]=_pchkMarks[i]||{}; m.count=val; }
+/* 📷 스캔 버튼 + 결과 띠 (v1072) */
+function pchkScanBarHtml(){
+  const n = Number(window._pchkScanN)||0;
+  const ex = window._pchkScanExtra||[];
+  const btn = `<button onclick="pchkEmpScanStart()" style="flex:1;background:#0e7490;color:#fff;border:none;border-radius:10px;padding:12px;font-size:14px;font-weight:800;">\u{1F4F7} ${n?'Scan more boxes':'Scan boxes'}</button>`;
+  const clr = n ? `<button onclick="pchkScanClear()" style="background:#fff;color:#b45309;border:1.5px solid #fcd34d;border-radius:10px;padding:12px 13px;font-size:12.5px;font-weight:800;white-space:nowrap;">\u21ba Clear scan</button>` : '';
+  const done = n ? `<div style="background:#ecfeff;border:1px solid #a5f3fc;border-radius:10px;padding:9px 11px;margin-top:8px;font-size:12px;color:#0e7490;font-weight:700;line-height:1.55;">`
+      + `\u2713 ${n} box(es) scanned \u2014 the lines below were filled in automatically.`
+      + `<div style="font-weight:400;color:#155e75;margin-top:3px;">Lines with no scan were left alone \u2014 an old carton may simply have no QR. Mark those by hand.</div>`
+      + `</div>` : '';
+  const extra = ex.length ? `<div style="background:#eff6ff;border:1.5px solid #93c5fd;border-radius:10px;padding:9px 11px;margin-top:8px;font-size:12px;color:#1d4ed8;font-weight:700;line-height:1.6;">`
+      + `\u26a0 ${ex.length} item(s) scanned that are <b>not on this pallet</b> in the system:`
+      + ex.map(e=>`<div style="font-weight:400;color:#1e40af;">\u00b7 ${esc(e.style)} ${esc(e.color)} ${esc(e.size)} \u2014 ${e.n} box(es)</div>`).join('')
+      + `<div style="font-weight:400;color:#1e40af;margin-top:3px;">Saved with this check so the office can move them to the right bin.</div>`
+      + `</div>` : '';
+  return `<div style="display:flex;gap:7px;margin-bottom:2px;">${btn}${clr}</div>${done}${extra}`;
+}
 function pchkEmpRenderBinCard(){ const el=document.getElementById('pchk-bincontents'); if(el) el.innerHTML=pchkEmpBinCardHtml(); }
 function pchkEmpBinCardHtml(){
   const d=window._pchkBinData; if(!d) return '';
@@ -17184,6 +17293,7 @@ function pchkEmpBinCardHtml(){
   return `<div style="background:#fff;border-radius:12px;padding:12px 14px;">
     <div style="font-size:13px;font-weight:800;color:#0f2a4a;margin-bottom:2px;">📦 System says this pallet has — [${_pchkWh}] ${esc(d.bin)}</div>
     <div style="font-size:11px;color:#64748b;margin-bottom:8px;">Check each line against the pallet: ✓ if it matches, ✗ if not. (if you can count them, enter the actual box count too — optional)</div>
+    ${pchkScanBarHtml()}
     <table style="width:100%;font-size:12.5px;border-collapse:collapse;"><thead><tr style="background:#f1f5f9;"><th style="padding:5px 7px;text-align:left;">Style</th><th style="padding:5px 7px;text-align:left;">Color</th><th style="padding:5px 7px;">Size</th><th style="padding:5px 7px;">Sys</th><th style="padding:5px 7px;">Match?</th><th style="padding:5px 7px;">Count</th></tr></thead><tbody>${body}</tbody></table>
     <div style="font-size:11px;color:#64748b;margin-top:6px;">Total: ${total} boxes</div>
   </div>`;
@@ -17405,7 +17515,7 @@ async function pchkEmpSaveCheck(){
   const staff_check=rows.map((x,i)=>{ const m=_pchkMarks[i]||{}; return { style:x.style, color:x.color, size:x.size, sys:Number(x.n)||0, mark:m.mark||null, count:(m.count!==undefined&&String(m.count).trim()!=='')?Number(m.count):null }; });
   const btn=document.getElementById('pchk-analyze'); if(btn){ btn.disabled=true; btn.textContent='💾 Saving…'; }
   const _boxN=(_pchkExtraBox||[]).length;
-  const row={ wh:_pchkWh, bin:bxLocOut(bin), submitter:(_pchkWho||'').trim()||null, note:pchkEmpItem()||null, detected:[], staff_check, photos:pchkAllPhotos(), extra_box:_boxN, status:'pending' };
+  const row={ wh:_pchkWh, bin:bxLocOut(bin), submitter:(_pchkWho||'').trim()||null, note:pchkEmpItem()||null, detected:pchkScanDetected(), staff_check, photos:pchkAllPhotos(), extra_box:_boxN, status:'pending' };
   try{
     const _res=await picRpc('pic_pchk_add', { b: row });   /* v1068 */
     if(_res !== 'ok') throw new Error('check save refused (' + _res + ')');
