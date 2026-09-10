@@ -25883,18 +25883,27 @@ let _wpManual = {};
 const WP_COLS   = ['base_price','price_2xl','price_3xl','price_4xl','price_5xl'];
 const WP_LABEL  = { base_price:'Base', price_2xl:'2XL', price_3xl:'3XL', price_4xl:'4XL', price_5xl:'5XL' };
 /* ⚠⚠ 큰사이즈 추가금은 예전에 여기 **코드에 박혀** 있었다 — 값을 바꾸려면 배포를 해야 했다.
-   이제 pr_config 의 'web_xl_ladder' 한 줄에 저장하고, Web Price 화면 맨 위에서 직접 고친다.
+   이제 pr_config 의 'web_xl_steps' 한 줄에 저장하고, Web Price 화면 맨 위에서 직접 고친다.
    WP_LADDER 는 화면을 열 때 서버 값으로 덮어씌워진다. 서버에 없으면 아래 기본값을 쓴다. */
-const WP_LADDER_DEFAULT = { price_2xl:0.60, price_3xl:1.60, price_4xl:3.10, price_5xl:5.60 };
+/* ⚠⚠ 추가금은 **앞 사이즈 기준**이다 (2026-09-10 에 바꿨다).
+     2XL = XS-XL + 0.60 · 3XL = 2XL + 0.80 · 4XL = 3XL + 1.20 · 5XL = 4XL + 2.20
+   예전에는 넷 다 Base 기준이었다(Base+0.60 / +1.60 / +3.10 / +5.60). 그런데 그러면
+   '사이즈가 한 단 올라갈 때 얼마가 붙는지' 가 안 보이고, 한 단을 고치려면 뒤의 숫자를
+   전부 손으로 다시 계산해야 했다. 이제 한 칸만 고치면 뒤가 알아서 밀린다.
+   ⚠ 저장 키도 web_xl_ladder → **web_xl_steps** 로 바꿨다. 옛 키에는 Base 기준 숫자가
+     들어 있어서, 그걸 그대로 '단계값' 으로 읽으면 가격이 엉뚱하게 뛴다. */
+const WP_LADDER_ORDER   = ['price_2xl','price_3xl','price_4xl','price_5xl'];
+const WP_LADDER_PREV    = { price_2xl:'XS-XL', price_3xl:'2XL', price_4xl:'3XL', price_5xl:'4XL' };
+const WP_LADDER_DEFAULT = { price_2xl:0.60, price_3xl:0.80, price_4xl:1.20, price_5xl:2.20 };
 let   WP_LADDER = Object.assign({}, WP_LADDER_DEFAULT);
 async function wpLadderLoad(){
   try{
-    const r = await fetch(SB_URL + '/rest/v1/pr_config?select=v&k=eq.web_xl_ladder',
+    const r = await fetch(SB_URL + '/rest/v1/pr_config?select=v&k=eq.web_xl_steps',
       { headers:{ apikey:SB_KEY, Authorization:'Bearer ' + SB_KEY } });
     if(r.ok){
       const j = await r.json(); let raw = (j[0]||{}).v;
       if(typeof raw === 'string') { try{ raw = JSON.parse(raw); }catch(e){ raw = null; } }
-      if(raw && typeof raw === 'object') Object.keys(WP_LADDER_DEFAULT).forEach(c=>{
+      if(raw && typeof raw === 'object') WP_LADDER_ORDER.forEach(c=>{
         const n = Number(raw[c]); if(isFinite(n)) WP_LADDER[c] = Math.round(n*100)/100;
       });
     }
@@ -25902,8 +25911,8 @@ async function wpLadderLoad(){
   return WP_LADDER;
 }
 function wpLadderText(){
-  return Object.keys(WP_LADDER_DEFAULT)
-    .map(c=> WP_LABEL[c] + ' = Base+' + WP_LADDER[c].toFixed(2)).join(' · ');
+  return WP_LADDER_ORDER
+    .map(c=> WP_LABEL[c] + ' = ' + WP_LADDER_PREV[c] + '+' + WP_LADDER[c].toFixed(2)).join(' · ');
 }
 /* 추가금 칸 4개 + 저장 버튼. 저장하면 '규칙 따르는 스타일 전부 다시 계산할까?' 를 묻는다 —
    묻지 않고 바로 고치면 145개 스타일 가격이 한 번에 바뀌어 버린다. */
@@ -25913,10 +25922,10 @@ function wpLadderBarHtml(){
     + 'padding:2px 5px;border:1px solid #93c5fd;border-radius:5px;">';
   return '<div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;padding:6px 4px 2px;font-size:11.5px;color:#374151;">'
     + '<b style="color:#1d4ed8;">큰사이즈 추가금</b>'
-    + '<span style="color:#9ca3af;">기본가에 얼마를 더할지 — 여기서 고치면 규칙이 바뀐다</span>'
-    + Object.keys(WP_LADDER_DEFAULT).map(c=>
+    + '<span style="color:#9ca3af;">한 사이즈 올라갈 때 <b>앞 사이즈 값</b>에 얼마를 더할지</span>'
+    + WP_LADDER_ORDER.map(c=>
         '<span style="display:inline-flex;align-items:center;gap:4px;"><b>' + WP_LABEL[c] + '</b>'
-        + '<span style="color:#94a3b8;">Base +$</span>' + box(c) + '</span>').join('')
+        + '<span style="color:#94a3b8;">= ' + WP_LADDER_PREV[c] + ' +$</span>' + box(c) + '</span>').join('')
     + '<button class="btn btn-sm" onclick="wpLadderSave()"'
     + ' style="background:#1d4ed8;color:#fff;border-color:#1d4ed8;font-weight:700;font-size:11px;padding:3px 10px;">추가금 저장</button>'
     + '<button class="btn btn-sm" onclick="wpLadderApplyAll(true)"'
@@ -25925,7 +25934,7 @@ function wpLadderBarHtml(){
 }
 async function wpLadderSave(){
   const o = {};
-  Object.keys(WP_LADDER_DEFAULT).forEach(c=>{
+  WP_LADDER_ORDER.forEach(c=>{
     const el = document.getElementById('wpl-' + c);
     const n = Number(String((el && el.value) || '').replace(/[^0-9.]/g, ''));
     o[c] = isFinite(n) ? Math.round(n*100)/100 : WP_LADDER_DEFAULT[c];
@@ -25935,11 +25944,11 @@ async function wpLadderSave(){
   try{
     const r = await sbFetch('/rest/v1/pr_config?on_conflict=k', { method:'POST',
       headers:{ Prefer:'resolution=merge-duplicates,return=representation' },
-      body: JSON.stringify([{ k:'web_xl_ladder', v: JSON.stringify(o), updated_at:new Date().toISOString() }]) });
+      body: JSON.stringify([{ k:'web_xl_steps', v: JSON.stringify(o), updated_at:new Date().toISOString() }]) });
     if(!r.ok) throw new Error(r.status + ' ' + (await r.text()).slice(0,140));
   }catch(e){ WP_LADDER = before; alert('추가금 저장 실패 — ' + e.message); return; }
-  showToast('✅ 추가금 저장 — ' + wpLadderText());
-  const changed = Object.keys(WP_LADDER_DEFAULT).some(c=> Math.abs(before[c] - o[c]) >= 0.005);
+  showToast('✅ 추가금 저장 — ' + wpLadderText() + '  (예: ' + wpLadderExample(4) + ')');
+  const changed = WP_LADDER_ORDER.some(c=> Math.abs(before[c] - o[c]) >= 0.005);
   if(changed) wpLadderApplyAll(false); else wpRender((document.getElementById('wp-search')||{}).value||'');
 }
 /* 규칙을 따르는(주황이 아닌) 칸만 새 추가금으로 다시 채운다. 저장은 안 한다 —
@@ -25950,7 +25959,9 @@ function wpLadderApplyAll(ask){
     if(wpIsKid(r)) return false;
     return wpEff(sn,'base_price') != null;
   });
-  if(ask && !confirm('규칙을 따르는 스타일 ' + targets.length + '개의 큰사이즈를 기본가 + 추가금으로 다시 채울까?\n\n' + wpLadderText() + '\n\n(주황색 예외 칸은 그대로 둔다. 아직 저장은 안 되고, Save changes 를 눌러야 반영된다.)')) return;
+  if(ask && !confirm('규칙을 따르는 스타일 ' + targets.length + '개의 큰사이즈를 다시 계산할까?\n\n'
+      + wpLadderText() + '\n예: ' + wpLadderExample(4)
+      + '\n\n(주황색 예외 칸은 그대로 둔다. 아직 저장은 안 되고, Save changes 를 눌러야 반영된다.)')) return;
   let n = 0;
   targets.forEach(r=>{
     const sn = String(r.style_number);
@@ -25982,10 +25993,18 @@ function wpIsKid(r){
   try{ if(typeof costIsKid === 'function') return costIsKid(r); }catch(e){}
   return /KID|YOUTH|JUVY|TODDLER/.test(String((r && r.category) || '').toUpperCase());
 }
+/* 앞 사이즈 값에 그 단계 추가금을 더해 가며 쌓는다 — XS-XL → 2XL → 3XL → 4XL → 5XL */
 function wpLadderFor(base){
   const b = parseFloat(base); if(isNaN(b)) return null;
-  const o = {}; Object.keys(WP_LADDER).forEach(c=>{ o[c] = Math.round((b + WP_LADDER[c]) * 100) / 100; });
+  const o = {}; let run = b;
+  WP_LADDER_ORDER.forEach(c=>{ run = Math.round((run + WP_LADDER[c]) * 100) / 100; o[c] = run; });
   return o;
+}
+/* 화면에 '지금 규칙이면 얼마가 되는지' 를 보여줄 때 쓴다 (기본가 4.00 → 4.60/5.40/6.60/8.80) */
+function wpLadderExample(base){
+  const w = wpLadderFor(base); if(!w) return '';
+  return 'Base ' + Number(base).toFixed(2) + ' → '
+    + WP_LADDER_ORDER.map(c=> WP_LABEL[c] + ' ' + w[c].toFixed(2)).join(' · ');
 }
 function wpEff(sn, col){
   const e = _wpEdits[sn];
