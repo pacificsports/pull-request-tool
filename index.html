@@ -192,7 +192,7 @@ body.po-dragging{user-select:none;}
   </span>
   <select id="lang-sel" onchange="setLang(this.value)" style="font-size:11px;padding:3px 6px;border-radius:5px;border:none;background:#1d3f66;color:#fff;"><option value="ko">한국어</option><option value="en">English</option><option value="es">Español</option></select>
   <button id="wide-btn" class="btn btn-sm" onclick="toggleWide()" title="화면 넓게 / 좁게 — 기본은 넓게 (이 브라우저에만 저장돼)" style="padding:2px 8px;font-size:10px;background:#1d3f66;color:#cfe0f2;border-color:#2b5384;">↔ Wide</button>
-  <span id="app-ver" style="font-size:10px;color:#9fb8d4;">v1066</span>
+  <span id="app-ver" style="font-size:10px;color:#9fb8d4;">v1067</span>
 </div>
 <script>
 // ↔ 넓게 보기 — 브라우저마다 따로 저장 (v793)
@@ -3099,9 +3099,37 @@ async function revPrintPR(base, wh, n){
   try{ await markDocPrinted(base, revRowKey(wh, n), 'pr'); }catch(e){}
   try{ logHist(base, 'REV ' + n + ' pull request printed — ' + wh); }catch(e){}
 }
+/* ═══════════ 🏷 REV 줄의 라벨은 그 REV 몫만 (v1067) ═══════════
+   ⚠⚠ 여기 한 줄이 **이미 나간 물건**의 라벨을 찍게 했다. (PO 80054066 · 2026-09-10)
+
+     예전:  openBoxLabelForRecWh(base, wh, mode)   ← 창고 줄 '전체' 를 뽑는 함수
+
+   그 오더의 CA 줄은 9/9 에 2 pcs (1348 Light Blue Htr XS) 로 선적이 끝났다.
+   REV 2 가 새로 붙인 것은 Slate 50 pcs 다. 그런데 REV 줄의 🏷 Box Label 을 누르면
+   위 한 줄이 창고 줄 전체를 뽑아서 **이미 나간 2 pcs** 의 라벨이 나왔다 —
+   정작 새로 나갈 50 pcs 는 한 장도 없이.
+
+   v1054 설계가 「원래 줄은 얼려두고 바뀐 것만 자기 줄로」 이므로, REV 줄의 종이는
+   그 REV 몫만 봐야 한다. revPlLines() 가 정확히 그것을 준다 (이 창고에서 늘어난 몫).
+   같은 파일의 📦 따로/합치기 버튼도 이미 revPlLines() 로 판단하고 있었다 —
+   라벨만 그 판단을 안 쓰고 있었던 것이다.
+
+   되돌리기(put back) REV 는 나갈 물건이 없어서 revPlLines() 가 빈 배열이다.
+   그럴 때는 모달을 아예 열지 않는다 — 나가지 않는 물건에 라벨을 뽑을 이유가 없다.
+   (SC REV 2 가 그 경우였는데 창고 줄 3박스가 그대로 나왔다.) */
 function revLabelClick(base, wh, n, mode){
-  const rec = savedCache.find(s=>s.base===base); if(!rec) return;
-  openBoxLabelForRecWh(base, wh, mode || undefined);
+  const rec = (typeof getSaved==='function' ? getSaved() : (savedCache||[])).find(s=>s.base===base);
+  if(!rec) return;
+  const src = revPlLines(rec, wh, n) || [];
+  if(!src.length){
+    showToast('\u21A9 REV ' + n + ' puts stock back \u2014 nothing ships out, so there is no box label.');
+    return;
+  }
+  window._blMode = (mode==='full') ? 'full' : 'box';
+  window._blCtx = { base: base, wh: wh, rev: n };
+  const boxes = (window._blMode==='full') ? calcFullBoxesFromLines(src, wh) : calcPartialBoxesFromLines(src, wh);
+  openBoxLabelModal(boxes, { customer_po: (rec.meta&&rec.meta.po)||'', customer_name: (rec.meta&&rec.meta.cust)||'',
+    boxGuess: blBoxGuess(src), warn: blRevNote(wh, n, src) + blBoxGapNote(wh, boxes) });
   if(!mode){ try{ markDocPrinted(base, revRowKey(wh, n), 'label'); }catch(e){} }
 }
 
@@ -3162,12 +3190,12 @@ function revRowsHtml(rec, wh){
         const sep = revSepOn(rec, key);
         const pi  = (rec.pl && rec.pl[key]) || {};
         const ivp = rec.inv && rec.inv[key] && rec.inv[key].printed;
-        if(!sep) return `<button class="btn btn-sm" style="background:#fff;color:#0f766e;border-color:#5eead4;font-weight:800;" onclick="revSepToggle('${esc(rec.base)}','${esc(key)}',true)" title="Give this REV its own packing list, invoice and tracking. Right now it goes out inside the ${wh} shipment.">📦 따로 보내기</button>`;
+        if(!sep) return `<button class="btn btn-sm" style="background:#fff;color:#0f766e;border-color:#5eead4;font-weight:800;" onclick="revSepToggle('${esc(rec.base)}','${esc(key)}',true)" title="Give this REV its own packing list, invoice and tracking. Right now it goes out inside the ${wh} shipment.">📦 Ship separately</button>`;
         return `<button class="btn btn-sm" style="background:${pi._completed?'#16a34a':(pi.savedAt?'#0e7490':'#f59e0b')};color:#fff;border-color:${pi._completed?'#16a34a':(pi.savedAt?'#0e7490':'#f59e0b')};" onclick="openPLWh('${esc(rec.base)}','${esc(key)}')" oncontextmenu="return plBtnMenu(event,'${esc(rec.base)}','${esc(key)}')" title="This REV's own packing list">📦 Packing List</button>`
           + (pi.savedAt ? `<button class="btn btn-sm" style="background:${ivp?'#16a34a':'#dc2626'};color:#fff;border-color:${ivp?'#16a34a':'#dc2626'};" onclick="openInvoiceWh('${esc(rec.base)}','${esc(key)}')" oncontextmenu="return docBtnMenu(event,'${esc(rec.base)}','${esc(key)}','inv')" title="This REV's own invoice">🧾 Invoice</button>` : '')
-          + `<button class="btn btn-sm" style="background:#fff;color:#b45309;border-color:#fed7aa;font-weight:800;" onclick="revSepToggle('${esc(rec.base)}','${esc(key)}',false)" title="Put it back into the ${wh} shipment — one packing list again">🔗 ${wh} 에 합치기</button>`;
+          + `<button class="btn btn-sm" style="background:#fff;color:#b45309;border-color:#fed7aa;font-weight:800;" onclick="revSepToggle('${esc(rec.base)}','${esc(key)}',false)" title="Put it back into the ${wh} shipment — one packing list again">🔗 Merge into ${wh}</button>`;
       })()}
-      <span style="margin-left:auto;font-size:10.5px;color:${locked?'#5b21b6':'#92400e'};font-weight:800;white-space:nowrap;">${locked ? '\u{1F512} on the truck — wait for CA' : (revSepOn(rec,key) ? '\u{1F4E6} 따로 나갑니다' : (mp.pr ? '✓ warehouse has this sheet' : '⚠ not given to the warehouse yet'))}</span>
+      <span style="margin-left:auto;font-size:10.5px;color:${locked?'#5b21b6':'#92400e'};font-weight:800;white-space:nowrap;">${locked ? '\u{1F512} on the truck — wait for CA' : (revSepOn(rec,key) ? '\u{1F4E6} ships separately' : (mp.pr ? '✓ warehouse has this sheet' : '⚠ not given to the warehouse yet'))}</span>
       ${note}
     </div>`;
   }).join('');
@@ -8993,6 +9021,32 @@ function blBoxGuess(lines){
   if(pcs <= 0) return 0;
   return Math.max(1, Math.ceil(pcs / (ppb||72)));
 }
+/* 🏷 「이 라벨은 REV 몫만입니다」 — 원래 출고와 헷갈리지 않게 (v1067) */
+function blRevNote(wh, n, src){
+  const q = (src||[]).reduce((a,l)=>a+(Number(l.qty)||0), 0);
+  return '<div style="background:#eff6ff;border-bottom:1px solid #bfdbfe;padding:8px 14px;font-size:11.5px;'
+    + 'color:#1d4ed8;font-weight:700;line-height:1.55;">\u21B3 <b>REV ' + esc(n) + ' only</b> \u2014 the '
+    + esc(wh) + ' portion this revision added (<b>' + q + ' pcs</b>).'
+    + ' The original ' + esc(wh) + ' shipment is <b>not</b> included here.</div>';
+}
+/* 🏷 박스 번호가 1..n 으로 안 이어질 때만 알려준다 (v1067).
+   물건이 다른 창고로 옮겨지면 그 번호가 이 출고에서 빠져서 1 \u00b7 2 \u00b7 4 처럼 남는다.
+   ⚠ 일부러 다시 매기지 않는다 — 창고에 이미 그 번호가 적힌 종이가 나가 있을 수 있고,
+   번호를 바꾸면 종이와 라벨이 서로 다른 것을 가리키게 된다. 대신 사람에게 말해준다.
+   박스가 하나뿐이면 아무 말도 하지 않는다 — 매니저가 그 박스에 9 번을 붙였을 뿐인
+   경우가 있고 그건 빠진 게 아니다. */
+function blBoxGapNote(wh, boxes){
+  const W = String(wh||'').trim().toUpperCase();
+  const nums = (boxes||[]).filter(b=>String(b.wh||'').trim().toUpperCase()===W)
+    .map(b=>Number(b.boxNum)).filter(n=>n>0).sort((a,b)=>a-b);
+  if(nums.length < 2) return '';
+  if(nums[0] === 1 && nums[nums.length-1] === nums.length) return '';
+  return '<div style="background:#fffbeb;border-bottom:1px solid #fde68a;padding:8px 14px;font-size:11.5px;'
+    + 'color:#92400e;font-weight:700;line-height:1.55;">\u24D8 <b>' + nums.length + ' label(s)</b> \u2014 box '
+    + nums.join(', ') + '. The numbering is not consecutive: a box in between moved to the other warehouse'
+    + ' or was taken out. The numbers come from the packing list and are left as they are, so they still'
+    + ' match the paper already on the floor.</div>';
+}
 function calcPartialBoxList(){
   const rec = (typeof savedCache!=='undefined' && savedCache) ? savedCache.find(s=>s.base===plBase) : null;
   return calcPartialBoxesFromLines(plHealWh(rec, (plDrafts[plWh]||{}).lines||[]), plWh);
@@ -9011,7 +9065,8 @@ function openBoxLabelForRecWh(base, wh, mode){
   const src = (Array.isArray(i.lines) && i.lines.length) ? i.lines : (rec.lines||[]).filter(l=>l.wh===wh && (l.qty||0)>0);
   const boxes = (window._blMode==='full') ? calcFullBoxesFromLines(src, wh) : calcPartialBoxesFromLines(src, wh);
   // full box\uAC00 \uC5C6\uC5B4\uB3C4 \uBAA8\uB4C8\uC740 \uB744\uC6B4\uB2E4 \u2014 Customer + PO# \uB77C\uBCA8\uC740 \uC5EC\uC804\uD788 \uD504\uB9B0\uD2B8 \uAC00\uB2A5 (v701)
-  openBoxLabelModal(boxes, { customer_po: (rec.meta&&rec.meta.po)||'', customer_name: (rec.meta&&rec.meta.cust)||'', boxGuess: blBoxGuess(src) });
+  openBoxLabelModal(boxes, { customer_po: (rec.meta&&rec.meta.po)||'', customer_name: (rec.meta&&rec.meta.cust)||'',
+    boxGuess: blBoxGuess(src), warn: blBoxGapNote(wh, boxes) });
 }
 function openBoxLabelForRec(base, mode){
   window._blMode = (mode==='full') ? 'full' : 'box';
@@ -9635,6 +9690,7 @@ function openBoxLabelModal(boxes, order){
     + '<span style="color:#fff;font-weight:700;font-size:14px;">' + (window._blMode==='full' ? '\uD83C\uDFF7 Full Box Label (2x2) — select boxes' : t('bl_title')) + '</span>'
     + '<button onclick="document.getElementById(\'modal-box-select\').remove()" style="background:none;border:none;color:#fff;font-size:18px;cursor:pointer;">✕</button>'
     + '</div>'
+    + ((window._blOrder && window._blOrder.warn) || '')   /* \u21b3 REV 몫만 \u00b7 박스 번호 구멍 (v1067) */
     + (window._blMode==='full' ? '<div style="background:#ecfeff;border-bottom:1px solid #a5f3fc;padding:7px 14px;font-size:11.5px;color:#0e7490;font-weight:700;display:flex;align-items:center;gap:8px;flex-wrap:wrap;">\uD83C\uDFF7 <span id="bl-count">' + boxes.length + ' full box(es) \u2192 ' + boxes.length + ' label(s)</span> &nbsp;\u00B7&nbsp; \u26A0 Load <b>2\" x 2\"</b> label stock first. <span id="bl-dpi" style="font-weight:800;"></span></div>'
       : '')
     + '<div style="padding:6px 14px;border-bottom:1px solid #eee;font-size:11.5px;display:flex;gap:6px;align-items:center;background:#f8fafc;">🖨 <b>Printer</b> '
