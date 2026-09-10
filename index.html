@@ -192,7 +192,7 @@ body.po-dragging{user-select:none;}
   </span>
   <select id="lang-sel" onchange="setLang(this.value)" style="font-size:11px;padding:3px 6px;border-radius:5px;border:none;background:#1d3f66;color:#fff;"><option value="ko">한국어</option><option value="en">English</option><option value="es">Español</option></select>
   <button id="wide-btn" class="btn btn-sm" onclick="toggleWide()" title="화면 넓게 / 좁게 — 기본은 넓게 (이 브라우저에만 저장돼)" style="padding:2px 8px;font-size:10px;background:#1d3f66;color:#cfe0f2;border-color:#2b5384;">↔ Wide</button>
-  <span id="app-ver" style="font-size:10px;color:#9fb8d4;">v1038</span>
+  <span id="app-ver" style="font-size:10px;color:#9fb8d4;">v1066</span>
 </div>
 <script>
 // ↔ 넓게 보기 — 브라우저마다 따로 저장 (v793)
@@ -3540,7 +3540,14 @@ function normalizeLines(lines){
 }
 // ═══════════════ 로그인 (웹사이트와 동일: Supabase 이메일+암호) ═══════════════
 const PCHK_WORKER = 'https://parse-po.hjbae.workers.dev/vision';   // 📸 vision — parse-po 워커에 /vision 경로 (기존 ANTHROPIC_API_KEY 재사용) (v556)
-const PCHECK_PIN = '4321';   // 🔒 직원 무로그인 촬영 링크(psflowx.com/#check) 공용 암호 — 바꾸려면 이 값만 수정 (v560)
+/* 🔒 /pic 공용 암호는 이제 이 파일에 없다 — DB(pic_gate)에 있고 서버가 확인한다 (v1066).
+   ⚠⚠ 예전에는 `const PCHECK_PIN = '****'` 이 그대로 여기 있었다. 실수가 아니라
+   설계가 잘못돼 있었다:
+     · index.html 은 로그인 없이 누구나 받을 수 있는 파일이다 → F12 한 번에 암호가 읽혔다.
+     · 더 나쁜 것은 통과 표시가 localStorage 의 pchk_pin_ok='1' 하나여서,
+       암호를 몰라도 그 값만 넣으면 /pic 이 그냥 열렸다.
+   이제는 pic_unlock(암호) 함수가 서버에서 맞춰보고, 맞으면 기기 토큰(uuid)을 준다.
+   암호를 바꿀 때는 `update pic_gate set v='새암호' where k='pin'` — 배포하지 않아도 된다. */
 const SB_URL = 'https://ypjnhhtfwyrwcjakjcgc.supabase.co';
 const SB_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Inlwam5oaHRmd3lyd2NqYWtqY2djIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzIyMDMxOTAsImV4cCI6MjA4Nzc3OTE5MH0.ADl8rXCeu9Z0fLAYR0d1wxOOkvT30eo47ahpss9yJq8';
 let SESS = null;
@@ -11393,7 +11400,13 @@ function pchkEmpEl(){ let ov=document.getElementById('pchk-emp');
 function pchkEmpBoot(){
   ['login-page','reset-page','app-main'].forEach(id=>{ const e=document.getElementById(id); if(e) e.style.display='none'; });
   const ov=pchkEmpEl();
-  let okPin=false; try{ okPin = localStorage.getItem('pchk_pin_ok')==='1'; }catch(e){}
+  /* ⚠⚠ 여기서 예전에는 `localStorage.pchk_pin_ok==='1'` 만 보았다 — 그래서
+     암호를 모르는 사람도 브라우저 저장소에 그 값 하나를 넣으면 /pic 이 열렸다.
+     이제는 서버가 발급한 토큰이 있어야 한다. 토큰은 지워지지 않으므로 기기당
+     한 번만 암호를 치면 그 뒤로는 그대로 쓴다 (v1066).
+     → 배포 직후 한 번은 창고 폰들이 암호를 다시 치게 된다. 사고가 아니라 의도다:
+       옛 표시(pchk_pin_ok)를 그대로 인정해주면 그 우회로를 남겨두는 것이 된다. */
+  let okPin = !!picTok();
   if(okPin){ pchkDoneLoad(); _pchkWh='SC'; _pchkBin=''; _pchkSlots={front:null,left:null,right:null,back:null}; window._pchkRetake=[]; window._pchkRetakeMsg=''; pchkEmpMenu(); } else pchkEmpGate();
 }
 function pchkEmpHeader(sub, showMenu){ return `<div style="background:#0891b2;color:#fff;padding:14px 16px;display:flex;align-items:center;gap:10px;position:sticky;top:0;z-index:5;">
@@ -11408,14 +11421,44 @@ function pchkEmpGate(){
       <div style="font-size:12px;color:#64748b;margin-bottom:18px;">Ask your manager for the 4-digit code.</div>
       <input id="pchk-pin" type="tel" inputmode="numeric" maxlength="8" autocomplete="off" placeholder="••••" onkeydown="if(event.key==='Enter')pchkEmpUnlock()" style="width:160px;text-align:center;letter-spacing:8px;font-size:26px;padding:12px;border:2px solid #cbd5e1;border-radius:12px;box-sizing:border-box;">
       <div id="pchk-pin-err" style="color:#dc2626;font-size:12px;font-weight:700;height:16px;margin-top:8px;"></div>
-      <button onclick="pchkEmpUnlock()" style="width:100%;margin-top:12px;background:#0891b2;color:#fff;border:none;border-radius:10px;padding:13px;font-size:16px;font-weight:800;">Unlock →</button>
+      <button id="pchk-pin-go" onclick="pchkEmpUnlock()" style="width:100%;margin-top:12px;background:#0891b2;color:#fff;border:none;border-radius:10px;padding:13px;font-size:16px;font-weight:800;">Unlock →</button>
     </div></div>`;
   const f=document.getElementById('pchk-pin'); if(f) setTimeout(()=>f.focus(),120);
 }
-function pchkEmpUnlock(){
+/* ═══ 🔒 /pic 문지기 — 암호 확인을 서버로 (v1066) ═══
+   pic_unlock(암호) → 맞으면 uuid 토큰, 틀리면 null. 암호 값 자체는 어떤 경우에도
+   돌아오지 않는다. 토큰은 기기마다 하나이고 localStorage('pchk_tok') 에 넣는다.
+   앞으로 만들 /pic 함수들이 이 토큰을 받아서 일하게 되면, 테이블을 anon 에게
+   통째로 열어두는 지금 방식을 끝낼 수 있다.
+
+   ⚠ 서버에 못 닿았을 때 예전 방식으로 통과시키는 예비 경로는 **일부러 안 넣었다.**
+   /pic 은 하는 일 전부가 Supabase 를 읽고 쓰는 것이다 — 그게 안 닿는 상황이면
+   암호를 통과시켜줘도 빈 화면만 보게 된다. 예비 경로는 암호를 소스에 다시 둘
+   이유만 만든다. 대신 배포 전에 anon 으로 직접 확인했다:
+   틀린 암호 → null, 가짜 토큰 → false, pic_gate 직접 읽기 → 빈 배열. */
+function picTok(){ try{ return localStorage.getItem('pchk_tok')||''; }catch(e){ return ''; } }
+async function picUnlockSrv(v){
+  try{
+    const r = await fetch(SB_URL + '/rest/v1/rpc/pic_unlock', { method:'POST',
+      headers:{ apikey:SB_KEY, Authorization:'Bearer '+SB_KEY, 'Content-Type':'application/json' },
+      body: JSON.stringify({ p: v, label: (navigator.userAgent||'').slice(0,120) }) });
+    if(!r.ok) return { err:'HTTP ' + r.status };
+    const t = await r.json();
+    return t ? { tok:String(t) } : { bad:true };
+  }catch(e){ return { err:String((e&&e.message)||e) }; }
+}
+async function pchkEmpUnlock(){
   const v=String((document.getElementById('pchk-pin')||{}).value||'').trim();
-  if(v!==PCHECK_PIN){ const e=document.getElementById('pchk-pin-err'); if(e) e.textContent='Wrong passcode.'; return; }
-  try{ localStorage.setItem('pchk_pin_ok','1'); }catch(e){}
+  const errEl=document.getElementById('pchk-pin-err');
+  const btn=document.getElementById('pchk-pin-go');
+  if(!v){ if(errEl) errEl.textContent='Enter the code.'; return; }
+  if(errEl) errEl.textContent='';
+  if(btn){ btn.disabled=true; btn.textContent='Checking\u2026'; }
+  const res = await picUnlockSrv(v);
+  if(btn){ btn.disabled=false; btn.textContent='Unlock \u2192'; }
+  if(res.err){ if(errEl) errEl.textContent='Cannot reach server \u2014 check the connection and try again.'; return; }
+  if(res.bad){ if(errEl) errEl.textContent='Wrong passcode.'; return; }
+  try{ localStorage.setItem('pchk_tok', res.tok); localStorage.removeItem('pchk_pin_ok'); }catch(e){}
   pchkDoneLoad(); _pchkWh='SC'; _pchkBin=''; _pchkSlots={front:null,left:null,back:null,right:null}; window._pchkRetake=[]; window._pchkRetakeMsg=''; pchkEmpMenu();
 }
 // ═══════════ /pic 직원 랜딩 메뉴 (v605) ═══════════
