@@ -192,7 +192,7 @@ body.po-dragging{user-select:none;}
   </span>
   <select id="lang-sel" onchange="setLang(this.value)" style="font-size:11px;padding:3px 6px;border-radius:5px;border:none;background:#1d3f66;color:#fff;"><option value="ko">한국어</option><option value="en">English</option><option value="es">Español</option></select>
   <button id="wide-btn" class="btn btn-sm" onclick="toggleWide()" title="화면 넓게 / 좁게 — 기본은 넓게 (이 브라우저에만 저장돼)" style="padding:2px 8px;font-size:10px;background:#1d3f66;color:#cfe0f2;border-color:#2b5384;">↔ Wide</button>
-  <span id="app-ver" style="font-size:10px;color:#9fb8d4;">v1080</span>
+  <span id="app-ver" style="font-size:10px;color:#9fb8d4;">v1081</span>
 </div>
 <script>
 // ↔ 넓게 보기 — 브라우저마다 따로 저장 (v793)
@@ -29860,12 +29860,17 @@ function trOrderShipOK(route){ return route==='SC2CA' || route==='SC2LK'; }
 function trOrderShipEligible(){
   const cur = new Set(((_shipMeta&&_shipMeta.orderShip)||[]).map(o=>o.base));
   const custTruck = trDstKind(_shipRoute) === 'LK';   /* 거래처(Melmarc) 문 앞으로 가는 트럭 */
-  return (savedCache||[]).filter(r=>{
+  let _oshipHid = 0;
+  const out = (savedCache||[]).filter(r=>{
     if(cur.has(r.base)) return false;
     if(!((r.whs||[]).includes('SC'))) return false;
     if(custTruck){
       /* 이미 SC 몫을 Complete 한(=나간) 오더는 또 실을 이유가 없다 */
       if(((r.pl||{}).SC||{})._completed) return false;
+      /* [stated] "3rd party (CA)로 가는 오더는 MELMARC 오더 밖에 없으니까" (v1081).
+         이 트럭은 그 거래처 문 앞으로만 간다 — 다른 거래처 오더를 실으면 엉뚱한 곳에
+         내려놓는 것이다. 걸러낸 개수는 선택창 아래에 적어서 「왜 안 보이지」 가 없게 한다. */
+      if(String(r.meta&&r.meta.cust||'').toUpperCase().indexOf(trLkCustMatch()) < 0){ _oshipHid++; return false; }
       return true;
     }
     if(!recShipFromCA(r)) return false;
@@ -29873,9 +29878,30 @@ function trOrderShipEligible(){
     if(st==='transit'||st==='arrived') return false;   // 이미 이동중/도착이면 제외
     return true;
   });
+  try{ window._oshipHidden = _oshipHid; }catch(e){}
+  return out;
 }
 /* 이 트럭이 거래처 문 앞으로 가나 (= 실린 오더가 도착하면 거래처 물건이 되나) */
 function trOrderShipToCust(route){ return trDstKind(route||_shipRoute) === 'LK'; }
+/* ═══ 🔒 3자(CA) 는 칸이 하나다 — 받을 때 미리 채운다 (v1081) ═══
+   [stated] 하윤: "depart누르고 receive 누르면 그냥 바로 다 special bin으로 들어가게"
+   실제 재고를 세어보니 `SPECIAL` **한 칸에 3,399박스**가 다 들어 있다 — Hodge 처럼
+   팔레트마다 번호를 받는 절차가 없다. 줄마다 손으로 같은 글자를 칠 이유가 없다.
+   ⓘ 오타로 `SPECAIL` 같은 칸이 새로 생기는 것도 같이 막힌다.
+   ⚠ Hodge(`3P`)에는 절대 안 한다 — 거긴 팔레트마다 H 번호가 따로 나가야 한다.
+   ⚠ 트럭에 실은 **오더(`meta.orderShip`)는 애초에 이 화면에 안 들어온다** (받기 화면은
+     `rec.lines` 만 읽는다). 그러니 이 자동 채움이 거래처 물건을 우리 재고로 올릴 일은 없다.
+   ⓘ 칸 이름이 바뀌면 배포 없이: localStorage.tr_lk_bin = 'SPECIAL2' */
+function trLkBin(){
+  try{ return String(localStorage.getItem('tr_lk_bin')||'').trim().toUpperCase() || 'SPECIAL'; }
+  catch(e){ return 'SPECIAL'; }
+}
+/* 이 트럭이 문 앞으로 가는 거래처 (3자(CA) = Melmarc). 이름이 바뀌면 배포 없이:
+   localStorage.tr_lk_cust_match = 'MELMARC' */
+function trLkCustMatch(){
+  try{ return String(localStorage.getItem('tr_lk_cust_match')||'').trim().toUpperCase() || 'MELMARC'; }
+  catch(e){ return 'MELMARC'; }
+}
 async function trOrderShipOpen(){
   await _trEnsureRow();   // 트럭 행 생성(저장되게)
   const elig = trOrderShipEligible();
@@ -29903,10 +29929,12 @@ async function trOrderShipOpen(){
     const bx=packed?packedBx:estBx;   // 매니저가 모달에서 수정 가능
     return `<label style="display:flex;align-items:center;gap:10px;padding:9px 11px;border:1px solid #e5e7eb;border-radius:9px;margin-bottom:7px;cursor:pointer;">
       <input type="checkbox" class="oship-cb" data-base="${esc(r.base)}" data-cust="${esc(String(r.meta.cust||'').replace(/"/g,''))}" data-po="${esc(String(r.meta.po||'').replace(/"/g,''))}" data-boxes="${bx}" data-pcs="${scPcs}" checked style="width:16px;height:16px;">
-      <div style="flex:1;min-width:0;"><div style="font-weight:800;color:#0f2a4a;">${esc(r.meta.cust||'—')}${(trOrderShipToCust(_shipRoute) && /MELMARC/i.test(String(r.meta.cust||'')))?' <span style="background:#ede9fe;color:#5b21b6;font-size:10px;font-weight:800;padding:1px 7px;border-radius:20px;" title="This truck goes to this customer’s warehouse">✓ this stop</span>':''}</div><div style="font-size:11px;color:#64748b;">PO ${esc(r.meta.po||'—')} · SC ${scPcs.toLocaleString()} pcs</div></div>
+      <div style="flex:1;min-width:0;"><div style="font-weight:800;color:#0f2a4a;">${esc(r.meta.cust||'—')}</div><div style="font-size:11px;color:#64748b;">PO ${esc(r.meta.po||'—')} · SC ${scPcs.toLocaleString()} pcs</div></div>
       ${packed?`<span style="font-size:11px;font-weight:800;color:#16a34a;background:#dcfce7;border-radius:20px;padding:3px 10px;">📦 ${bx} box</span>`:`<span style="font-size:11px;font-weight:800;color:#b45309;background:#fff7ed;border-radius:20px;padding:3px 10px;" title="Estimated from pcs — SC hasn't packed boxes yet. Edit on the pallet if needed.">≈ ${bx} box (est)</span>`}
     </label>`;
-  }).join('') : '<div style="color:#94a3b8;font-size:12.5px;padding:14px;text-align:center;">No Ship-from-CA orders waiting. Turn on 🚚 Ship from CA on an order (with SC boxes packed) first.</div>';
+  }).join('') : (trOrderShipToCust(_shipRoute)
+      ? `<div style="color:#94a3b8;font-size:12.5px;padding:14px;text-align:center;">No ${esc(trLkCustMatch())} order is waiting with SC boxes. (Orders already marked Complete are not listed.)</div>`
+      : '<div style="color:#94a3b8;font-size:12.5px;padding:14px;text-align:center;">No Ship-from-CA orders waiting. Turn on 🚚 Ship from CA on an order (with SC boxes packed) first.</div>');
   const palOpts = _shipPallets.map(p=>`<option value="${esc(p.label)}">${esc(p.label)}</option>`).join('')+'<option value="__new__">+ New pallet</option>';
   d.innerHTML=`<div style="background:#fff;border-radius:12px;width:520px;max-width:95vw;max-height:88vh;overflow-y:auto;box-shadow:0 20px 60px rgba(0,0,0,.35);">
     <div style="background:#7b1fa2;color:#fff;padding:12px 16px;font-weight:800;display:flex;justify-content:space-between;align-items:center;">
@@ -29922,6 +29950,9 @@ async function trOrderShipOpen(){
         <select id="oship-pallet" class="fi" style="font-size:12px;padding:5px 8px;flex:1;">${palOpts}</select>
       </div>
       ${rows}
+      ${(trOrderShipToCust(_shipRoute) && (Number(window._oshipHidden)||0))
+        ? `<div style="font-size:11px;color:#94a3b8;margin-top:8px;padding-top:8px;border-top:1px solid #e5e7eb;">🔒 ${Number(window._oshipHidden)} other order(s) hidden — this truck only goes to <b>${esc(trLkCustMatch())}</b>.</div>`
+        : ''}
     </div>
     <div style="padding:0 16px 15px;display:flex;gap:8px;justify-content:flex-end;">
       <button class="btn btn-sm" onclick="document.getElementById('modal-oship').remove()">Cancel</button>
@@ -30088,7 +30119,12 @@ async function trRecvOpen(id){
      정해 놓고 모든 줄에 같은 판정을 썼다. 정차지가 없으면 결과가 예전과 같다. */
   lines.forEach(l=>{ const lbl = l.pallet||'Pallet 1'; if(!palletMap[lbl]){ const ps=_recvP[lbl]||{}; palletMap[lbl] = { label:lbl, mode:ps.mode||'whole', bin:ps.bin||'', act:ps.act||'sc', lines:[] }; }
     const _lD = trStopKindOfLine(rec, l);
-    palletMap[lbl].lines.push({...l, ca_bin: (l.ca_bin!=null && l.ca_bin!=='') ? l.ca_bin : ((trIsSpecKind(_lD)&&l.ret_bin)?String(l.ret_bin).toUpperCase():''), act: l.act||'sc', so_memo: l.so_memo||'', dmg_note: l.dmg_note||''}); });
+    /* 3자(CA) 는 넣을 칸이 하나뿐이라 미리 채워둔다 (v1081) — 칸은 그대로 보이고 지울 수도 있다 */
+    const _lB = (l.ca_bin!=null && l.ca_bin!=='') ? l.ca_bin
+              : (trIsSpecKind(_lD) && l.ret_bin) ? String(l.ret_bin).toUpperCase()
+              : (_lD === 'LK') ? trLkBin()
+              : '';
+    palletMap[lbl].lines.push({...l, ca_bin: _lB, act: l.act||'sc', so_memo: l.so_memo||'', dmg_note: l.dmg_note||''}); });
   _trRecvPallets = Object.values(palletMap);
   _trRecvPallets.forEach(p=>{ if(!trIsSpecKind(trStopKindOfPallet(rec, p))) return;
     const bs=[...new Set(p.lines.map(l=>l.ca_bin).filter(Boolean))]; if(bs.length===1) p.bin=bs[0]; });
