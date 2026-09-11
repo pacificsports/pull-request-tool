@@ -203,7 +203,7 @@ body.po-dragging{user-select:none;}
   </span>
   <select id="lang-sel" onchange="setLang(this.value)" style="font-size:11px;padding:3px 6px;border-radius:5px;border:none;background:#1d3f66;color:#fff;"><option value="ko">한국어</option><option value="en">English</option><option value="es">Español</option></select>
   <button id="wide-btn" class="btn btn-sm" onclick="toggleWide()" title="화면 넓게 / 좁게 — 기본은 넓게 (이 브라우저에만 저장돼)" style="padding:2px 8px;font-size:10px;background:#1d3f66;color:#cfe0f2;border-color:#2b5384;">↔ Wide</button>
-  <span id="app-ver" style="font-size:10px;color:#9fb8d4;">v1090</span>
+  <span id="app-ver" style="font-size:10px;color:#9fb8d4;">v1091</span>
 </div>
 <script>
 // ↔ 넓게 보기 — 브라우저마다 따로 저장 (v793)
@@ -9235,12 +9235,58 @@ function openBoxLabelModalPL(mode){
   const _bl = (window._blMode==='full') ? calcFullBoxesFromLines((plDrafts[plWh]||{}).lines, plWh) : calcPartialBoxList();
   openBoxLabelModal(_bl, { customer_po: (rec&&rec.meta&&rec.meta.po)||'', customer_name: (rec&&rec.meta&&rec.meta.cust)||'', boxGuess: blBoxGuess((plDrafts[plWh]||{}).lines||[]) });
 }
+/* ═══════════ 🏷 라벨 순서는 오더 줄 순서를 따른다 (v1091) ═══════════
+   [stated] 하윤: "order open edit해서 M을 S하고 L 사이로 drag해서 올리고 save했는데
+   box label에 순서는 안바껴서나오네"  (PO 80053987)
+
+   [왜 그랬나] 라벨은 `pl[wh].lines` — **저장된 패킹리스트**를 쓴다. 그게 맞다:
+   실제로 몇 장을 담았고 P.BOX# 가 몇 번인지는 거기에만 있다. 그런데 그 목록은
+   **포장할 때 찍힌 사진**이라, 나중에 오더 화면에서 줄을 끌어 옮겨도 그대로 남는다.
+   그래서 M 을 S 와 L 사이로 올려 저장했는데도 라벨은 M 을 계속 맨 아래로 찍었다.
+
+   [무엇을 했나] 내용(장수·P.BOX#)은 패킹리스트 것을 **그대로** 쓰고, **순서만**
+   지금 오더 줄 순서로 맞춘다. 둘 중 맞는 쪽을 각자에서 가져오는 것이다.
+
+   ⚠ 오더에 없는 줄(포장하다 더 넣은 것)은 **절대 버리지 않는다** — 버리면 라벨이
+   그만큼 사라져서 박스에 안 붙는다. 원래 순서를 지키며 뒤에 붙인다.
+   ⚠ 줄 개수는 들어온 것과 나가는 것이 반드시 같다 (아래 시험에서 확인).
+   ⚠ 같은 스타일·색·사이즈가 두 줄로 갈라져 있으면(P.BOX# 가 다른 경우) 둘이 같은
+     순위를 받고, 원래 앞뒤 관계를 그대로 지킨다.
+   ⚠ 순서가 바뀌면 **박스 번호도 다시 매겨진다** (`calcFullBoxesFromLines` 가 순서대로
+     1,2,3… 을 붙인다). 그래서 순서를 고친 뒤에는 그 창고 라벨을 **전부 다시** 뽑아야
+     한다 — 한 장만 다시 뽑으면 'BOX 3 of 5' 가 서로 안 맞는다. */
+function blLineKey(l){
+  return String((l && l.style) || '').trim().toUpperCase() + '|'
+       + String((l && l.color) || '').trim().toUpperCase() + '|'
+       + String((l && l.size)  || '').trim().toUpperCase();
+}
+function blOrderLike(src, rec, wh){
+  try{
+    if(!Array.isArray(src) || src.length < 2) return src;
+    const W = String(wh || '').toUpperCase();
+    const want = (rec && Array.isArray(rec.lines))
+      ? rec.lines.filter(l => !W || String((l && l.wh) || '').toUpperCase() === W)
+      : [];
+    if(!want.length) return src;
+    const rank = {};
+    want.forEach(function(l, i){ const k = blLineKey(l); if(rank[k] == null) rank[k] = i; });
+    const N = want.length;
+    return src
+      .map(function(l, i){
+        const r = rank[blLineKey(l)];
+        return { l: l, i: i, r: (r == null) ? (N + i) : r };   /* 오더에 없는 줄은 뒤로 */
+      })
+      .sort(function(a, b){ return (a.r - b.r) || (a.i - b.i); })
+      .map(function(x){ return x.l; });
+  }catch(e){ return src; }
+}
 function openBoxLabelForRecWh(base, wh, mode){
   const rec = getSaved().find(s=>s.base===base); if(!rec) return;
   window._blMode = (mode==='full') ? 'full' : 'box';
   window._blCtx = { base: base, wh: wh };
   const i = (rec.pl && rec.pl[wh]) || {};
-  const src = (Array.isArray(i.lines) && i.lines.length) ? i.lines : (rec.lines||[]).filter(l=>l.wh===wh && (l.qty||0)>0);
+  /* 내용은 패킹리스트, 순서는 지금 오더 줄 순서 (v1091) */
+  const src = blOrderLike((Array.isArray(i.lines) && i.lines.length) ? i.lines : (rec.lines||[]).filter(l=>l.wh===wh && (l.qty||0)>0), rec, wh);
   const boxes = (window._blMode==='full') ? calcFullBoxesFromLines(src, wh) : calcPartialBoxesFromLines(src, wh);
   // full box\uAC00 \uC5C6\uC5B4\uB3C4 \uBAA8\uB4C8\uC740 \uB744\uC6B4\uB2E4 \u2014 Customer + PO# \uB77C\uBCA8\uC740 \uC5EC\uC804\uD788 \uD504\uB9B0\uD2B8 \uAC00\uB2A5 (v701)
   openBoxLabelModal(boxes, { customer_po: (rec.meta&&rec.meta.po)||'', customer_name: (rec.meta&&rec.meta.cust)||'',
@@ -9251,9 +9297,9 @@ function openBoxLabelForRec(base, mode){
   const rec = savedCache.find(s=>s.base===base); if(!rec) return;
   let boxes = [], guess = 0;
   (rec.whs||[]).filter(w=>w!=='BO' && w!=='NA').forEach(w=>{
-    const src = (rec.pl && rec.pl[w] && Array.isArray(rec.pl[w].lines) && rec.pl[w].lines.length)
+    const src = blOrderLike((rec.pl && rec.pl[w] && Array.isArray(rec.pl[w].lines) && rec.pl[w].lines.length)
       ? rec.pl[w].lines
-      : (rec.lines||[]).filter(l=>l.wh===w);
+      : (rec.lines||[]).filter(l=>l.wh===w), rec, w);   /* 순서는 오더 줄 순서 (v1091) */
     boxes = boxes.concat((window._blMode==='full') ? calcFullBoxesFromLines(src, w) : calcPartialBoxesFromLines(src, w));
     guess += blBoxGuess(src);
   });
