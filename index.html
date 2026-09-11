@@ -203,7 +203,7 @@ body.po-dragging{user-select:none;}
   </span>
   <select id="lang-sel" onchange="setLang(this.value)" style="font-size:11px;padding:3px 6px;border-radius:5px;border:none;background:#1d3f66;color:#fff;"><option value="ko">한국어</option><option value="en">English</option><option value="es">Español</option></select>
   <button id="wide-btn" class="btn btn-sm" onclick="toggleWide()" title="화면 넓게 / 좁게 — 기본은 넓게 (이 브라우저에만 저장돼)" style="padding:2px 8px;font-size:10px;background:#1d3f66;color:#cfe0f2;border-color:#2b5384;">↔ Wide</button>
-  <span id="app-ver" style="font-size:10px;color:#9fb8d4;">v1083</span>
+  <span id="app-ver" style="font-size:10px;color:#9fb8d4;">v1084</span>
 </div>
 <script>
 // ↔ 넓게 보기 — 브라우저마다 따로 저장 (v793)
@@ -524,6 +524,7 @@ try{ applyWide(localStorage.getItem('psx_wide') !== '0'); }catch(e){ applyWide(t
       <button class="btn btn-sm" id="bx-costbtn" onclick="costOpen()" style="display:none;background:#065f46;color:#fff;border-color:#065f46;" title="Cost per style/size + margin — owner & accounting only. Fill gaps, edit, and see inventory value">💲 Cost</button>
       <button class="btn btn-sm" onclick="pchkOpen()" style="background:#0891b2;color:#fff;border-color:#0891b2;" title="Physical check with photos — take pallet photos, AI reads labels, compares to system">📸 Photo Check</button>
       <button class="btn btn-sm" onclick="pchkReviewOpen()" style="background:#155e75;color:#fff;border-color:#155e75;" title="Review physical checks submitted by staff (staff link: psflowx.com/#check)">🔍 Check reviews<span id="pchk-review-badge" style="font-weight:800;"></span></button>
+      <button class="btn btn-sm" onclick="intakeOpen()" style="background:#15803d;color:#fff;border-color:#15803d;" title="Boxes the warehouse scanned into a bin at /pic — confirm them into stock">📥 Intake<span id="intake-badge" style="font-weight:800;"></span></button>
       <button class="btn btn-sm" onclick="pchkReqMgrOpen()" style="background:#7c3aed;color:#fff;border-color:#7c3aed;" title="Box pull requests from staff (staff link: psflowx.com/pic → Request a Box) — see locations, move a box to PC Room, print">📦 Box requests<span id="boxreq-badge" style="font-weight:800;"></span></button>
       <button class="btn btn-sm" onclick="hiOpen()" style="background:#0e7490;color:#fff;border-color:#0e7490;" title="Upload Haiti invoice → review → assign locations on arrival">🇭🇹 Haiti Receive</button>
       <button class="btn btn-sm" onclick="trOpen()" style="background:#b45309;color:#fff;border-color:#b45309;" title="SC → CA box transfer (build batch → depart → assign CA locations on arrival)">🚚 Transfer</button>
@@ -11573,6 +11574,365 @@ async function pchkEmpUnlock(){
   pchkDoneLoad(); _pchkWh='SC'; _pchkBin=''; _pchkSlots={front:null,left:null,back:null,right:null}; window._pchkRetake=[]; window._pchkRetakeMsg=''; pchkEmpMenu();
 }
 // ═══════════ /pic 직원 랜딩 메뉴 (v605) ═══════════
+/* ═══════════ ➕ /pic 재고 넣기 (Add Inventory) (v1084) ═══════════
+   [stated] 하윤: "location bin을 선택하거나 새로운 location bin을 만들고 그 안에 재고를
+   넣을수있게. QR Code 스캔을 하면 그 location bin에 (쌓이고) 마지막에 확인하고 confirm
+   하면 시스템에 들어오는걸로"
+   [stated] 넣을 물건 = **시스템에 없던 옛 박스**, 그리고 **새 bin 을 만들어 넣을 때**.
+   [stated] confirm 은 **매니저가 psflowx 에서** — /pic 은 올리는 것까지다.
+
+   ⚠⚠ 이 화면에서 제일 위험한 실수는 **이미 재고인 박스를 또 넣는 것**이다.
+   `⬛ 재고에서 QR 스티커 뽑기`(v824) 로 옛 박스에 스티커를 붙여 이미 재고에 넣어둔 것이
+   창고에 돌아다닌다. 그 스티커를 여기서 또 찍으면 재고가 조용히 두 배가 되고,
+   실사 때까지 아무도 모른다. 그래서 v1084 에서 `pr_boxes.ctn` 칸을 만들고, 찍는 즉시
+   `pic_ctn_check` 로 물어본다 — 이미 있으면 담지 않고 🚫 칸으로 따로 보여준다.
+
+   ⚠ 오더 포장 라벨(`/box/pb/…`, scanParseQr 의 `kind='pbox'`)은 재고가 아니다.
+   이미 판 물건을 싼 박스다. 담지 않고 ⚠ 칸으로 보낸다.
+
+   ⚠ 재고는 이 화면에서 **절대** 안 바뀐다. /pic 은 로그인 없이 도는 화면이라
+   테이블을 직접 못 만지고(v1068), 쓰는 길은 `pic_intake_add` 하나뿐이며 서버가
+   status 를 늘 'pending' 으로 못박는다. */
+let _adIn = null;
+function adState(){
+  if(!_adIn) _adIn = { wh:'SC', bin:'', rows:[], dupe:[], rej:[], have:null, chkErr:'' };
+  return _adIn;
+}
+function adFresh(wh){ _adIn = { wh:(wh==='CA'?'CA':'SC'), bin:'', rows:[], dupe:[], rej:[], have:null, chkErr:'' }; }
+function adNormBin(v){
+  return (typeof binNorm === 'function') ? binNorm(v)
+       : String(v||'').toUpperCase().replace(/[^A-Z0-9]/g,'');
+}
+/* 박스 하나 = 줄 하나로 들고 있다가, 보여줄 때만 묶는다.
+   카톤번호를 줄마다 붙여둬야 「이 박스 이미 재고야」 를 박스 단위로 가려낼 수 있다. */
+function adGroups(){
+  const S = adState(), g = {};
+  S.rows.forEach(function(r){
+    const k = r.style + '|' + r.color + '|' + r.size + '|' + (Number(r.pcs)||0);
+    if(!g[k]) g[k] = { style:r.style, color:r.color, size:r.size, pcs:Number(r.pcs)||0, n:0, man:0 };
+    g[k].n++; if(r.manual) g[k].man++;
+  });
+  return Object.keys(g).sort().map(function(k){ return g[k]; });
+}
+function adOpen(){
+  const S = adState();
+  _pchkWh = S.wh; try{ pchkWhoLoad(); }catch(e){}
+  const ov = pchkEmpEl();
+  ov.innerHTML =
+    '<div style="background:#15803d;color:#fff;padding:14px 16px;display:flex;align-items:center;gap:10px;position:sticky;top:0;z-index:5;">'
+  +   '<button onclick="adLeave()" style="background:rgba(255,255,255,.2);color:#fff;border:none;border-radius:8px;padding:6px 11px;font-size:13px;font-weight:700;">&larr; Menu</button>'
+  +   '<span style="font-size:17px;font-weight:800;">➕ Add Inventory</span></div>'
+  + '<div style="flex:1;background:#f1f5f9;padding:16px 14px;"><div style="max-width:520px;margin:0 auto;">'
+  +   '<div id="ad-wh" style="display:flex;gap:8px;margin-bottom:12px;"></div>'
+  +   '<div style="background:#fff;border-radius:12px;padding:13px;margin-bottom:12px;">'
+  +     '<div style="font-size:12px;font-weight:800;color:#0f2a4a;margin-bottom:7px;">📍 Which bin?</div>'
+  +     '<div style="display:flex;gap:7px;">'
+  +       '<input id="ad-bin" value="' + esc(S.bin) + '" placeholder="e.g. 1G19 · or a brand new name" autocomplete="off"'
+  +         ' onkeydown="if(event.key===\'Enter\'){event.preventDefault();adBinGo();}"'
+  +         ' style="flex:1;font-size:17px;padding:12px;border:2px solid #cbd5e1;border-radius:10px;box-sizing:border-box;text-transform:uppercase;">'
+  +       '<button onclick="adBinGo()" style="background:#0f2a4a;color:#fff;border:none;border-radius:10px;padding:0 16px;font-size:15px;font-weight:800;">Check</button>'
+  +     '</div>'
+  +     '<div id="ad-have" style="margin-top:9px;"></div>'
+  +   '</div>'
+  +   '<div id="ad-act"></div><div id="ad-list"></div><div id="ad-foot"></div>'
+  + '</div></div>';
+  adWhTabs(); adRenderHave(); adRenderAll();
+}
+function adLeave(){
+  const S = adState();
+  if(S.rows.length && !confirm('⚠ ' + S.rows.length + ' box(es) are scanned but NOT sent yet.\n\nLeave and lose them?')) return;
+  _adIn = null; _scan = null; pchkEmpMenu();
+}
+function adWhTabs(){
+  const el = document.getElementById('ad-wh'); if(!el) return;
+  const cur = adState().wh;
+  const tab = function(v, c){
+    return '<button onclick="adSetWh(\'' + v + '\')" style="flex:1;padding:12px;border-radius:10px;border:2px solid '
+      + (cur===v?c:'#cbd5e1') + ';background:' + (cur===v?c:'#fff') + ';color:' + (cur===v?'#fff':'#64748b')
+      + ';font-size:15px;font-weight:800;">' + v + '</button>';
+  };
+  el.innerHTML = tab('SC','#1d4ed8') + tab('CA','#c2410c');
+}
+function adSetWh(w){
+  const S = adState();
+  w = (w==='CA') ? 'CA' : 'SC';
+  if(w === S.wh) return;
+  if(S.rows.length && !confirm('⚠ Switching warehouse clears the ' + S.rows.length + ' box(es) you scanned.\n\nSwitch anyway?')) return;
+  adFresh(w); _scan = null; adOpen();
+}
+/* 그 bin 에 지금 무엇이 있는지 — 로그인 없이 읽을 수 있는 `pchk_bin_contents` 를 쓴다.
+   비어 있으면 「새 bin」 이라고 분명히 말해준다. 오타로 엉뚱한 새 bin 이 생기는 게
+   이 화면의 두 번째 위험이라서, 만들기 전에 눈으로 한 번 보게 한다. */
+async function adBinGo(){
+  const S = adState();
+  const bin = adNormBin(String((document.getElementById('ad-bin')||{}).value||''));
+  if(!bin){ showToast('⚠ Type a bin name'); return; }
+  if(S.bin && bin !== S.bin && S.rows.length){
+    if(!confirm('⚠ ' + S.rows.length + ' box(es) are scanned for ' + S.bin + '.\n\nMoving to ' + bin + ' clears them. Continue?')){
+      const b0 = document.getElementById('ad-bin'); if(b0) b0.value = S.bin; return;
+    }
+    S.rows = []; S.dupe = []; S.rej = []; S.chkErr = ''; _scan = null;
+  }
+  S.bin = bin; S.have = null;
+  const el = document.getElementById('ad-bin'); if(el) el.value = bin;
+  adRenderHave(); adRenderAll();
+  let rows = [];
+  try{
+    const r = await fetch(SB_URL + '/rest/v1/rpc/pchk_bin_contents', { method:'POST',
+      headers:{ apikey:SB_KEY, Authorization:'Bearer ' + SB_KEY, 'Content-Type':'application/json' },
+      body: JSON.stringify({ p_bin: bin }) });
+    if(!r.ok) throw new Error('HTTP ' + r.status);
+    rows = await r.json();
+  }catch(e){ S.have = 'err'; adRenderHave(); return; }
+  S.have = (rows||[]).filter(function(x){ return String(x.wh||'').toUpperCase() === S.wh; });
+  adRenderHave(); adRenderAll();
+}
+function adRenderHave(){
+  const S = adState(), el = document.getElementById('ad-have'); if(!el) return;
+  if(!S.bin){
+    el.innerHTML = '<div style="font-size:11.5px;color:#94a3b8;">Type the bin name and press Check. A name that does not exist yet is fine — it becomes a new bin.</div>';
+    return;
+  }
+  if(S.have === null){ el.innerHTML = '<div style="font-size:11.5px;color:#64748b;">Looking…</div>'; return; }
+  if(S.have === 'err'){
+    el.innerHTML = '<div style="font-size:11.5px;color:#b91c1c;font-weight:700;">Could not read this bin — you can still scan, but check the name letter by letter.</div>';
+    return;
+  }
+  if(!S.have.length){
+    el.innerHTML = '<div style="background:#f0fdf4;border:1px solid #86efac;border-radius:9px;padding:9px 11px;font-size:12.5px;color:#15803d;font-weight:700;">🆕 Nothing in [' + S.wh + '] ' + esc(S.bin) + ' — this will be a NEW bin.</div>';
+    return;
+  }
+  const tot = S.have.reduce(function(a,x){ return a + (Number(x.n)||0); }, 0);
+  const body = S.have.slice().sort(function(a,b){
+      return String(a.style).localeCompare(String(b.style)) || String(a.color).localeCompare(String(b.color)) || bxSizeCmp(a.size,b.size);
+    }).map(function(x){
+      return '<tr><td style="padding:3px 6px;font-weight:700;font-family:Consolas,monospace;">' + esc(x.style)
+        + '</td><td style="padding:3px 6px;">' + esc(x.color)
+        + '</td><td style="padding:3px 6px;text-align:center;">' + esc(x.size)
+        + '</td><td style="padding:3px 6px;text-align:center;font-weight:800;">' + (Number(x.n)||0) + '</td></tr>';
+    }).join('');
+  el.innerHTML = '<div style="background:#eff6ff;border:1px solid #bfdbfe;border-radius:9px;padding:8px 10px;">'
+    + '<div style="font-size:11.5px;font-weight:800;color:#1d4ed8;margin-bottom:5px;">Already in [' + S.wh + '] ' + esc(S.bin) + ' — ' + tot + ' box(es)</div>'
+    + '<table style="width:100%;font-size:11.5px;border-collapse:collapse;">' + body + '</table></div>';
+}
+function adRenderAll(){ adRenderAct(); adRenderList(); adRenderFoot(); }
+function adRenderAct(){
+  const S = adState(), el = document.getElementById('ad-act'); if(!el) return;
+  if(!S.bin){ el.innerHTML = ''; return; }
+  el.innerHTML = '<div style="display:flex;flex-direction:column;gap:9px;margin-bottom:12px;">'
+    + '<button onclick="adScanStart()" style="background:#0e7490;color:#fff;border:none;border-radius:12px;padding:18px;font-size:18px;font-weight:800;">📷 '
+    + (S.rows.length ? 'Scan more boxes' : 'Scan boxes') + '</button>'
+    + '<button onclick="adManToggle()" style="background:#fff;color:#0f2a4a;border:2px solid #cbd5e1;border-radius:12px;padding:13px;font-size:14px;font-weight:800;">✍ Add a box with no QR</button>'
+    + '<div id="ad-man" style="display:none;"></div></div>';
+}
+function adScanStart(){
+  const S = adState();
+  if(!S.bin){ showToast('⚠ Pick a bin first'); return; }
+  if(typeof scanCam !== 'function'){ showToast('⚠ Scanner not available'); return; }
+  /* 새 세션으로 시작한다 — 담은 것은 이미 `_adIn.rows` 에 있고, 같은 박스를 또 찍으면
+     카톤번호로 걸러진다. 세션을 이어붙이면 같은 것이 두 군데에 남아 헷갈린다. */
+  _scan = { mode:'ADD', back:'ADD', id:S.bin, wh:S.wh, ref:S.bin,
+            title:'📷 Into [' + S.wh + '] ' + S.bin,
+            exp:[], seen:new Map(), pbox:new Map(), manual:{} };
+  scanCam();
+}
+/* 카메라를 닫을 때 한 번 — 찍은 것을 목록으로 옮긴다. */
+function adScanApply(){
+  if(!_scan || _scan.mode !== 'ADD') return;
+  const S = adState();
+  if(String(_scan.id) !== String(S.bin)){ _scan = null; return; }   /* bin 이 바뀌었으면 얹지 않는다 */
+  const have = {};
+  S.rows.forEach(function(r){ if(r.ctn) have[r.ctn] = 1; });
+  S.dupe.forEach(function(d){ if(d.ctn) have[d.ctn] = 1; });
+  let add = 0;
+  try{
+    _scan.seen.forEach(function(b, k){
+      if(!b || have[k]) return;
+      have[k] = 1;
+      S.rows.push({
+        style: String(b.style||'').trim().toUpperCase(),
+        color: (typeof bxFixColor === 'function') ? bxFixColor(String(b.color||'')) : String(b.color||'').toUpperCase(),
+        size:  String(b.size||'').trim().toUpperCase(),
+        pcs:   Number(b.qty)||0,
+        ctn:   String(k), manual:false });
+      add++;
+    });
+  }catch(e){}
+  /* 오더 포장 박스는 재고가 아니다 */
+  try{
+    _scan.pbox.forEach(function(b, k){
+      if(S.rej.some(function(x){ return x.id === k; })) return;
+      S.rej.push({ id:k, po:String((b&&b.po)||''), cust:String((b&&b.cust)||'') });
+    });
+  }catch(e){}
+  _scan = null;
+  if(add) adCtnCheck();
+}
+/* 찍은 카톤이 이미 재고인지 서버에 묻는다 (이미 재고 + 아직 확인 안 된 대기 입고 둘 다). */
+async function adCtnCheck(){
+  const S = adState();
+  const ctns = S.rows.map(function(r){ return r.ctn; }).filter(Boolean);
+  if(!ctns.length){ adRenderAll(); return; }
+  let hits = [];
+  try{ hits = await picRpc('pic_ctn_check', { ctns: ctns }); }
+  catch(e){ S.chkErr = String((e && e.message) || e); adRenderAll(); return; }
+  S.chkErr = '';
+  const m = {};
+  (hits||[]).forEach(function(h){ const c = String((h&&h.ctn)||''); if(c && !m[c]) m[c] = h; });
+  if(Object.keys(m).length){
+    const keep = [];
+    S.rows.forEach(function(r){
+      const h = r.ctn ? m[r.ctn] : null;
+      if(h) S.dupe.push({ ctn:r.ctn, style:r.style, color:r.color, size:r.size,
+                          wh:String(h.wh||''), loc:String(h.loc||''), src:String(h.src||'') });
+      else keep.push(r);
+    });
+    S.rows = keep;
+    try{ scanBeep(false); }catch(e){}
+  }
+  adRenderAll();
+}
+function adManToggle(){
+  const el = document.getElementById('ad-man'); if(!el) return;
+  if(el.style.display !== 'none'){ el.style.display = 'none'; return; }
+  const fld = function(id, lab, num){
+    return '<div style="margin-bottom:7px;"><div style="font-size:11px;font-weight:800;color:#475569;margin-bottom:3px;">' + lab + '</div>'
+      + '<input id="' + id + '" ' + (num ? 'type="number" inputmode="numeric" min="1"' : 'autocomplete="off"')
+      + ' style="width:100%;font-size:16px;padding:10px;border:2px solid #cbd5e1;border-radius:9px;box-sizing:border-box;'
+      + (num ? '' : 'text-transform:uppercase;') + '"></div>';
+  };
+  el.innerHTML = '<div style="background:#fff;border:2px solid #cbd5e1;border-radius:12px;padding:11px;">'
+    + '<div style="font-size:11.5px;color:#64748b;margin-bottom:8px;">A carton with no QR sticker. Print one for it later from the office (⬛ QR stickers).</div>'
+    + fld('ad-m-style','Style #',0) + fld('ad-m-color','Color',0) + fld('ad-m-size','Size',0)
+    + fld('ad-m-pcs','Pcs per box (blank = by rule)',1) + fld('ad-m-n','How many boxes',1)
+    + '<button onclick="adManAdd()" style="width:100%;margin-top:9px;background:#15803d;color:#fff;border:none;border-radius:10px;padding:13px;font-size:15px;font-weight:800;">＋ Add</button></div>';
+  el.style.display = '';
+}
+function adManAdd(){
+  const S = adState();
+  const g = function(id){ return String((document.getElementById(id)||{}).value||'').trim(); };
+  const style = g('ad-m-style').toUpperCase();
+  const color = (typeof bxFixColor === 'function') ? bxFixColor(g('ad-m-color')) : g('ad-m-color').toUpperCase();
+  const size  = g('ad-m-size').toUpperCase();
+  let   pcs   = parseInt(g('ad-m-pcs'), 10) || 0;
+  const n     = Math.max(1, Math.min(200, parseInt(g('ad-m-n'), 10) || 1));
+  if(!style || !color || !size){ alert('⚠ Style, Color and Size are all needed.'); return; }
+  if(!pcs){ try{ pcs = autoPpb({ style:style, size:size }) || 0; }catch(e){ pcs = 0; } }
+  if(!pcs){ alert('⚠ How many pieces are in one box?'); return; }
+  for(let i=0;i<n;i++) S.rows.push({ style:style, color:color, size:size, pcs:pcs, ctn:'', manual:true });
+  showToast('＋ ' + n + ' box(es) added · ' + pcs + ' pcs each');
+  adRenderAll();
+}
+function adRenderList(){
+  const S = adState(), el = document.getElementById('ad-list'); if(!el) return;
+  if(!S.bin){ el.innerHTML = ''; return; }
+  const gs = adGroups();
+  const nb = S.rows.length, np = S.rows.reduce(function(a,r){ return a + (Number(r.pcs)||0); }, 0);
+  let h = '';
+  if(gs.length){
+    h += '<div style="background:#fff;border-radius:12px;padding:11px;margin-bottom:12px;">'
+      + '<div style="font-size:12.5px;font-weight:800;color:#15803d;margin-bottom:7px;">✅ Going into ' + esc(S.bin)
+      + ' — ' + nb + ' box(es) · ' + np.toLocaleString() + ' pcs</div>'
+      + '<table style="width:100%;font-size:12.5px;border-collapse:collapse;">'
+      + gs.map(function(g, i){
+          return '<tr style="border-bottom:1px solid #f1f5f9;">'
+            + '<td style="padding:6px 4px;font-weight:800;font-family:Consolas,monospace;">' + esc(g.style) + '</td>'
+            + '<td style="padding:6px 4px;">' + esc(g.color) + '</td>'
+            + '<td style="padding:6px 4px;text-align:center;font-weight:700;">' + esc(g.size) + '</td>'
+            + '<td style="padding:6px 4px;text-align:center;color:#64748b;">' + g.pcs + '/bx</td>'
+            + '<td style="padding:6px 4px;text-align:center;font-weight:800;">' + g.n + ' bx'
+            + (g.man ? ' <span style="font-size:10px;color:#b45309;" title="typed by hand — no QR">✍</span>' : '') + '</td>'
+            + '<td style="padding:6px 2px;text-align:right;"><button onclick="adDropGroup(' + i + ')" style="border:none;background:none;color:#e53935;font-size:17px;font-weight:800;padding:2px 6px;">✕</button></td></tr>';
+        }).join('')
+      + '</table></div>';
+  }
+  if(S.dupe.length){
+    h += '<div style="background:#fef2f2;border:2px solid #fca5a5;border-radius:12px;padding:11px;margin-bottom:12px;">'
+      + '<div style="font-size:12.5px;font-weight:800;color:#b91c1c;margin-bottom:5px;">🚫 ' + S.dupe.length + ' box(es) are ALREADY in the system — left out</div>'
+      + '<div style="font-size:11.5px;color:#7f1d1d;margin-bottom:6px;">These cartons already count as stock. Putting them in again would double the inventory.</div>'
+      + '<table style="width:100%;font-size:11.5px;border-collapse:collapse;">'
+      + S.dupe.slice(0,40).map(function(d){
+          return '<tr><td style="padding:3px 4px;font-weight:700;font-family:Consolas,monospace;">' + esc(d.style||'?')
+            + '</td><td style="padding:3px 4px;">' + esc(d.color||'') + ' ' + esc(d.size||'')
+            + '</td><td style="padding:3px 4px;text-align:right;font-weight:800;color:#b91c1c;white-space:nowrap;">'
+            + (d.src === 'pending' ? 'waiting ' : '') + '@' + esc(d.wh||'') + ' ' + esc(d.loc||'?') + '</td></tr>';
+        }).join('')
+      + '</table>'
+      + (S.dupe.length > 40 ? '<div style="font-size:11px;color:#7f1d1d;margin-top:4px;">… +' + (S.dupe.length-40) + ' more</div>' : '')
+      + '<button onclick="adClearDupe()" style="margin-top:8px;background:#fff;color:#b91c1c;border:1.5px solid #fca5a5;border-radius:9px;padding:8px 12px;font-size:12.5px;font-weight:800;">Clear this warning</button></div>';
+  }
+  if(S.rej.length){
+    h += '<div style="background:#fff7ed;border:2px solid #fdba74;border-radius:12px;padding:11px;margin-bottom:12px;">'
+      + '<div style="font-size:12.5px;font-weight:800;color:#b45309;margin-bottom:5px;">⚠ ' + S.rej.length + ' label(s) are ORDER boxes — left out</div>'
+      + '<div style="font-size:11.5px;color:#7c2d12;">Those are boxes we packed for a customer order. They are already sold, so they never go back into stock.</div>'
+      + '<div style="font-size:11.5px;color:#7c2d12;margin-top:5px;font-family:Consolas,monospace;">'
+      + S.rej.slice(0,10).map(function(x){ return esc((x.cust||'') + '  PO ' + (x.po||'—')); }).join('<br>') + '</div>'
+      + '<button onclick="adClearRej()" style="margin-top:8px;background:#fff;color:#b45309;border:1.5px solid #fdba74;border-radius:9px;padding:8px 12px;font-size:12.5px;font-weight:800;">Clear this warning</button></div>';
+  }
+  if(S.chkErr){
+    h += '<div style="background:#fffbeb;border:2px solid #fcd34d;border-radius:12px;padding:11px;margin-bottom:12px;font-size:12px;color:#92400e;font-weight:700;">'
+      + '⚠ Could not check these cartons against the system (' + esc(S.chkErr) + ').<br>The office will still catch a duplicate when they confirm — but tell them.</div>';
+  }
+  el.innerHTML = h;
+}
+function adDropGroup(i){
+  const S = adState(), g = adGroups()[i]; if(!g) return;
+  S.rows = S.rows.filter(function(r){
+    return !(r.style === g.style && r.color === g.color && r.size === g.size && (Number(r.pcs)||0) === g.pcs);
+  });
+  adRenderAll();
+}
+function adClearDupe(){ adState().dupe = []; adRenderAll(); }
+function adClearRej(){ adState().rej = []; adRenderAll(); }
+function adRenderFoot(){
+  const S = adState(), el = document.getElementById('ad-foot'); if(!el) return;
+  if(!S.bin || !S.rows.length){ el.innerHTML = ''; return; }
+  el.innerHTML = '<div style="background:#fff;border-radius:12px;padding:13px;margin-bottom:28px;">'
+    + '<div style="font-size:12px;font-weight:800;color:#0f2a4a;margin-bottom:7px;">Who is doing this?</div>'
+    + pchkNamePicker()
+    + '<div style="font-size:12px;font-weight:800;color:#0f2a4a;margin:11px 0 5px;">Note (optional)</div>'
+    + '<input id="ad-note" placeholder="e.g. old boxes found behind rack 4" autocomplete="off" style="width:100%;font-size:15px;padding:10px;border:2px solid #cbd5e1;border-radius:9px;box-sizing:border-box;">'
+    + '<button id="ad-submit" onclick="adSubmit()" style="width:100%;margin-top:13px;background:#15803d;color:#fff;border:none;border-radius:12px;padding:17px;font-size:17px;font-weight:800;">📤 Submit — office confirms it into stock</button>'
+    + '<div style="font-size:11px;color:#64748b;margin-top:7px;">Nothing changes the inventory until a manager presses Confirm in the office.</div></div>';
+}
+async function adSubmit(){
+  const S = adState();
+  const bin = adNormBin(S.bin);
+  if(!bin){ showToast('⚠ Pick a bin'); return; }
+  if(!S.rows.length){ showToast('⚠ Nothing scanned yet'); return; }
+  const bad = S.rows.filter(function(r){ return !r.style || !r.color || !r.size || !(Number(r.pcs) > 0); });
+  if(bad.length){ alert('⚠ ' + bad.length + ' box(es) have no style / color / size / pcs.\n\nRemove them (✕) and add them by hand instead.'); return; }
+  const who = String(_pchkWho||'').trim();
+  if(!who){ alert('⚠ Tap your name first.'); return; }
+  const note = String((document.getElementById('ad-note')||{}).value||'').trim();
+  const nb = S.rows.length, np = S.rows.reduce(function(a,r){ return a + (Number(r.pcs)||0); }, 0);
+  if(!confirm('📤 Send ' + nb + ' box(es) · ' + np.toLocaleString() + ' pcs into [' + S.wh + '] ' + bin + '?\n\nA manager has to confirm it in the office before it counts as stock.')) return;
+  const btn = document.getElementById('ad-submit');
+  if(btn){ btn.disabled = true; btn.textContent = 'Sending…'; }
+  let res = null;
+  try{
+    res = await picRpc('pic_intake_add', { b: {
+      wh: S.wh, bin: bin, submitter: who, note: note || null,
+      lines: S.rows.map(function(r){
+        return { style:r.style, color:r.color, size:r.size, pcs:Number(r.pcs)||0, ctn:r.ctn || null };
+      }) } });
+  }catch(e){
+    if(btn){ btn.disabled = false; btn.textContent = '📤 Submit — office confirms it into stock'; }
+    alert('⚠ Could not send — check the connection and try again.\n\n' + String((e && e.message) || e));
+    return;
+  }
+  /* ⚠ 서버가 'ok' 가 아닌 것을 돌려주면 **저장이 안 된 것**이다. 조용히 넘기면
+     직원은 보낸 줄 알고 박스를 치워버린다. 그래서 여기서 크게 막는다. */
+  if(!(typeof res === 'string' && res.indexOf('ok') === 0)){
+    if(btn){ btn.disabled = false; btn.textContent = '📤 Submit — office confirms it into stock'; }
+    alert('⚠ The server did NOT accept this: ' + String(res) + '\n\nNothing was saved. Tell the office.');
+    return;
+  }
+  const wh0 = S.wh;
+  adFresh(wh0);
+  adOpen();
+  showToast('✅ Sent — ' + nb + ' box(es) into ' + bin + '. A manager will confirm it.');
+}
 function pchkEmpMenu(){
   window._packSel={}; const _psb=document.getElementById('pack-sel-bar'); if(_psb) _psb.remove();
   const ov=pchkEmpEl();
@@ -11583,6 +11943,7 @@ function pchkEmpMenu(){
       <button onclick="pchkEmpCapture()" style="background:#0891b2;color:#fff;border:none;border-radius:16px;padding:28px 22px;font-size:21px;font-weight:800;box-shadow:0 3px 10px rgba(0,0,0,.15);text-align:left;">📸 Check Physical Inventory<div style="font-size:12.5px;font-weight:500;opacity:.85;margin-top:6px;">Count a pallet with photos</div></button>
       <button onclick="pchkPackOpen()" style="background:#b45309;color:#fff;border:none;border-radius:16px;padding:28px 22px;font-size:21px;font-weight:800;box-shadow:0 3px 10px rgba(0,0,0,.15);text-align:left;">📦 Pending Orders — Pack Boxes<div style="font-size:12.5px;font-weight:500;opacity:.85;margin-top:6px;">Pick a PO, add each box's size &amp; weight for the UPS label</div></button>
       <button onclick="scanOpen()" style="background:#0e7490;color:#fff;border:none;border-radius:16px;padding:28px 22px;font-size:21px;font-weight:800;box-shadow:0 3px 10px rgba(0,0,0,.15);text-align:left;">📷 Receive / Transfer — Scan Boxes<div style="font-size:12.5px;font-weight:500;opacity:.85;margin-top:6px;">Scan the cartons and check them against the expected list</div></button>
+      <button onclick="adOpen()" style="background:#15803d;color:#fff;border:none;border-radius:16px;padding:28px 22px;font-size:21px;font-weight:800;box-shadow:0 3px 10px rgba(0,0,0,.15);text-align:left;">➕ Add Inventory<div style="font-size:12.5px;font-weight:500;opacity:.85;margin-top:6px;">Pick or make a bin, scan the boxes into it — the office confirms it into stock</div></button>
     </div>
   </div>`;
 }
@@ -15335,6 +15696,13 @@ function scanStop(){
      `scanStop()` 만 부른다** — `scanExit()` 을 지나가지 않는다.
      그래서 다 찍고 Done 을 눌러도 줄이 하나도 안 바뀌었다.
      카메라가 닫히는 길은 두 개(Done · 뒤로가기)이고, 둘 다 여기를 지난다. */
+  /* ➕ 재고 넣기 — 찍은 카톤을 목록에 담고 화면으로 돌아간다 (v1084).
+     ⚠ `scanStop()` 이 진짜 출구다 — 카메라의 Done 단추는 `scanExit()` 을 안 지나간다 (v1073 교훈). */
+  if(_scan && _scan.mode === 'ADD'){
+    try{ adScanApply(); }catch(e){}
+    try{ adOpen(); }catch(e){}
+    return;
+  }
   if(_scan && _scan.mode === 'PCHK'){
     try{ pchkScanApply(); }catch(e){}
     try{ pchkEmpCapture(); }catch(e){}
@@ -16633,6 +17001,7 @@ async function pchkBoxreqBadge(){
     pchkBoxreqTiles();
     if(typeof wqRenderAll==='function') wqRenderAll();
     if(typeof renderKpi==='function') renderKpi();   // 모든 탭 KPI 슬롯 갱신 (blink 포함)
+    try{ if(typeof intakeBadge==='function') intakeBadge(); }catch(e){}   /* 📥 대기 입고 (v1084) */
   }catch(e){}
 }
 function pchkBoxreqPend(wh){ const p=window._boxreqPend||{}; return Number(p[String(wh||'').toUpperCase()])||0; }
@@ -17762,6 +18131,237 @@ function pchkCompare(bin, wh, detected, staffCheck, scanned){
   const hasScan = scanN>0;
   const scanFlags = hasScan ? rows.filter(r=>r.scan>0 && r.scan!==r.sys).length : 0;
   return {rows, okN, diffN:aiFlags, staffOff, aiFlags, aiUnmatched, scanN, hasScan, scanFlags};
+}
+/* ═══════════ 📥 대기 입고 확인 (Pending intake) (v1084) ═══════════
+   창고가 /pic 의 ➕ Add Inventory 로 올린 것을 여기서 확인해야 재고가 된다.
+   [stated] 하윤: confirm 은 매니저가 psflowx 에서.
+
+   ⚠⚠ **두 번 들어가면 재고가 두 배가 된다.** 세 겹으로 막는다:
+     ① 누를 때 pr_intake 의 status 를 다시 읽는다 — 이미 처리됐으면 멈춘다
+     ② 카톤번호가 이미 재고(status='IN')면 그 박스는 빼고 넣는다
+     ③ `pr_boxes_ctn_in_uq` 유니크 색인 — 위 둘을 다 뚫어도 DB 가 거절한다
+   ⚠ 넣는 것은 **POST 한 번**으로 한다. 쪼개서 넣으면 중간에 실패했을 때
+     앞 덩이만 들어간 채로 끝난다 — 그게 제일 고치기 어려운 상태다. */
+async function intakeBadge(){
+  try{
+    const r = await sbFetch('/rest/v1/pr_intake?select=wh&status=eq.pending');
+    if(!r.ok) return;
+    const rows = await r.json();
+    const c = { SC:0, CA:0, total:(rows||[]).length };
+    (rows||[]).forEach(function(x){ if(String(x.wh||'').toUpperCase() === 'CA') c.CA++; else c.SC++; });
+    window._intakePend = c;
+    const b = document.getElementById('intake-badge'); if(b) b.textContent = c.total ? (' ' + c.total) : '';
+    const s = document.getElementById('intake-tile-sc-n'); if(s) s.textContent = c.SC;
+    const a = document.getElementById('intake-tile-ca-n'); if(a) a.textContent = c.CA;
+  }catch(e){}
+}
+function intakePend(wh){ const p = window._intakePend || {}; return Number(p[String(wh||'').toUpperCase()]) || 0; }
+async function intakeOpen(whFilter){
+  window._intakeFilter = whFilter || '';
+  const ex = document.getElementById('modal-intake'); if(ex) ex.remove();
+  const div = document.createElement('div'); div.id = 'modal-intake';
+  div.style.cssText = 'position:fixed;inset:0;background:rgba(15,23,42,.55);z-index:210;display:flex;align-items:flex-start;justify-content:center;padding:20px 12px;overflow-y:auto;';
+  div.innerHTML = '<div style="background:#fff;border-radius:14px;max-width:860px;width:100%;max-height:92vh;display:flex;flex-direction:column;overflow:hidden;">'
+    + '<div style="background:#14532d;color:#fff;padding:14px 18px;display:flex;align-items:center;gap:10px;">'
+    +   '<span style="font-size:16px;font-weight:800;">📥 ' + (whFilter ? esc(whFilter) + ' ' : '') + 'Inventory sent in from the warehouse</span>'
+    +   '<button onclick="intakeOpen(\'' + (whFilter||'') + '\')" title="Refresh" style="background:rgba(255,255,255,.15);color:#fff;border:none;border-radius:8px;padding:5px 10px;font-size:13px;">🔄</button>'
+    +   '<button onclick="document.getElementById(\'modal-intake\').remove()" style="margin-left:auto;background:rgba(255,255,255,.2);color:#fff;border:none;border-radius:8px;padding:6px 12px;font-size:15px;font-weight:800;">✕</button>'
+    + '</div>'
+    + '<div id="intake-body" style="flex:1;overflow-y:auto;background:#f1f5f9;padding:14px;"><div style="text-align:center;color:#64748b;padding:30px;">Loading…</div></div>'
+    + '</div>';
+  document.body.appendChild(div);
+  let rows = [];
+  try{
+    let p = '/rest/v1/pr_intake?select=id,created_at,wh,bin,submitter,note,lines,status,reviewed_at,reviewed_by,resolve_note&order=created_at.desc&limit=120';
+    if(whFilter) p += '&wh=eq.' + encodeURIComponent(whFilter);
+    const r = await sbFetch(p);
+    if(!r.ok) throw new Error('HTTP ' + r.status);
+    rows = await r.json();
+  }catch(e){
+    const b = document.getElementById('intake-body');
+    if(b) b.innerHTML = '<div style="padding:20px;color:#b91c1c;">Load failed: ' + esc((e && e.message) || String(e))
+      + '<div style="font-size:12px;color:#64748b;margin-top:8px;">If this says 404, the <code>pr_intake</code> table is not created yet — run the SQL first.</div></div>';
+    return;
+  }
+  window._intakeRows = rows;
+  intakeRender(rows);
+}
+function intakeGroups(rec){
+  const g = {};
+  (Array.isArray(rec && rec.lines) ? rec.lines : []).forEach(function(l){
+    const st = String((l&&l.style)||'').trim().toUpperCase();
+    const c  = String((l&&l.color)||'').trim().toUpperCase();
+    const z  = String((l&&l.size)||'').trim().toUpperCase();
+    const k  = st + '|' + c + '|' + z + '|' + (Number(l&&l.pcs)||0);
+    if(!g[k]) g[k] = { style:st, color:c, size:z, pcs:Number(l&&l.pcs)||0, n:0, noqr:0, ctns:[] };
+    g[k].n++;
+    const ctn = String((l&&l.ctn)||'');
+    if(ctn) g[k].ctns.push(ctn); else g[k].noqr++;
+  });
+  return Object.keys(g).sort().map(function(k){ return g[k]; });
+}
+function intakeRender(rows){
+  const body = document.getElementById('intake-body'); if(!body) return;
+  const pend = (rows||[]).filter(function(r){ return String(r.status) === 'pending'; });
+  const done = (rows||[]).filter(function(r){ return String(r.status) !== 'pending'; });
+  if(!pend.length && !done.length){
+    body.innerHTML = '<div style="text-align:center;color:#64748b;padding:34px;font-size:13px;">Nothing sent in yet.<div style="font-size:11.5px;color:#94a3b8;margin-top:6px;">The warehouse sends these from /pic → ➕ Add Inventory.</div></div>';
+    return;
+  }
+  body.innerHTML = pend.map(intakeCardHtml).join('')
+    + (done.length ? '<div style="font-size:11.5px;font-weight:800;color:#64748b;margin:14px 2px 8px;">Handled earlier</div>'
+        + done.slice(0,25).map(intakeCardHtml).join('') : '');
+}
+function intakeCardHtml(rec){
+  const id = rec.id;
+  const wh = String(rec.wh||'SC').toUpperCase() === 'CA' ? 'CA' : 'SC';
+  const gs = intakeGroups(rec);
+  const nb = gs.reduce(function(a,g){ return a + g.n; }, 0);
+  const np = gs.reduce(function(a,g){ return a + g.n * g.pcs; }, 0);
+  const noqr = gs.reduce(function(a,g){ return a + g.noqr; }, 0);
+  const open = String(rec.status) === 'pending';
+  const whC = wh === 'CA' ? '#9a3412' : '#1d4ed8';
+  const stChip = open
+    ? '<span style="background:#fef9c3;color:#854d0e;border-radius:20px;padding:2px 10px;font-size:10.5px;font-weight:800;">waiting</span>'
+    : (String(rec.status) === 'received'
+        ? '<span style="background:#dcfce7;color:#15803d;border-radius:20px;padding:2px 10px;font-size:10.5px;font-weight:800;">✅ in stock</span>'
+        : '<span style="background:#fee2e2;color:#b91c1c;border-radius:20px;padding:2px 10px;font-size:10.5px;font-weight:800;">✕ rejected</span>');
+  return '<div style="background:#fff;border:1px solid ' + (open ? '#86efac' : '#e2e8f0') + ';border-radius:12px;padding:12px 14px;margin-bottom:12px;">'
+    + '<div style="display:flex;align-items:center;gap:9px;flex-wrap:wrap;margin-bottom:9px;">'
+    +   '<span style="background:' + whC + ';color:#fff;border-radius:5px;padding:2px 9px;font-size:11px;font-weight:900;">' + wh + '</span>'
+    +   '<span style="font-size:15px;font-weight:800;color:#0f2a4a;font-family:Consolas,monospace;">' + esc(rec.bin||'—') + '</span>'
+    +   stChip
+    +   '<span style="font-size:11.5px;color:#64748b;">' + nb + ' box · ' + np.toLocaleString() + ' pcs</span>'
+    +   (noqr ? '<span style="font-size:10.5px;color:#b45309;font-weight:800;" title="typed by hand — no QR sticker">✍ ' + noqr + ' no-QR</span>' : '')
+    +   '<span style="margin-left:auto;font-size:11px;color:#94a3b8;">' + esc(String(rec.submitter||'—')) + ' · '
+    +     esc(String(rec.created_at||'').slice(0,16).replace('T',' ')) + '</span>'
+    + '</div>'
+    + (rec.note ? '<div style="font-size:11.5px;color:#475569;background:#f8fafc;border-radius:7px;padding:6px 9px;margin-bottom:8px;">📝 ' + esc(rec.note) + '</div>' : '')
+    + '<table class="etbl" style="font-size:12px;"><thead><tr><th class="tl">Style</th><th class="tl">Color</th><th>Size</th><th>Boxes</th><th style="background:#b45309;">Pcs/Box ✎</th><th>Total</th></tr></thead><tbody>'
+    + gs.map(function(g, gi){
+        return '<tr><td class="tl" style="font-weight:800;font-family:Consolas,monospace;">' + esc(g.style) + '</td>'
+          + '<td class="tl">' + esc(g.color) + '</td>'
+          + '<td>' + esc(g.size) + '</td>'
+          + '<td style="font-weight:800;">' + g.n + (g.noqr ? ' <span style="font-size:10px;color:#b45309;">✍' + g.noqr + '</span>' : '') + '</td>'
+          + '<td>' + (open
+              ? '<input class="fi" id="itk-pcs-' + id + '-' + gi + '" type="number" min="1" value="' + g.pcs + '" style="width:64px;text-align:center;font-family:Consolas,monospace;font-weight:700;padding:3px;">'
+              : '<span style="font-family:Consolas,monospace;font-weight:700;">' + g.pcs + '</span>') + '</td>'
+          + '<td style="font-family:Consolas,monospace;">' + (g.n * g.pcs).toLocaleString() + '</td></tr>';
+      }).join('')
+    + '</tbody></table>'
+    + (open
+      ? '<div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-top:10px;">'
+        + '<label style="font-size:11px;font-weight:800;color:#475569;">📍 Bin</label>'
+        + '<input class="fi" id="itk-bin-' + id + '" value="' + esc(rec.bin||'') + '" style="width:120px;font-family:Consolas,monospace;font-weight:800;text-transform:uppercase;">'
+        + '<button class="btn btn-sm" id="itk-go-' + id + '" style="background:#15803d;border-color:#15803d;color:#fff;font-weight:800;margin-left:auto;" onclick="intakeConfirm(' + id + ')">✅ Receive into stock</button>'
+        + '<button class="btn btn-sm" style="background:#fff;color:#b91c1c;border-color:#fca5a5;font-weight:800;" onclick="intakeReject(' + id + ')">✕ Reject</button>'
+        + '</div>'
+      : '<div style="font-size:11px;color:#94a3b8;margin-top:8px;">'
+        + esc(String(rec.status)) + (rec.reviewed_by ? ' by ' + esc(String(rec.reviewed_by)) : '')
+        + (rec.reviewed_at ? ' · ' + esc(String(rec.reviewed_at).slice(0,16).replace('T',' ')) : '')
+        + (rec.resolve_note ? ' · ' + esc(String(rec.resolve_note)) : '')
+        + ' <button class="btn btn-sm" style="margin-left:8px;background:#fff;color:#64748b;border-color:#e2e8f0;" onclick="intakeDelete(' + id + ')">🗑</button></div>')
+    + '</div>';
+}
+/* 화면에서 고친 pcs 를 반영해 박스 단위 줄을 다시 만든다 */
+function intakeLinesOf(id){
+  const rec = (window._intakeRows||[]).find(function(x){ return String(x.id) === String(id); });
+  if(!rec) return [];
+  const out = [];
+  intakeGroups(rec).forEach(function(g, gi){
+    const el = document.getElementById('itk-pcs-' + id + '-' + gi);
+    let pcs = el ? (parseInt(String(el.value).replace(/[^0-9]/g,''), 10) || 0) : g.pcs;
+    if(!pcs) pcs = g.pcs;
+    g.ctns.forEach(function(c){ out.push({ style:g.style, color:g.color, size:g.size, pcs:pcs, ctn:c }); });
+    for(let i=0;i<g.noqr;i++) out.push({ style:g.style, color:g.color, size:g.size, pcs:pcs, ctn:'' });
+  });
+  return out;
+}
+async function intakeConfirm(id){
+  const rec = (window._intakeRows||[]).find(function(x){ return String(x.id) === String(id); });
+  if(!rec) return;
+  let cur = null;
+  try{ const r = await sbFetch('/rest/v1/pr_intake?id=eq.' + id + '&select=id,status'); if(r.ok) cur = (await r.json())[0]; }catch(e){}
+  if(!cur){ alert('⚠ Could not re-read this submission — try again.'); return; }
+  if(String(cur.status) !== 'pending'){
+    alert('Already handled — status is "' + String(cur.status) + '". Nothing was done.');
+    intakeOpen(window._intakeFilter || ''); return;
+  }
+  const wh  = String(rec.wh||'SC').toUpperCase() === 'CA' ? 'CA' : 'SC';
+  const bin = bxLocOut(String((document.getElementById('itk-bin-' + id)||{}).value || rec.bin || ''));
+  if(!bin){ alert('⚠ Bin is empty — type where these boxes are.'); return; }
+  const lines = intakeLinesOf(id);
+  if(!lines.length){ alert('⚠ Nothing in this submission.'); return; }
+  const bad = lines.filter(function(l){ return !l.style || !l.color || !l.size || !(Number(l.pcs) > 0); });
+  if(bad.length){ alert('⚠ ' + bad.length + ' box(es) have no style / color / size / pcs — cannot receive.'); return; }
+  const ctns = lines.map(function(l){ return l.ctn; }).filter(Boolean);
+  const dup = {};
+  for(let i=0;i<ctns.length;i+=80){
+    const q = ctns.slice(i, i+80).map(function(c){ return 'ctn.eq.' + encodeURIComponent(c); }).join(',');
+    try{
+      const r = await sbFetch('/rest/v1/pr_boxes?select=ctn,wh,loc&status=eq.IN&or=(' + q + ')');
+      if(r.ok) (await r.json()).forEach(function(b){ dup[String(b.ctn)] = b; });
+    }catch(e){}
+  }
+  const put  = lines.filter(function(l){ return !(l.ctn && dup[l.ctn]); });
+  const skip = lines.length - put.length;
+  if(!put.length){ alert('🚫 Every carton here is already in stock — nothing to receive.\n\nReject it instead.'); return; }
+  const nb = put.length, np = put.reduce(function(a,l){ return a + (Number(l.pcs)||0); }, 0);
+  if(!confirm('✅ Receive ' + nb + ' box(es) · ' + np.toLocaleString() + ' pcs into [' + wh + '] ' + bin + '?'
+    + (skip ? '\n\n🚫 ' + skip + ' carton(s) skipped — already in stock.' : '')
+    + '\n\nSent in by ' + String(rec.submitter || '—') + '.')) return;
+  if(!skuLoaded) await skuFetch();
+  if(!(await skuConfirmRegister(skuGateRows(put)))) return;
+  const by = (SESS && SESS.email) || '';
+  const stock = put.map(function(l){
+    return { style:l.style, color:l.color, size:l.size, pcs:Number(l.pcs)||0,
+             loc:bin, wh:wh, status:'IN', in_by:by, note:'intake #' + id, ctn:l.ctn || null };
+  });
+  const btn = document.getElementById('itk-go-' + id);
+  if(btn){ btn.disabled = true; btn.textContent = 'Receiving…'; }
+  try{
+    const r = await sbFetch('/rest/v1/pr_boxes', { method:'POST', headers:{ Prefer:'return=minimal' }, body:JSON.stringify(stock) });
+    if(!r.ok){ let t = ''; try{ t = await r.text(); }catch(e){} throw new Error('HTTP ' + r.status + ' ' + t.slice(0,300)); }
+  }catch(e){
+    if(btn){ btn.disabled = false; btn.textContent = '✅ Receive into stock'; }
+    const m = String((e && e.message) || e);
+    alert(/23505|duplicate key/.test(m)
+      ? '🚫 One of these cartons is already in stock — NOTHING was received.\n\n' + m
+      : (/SKU_NOT_REGISTERED/.test(m)
+          ? '⚠ Unregistered SKU — register it in 🎨 SKU Master first. Nothing was received.'
+          : '⚠ Receive failed — nothing was received.\n\n' + m));
+    return;
+  }
+  try{
+    await sbFetch('/rest/v1/pr_intake?id=eq.' + id, { method:'PATCH', headers:{ Prefer:'return=minimal' },
+      body: JSON.stringify({ status:'received', bin:bin, lines:lines,
+        reviewed_at:new Date().toISOString(), reviewed_by:by,
+        resolve_note: skip ? (skip + ' carton(s) skipped — already in stock') : null }) });
+  }catch(e){
+    alert('⚠ The boxes DID go into stock, but this submission could not be closed.\n\nDo NOT press Receive again — tell me and I will close it.');
+  }
+  showToast('✅ ' + nb + ' box(es) into [' + wh + '] ' + bin);
+  try{ await bxRefetch(); window._bxAt = Date.now(); if(typeof renderBoxRoom === 'function') renderBoxRoom(); }catch(e){}
+  intakeBadge();
+  intakeOpen(window._intakeFilter || '');
+}
+async function intakeReject(id){
+  const why = window.prompt('Reject this submission — why? (the warehouse will not see this, it is for your record)', 'Already in stock');
+  if(why === null) return;
+  const by = (SESS && SESS.email) || '';
+  try{
+    await sbFetch('/rest/v1/pr_intake?id=eq.' + id, { method:'PATCH', headers:{ Prefer:'return=minimal' },
+      body: JSON.stringify({ status:'rejected', reviewed_at:new Date().toISOString(), reviewed_by:by, resolve_note:String(why||'').trim() || null }) });
+  }catch(e){ showToast('⚠ Failed'); return; }
+  showToast('✕ Rejected — nothing went into stock');
+  intakeBadge(); intakeOpen(window._intakeFilter || '');
+}
+async function intakeDelete(id){
+  if(!confirm('🗑 Delete this record? (stock already received is NOT touched)')) return;
+  try{ await sbFetch('/rest/v1/pr_intake?id=eq.' + id, { method:'DELETE', headers:{ Prefer:'return=minimal' } }); }
+  catch(e){ showToast('⚠ Failed'); return; }
+  showToast('🗑 Deleted');
+  intakeBadge(); intakeOpen(window._intakeFilter || '');
 }
 async function pchkReviewBadge(){
   try{ const r=await sbFetch('/rest/v1/pr_physcheck?select=wh&status=eq.pending'); if(!r.ok) return;
@@ -25875,6 +26475,14 @@ function renderBoxRoom(){
         <div style="font-size:11px;font-weight:800;color:#9a3412;line-height:1.35;">🔍 CA Inventory check review <span style="font-size:10px;color:#94a3b8;">click</span></div>
         <div style="font-size:21px;font-weight:800;color:#7c2d12;font-family:Consolas,monospace;line-height:1.2;"><span id="pchk-tile-ca-n">${pchkPending('CA')}</span><span style="font-size:11px;color:#9a3412;font-weight:700;"> pending</span></div>
         <div style="font-size:11px;color:#9a3412;font-family:Consolas,monospace;">staff photo checks</div></div>
+      <div onclick="intakeOpen('SC')" title="Boxes the warehouse scanned into a bin at /pic — SC. Click to confirm them into stock." style="flex:1 1 190px;min-width:190px;max-width:252px;border:1.5px solid #86efac;border-radius:10px;padding:9px 14px;background:#f0fdf4;cursor:pointer;">
+        <div style="font-size:11px;font-weight:800;color:#15803d;line-height:1.35;">📥 SC inventory sent in <span style="font-size:10px;color:#94a3b8;">click</span></div>
+        <div style="font-size:21px;font-weight:800;color:#14532d;font-family:Consolas,monospace;line-height:1.2;"><span id="intake-tile-sc-n">${intakePend('SC')}</span><span style="font-size:11px;color:#15803d;font-weight:700;"> waiting</span></div>
+        <div style="font-size:11px;color:#15803d;font-family:Consolas,monospace;">→ confirm into stock</div></div>
+      <div onclick="intakeOpen('CA')" title="Boxes the warehouse scanned into a bin at /pic — CA. Click to confirm them into stock." style="flex:1 1 190px;min-width:190px;max-width:252px;border:1.5px solid #86efac;border-radius:10px;padding:9px 14px;background:#f0fdf4;cursor:pointer;">
+        <div style="font-size:11px;font-weight:800;color:#15803d;line-height:1.35;">📥 CA inventory sent in <span style="font-size:10px;color:#94a3b8;">click</span></div>
+        <div style="font-size:21px;font-weight:800;color:#14532d;font-family:Consolas,monospace;line-height:1.2;"><span id="intake-tile-ca-n">${intakePend('CA')}</span><span style="font-size:11px;color:#15803d;font-weight:700;"> waiting</span></div>
+        <div style="font-size:11px;color:#15803d;font-family:Consolas,monospace;">→ confirm into stock</div></div>
       <div id="boxreq-tile-sc" class="${pchkBoxreqPend('SC')>0?'breq-blink':''}" onclick="pchkReqMgrOpenWh('SC')" title="SC staff box requests → move to PC Room. Click to process now." style="flex:1 1 190px;min-width:190px;max-width:252px;border:2px solid #93c5fd;border-radius:10px;padding:9px 14px;background:#eff6ff;cursor:pointer;">
         <div style="font-size:11px;font-weight:800;color:#1d4ed8;line-height:1.35;">📦 SC box request <span style="font-size:10px;color:#94a3b8;">click</span></div>
         <div style="font-size:21px;font-weight:800;color:#1e3a8a;font-family:Consolas,monospace;line-height:1.2;"><span id="boxreq-tile-sc-n">${pchkBoxreqPend('SC')}</span><span style="font-size:11px;color:#1d4ed8;font-weight:700;"> pending</span></div>
