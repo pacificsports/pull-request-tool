@@ -203,7 +203,7 @@ body.po-dragging{user-select:none;}
   </span>
   <select id="lang-sel" onchange="setLang(this.value)" style="font-size:11px;padding:3px 6px;border-radius:5px;border:none;background:#1d3f66;color:#fff;"><option value="ko">한국어</option><option value="en">English</option><option value="es">Español</option></select>
   <button id="wide-btn" class="btn btn-sm" onclick="toggleWide()" title="화면 넓게 / 좁게 — 기본은 넓게 (이 브라우저에만 저장돼)" style="padding:2px 8px;font-size:10px;background:#1d3f66;color:#cfe0f2;border-color:#2b5384;">↔ Wide</button>
-  <span id="app-ver" style="font-size:10px;color:#9fb8d4;">v1089</span>
+  <span id="app-ver" style="font-size:10px;color:#9fb8d4;">v1090</span>
 </div>
 <script>
 // ↔ 넓게 보기 — 브라우저마다 따로 저장 (v793)
@@ -4482,7 +4482,7 @@ function replaceOrderOpen(base){
   div.onclick = e=>{ if(e.target===div) div.remove(); };
   div.innerHTML = `<style>#modal-replace thead th{position:sticky;top:0;z-index:6;background:var(--header);color:#fff;box-shadow:0 2px 4px rgba(15,42,74,.25);}</style><div style="background:#fff;border-radius:12px;max-width:1180px;width:100%;max-height:92vh;display:flex;flex-direction:column;overflow:hidden;">
     <div style="background:#be123c;color:#fff;padding:10px 16px;font-weight:800;">🔁 Replace (defect replacement) · ${esc((rec.meta&&rec.meta.cust)||'')} — PO ${esc((rec.meta&&rec.meta.po)||'')}
-      <div style="font-weight:400;font-size:11px;color:#fecdd3;">Set the replace qty and process every line right here — assign SC / CA / BO / NA (live stock shows under the box). Use 📍 to pick full-box locations and 📌 to move a box into PC Room, just like a normal order. On save, stock is deducted and boxes move to PC Room. Free (PO# + R), no invoice.</div></div>
+      <div style="font-weight:400;font-size:11px;color:#fecdd3;">Set the replace qty and process every line right here — assign SC / CA / BO / NA (live stock shows under the box). Use 📍 to pick full-box locations and 📌 to move a box into PC Room, just like a normal order. Sending a DIFFERENT item? Press \u21C4 on that line (or \uFF0B below the table) \u2014 what was defective stays on the record. On save, stock is deducted and boxes move to PC Room. Free (PO# + R), no invoice.</div></div>
     <div style="overflow:auto;padding:0 16px 10px;flex:1;">
       <table class="etbl" style="font-size:11.5px;white-space:nowrap;">
         <thead><tr>
@@ -4492,6 +4492,11 @@ function replaceOrderOpen(base){
         </tr></thead>
         <tbody id="rp-body"></tbody>
       </table>
+      <datalist id="rp-dl-style">${rpDlStyles().map(x=>'<option value="'+esc(String(x))+'">').join('')}</datalist>
+      <div style="display:flex;gap:8px;align-items:center;margin-top:8px;flex-wrap:wrap;">
+        <button class="btn btn-sm" style="background:#0f766e;color:#fff;border-color:#0f766e;font-weight:800;" onclick="rpAddLine()" title="Send an item that is not on the shipped list at all">\uFF0B Add a different item</button>
+        <span class="muted" style="font-size:10.5px;">Sending something else instead? Press <b>\u21C4</b> on the line \u2014 the item that was defective stays on the record.</span>
+      </div>
       <div class="ff" style="margin-top:10px;max-width:640px;"><label>Defect reason — check all that apply (saved for tracking)</label>
         <div id="rp-reason-chips" style="display:flex;flex-wrap:wrap;margin:5px 0 7px;">${rrChipsHtml('rp')}</div>
         <input class="fi" id="rp-reason" placeholder="Detail note (optional) — e.g. yellow spot on left sleeve"></div>
@@ -4503,19 +4508,146 @@ function replaceOrderOpen(base){
       <button class="btn btn-primary" id="rp-go" style="background:#be123c;border-color:#be123c;" onclick="replaceOrderDo()">🔁 Create replacement order</button>
     </div></div>`;
   document.body.appendChild(div);
+  window._rpCust = String((rec.meta && rec.meta.cust) || '');
   rpRender();
+  /* 바꾼 줄 가격을 채우려면 이 거래처 가격표가 필요하다 — 조용히 받아둔다 (v1090) */
+  if(typeof loadImsPricesFor === 'function' && window._rpCust){
+    try{ loadImsPricesFor(window._rpCust).then(function(){ if(document.getElementById('rp-body')) rpRender(); }); }catch(e){}
+  }
   // stock 표시용 데이터가 아직 없으면 받아와서 다시 그림 (Full Box 재고)
   if((typeof bxLoaded==='undefined'||!bxLoaded) && typeof bxFetchStore==='function'){ try{ bxFetchStore().then(()=>{ if(document.getElementById('rp-body')) rpRender(); }); }catch(e){} }
+}
+/* ═══════════ ⇄ 다른 물건으로 대체 (v1090) ═══════════
+   [stated] 하윤: "여기서 다른스타일로 replace해줘야하는데 그게 안되는데"
+
+   [왜 안 됐나] `_rpLines` 는 **출고된 줄**에서만 만들어지고 스타일·색·사이즈가 화면에
+   글자로만 박혀 있었다. 그래서 「1368 OLIVE S 가 불량인데 대신 8368 BLACK M 을 보낸다」
+   를 넣을 자리가 아예 없었다.
+
+   ⭐ 줄 하나가 **두 가지**를 들고 있게 했다:
+     · `origStyle/origColor/origSize` = 무엇이 불량이었나  (기록 · 절대 안 바뀜)
+     · `style/color/size`             = 무엇을 대신 보내나  (바꿀 수 있음)
+   이게 중요하다 — 그냥 줄을 덮어쓰면 「무엇이 불량이었는지」가 사라져서, 나중에
+   공장에 따질 때도 거래처와 다툴 때도 근거가 없어진다. 바뀐 줄은 원래 물건을
+   작게 같이 보여주고, 저장할 때 `_replaceOf.swaps` 에도 남긴다.
+
+   ⚠ 수량 상한: 원래 줄은 출고 수량을 넘을 수 없다(그게 맞다). 하지만 **물건을 바꾼 줄과
+   새로 넣은 줄은 상한이 없다** — 다른 사이즈로 맞춰주다 보면 수가 달라지는 게 정상이다.
+   `rpUpd` 의 clamp 가 바로 그 자리다.
+
+   ⚠ 스타일을 바꾸면 `ppb`(박스당 장수)도 같이 바뀌어야 한다. 안 바꾸면 72 로 남아서
+   박스 계산·📍 위치 지정이 전부 틀어진다.
+   ⚠ 등록 안 된 스타일/색 조합은 저장할 때 막는다 — 대체 오더도 재고를 실제로 빼기
+   때문에, 오타 난 SKU 는 유령 재고를 만든다. */
+function rpDlStyles(){
+  try{ return (typeof skuStyles === 'function' ? skuStyles() : []); }catch(e){ return []; }
+}
+function rpDlColors(st){
+  try{ return [...new Set((typeof skuColors === 'function' ? skuColors(st) : [])
+    .map(c=>String(c).trim().toUpperCase()).filter(Boolean))].sort(); }catch(e){ return []; }
+}
+function rpDlSizes(st){
+  try{ const z = (typeof bxStyleSizes === 'function') ? (bxStyleSizes(st)||[]) : [];
+    return z.length ? z.map(x=>String(x).toUpperCase())
+                    : ['XS','S','M','L','XL','2XL','3XL','4XL','5XL']; }catch(e){ return []; }
+}
+function rpAltOn(i){
+  const l = (window._rpLines||[])[i]; if(!l) return;
+  l.alt = true;
+  if(l.origStyle == null){ l.origStyle = l.style; l.origColor = l.color; l.origSize = l.size; }
+  rpRerenderRow(i); rpSum();
+}
+/* 되돌리기 — 원래 출고된 물건으로 (새로 넣은 줄은 지운다) */
+function rpAltOff(i){
+  const l = (window._rpLines||[])[i]; if(!l) return;
+  if(l.added){ rpDelLine(i); return; }
+  if(l.origStyle != null){ l.style = l.origStyle; l.color = l.origColor; l.size = l.origSize; }
+  l.alt = false;
+  l.ppb = (typeof autoPpb === 'function') ? (autoPpb({style:l.style, size:l.size}) || l.ppb) : l.ppb;
+  l.pickLocs = []; l._fbForce = false;
+  if(l.qty > l.shipped) l.qty = l.shipped;
+  rpRerenderRow(i); rpSum();
+}
+function rpAlt(i, field, val){
+  const l = (window._rpLines||[])[i]; if(!l) return;
+  const v = String(val||'').trim();
+  if(field === 'style') l.style = v.toUpperCase();
+  else if(field === 'color') l.color = (typeof bxFixColor === 'function') ? bxFixColor(v) : v.toUpperCase();
+  else if(field === 'size') l.size = v.toUpperCase();
+  /* 물건이 바뀌면 박스당 장수와 품명도 따라가야 한다 */
+  if(field === 'style' || field === 'size'){
+    try{ const p = autoPpb({ style:l.style, size:l.size }); if(p) l.ppb = p; }catch(e){}
+  }
+  if(field === 'style'){
+    try{ l.desc = (typeof bxRptType === 'function') ? (bxRptType(l.style) || l.desc) : l.desc; }catch(e){}
+  }
+  /* 다른 물건이면 아까 골라둔 위치는 말이 안 된다 — 비운다 */
+  l.pickLocs = []; l._fbForce = false;
+  _lineAvailCache = {};
+  /* 값을 받는 줄이니 그 거래처 가격표에서 찾아 채운다 (직접 고칠 수 있다).
+     ⚠ 못 찾으면 0 으로 두지 않고 비워 둔다 — 0 이면 공짜로 청구돼서 그냥 넘어간다. */
+  if(field === 'style' || field === 'size'){
+    try{
+      const cust = (window._rpCust || '');
+      const p = (typeof custPsPrice === 'function' && cust) ? custPsPrice(cust, l.style, l.size) : null;
+      if(p != null) l.price = p;
+    }catch(e){}
+  }
+  rpRerenderRow(i); rpSum();
+}
+/* ＋ 출고 목록에 아예 없던 물건을 보낼 때 */
+function rpAddLine(){
+  window._rpLines = window._rpLines || [];
+  window._rpLines.push({ style:'', desc:'', color:'', size:'', shipped:0, price:0,
+    ppb:DEFAULT_PPB, srcWh:'', pbox:'', qty:0, wh:'', alt:true, added:true,
+    origStyle:'', origColor:'', origSize:'' });
+  rpRender();
+  const el = document.querySelector('#rp-row-' + (window._rpLines.length-1) + ' .rp-alt-style');
+  if(el) el.focus();
+}
+function rpDelLine(i){
+  const A = window._rpLines || [];
+  if(!A[i]) return;
+  if(!A[i].added){ showToast('⚠ Only an added line can be removed — set Replace to 0 instead'); return; }
+  A.splice(i, 1);
+  rpRender();
+}
+function rpAltCellsHtml(l, i){
+  const dlC = 'rp-dlc-' + i, dlZ = 'rp-dlz-' + i;
+  const inp = (cls, field, val, dl, w) =>
+    '<input class="fi ' + cls + '" list="' + dl + '" value="' + esc(String(val||'')) + '"'
+    + ' onchange="rpAlt(' + i + ',\'' + field + '\',this.value)"'
+    + ' style="width:' + w + 'px;font-weight:800;text-transform:uppercase;padding:3px 5px;">';
+  const wasTxt = l.added ? '' :
+    '<div style="font-size:9px;font-weight:800;color:#be123c;line-height:1.3;white-space:nowrap;" title="what was defective">'
+    + '↩ was ' + esc(String(l.origStyle||'')) + ' ' + esc(String(l.origColor||'')) + ' ' + esc(String(l.origSize||'')) + '</div>';
+  return '<td style="font-weight:700;background:#fffbeb;">'
+    +   inp('rp-alt-style', 'style', l.style, 'rp-dl-style', 74)
+    +   '<datalist id="' + dlC + '">' + rpDlColors(l.style).map(c=>'<option value="'+esc(c)+'">').join('') + '</datalist>'
+    +   '<datalist id="' + dlZ + '">' + rpDlSizes(l.style).map(z=>'<option value="'+esc(z)+'">').join('') + '</datalist>'
+    +   '<div style="margin-top:2px;display:flex;gap:2px;align-items:center;">'
+    +     '<button class="btn btn-sm" style="border:none;padding:0 3px;font-size:11px;color:#64748b;" onclick="rpAltOff(' + i + ')" title="' + (l.added ? 'Remove this added line' : 'Back to the item that was shipped') + '">' + (l.added ? '✕' : '↺') + '</button>'
+    +     (l.added ? '<span style="font-size:9px;font-weight:800;color:#0f766e;">added</span>' : '')
+    +   '</div>'
+    +   wasTxt
+    + '</td>'
+    + '<td class="tl" style="background:#fffbeb;">' + inp('rp-alt-color', 'color', l.color, dlC, 128) + '</td>'
+    + '<td style="background:#fffbeb;">' + inp('rp-alt-size', 'size', l.size, dlZ, 58) + '</td>';
+}
+function rpFixedCellsHtml(l, i){
+  return '<td style="font-weight:700;">' + esc(String(l.style))
+    +   ' <button class="btn btn-sm" style="border:none;padding:0 3px;font-size:11px;color:#0f766e;" onclick="rpAltOn(' + i + ')"'
+    +   ' title="Send a DIFFERENT item instead — the item that was defective stays on the record">⇄</button></td>'
+    + '<td class="tl">' + esc(String(l.color).toUpperCase()) + '</td>'
+    + '<td style="font-weight:700;">' + esc(String(l.size).toUpperCase()) + '</td>';
 }
 function rpRowHtml(l,i){
   const b = boxCalc(l);
   const dot = '<span style="color:#cbd5e1;">·</span>';
   return `<tr id="rp-row-${i}" style="${l.wh==='BO'?'background:#fef2f2;':''}">
-    <td style="font-weight:700;">${esc(String(l.style))}</td>
-    <td class="tl">${esc(String(l.color).toUpperCase())}</td>
-    <td style="font-weight:700;">${esc(String(l.size).toUpperCase())}</td>
-    <td style="font-family:Consolas,monospace;color:#64748b;">${(l.shipped||0).toLocaleString()}${l.srcWh?`<div style="font-family:system-ui;font-size:9px;font-weight:800;color:${l.srcWh==='CA'?'#c2410c':'#1d4ed8'};">from ${esc(l.srcWh)}</div>`:''}</td>
-    <td style="background:#fff1f2;"><input class="fi num" type="number" min="0" max="${l.shipped}" value="${l.qty||''}" onchange="rpUpd(${i},'qty',this.value)" style="width:66px;font-weight:800;"></td>
+    ${l.alt ? rpAltCellsHtml(l,i) : rpFixedCellsHtml(l,i)}
+    <td style="font-family:Consolas,monospace;color:#64748b;">${l.added?'<span style="color:#cbd5e1;">\u2014</span>':(l.shipped||0).toLocaleString()}${(!l.added&&l.srcWh)?`<div style="font-family:system-ui;font-size:9px;font-weight:800;color:${l.srcWh==='CA'?'#c2410c':'#1d4ed8'};">from ${esc(l.srcWh)}</div>`:''}</td>
+    <td style="background:#fff1f2;"><input class="fi num" type="number" min="0" ${(l.alt||l.added)?'':`max="${l.shipped}"`} value="${l.qty||''}" onchange="rpUpd(${i},'qty',this.value)" style="width:66px;font-weight:800;">${(l.alt||l.added)?`<div style="margin-top:3px;display:flex;align-items:center;gap:2px;"><span style="font-size:10px;font-weight:800;color:#92400e;">$</span><input class="fi num" type="number" min="0" step="0.01" value="${l.price?Number(l.price).toFixed(2):''}" onchange="rpUpd(${i},'price',this.value)" style="width:58px;font-weight:800;" title="Different item \u2014 this line IS invoiced. Prefilled from this customer's price list; change it if needed."></div>`:`<div style="margin-top:3px;font-size:9.5px;font-weight:800;color:#be123c;" title="Like-for-like replacement \u2014 free, invoiced at $0.00">free $0.00</div>`}</td>
     <td><input class="fi num" value="${l.ppb||DEFAULT_PPB}" onchange="rpUpd(${i},'ppb',this.value)" style="width:52px;"></td>
     <td id="rp-fb-${i}" style="font-family:Consolas,monospace;">${rpFbCellInner(l,b,i)||dot}</td>
     <td id="rp-ls-${i}" style="font-family:Consolas,monospace;color:${b.loose?'#d97706':'#9ca3af'};">${rpLsCellInner(l,b,i)||dot}</td>
@@ -4607,9 +4739,12 @@ async function rpMoveUndo(i){
 }
 function rpUpd(i, field, val){
   const l=(window._rpLines||[])[i]; if(!l) return;
-  if(field==='qty') l.qty = Math.min(Math.max(0, parseInt(val)||0), l.shipped);
+  /* ⚠ 원래 줄만 출고 수량으로 묶는다. 물건을 바꾼 줄·새로 넣은 줄은 상한이 없다 (v1090) */
+  if(field==='qty'){ const q = Math.max(0, parseInt(val)||0);
+    l.qty = (l.alt || l.added) ? q : Math.min(q, l.shipped); }
   else if(field==='ppb') l.ppb = Math.max(1, parseInt(val)||DEFAULT_PPB);
   else if(field==='pbox'){ l.pbox = String(val||'').trim(); }
+  else if(field==='price'){ l.price = Math.max(0, Math.round((parseFloat(val)||0)*100)/100); }
   _lineAvailCache = {};
   rpRerenderRow(i); rpSum();
 }
@@ -4623,7 +4758,12 @@ function rpSum(){
   const L=(window._rpLines||[]).filter(l=>(l.qty||0)>0);
   const np=L.reduce((a,l)=>a+(l.qty||0),0);
   const noWh=L.filter(l=>!l.wh).length;
-  el.innerHTML = `${L.length} line(s) · ${np.toLocaleString()} pcs`+(noWh?` · <span style="color:#dc2626;font-weight:800;">${noWh} still need SC / CA / BO / NA</span>`:'');
+  const sw = L.filter(l=>l.alt || l.added);
+  const amt = sw.reduce((a,l)=>a+(Number(l.qty)||0)*(Number(l.price)||0), 0);
+  el.innerHTML = `${L.length} line(s) · ${np.toLocaleString()} pcs`
+    + (sw.length ? ` · <span style="color:#92400e;font-weight:800;">\u21C4 ${sw.length} swapped \u2014 invoiced $${amt.toFixed(2)}</span>`
+                 : ` · <span style="color:#be123c;font-weight:800;">free \u2014 no invoice</span>`)
+    + (noWh?` · <span style="color:#dc2626;font-weight:800;">${noWh} still need SC / CA / BO / NA</span>`:'');
 }
 async function replaceOrderDo(){
   const base = window._rpBase;
@@ -4632,8 +4772,31 @@ async function replaceOrderDo(){
   if(!L.length){ alert('⚠ Enter a replace qty for at least one line.'); return; }
   const noWh = L.filter(l=>!l.wh);
   if(noWh.length){ alert('⚠ Assign SC / CA / BO / NA for every line with a replace qty ('+noWh.length+' still unset).'); return; }
+  /* ⚠ 물건을 바꾼 줄·새로 넣은 줄은 칸이 비어 있을 수 있다 — 비면 재고에서 엉뚱한 것을
+     빼거나 아무것도 못 빼고 조용히 넘어간다 (v1090) */
+  const bad = L.filter(l=>!String(l.style||'').trim() || !String(l.color||'').trim() || !String(l.size||'').trim());
+  if(bad.length){ alert('⚠ '+bad.length+' line(s) are missing style / color / size.\n\nFill them in (or set Replace to 0).'); return; }
+  /* ⚠ 등록 안 된 스타일/색은 여기서 막는다 — 대체 오더도 재고를 실제로 뺀다 */
+  if(typeof skuFetch === 'function' && !skuLoaded){ try{ await skuFetch(); }catch(e){} }
+  if(typeof skuGateRows === 'function' && typeof skuConfirmRegister === 'function'){
+    if(!(await skuConfirmRegister(skuGateRows(L.map(l=>({style:l.style, color:l.color})))))) return;
+  }
+  /* ⚠ 바꾼 줄에 값이 안 붙어 있으면 $0 으로 청구된다 — 조용히 넘기지 않고 묻는다 */
+  const noPrice = L.filter(l=>(l.alt || l.added) && !(Number(l.price) > 0));
+  if(noPrice.length && !confirm('\u26A0 ' + noPrice.length + ' swapped line(s) have no price.\n\n'
+      + noPrice.slice(0,6).map(l=>'  \u00B7 ' + l.style + ' ' + l.color + ' ' + l.size).join('\n')
+      + (noPrice.length>6 ? '\n  \u2026 +' + (noPrice.length-6) + ' more' : '')
+      + '\n\nThey will be invoiced at $0.00. Send them free?')) return;
+  /* 무엇이 불량이었고 무엇으로 바꿔 보냈는지 — 기록에 남긴다 */
+  const swaps = L.filter(l=>l.alt || l.added).map(l=>({
+    from: l.added ? null : [l.origStyle, l.origColor, l.origSize].filter(Boolean).join(' '),
+    to: [l.style, l.color, l.size].filter(Boolean).join(' '), qty: l.qty, added: !!l.added }));
   // 📍 픽 위치 · 🧺 PC Room 이동 정보를 replacement 오더에 보존 → Pull Request에 위치·이동 내용이 나오게 (이미 실행된 이동이라 재실행 안 됨, 표시용)
-  const lines2 = L.map(l=>({ style:l.style, desc:l.desc, color:l.color, size:l.size, qty:l.qty, price:l.price, ppb:l.ppb, pbox:l.pbox, wh:l.wh,
+  /* ⚠⚠ 바꾸지 않은 줄은 **무상**이다 — price 를 0 으로 못박는다 (v1090).
+     이 오더는 바꾼 줄이 있으면 인보이스가 열리는데, 여기서 원래 단가를 그대로 들고 가면
+     거래처에 **불량 교체분까지 청구**된다. */
+  const lines2 = L.map(l=>({ style:l.style, desc:l.desc, color:l.color, size:l.size, qty:l.qty,
+    price:(l.alt || l.added) ? (Number(l.price)||0) : 0, ppb:l.ppb, pbox:l.pbox, wh:l.wh,
     ...(l.pickLocs&&l.pickLocs.length?{pickLocs:l.pickLocs}:{}),
     ...(l.pcMove&&l.pcMove.length?{pcMove:l.pcMove}:{}),
     ...(l.pcMovePrintedN?{pcMovePrintedN:l.pcMovePrintedN}:{}) }));
@@ -4645,7 +4808,8 @@ async function replaceOrderDo(){
   const base2 = base + sfx;
   const by = (SESS&&SESS.email)||'';
   const meta2 = {...rec.meta, po: String((rec.meta&&rec.meta.po)||'') + sfx, date: todayStr(),
-    _replaceOf: { base: base, po: String((rec.meta&&rec.meta.po)||''), reasons: reasons, note: note, reason: reason, at: new Date().toISOString(), by } };
+    _replaceOf: { base: base, po: String((rec.meta&&rec.meta.po)||''), reasons: reasons, note: note, reason: reason,
+                 ...(swaps.length ? { swaps: swaps } : {}), at: new Date().toISOString(), by } };
   ['_pcAuto','_printed','_hold','_holdOk','_modified','_from','futureShip','confNote'].forEach(k=>delete meta2[k]);
   const rec2 = { base: base2, meta: meta2, lines: lines2, whs: [...new Set(lines2.map(l=>l.wh||'SC'))],
     savedAt: new Date().toISOString(), pl:{}, inv:{}, history:[{t:new Date().toISOString(), by, e:'Replace of '+base + (reason?' — '+reason:'')}] };
@@ -4654,8 +4818,10 @@ async function replaceOrderDo(){
   savedCache.unshift(rec2);
   const m = document.getElementById('modal-replace'); if(m) m.remove();
   renderSaved();
-  showToast('🔁 Replacement order created: PO ' + meta2.po + ' — ' + lines2.length + ' line(s) (free · no invoice)');
-  logHist(base, 'Replace order created → ' + base2 + (reason?' ('+reason+')':''));
+  showToast('🔁 Replacement order created: PO ' + meta2.po + ' — ' + lines2.length + ' line(s)'
+    + (swaps.length ? ' · ' + swaps.length + ' different item(s)' : '') + ' (free · no invoice)');
+  logHist(base, 'Replace order created → ' + base2 + (reason?' ('+reason+')':'')
+    + (swaps.length ? ' — swapped: ' + swaps.map(x=>(x.from?x.from+' → ':'+ ')+x.to+' ×'+x.qty).join(', ') : ''));
   await invSyncOnSave(rec2);   // stock deduction + PC Room moves
 }
 // ══════════ ↩ Customer Return / RMA ══════════
@@ -35174,6 +35340,23 @@ function updateItemRows(){
 }
 
 function recIsReplace(s){ return !!(s && s.meta && s.meta._replaceOf); }
+/* ═══ 무상 교체인가, 값을 받는 교체인가 (v1090) ═══
+   [stated] "replacement은 보통 인보이스를 $0.00으로 하는데 스타일이 바껴서 나갈때는
+   가격이 다르니까 이거는 인보이스가 제대로 되야되는거지"
+
+   같은 물건을 다시 보내는 건 무상이라 인보이스가 아예 없다. 그런데 **다른 스타일**을
+   대신 보내면 값이 다르므로 보통 오더처럼 인보이스가 나가야 한다.
+   그래서 「교체 오더인가」(`recIsReplace` — 빨간 딱지용) 와 「무상인가」(여기) 를
+   나눈다. 인보이스를 잠그는 자리는 전부 이 함수를 봐야 한다.
+
+   ⚠⚠ 값을 받는 교체가 되면 **무상으로 보내는 줄까지 청구될 위험**이 생긴다.
+   그래서 `replaceOrderDo` 가 바꾸지 않은 줄의 price 를 **0 으로 못박는다**.
+   둘 중 하나만 고치면 안 된다 — 거래처에 불량 교체분을 청구하는 사고가 된다. */
+function recRepSwaps(s){
+  const w = s && s.meta && s.meta._replaceOf && s.meta._replaceOf.swaps;
+  return Array.isArray(w) ? w : [];
+}
+function recRepFree(s){ return recIsReplace(s) && !recRepSwaps(s).length; }
 function recStatus(s){
   /* 취소된 오더는 다른 어떤 상태보다 먼저다 — 문서가 얼마나 진행됐든 상관없다 (v863) */
   if(s && s.meta && s.meta._cancelled) return { label:'\u274C CANCELLED', color:'#fff', bg:'#b91c1c', cancelled:true };
@@ -35183,8 +35366,8 @@ function recStatus(s){
   if(!whs.length) return { label: t('st_bo'), color:'#b91c1c', bg:'#fee2e2' };
   const _locker = !!(s.meta && s.meta.lockerStock);
   const plDone = whs.filter(w=>(s.pl && s.pl[w] && s.pl[w].savedAt) || _locker).length;
-  const invDone = recIsReplace(s)
-    ? whs.filter(w=>s.pl && s.pl[w] && s.pl[w]._completed).length   // 🔁 교체 오더: 인보이스 없음 — PL Complete가 완료
+  const invDone = recRepFree(s)
+    ? whs.filter(w=>s.pl && s.pl[w] && s.pl[w]._completed).length   // 🔁 무상 교체: 인보이스 없음 — PL Complete가 완료 (값 받는 교체는 보통 오더처럼)
     : whs.filter(w=>s.inv && s.inv[w] && s.inv[w].printed).length;
   const n = whs.length;
   const hasBO = (s.whs||[]).includes('BO');
@@ -35208,7 +35391,7 @@ function whStatus(s, w){
   if(invPr) return { label: t('st_complete'), color:'#166534', bg:'#dcfce7' };
   if(s.meta && s.meta.lockerStock) return { label: '🔒 Locker — Invoice', color:'#6d28d9', bg:'#f5f3ff' };
   const plDone = plSaved && s.pl[w]._completed;
-  if(recIsReplace(s) && plDone) return { label: '🔁 ' + t('st_complete'), color:'#166534', bg:'#dcfce7' };
+  if(recRepFree(s) && plDone) return { label: '🔁 ' + t('st_complete'), color:'#166534', bg:'#dcfce7' };
   if(plDone && plFutureDate(s, w)) return { label: '📅 Ready to Ship', color:'#b45309', bg:'#fef3c7' };
   if(plDone) return { label: t('st_packed'), color:'#0e7490', bg:'#cffafe' };
   if(plSaved) return { label: '📦 PL Saved', color:'#0369a1', bg:'#e0f2fe' };
@@ -35583,7 +35766,7 @@ function icBuild(){
 function invNpList(){
   const out = [];
   (typeof savedCache!=='undefined' ? savedCache : []).forEach(s=>{
-    if(typeof recIsReplace==='function' && recIsReplace(s)) return;
+    if(typeof recRepFree==='function' && recRepFree(s)) return;   /* 값 받는 교체는 미청구 목록에 남아야 한다 (v1090) */
     (s.whs||[]).forEach(w=>{
       const pl = s.pl && s.pl[w];
       if(!pl || !pl.savedAt) return;
@@ -36424,7 +36607,7 @@ function renderKpi(){
     const shipped = _allShipped(s);
     if(!done && !shipped) open++;
     if(s.meta && s.meta.urgent && !done && !shipped) rush++;   // 나간 rush 는 더 이상 급한 게 아니다
-    if(!recIsReplace(s) && (s.whs||[]).some(w=> s.pl && s.pl[w] && s.pl[w].savedAt && !(s.inv && s.inv[w] && s.inv[w].printed))) uninv++;
+    if(!recRepFree(s) && (s.whs||[]).some(w=> s.pl && s.pl[w] && s.pl[w].savedAt && !(s.inv && s.inv[w] && s.inv[w].printed))) uninv++;
     if(recHasPendingReturn(s)) pret++;
     if(recReturns(s).some(r=>r && r.status==='received' && r.cc && !r.refunded)) refund++;
     if(!done && !shipped){
@@ -36958,8 +37141,8 @@ function renderSaved(){
         ${(w==='BO'||w==='NA') ? `<button class="btn btn-sm" style="background:#f5f3ff;color:#6d28d9;border-color:#c4b5fd;font-weight:700;" onclick="processFromWh('${esc(s.base)}','${w}','SC')" title="Stock arrived — split into a separate order (-${w==='BO'?'B':'N'}) and ship from SC">⚙ Process from SC</button><button class="btn btn-sm" style="background:#fff7ed;color:#c2410c;border-color:#fed7aa;font-weight:700;" onclick="processFromWh('${esc(s.base)}','${w}','CA')" title="Stock arrived — split into a separate order (-${w==='BO'?'B':'N'}) and ship from CA">⚙ Process from CA</button><button class="btn btn-sm" style="background:#fee2e2;color:#b91c1c;border-color:#fca5a5;font-weight:700;" onclick="boAltFromList('${esc(s.base)}')" title="Replace a back-ordered item with an in-stock alternative (style / color / size / qty), then finish the order">⇄ Alternate</button>` : ''}
         ${w!=='BO' && w!=='NA' ? `<button class="btn btn-sm" style="background:${(mp.label||locker)?'#16a34a':'#7c3aed'};color:#fff;border-color:${(mp.label||locker)?'#16a34a':'#7c3aed'};" onclick="docBtnClick('${esc(s.base)}','${w}','label')" oncontextmenu="return docBtnMenu(event,'${esc(s.base)}','${w}','label')" title="Right-click: ${mp.label?'clear':'mark'} done (green)">🏷 Box Label${pby(mp.label)}</button><button class="btn btn-sm" style="background:#0f766e;color:#fff;border-color:#0f766e;" onclick="openBoxLabelForRecWh('${esc(s.base)}','${w}','full')" title="Small 2x1 label for individual full boxes (load 2x1 label stock)">🏷 Full Box</button>
         ${consolSC ? `<span style="padding:3px 10px;border-radius:20px;font-size:10.5px;font-weight:800;background:#fff7ed;color:#b45309;border:1px solid #fed7aa;white-space:nowrap;" title="This SC portion transfers to CA and ships out combined with the CA portion — the packing slip &amp; invoice are on the CA (SC+CA) document.">🚚 → ships from CA (combined doc)</span>` : `<button class="btn btn-sm" style="${((s.pl && s.pl[w] && s.pl[w]._completed) || locker)?'background:#16a34a;border-color:#16a34a;':(plSaved?'background:#0e7490;border-color:#0e7490;':'background:#f59e0b;border-color:#f59e0b;')}color:#fff;" onclick="openPLWh('${esc(s.base)}','${w}')" oncontextmenu="return plBtnMenu(event,'${esc(s.base)}','${w}')" title="${plSaved && !(s.pl[w]&&s.pl[w]._completed)?'Saved — not Complete yet (no email sent) · ':''}Right-click: toggle Complete (without email)">📦 Packing List</button>`}
-        ${plSaved && recIsReplace(s) ? `<span style="padding:3px 10px;border-radius:20px;font-size:10.5px;font-weight:800;background:#fff1f2;color:#be123c;border:1px solid #fda4af;white-space:nowrap;" title="Defect replacement order — no invoice issued">🔁 Free replacement — no Invoice</span>` : ''}
-        ${(plSaved || locker) && !recIsReplace(s) ? `<button class="btn btn-sm" style="${invPr?'background:#16a34a;border-color:#16a34a;':'background:#dc2626;border-color:#dc2626;'}color:#fff;" onclick="docBtnClick('${esc(s.base)}','${w}','inv')" oncontextmenu="return docBtnMenu(event,'${esc(s.base)}','${w}','inv')" title="Right-click: ${invPr?'clear':'mark'} done (green)">🧾 Invoice</button>${invPr ? `<button class="btn btn-sm" style="background:#065f46;color:#fff;border-color:#065f46;" onclick="payFromRow('${esc(s.base)}','${w}')" title="Record payment (full/partial)">💰 Payment</button><button class="btn btn-sm" style="background:#7c2d12;color:#fff;border-color:#7c2d12;" onclick="memoFromRow('${esc(s.base)}','${w}')" title="Credit Memo (returns) — MAS200 file can be attached">📝 Credit Memo</button>` : ''}` : ''}
+        ${plSaved && recRepFree(s) ? `<span style="padding:3px 10px;border-radius:20px;font-size:10.5px;font-weight:800;background:#fff1f2;color:#be123c;border:1px solid #fda4af;white-space:nowrap;" title="Defect replacement order — no invoice issued">🔁 Free replacement — no Invoice</span>` : ''}${plSaved && recIsReplace(s) && !recRepFree(s) ? `<span style="padding:3px 10px;border-radius:20px;font-size:10.5px;font-weight:800;background:#fffbeb;color:#92400e;border:1px solid #fcd34d;white-space:nowrap;" title="A different item was sent instead, so this one is invoiced — the like-for-like lines are $0.00">🔁⇄ Swapped item — invoiced</span>` : ''}
+        ${(plSaved || locker) && !recRepFree(s) ? `<button class="btn btn-sm" style="${invPr?'background:#16a34a;border-color:#16a34a;':'background:#dc2626;border-color:#dc2626;'}color:#fff;" onclick="docBtnClick('${esc(s.base)}','${w}','inv')" oncontextmenu="return docBtnMenu(event,'${esc(s.base)}','${w}','inv')" title="Right-click: ${invPr?'clear':'mark'} done (green)">🧾 Invoice</button>${invPr ? `<button class="btn btn-sm" style="background:#065f46;color:#fff;border-color:#065f46;" onclick="payFromRow('${esc(s.base)}','${w}')" title="Record payment (full/partial)">💰 Payment</button><button class="btn btn-sm" style="background:#7c2d12;color:#fff;border-color:#7c2d12;" onclick="memoFromRow('${esc(s.base)}','${w}')" title="Credit Memo (returns) — MAS200 file can be attached">📝 Credit Memo</button>` : ''}` : ''}
         ${(()=>{ const iv0 = s.inv && s.inv[w]; const pd = iv0 && iv0.paid; if(!pd) return '';
           const rt = refundTotals(pd);
           const dupOpen = (iv0.dupPays||[]).some(d=>refundTotals(d).remain > 0.005);
