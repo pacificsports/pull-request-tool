@@ -203,7 +203,7 @@ body.po-dragging{user-select:none;}
   </span>
   <select id="lang-sel" onchange="setLang(this.value)" style="font-size:11px;padding:3px 6px;border-radius:5px;border:none;background:#1d3f66;color:#fff;"><option value="ko">한국어</option><option value="en">English</option><option value="es">Español</option></select>
   <button id="wide-btn" class="btn btn-sm" onclick="toggleWide()" title="화면 넓게 / 좁게 — 기본은 넓게 (이 브라우저에만 저장돼)" style="padding:2px 8px;font-size:10px;background:#1d3f66;color:#cfe0f2;border-color:#2b5384;">↔ Wide</button>
-  <span id="app-ver" style="font-size:10px;color:#9fb8d4;">v1088</span>
+  <span id="app-ver" style="font-size:10px;color:#9fb8d4;">v1089</span>
 </div>
 <script>
 // ↔ 넓게 보기 — 브라우저마다 따로 저장 (v793)
@@ -9633,6 +9633,102 @@ function zplScale(zpl, f){
    이름 뒷부분이 **말없이 잘려 나간다** — 라벨에 `ATTN: CHRISTOPH` 로 찍히는 식이다.
    ⚠ `^` 와 `~` 는 ZPL 명령 시작 글자다. 이름에 섞이면 라벨이 깨지므로 `blSampleAttn`
    에서 반드시 걸러낸다. */
+/* ═══════════ 🏷 2x2 로고 스티커 (v1089) ═══════════
+   [stated] 하윤: "우리 2X2에 우리 로고만 찍어서 스티커 형식으로 프린트할수있게도 할수있나?"
+
+   ⭐ 로고를 코드에 hex 로 박지 않는다. 앱에 이미 있는 `LOGO_B64`(820x200 PNG)를
+   캔버스에 그려서 그 자리에서 1비트 그림으로 만든다. 그래서
+     · 파일이 41KB 커지지 않는다
+     · 203dpi·300dpi 프린터 각각의 **실제 해상도로** 그려진다 (미리 만든 그림이면 뭉개진다)
+     · 로고를 바꾸면 스티커도 같이 바뀐다
+
+   ⚠⚠ 원본 로고는 **흰 글자 + 투명 배경**이다 (어두운 배경용). 그래서 색이 아니라
+   **알파(투명도)** 를 보고 잉크를 정한다. 색(RGB)으로 판단하면 전부 흰색이라
+   **백지가 나온다**. `alpha > 100` 인 곳이 검게 찍힌다.
+
+   ⚠ 로고는 4.25:1 로 가로로 길어서 2x2 정사각형에 그냥 넣으면 아주 작아진다.
+   그래서 그림을 두 조각으로 나눠 위아래로 쌓는다:
+     · 목화 마크  원본 x 0..190   (191x182, 거의 정사각)
+     · PACIFIC SPORTS  원본 x 215..819 (605x169)
+   두 조각 사이 24dot 빈 칸이 원본에 있어서 자리는 고정이다 — 로고 그림을 바꾸면
+   이 숫자도 다시 재야 한다.
+
+   ⚠ 장수: 그림 한 장이 hex 로 약 41KB 다. 라벨을 그대로 되풀이하면 50장이면 2MB 가
+   Browser Print 로 간다. 그래서 **8장까지는 되풀이**(이 앱에서 이미 검증된 길),
+   그 이상은 `^PQ` (프린터가 스스로 n 장 찍는 명령) 를 쓴다. `^PQ` 가 혹시 안 먹으면
+   한 장만 나온다 — 라벨지를 버리지 않는, 눈에 바로 보이는 실패다. */
+const BLLOGO_MARK = [0, 0, 191, 182];        /* 목화 마크 (sx, sy, sw, sh) */
+const BLLOGO_WORD = [215, 24, 605, 169];     /* PACIFIC SPORTS 글자 */
+const BLLOGO_REPEAT_MAX = 8;                 /* 여기까지는 라벨을 되풀이 · 넘으면 ^PQ */
+
+function blLogoImg(){
+  if(window._blLogoImg) return window._blLogoImg;
+  window._blLogoImg = new Promise(function(res, rej){
+    const im = new Image();
+    im.onload = function(){ res(im); };
+    im.onerror = function(){ rej(new Error('logo image failed to load')); };
+    im.src = LOGO_B64;
+  });
+  return window._blLogoImg;
+}
+/* 캔버스 → 1비트 → ZPL `^GFA` hex. 알파가 잉크다 (위 ⚠ 참고). */
+async function blLogoZpl(){
+  const S = blDpi() / 203;
+  const W = Math.round(406 * S), H = Math.round(406 * S);   /* 2x2 in */
+  const PAD = Math.round(24 * S), USE = W - PAD * 2;
+  const wordH = Math.round(USE / (BLLOGO_WORD[2] / BLLOGO_WORD[3]));
+  const gap = Math.round(22 * S);
+  const markH = USE - wordH - gap;
+  const markW = Math.round(markH * (BLLOGO_MARK[2] / BLLOGO_MARK[3]));
+  if(!(markH > 0 && markW > 0 && markW <= USE)) throw new Error('logo layout does not fit');
+  const im = await blLogoImg();
+  const c = document.createElement('canvas'); c.width = W; c.height = H;
+  const g = c.getContext('2d');
+  g.clearRect(0, 0, W, H);
+  g.imageSmoothingEnabled = true;
+  try{ g.imageSmoothingQuality = 'high'; }catch(e){}
+  g.drawImage(im, BLLOGO_MARK[0], BLLOGO_MARK[1], BLLOGO_MARK[2], BLLOGO_MARK[3],
+              Math.round((W - markW) / 2), PAD, markW, markH);
+  g.drawImage(im, BLLOGO_WORD[0], BLLOGO_WORD[1], BLLOGO_WORD[2], BLLOGO_WORD[3],
+              PAD, PAD + markH + gap, USE, wordH);
+  const px = g.getImageData(0, 0, W, H).data;
+  const rowB = Math.ceil(W / 8), total = rowB * H;
+  const HEX = '0123456789ABCDEF';
+  const out = new Array(H);
+  let ink = 0;
+  for(let y = 0; y < H; y++){
+    let row = '';
+    for(let b = 0; b < rowB; b++){
+      let v = 0;
+      for(let k = 0; k < 8; k++){
+        const x = b * 8 + k;
+        if(x < W && px[(y * W + x) * 4 + 3] > 100){ v |= (0x80 >> k); ink++; }
+      }
+      row += HEX[v >> 4] + HEX[v & 15];
+    }
+    out[y] = row;
+  }
+  /* ⚠ 백지 확인 — 알파 대신 색(RGB)을 봤을 때 정확히 이렇게 된다. 조용히 빈 라벨을
+     50장 뽑는 것보다 여기서 멈추는 게 낫다. */
+  if(!ink) throw new Error('logo came out blank');
+  return { one: '^XA\n^POI\n^MMT\n^PW' + W + '\n^LL' + H + '\n^LS0\n'
+                + '^FO0,0^GFA,' + total + ',' + total + ',' + rowB + ',' + out.join('') + '^FS\n',
+           w: W, h: H, bytes: total, ink: ink };
+}
+async function blLogoPrint(){
+  let n = parseInt(String(window.prompt('🏷 2×2 로고 스티커 — 몇 장?', '1') || ''), 10);
+  if(!(n > 0)) return;
+  if(n > 200) n = 200;
+  await blDpiSync();
+  let L;
+  try{ L = await blLogoZpl(); }
+  catch(e){ showToast('⚠ 로고를 만들지 못했습니다: ' + ((e && e.message) || e)); return; }
+  const zpl = (n <= BLLOGO_REPEAT_MAX)
+    ? Array.from({ length:n }, function(){ return L.one + '^XZ'; }).join('\n')
+    : (L.one + '^PQ' + n + ',0,0,Y\n^XZ');
+  const ok = await sendToZebraBrowserPrint(zpl, n, '.66');   /* 2x2 프린터 */
+  if(ok) showToast('🏷 ' + n + ' logo sticker(s) sent · ' + L.w + '×' + L.h + ' dot');
+}
 const SMP_PADY = 20, SMP_LEN = 1178;   /* 글자가 흐르는 방향(Y) */
 /* 이름에서 ZPL 이 못 먹는 글자를 뺀다. `^` `~` 는 명령 시작 글자라 특히 위험하다. */
 function blSampleAttn(v){
@@ -22103,6 +22199,7 @@ async function haitiOpen(){
     + '<span style="font-weight:800;font-size:14px;">🏷 Box Labels — 6×4 Carton</span>'
     + '<span id="haiti-note" style="font-size:11.5px;color:#cbd5e1;">loading…</span>'
     + '<button class="btn btn-sm" style="margin-left:auto;background:#b45309;color:#fff;border-color:#b45309;font-weight:800;" onclick="blSampleOpen()" title="PACIFIC SPORTS / SAMPLE \u2014 type the ATTN name, then print \u00B7 4x6 sideways">🔖 SAMPLE label</button>'
+    + '<button class="btn btn-sm" style="background:#0f2a4a;color:#fff;border-color:#0f2a4a;font-weight:800;" onclick="blLogoPrint()" title="Our logo only, on a 2x2 sticker — goes to the 2x2 printer">🏷 Logo 2×2</button>'
     + '<button class="btn btn-sm" style="background:#4c1d95;color:#fff;border-color:#4c1d95;font-weight:800;" onclick="blPickOpen()" title="2x2 QR stickers for the Zebra printer">🏷 Zebra stickers</button>'
     + '<button class="btn btn-sm" style="background:#0f766e;color:#fff;border-color:#0f766e;font-weight:800;" onclick="blExportFile()" title="Save the same tool as one file — to send to Haiti">⬇ Download file</button>'
     + '<button class="btn btn-sm" style="background:rgba(255,255,255,.18);color:#fff;border-color:rgba(255,255,255,.35);font-weight:800;" onclick="document.getElementById(\'modal-haiti\').remove()">✕ Close</button>'
