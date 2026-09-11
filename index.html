@@ -192,7 +192,7 @@ body.po-dragging{user-select:none;}
   </span>
   <select id="lang-sel" onchange="setLang(this.value)" style="font-size:11px;padding:3px 6px;border-radius:5px;border:none;background:#1d3f66;color:#fff;"><option value="ko">한국어</option><option value="en">English</option><option value="es">Español</option></select>
   <button id="wide-btn" class="btn btn-sm" onclick="toggleWide()" title="화면 넓게 / 좁게 — 기본은 넓게 (이 브라우저에만 저장돼)" style="padding:2px 8px;font-size:10px;background:#1d3f66;color:#cfe0f2;border-color:#2b5384;">↔ Wide</button>
-  <span id="app-ver" style="font-size:10px;color:#9fb8d4;">v1078</span>
+  <span id="app-ver" style="font-size:10px;color:#9fb8d4;">v1079</span>
 </div>
 <script>
 // ↔ 넓게 보기 — 브라우저마다 따로 저장 (v793)
@@ -27531,6 +27531,7 @@ async function trBuilderOpen(existingId, route){
         ${trSrcIsSpec(_shipRoute)?'<button class="btn" style="background:#b45309;color:#fff;border-color:#b45309;" onclick="trPickupReq()">🖨 Stock Release</button>':''}
         <button class="btn" style="background:#0f4c8a;color:#fff;border-color:#0f4c8a;" onclick="trPL()">🖨 Packing List Preview/Print</button>
         ${trSrcIsSpec(_shipRoute)?'':`<button class="btn" style="background:#166534;color:#fff;border-color:#166534;" onclick="trPR()">🖨 Pull Request (per pallet)</button>`}
+        ${trSrcIsSpec(_shipRoute)?'':`<button class="btn" style="background:#6d28d9;color:#fff;border-color:#6d28d9;" onclick="trQrAll()" title="Print a 2&quot; x 2&quot; box QR sticker for every box on this truck. New carton numbers — only for boxes that have no QR yet.">⬛ Box QR (all)</button>`}
         <button class="btn" style="background:#334155;color:#fff;border-color:#334155;" onclick="trBOL()">🖨 BOL</button>
         ${trDstKind(_shipRoute)==='3P'
           ? `<button class="btn btn-primary" style="background:#b45309;border-color:#b45309;" onclick="trSave3P()" title="Save this shipment and put it in Pending. When the truck actually picks it up, press 🚚 Shipped there — that is when the boxes move into their H bins.">💾 Save</button>`
@@ -27743,6 +27744,53 @@ async function hbPeek(){
   if(free.length) return 'H' + free[0];
   const nx = await _hbGet('@hbin:next', String(HBIN_SEED));
   return nx === null ? '' : ('H' + (parseInt(nx, 10) || HBIN_SEED));
+}
+/* ═══════════ ⬛ 이송 팔레트 박스 전부에 QR 스티커 (v1079) ═══════════
+   [stated] 하윤: "여기 full box qr code print할수있게도 만들어줘" (이송 빌더에서)
+   `bxQrBinPrint`(v1069, bin 단위) 와 **같은 스티커·같은 프린터**(2x2, .66) 를 쓴다 —
+   창고가 이미 스캔하는 그 QR 이고, 공장 카톤 QR 과 같은 형식이다.
+
+   ⚠⚠ 카톤번호를 **새로 만든다** (`ctnNew`). 그래서 **QR 이 이미 붙어 있는 박스에 또
+   붙이면 안 된다** — 한 박스에 번호가 둘이면 트럭 스캔·실사에서 **두 박스로 세어진다.**
+   QR 없는 옛 카톤에만 붙이거나, 옛 스티커를 덮고 붙일 것. 확인창에 그 말을 적어둔다.
+   ⚠ 장수(pcs/box)가 없는 줄은 건너뛴다 — 몇 장인지 모르는 스티커는 대조를 망친다.
+   ⓘ 3자 창고에서 출발하는 길에는 안 띄운다 (🖨 Pull Request 와 같은 기준) —
+     그 박스는 남의 창고 사람이 뽑아서 우리가 손에 들 일이 없다. */
+async function trQrLines(src, what){
+  const all = (src||[]);
+  const good = all.filter(l=>trLinePpb(l) > 0 && trLineBoxes(l) > 0);
+  const skipped = all.length - good.length;
+  const total = good.reduce((a,l)=>a+trLineBoxes(l), 0);
+  if(!total){ showToast('⚠ ' + what + ' — no line has a pcs/box value, so no sticker can be made'); return; }
+  const shown = good.slice(0,14).map(l=>l.style + ' ' + bxBaseColor(l.color) + ' ' + l.size + ' ×' + trLineBoxes(l)).join('\n')
+    + (good.length > 14 ? ('\n… +' + (good.length-14) + ' more line(s)') : '');
+  if(!confirm('⬛ ' + total + ' box QR sticker(s) — ' + what + '\n\n' + shown
+    + (skipped ? ('\n\n⚠ ' + skipped + ' line(s) skipped — no pcs/box value') : '')
+    + '\n\n⚠ These carry NEW carton numbers. Do NOT put one on a box that already has a QR'
+    + '\n   — two numbers on one box get counted as two boxes when the truck is scanned.'
+    + '\n\n🖨 Goes to the 2" x 2" printer (192.168.1.66).'
+    + '\n⚠ Load 2" x 2" label stock in it first.')) return;
+  let prnMatch = '.66';
+  try{ prnMatch = localStorage.getItem('bl_printer_binqr_match') || '.66'; }catch(e){}
+  window._blMode = 'full';                       /* 해상도를 2x2 쪽 기준으로 */
+  try{ await blDpiSync(); }catch(e){}
+  const parts = [];
+  good.forEach(l=>{ const n = trLineBoxes(l), q = trLinePpb(l);
+    for(let k=0; k<n; k++) parts.push(buildBoxQr2x2Zpl({ styleNum:l.style, color:l.color, size:l.size, qty:q }, ctnNew()));
+  });
+  const ok = await sendToZebraBrowserPrint(parts.filter(Boolean).join('\n'), total, prnMatch);
+  if(!ok) return;
+  showToast('⬛ ' + total + ' QR sticker(s) — ' + what);
+  try{ logHist && logHist('', 'Box QR stickers printed — ' + what + ' (' + (_shipNo||'') + '), ' + total + ' sticker(s)'); }catch(e){}
+}
+function trQrPallet(pid){
+  const p = _shipPallets.find(x=>x.id===pid); if(!p) return;
+  return trQrLines(p.lines, p.label);
+}
+function trQrAll(){
+  const all = _shipPallets.reduce((a,p)=>a.concat(p.lines||[]), []);
+  if(!all.length){ showToast('⚠ No lines on this truck yet'); return; }
+  return trQrLines(all, (_shipPallets.length>1 ? ('all ' + _shipPallets.length + ' pallets') : 'this truck') + ' · ' + (_shipNo||''));
 }
 /* ═══ 🛛 정차지 줄 (v1076) ═══
    순서가 곧 트럭이 서는 순서다. ↑↓ 로 바꾸고, ✕ 로 빼고, 드롭다운으로 더한다.
@@ -28518,6 +28566,7 @@ function trRenderPallets(){
         <span style="color:var(--text2);font-size:11px;">${p.lines.length} line(s) · <b>${pB}</b> box(es) · <b>${pP.toLocaleString()}</b> pcs</span>
         ${_spSrc?'':`<button class="btn btn-sm" style="margin-left:auto;background:#1565c0;color:#fff;border-color:#1565c0;" onclick="trScOpen('${p.id}')">+ ${esc(_srcLbl)} Inventory</button>`}
         ${_noPR?'':`<button class="btn btn-sm" style="background:#166534;color:#fff;border-color:#166534;" onclick="trPRPallet('${p.id}')" title="Print the Pull Request for this pallet only">🖨 Pull Request</button>`}
+        ${_noPR?'':`<button class="btn btn-sm" style="background:#6d28d9;color:#fff;border-color:#6d28d9;" onclick="trQrPallet('${p.id}')" title="Print a 2&quot; x 2&quot; box QR sticker for every box on this pallet. New carton numbers — only for boxes that have no QR yet.">⬛ Box QR</button>`}
         <button class="btn btn-sm" onclick="trManualLine('${p.id}')">+ Manual</button>
         ${_shipPallets.length>1 ? `<button class="btn btn-sm" style="background:#fff7ed;color:#c2410c;border-color:#fdba74;font-weight:800;" onclick="trSplitPallet('${p.id}')" title="Move this pallet into its own shipment — stock does not move, the boxes on it just travel to the new shipment">\u2702 Split off</button>` : ''}
         <button class="btn btn-sm" style="background:#fee2e2;color:#c62828;border-color:#fecaca;" onclick="trDelPallet('${p.id}')">✕ ${_spSrc?'Remove this bin':'Delete pallet'}</button>
