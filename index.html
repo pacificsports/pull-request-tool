@@ -192,7 +192,7 @@ body.po-dragging{user-select:none;}
   </span>
   <select id="lang-sel" onchange="setLang(this.value)" style="font-size:11px;padding:3px 6px;border-radius:5px;border:none;background:#1d3f66;color:#fff;"><option value="ko">한국어</option><option value="en">English</option><option value="es">Español</option></select>
   <button id="wide-btn" class="btn btn-sm" onclick="toggleWide()" title="화면 넓게 / 좁게 — 기본은 넓게 (이 브라우저에만 저장돼)" style="padding:2px 8px;font-size:10px;background:#1d3f66;color:#cfe0f2;border-color:#2b5384;">↔ Wide</button>
-  <span id="app-ver" style="font-size:10px;color:#9fb8d4;">v1075</span>
+  <span id="app-ver" style="font-size:10px;color:#9fb8d4;">v1076</span>
 </div>
 <script>
 // ↔ 넓게 보기 — 브라우저마다 따로 저장 (v793)
@@ -27116,8 +27116,74 @@ const TR_ROUTES = {
   H2SC:  { label:'3rd Party (SC) → SC',    short:'3P→SC', from:'3P', dest:'SC', color:'#15803d', bg:'#15803d' },
   CA2LK: { label:'CA → 3rd Party (CA)',    short:'CA→3P', from:'CA', dest:'LK', color:'#78350f', bg:'#78350f' },
   LK2CA: { label:'3rd Party (CA) → CA',    short:'3P→CA', from:'LK', dest:'CA', color:'#166534', bg:'#166534' },
-  H2CA:  { label:'3rd Party (SC) → CA',    short:'3P→CA', from:'3P', dest:'CA', color:'#166534', bg:'#166534', legacy:true }
+  H2CA:  { label:'3rd Party (SC) → CA',    short:'3P→CA', from:'3P', dest:'CA', color:'#166534', bg:'#166534', legacy:true },
+  /* 🛛 multi-stop — 트럭 하나가 여러 곳에 나눠 내린다 (v1076).
+     `from` 은 고정이라 `trSrcKind`·`trSrcIsSpec`·`trSrcAutoPallet` 이 손 안 대고 그대로 맞는다.
+     `dest` 는 **정차지를 못 읽었을 때의 예비값**일 뿐 — 진짜 목적지는 팔레트마다
+     `trStopKindOfPallet()` 이 정한다. */
+  MULTI_SC: { label:'Multi-stop — from SC', short:'MULTI·SC', from:'SC', dest:'CA', color:'#6d28d9', bg:'#6d28d9', multi:true },
+  MULTI_CA: { label:'Multi-stop — from CA', short:'MULTI·CA', from:'CA', dest:'LK', color:'#6d28d9', bg:'#6d28d9', multi:true }
 };
+/* ═══════════ 🛛 Multi-stop Transfer (v1076) ═══════════
+   [stated] 하윤: "multip stop 할수있는거 하나 만들자. SC--> CA ----> 3rd party (CA) 또는
+   SC---->3rd Party (CA) ----> CA 이렇케 우리가 순서는 자유자재로 할수있게"
+   [stated] 내리는 단위는 **팔레트당**.
+
+   ⭐ 왜 상태값을 새로 안 만들었나 — **부분 수령이 이미 되고 있었다.**
+   `trRecvApplyOne` 은 줄 하나씩 처리하고, `trRecvFinishApply` 는 **모든** 줄이 끝났을
+   때만 `RECEIVED` 로 넘긴다. 그래서 첫 정차지 팔레트만 받고 닫으면 기록은 그대로
+   `TRANSIT` 에 남는다 — 다음 정차지에서 이어 받으면 된다.
+
+   ⭐ 그리고 목적지를 정하는 곳이 사실상 두 군데뿐이었다:
+     · `trRecvApplyOne` 의 `dest`  (재고가 실제로 움직이는 곳)
+     · `trRecvRender` 의 `_rtD`    (화면 문구·bin 힌트·datalist 가 전부 여기서 파생)
+   둘 다 팔레트의 정차지로 바꾸면 나머지는 따라온다.
+
+   ⚠⚠ **`meta.stops` 가 없으면 `trDstKind(route)` 를 그대로 돌려준다** —
+   기존 이송 6개 길은 동작이 한 줄도 안 바뀐다. 이게 이 기능의 안전장치다.
+
+   ⓘ v1 은 정차지를 `SC` / `CA` / `LK`(3rd Party CA) 로 제한했다. Hodge(`3P`)는
+     H bin 번호를 받아가는 절차(`trAssignBin`·`hbVoid`)가 붙어 있어서 multi 에 끼우면
+     번호 관리가 엉킨다 — Hodge 는 지금처럼 SC→3P 단독 이송으로 보낸다.
+
+   ⓘ 「거쳐서 간다」 두 가지가 다 된다:
+     · 그냥 통과      → 그 팔레트의 정차지를 뒤쪽으로 준다 (앞 정차지에서 안 내린다)
+     · CA 재고로 들어갔다 다시 나간다 → 정차지를 CA 로 주고 받은 뒤 CA→3P 이송을 새로 만든다
+       (재고가 CA 를 실제로 거친 기록이 정직하게 남는다) */
+const TR_STOP_KINDS = ['SC','CA','LK'];
+function trIsMultiRoute(route){ return !!(TR_ROUTES[route] && TR_ROUTES[route].multi); }
+function trStopsOf(rec){
+  const m = (rec && rec.meta && typeof rec.meta==='object') ? rec.meta : {};
+  return Array.isArray(m.stops) ? m.stops.filter(k=>TR_STOP_KINDS.indexOf(k) >= 0) : [];
+}
+/* 팔레트의 정차지 번호. 줄에 박아둔 `stop` 이 1순위 —
+   팔레트 이름은 지우고 나면 다시 번호가 매겨져서(`Pallet 2`→`Pallet 1`) 이름으로만
+   들고 있으면 엉뚱한 팔레트가 앞 팔레트의 정차지를 물려받는다. 줄은 팔레트와 함께 움직인다. */
+function trStopIdxOfPallet(rec, pal){
+  const stops = trStopsOf(rec); if(!stops.length) return -1;
+  const ls = (pal && Array.isArray(pal.lines)) ? pal.lines : [];
+  for(let i=0;i<ls.length;i++){ const v = Number(ls[i] && ls[i].stop);
+    if(v >= 0 && v < stops.length) return v; }
+  const mp = ((rec && rec.meta && rec.meta.palletStop) || {});
+  const v2 = Number(mp[pal && pal.label]);
+  if(v2 >= 0 && v2 < stops.length) return v2;
+  /* 안 정했으면 **마지막 정차지**로 본다 — 트럭에 더 오래 실려 있는 쪽이 안전하다.
+     첫 문 앞에 잘못 내려놓는 것보다, 실려 가다가 각 정차지에서 고칠 수 있는 게 낫다. */
+  return stops.length - 1;
+}
+function trStopKindOfPallet(rec, pal){
+  const stops = trStopsOf(rec);
+  if(!stops.length) return trDstKind(trRoute(rec));   /* ⭐ 기존 이송은 그대로 */
+  return stops[trStopIdxOfPallet(rec, pal)];
+}
+function trStopKindOfLine(rec, l){
+  const stops = trStopsOf(rec);
+  if(!stops.length) return trDstKind(trRoute(rec));
+  const v = Number(l && l.stop);
+  return stops[(v >= 0 && v < stops.length) ? v : (stops.length - 1)];
+}
+/* 「정차 2 · 3rd Party CA (SPECIAL*)」 — 화면·종이에서 같은 말을 쓴다 */
+function trStopTag(i, k){ return 'Stop ' + (i+1) + ' · ' + trKindShort(k); }
 /* 길 딱지 하나 — 목록·상세 어디서나 같은 모양으로 (v992) */
 function trRouteChip(route, size){
   const rt = TR_ROUTES[route] || TR_ROUTES.SC2CA;
@@ -27197,7 +27263,8 @@ function bxSpecMeta(kind){
 }
 function trGenShipNo(route){
   const d = new Date(); const p2 = n=>String(n).padStart(2,'0');
-  const pre = { SC2CA:'SC-CA-', H2SC:'3P-SC-', H2CA:'3P-CA-', SC2H:'SC-3P-', CA2LK:'CA-3P-', LK2CA:'3P-CA-' }[route||'SC2CA'] || 'SC-CA-';
+  const pre = { SC2CA:'SC-CA-', H2SC:'3P-SC-', H2CA:'3P-CA-', SC2H:'SC-3P-', CA2LK:'CA-3P-', LK2CA:'3P-CA-',
+                MULTI_SC:'MS-SC-', MULTI_CA:'MS-CA-' }[route||'SC2CA'] || 'SC-CA-';
   return pre + String(d.getFullYear()).slice(2) + p2(d.getMonth()+1) + p2(d.getDate()) + '-' + p2(d.getHours()) + p2(d.getMinutes());
 }
 // 새 Transfer — 노선 선택
@@ -27214,17 +27281,26 @@ function trNewOpen(){
       k==='CA2LK' ? 'Send CA stock to the 3rd party warehouse (SPECIAL* bin)' :
       k==='LK2CA' ? 'Recall stock from the 3rd party warehouse back to CA' :
       k==='H2CA'  ? 'Ship Hodge (H*) stock to CA warehouse' :
+      k==='MULTI_SC' ? 'One truck out of SC, several drop-offs — you set the stops and their order, then say which pallet comes off where' :
+      k==='MULTI_CA' ? 'One truck out of CA, several drop-offs — you set the stops and their order, then say which pallet comes off where' :
                     'Send SC stock to Hodge storage (assign new H bin)'}</span></button>`; };
   div.innerHTML = `<div style="background:#fff;border-radius:12px;padding:18px 20px;max-width:520px;">
     <div style="font-weight:800;color:#0f2a4a;margin-bottom:12px;font-size:14px;">🚚 New Transfer — choose route
       <button class="btn btn-sm" style="float:right;" onclick="document.getElementById('modal-trnew').remove()">✕</button></div>
-    <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;">${card('SC2CA')}${card('SC2H')}${card('H2SC')}${card('CA2LK')}${card('LK2CA')}</div></div>`;
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;">${card('SC2CA')}${card('SC2H')}${card('H2SC')}${card('CA2LK')}${card('LK2CA')}</div>
+    <div style="margin-top:12px;padding-top:12px;border-top:1px solid var(--border);">
+      <div style="font-size:10.5px;color:var(--text2);font-weight:700;margin-bottom:8px;">🛛 One truck, several stops</div>
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;">${card('MULTI_SC')}${card('MULTI_CA')}</div>
+    </div></div>`;
   document.body.appendChild(div);
 }
 async function trGet(id){ try{ const r = await sbFetch('/rest/v1/pr_transfers?id=eq.'+id+'&select=*'); if(r.ok) return (await r.json())[0]; }catch(e){} return null; }
 async function trPatchRec(id, body){ try{ await sbFetch('/rest/v1/pr_transfers?id=eq.'+id, {method:'PATCH', headers:{Prefer:'return=minimal'}, body:JSON.stringify(body)}); }catch(e){} }
 function trLinesFlat(){ return _shipPallets.reduce((a,p)=>a.concat(p.lines.map(l=>({...l, pallet:p.label,
-  ...(p.hbin ? { ca_bin:p.hbin } : {}) }))),[]); }   // 팔레트에 매긴 H bin 을 라인에도 (받을 때 자동 입력) (v827)
+  ...(p.hbin ? { ca_bin:p.hbin } : {}),
+  /* 🛛 내리는 정차지를 **줄에** 박는다 (v1076) — 팔레트 이름은 지우면 다시 번호가
+     매겨지지만 줄은 팔레트와 함께 움직인다. 받을 때 이 값이 1순위다. */
+  ...(p.stop >= 0 ? { stop:Number(p.stop) } : {}) }))),[]); }   // 팔레트에 매긴 H bin 을 라인에도 (받을 때 자동 입력) (v827)
 async function trSaveDraftLines(){ if(_shipId) await trPatchRec(_shipId, {lines: trLinesFlat()}); }
 function trLineBoxes(l){ return l.is_manual ? (Number(l.boxes)||0) : (l.ids||[]).length; }
 function trLinePcs(l){ return trLineBoxes(l) * (Number(l.ppb)||Number(l.pcs)||0); }
@@ -27252,6 +27328,22 @@ function trDoneSummary(l){
   }
   if(Array.isArray(l._log) && l._log.length) return l._log.map(x=>({lbl:String(x), n:null}));
   return l.ca_bin ? [{lbl:'📍 '+l.ca_bin, n:null}] : [];
+}
+/* 🛛 「2 of 3 stops」 — 어디까지 부렸는지 목록에서 바로 (v1076).
+   줄이 다 처리된 정차지를 「끝난 정차지」로 본다 — 상태값을 새로 만들지 않아도
+   진행도가 나온다. */
+function trStopProgress(rec){
+  const st = trStopsOf(rec); if(!st.length) return '';
+  const lines = Array.isArray(rec.lines) ? rec.lines : [];
+  const per = st.map(()=>({ n:0, done:0 }));
+  lines.forEach(l=>{
+    let i = Number(l && l.stop); if(!(i>=0 && i<st.length)) i = st.length-1;
+    per[i].n++;
+    if(l._applied || trLineBoxes(l) <= 0) per[i].done++;
+  });
+  const used = per.filter(x=>x.n>0);
+  const fin = used.filter(x=>x.done>=x.n).length;
+  return fin + ' of ' + used.length + ' stops';
 }
 function trStatusChip(s){
   const m = { LOADING:{label:'Draft',c:'#92400e',b:'#fef3c7'}, TRANSIT:{label:'In Transit',c:'#b45309',b:'#fef3c7'}, RECEIVED:{label:'Received',c:'#15803d',b:'#dcfce7'} }[s] || {label:s,c:'#475467',b:'#f2f4f7'};
@@ -27325,7 +27417,7 @@ function trRenderList(){
         + (trDstKind(trRoute(r))==='3P'
           ? `<button class="btn btn-sm btn-primary" style="background:#b45309;border-color:#b45309;font-weight:800;" onclick="trShipped3P('${r.id}')" title="Picked up — move each pallet into its H bin and close this shipment">🚚 Shipped</button>`
           : `<button class="btn btn-sm btn-primary" style="background:#7b1fa2;border-color:#7b1fa2;font-weight:800;" onclick="trPostFromList('${r.id}')" title="The truck left — mark In Transit">🚚 Depart</button>`);
-      else if(r.status==='TRANSIT') act = `<button class="btn btn-sm btn-primary" style="background:#0f766e;border-color:#0f766e;" onclick="trRecvOpen('${r.id}')">📦 Receive (${trKindShort(trDstKind(trRoute(r)))})</button> <button class="btn btn-sm" style="font-size:10px;" onclick="trCancelTransit('${r.id}')" title="Cancel departure — back to Draft, boxes stay reserved">↩</button>`;
+      else if(r.status==='TRANSIT') act = `<button class="btn btn-sm btn-primary" style="background:#0f766e;border-color:#0f766e;" onclick="trRecvOpen('${r.id}')">📦 Receive ${trStopsOf(r).length ? ('('+trStopProgress(r)+')') : ('('+trKindShort(trDstKind(trRoute(r)))+')')}</button> <button class="btn btn-sm" style="font-size:10px;" onclick="trCancelTransit('${r.id}')" title="Cancel departure — back to Draft, boxes stay reserved">↩</button>`;
       else act = `<span style="font-size:10px;color:#15803d;font-weight:800;">✓ Done</span>`;
       return `<tr>
       <td class="tl"><span style="font-family:Consolas,monospace;font-weight:700;color:#7b1fa2;text-decoration:underline;cursor:pointer;" onclick="${r.status==='LOADING'?`trBuilderOpen('${r.id}')`:`trView('${r.id}')`}">${esc(r.ref||'(no number)')}</span></td>
@@ -27350,6 +27442,9 @@ async function trBuilderOpen(existingId, route){
   _shipId = null; _shipNo = null; _shipMeta = {}; _shipPallets = [];
   _hbGaveUp = false;                                 // 새로 열면 다시 시도 (v829)
   _shipRoute = TR_ROUTES[route] ? route : 'SC2CA';
+  /* multi 로 새로 시작하면 기본 정차지를 깔아준다 — 빈 목록으로 시작하면
+     팔레트에 정차지를 못 주고 막힌다. 순서·구성은 바로 바꿀 수 있다. */
+  if(trIsMultiRoute(_shipRoute)) _shipMeta.stops = (_shipRoute==='MULTI_CA') ? ['LK','SC'] : ['CA','LK'];
   if(existingId){
     const rec = await trGet(existingId);
     if(!rec){ showToast('⚠ Shipment not found'); return; }
@@ -27363,6 +27458,11 @@ async function trBuilderOpen(existingId, route){
       palletMap[lbl].lines.push({...l});
     });
     if(!trSrcAutoPallet(_shipRoute)) _shipPallets.forEach((p,i)=>p.label='Pallet '+(i+1));
+    /* 저장해둔 정차지를 팔레트에 되살린다 — 줄의 `stop` 이 1순위 (v1076) */
+    if(trIsMultiRoute(_shipRoute)){
+      const _st = trStopsOf({meta:_shipMeta});
+      _shipPallets.forEach(p=>{ const i = trStopIdxOfPallet({meta:_shipMeta}, p); if(_st.length && i>=0) p.stop = i; });
+    }
   }
   // 🚚 오더 박스만 실린 팔레트도 유지 (라인이 없어도 사라지지 않게)
   try{ ((_shipMeta.orderShip)||[]).forEach(o=>{ if(o.pallet && !_shipPallets.some(p=>p.label===o.pallet)) _shipPallets.push({ id:'p_'+Math.random().toString(36).slice(2,9), label:o.pallet, lines:[] }); }); }catch(e){}
@@ -27389,6 +27489,7 @@ async function trBuilderOpen(existingId, route){
           <div><label style="font-size:10px;color:var(--text2);">PRO # / Tracking</label><div style="display:flex;gap:4px;"><input class="fi" id="ship-pro" value="${esc(_shipMeta.pro||'')}" placeholder="PRO / tracking #" style="width:100%;font-family:Consolas,monospace;"><button class="btn btn-sm" style="white-space:nowrap;background:#0f4c8a;color:#fff;border-color:#0f4c8a;" onclick="trTrackOpen()" title="Open carrier tracking page">🔎</button></div></div>
         </div>
         <div style="margin-top:8px;"><label style="font-size:10px;color:var(--text2);">Notes</label><input class="fi" id="ship-notes" value="${esc(_shipMeta.notes||'')}" placeholder="other notes" style="width:100%;"></div>
+        <div id="ship-stops">${trStopBarHtml()}</div>
         <div style="margin-top:8px;"><label style="font-size:10px;color:var(--text2);" title="This email goes out when the truck actually leaves (🚚 Depart / 🚚 Shipped) — not when you press Save.">📧 Notify staff when it departs — <span style="color:#7c3aed;font-weight:700;">not on Save</span> (comma-separated · saved as default)</label><input class="fi" id="ship-notify" value="${esc(shipNotifyGet())}" placeholder="email1@..., email2@..." style="width:100%;font-size:11px;"></div>
         <div style="margin-top:8px;display:flex;align-items:center;gap:8px;flex-wrap:wrap;">
           <label class="btn btn-sm" style="background:#334155;color:#fff;border-color:#334155;cursor:pointer;white-space:nowrap;">📎 Attach BOL (scan / phone photo → PDF)<input type="file" accept="image/*,application/pdf" multiple style="display:none;" onchange="trBolUpload(this)"></label>
@@ -27436,7 +27537,16 @@ async function trBuilderOpen(existingId, route){
 function trCaptureInfo(){
   const v = id=>String((document.getElementById(id)||{}).value||'').trim();
   _shipNo = v('ship-no') || _shipNo || trGenShipNo(_shipRoute);
-  _shipMeta = { route:_shipRoute, ship_date:v('ship-date'), eta:v('ship-eta'), seal:v('ship-seal'), carrier:v('ship-carrier'), driver:v('ship-driver'), phone:v('ship-phone'), truck:v('ship-truck'), pro:v('ship-pro'), notes:v('ship-notes'), bolFiles:(_shipMeta&&_shipMeta.bolFiles)||[], orderShip:(_shipMeta&&_shipMeta.orderShip)||[], designatedByPallet:(_shipMeta&&_shipMeta.designatedByPallet)||undefined };
+  /* ⚠⚠ 이 함수는 `_shipMeta` 를 **통째로 새로 만든다**. 여기 안 적은 것은 저장할 때마다
+     사라진다 — multi-stop 의 정차지도 그래서 여기서 같이 실어야 한다 (v1076).
+     `palletStop` 은 매번 현재 팔레트 목록에서 다시 만든다: 팔레트를 지우면 이름이
+     다시 매겨지므로(`Pallet 2`→`Pallet 1`) 옛 이름표를 들고 있으면 어긋난다. */
+  const _stops = trIsMultiRoute(_shipRoute) ? trStopsOf({meta:_shipMeta}) : null;
+  let _palStop;
+  if(_stops && _stops.length){ _palStop = {};
+    _shipPallets.forEach(p=>{ if(p.stop >= 0 && p.stop < _stops.length) _palStop[p.label] = Number(p.stop); }); }
+  _shipMeta = { route:_shipRoute, ship_date:v('ship-date'), eta:v('ship-eta'), seal:v('ship-seal'), carrier:v('ship-carrier'), driver:v('ship-driver'), phone:v('ship-phone'), truck:v('ship-truck'), pro:v('ship-pro'), notes:v('ship-notes'), bolFiles:(_shipMeta&&_shipMeta.bolFiles)||[], orderShip:(_shipMeta&&_shipMeta.orderShip)||[], designatedByPallet:(_shipMeta&&_shipMeta.designatedByPallet)||undefined,
+    ...(_stops && _stops.length ? { stops:_stops, palletStop:_palStop } : {}) };
 }
 async function _trEnsureRow(){
   if(_shipId) return _shipId;
@@ -27625,6 +27735,78 @@ async function hbPeek(){
   if(free.length) return 'H' + free[0];
   const nx = await _hbGet('@hbin:next', String(HBIN_SEED));
   return nx === null ? '' : ('H' + (parseInt(nx, 10) || HBIN_SEED));
+}
+/* ═══ 🛛 정차지 줄 (v1076) ═══
+   순서가 곧 트럭이 서는 순서다. ↑↓ 로 바꾸고, ✕ 로 빼고, 드롭다운으로 더한다.
+   ⚠ 정차지를 빼면 그 뒤 번호가 하나씩 밀린다 → 팔레트에 매겨둔 번호도 같이 당겨
+     준다. 안 당기면 팔레트가 조용히 엉뚱한 정차지로 옮겨 붙는다. */
+function trStopBarHtml(){
+  if(!trIsMultiRoute(_shipRoute)) return '';
+  const st = trStopsOf({meta:_shipMeta});
+  const org = trSrcKind(_shipRoute);
+  const chip = (k,i)=>`<span style="display:inline-flex;align-items:center;gap:5px;background:#f5f3ff;border:1.5px solid #c4b5fd;border-radius:8px;padding:4px 6px 4px 9px;font-size:11.5px;font-weight:800;color:#5b21b6;white-space:nowrap;">`
+    + `<span style="font-family:Consolas,monospace;opacity:.7;">${i+1}</span> ${esc(trKindShort(k))}`
+    + `<button class="btn btn-sm" style="padding:0 4px;font-size:10px;border-color:#c4b5fd;color:#6d28d9;" onclick="trStopMove(${i},-1)" title="Earlier stop"${i===0?' disabled':''}>↑</button>`
+    + `<button class="btn btn-sm" style="padding:0 4px;font-size:10px;border-color:#c4b5fd;color:#6d28d9;" onclick="trStopMove(${i},1)" title="Later stop"${i===st.length-1?' disabled':''}>↓</button>`
+    + `<button class="btn btn-sm" style="padding:0 5px;font-size:10px;border-color:#fecaca;color:#b91c1c;" onclick="trStopDel(${i})" title="Remove this stop">✕</button>`
+    + `</span>`;
+  const opts = TR_STOP_KINDS.map(k=>`<option value="${k}">+ ${esc(trKindShort(k))}</option>`).join('');
+  return `<div style="margin-top:10px;padding:9px 11px;background:#faf5ff;border:1.5px solid #d8b4fe;border-radius:8px;">
+    <div style="font-size:10px;color:#6d28d9;font-weight:800;margin-bottom:7px;">🛛 STOPS — in the order the truck stops. Then tell each pallet where it comes off.</div>
+    <div style="display:flex;gap:7px;align-items:center;flex-wrap:wrap;">
+      <span style="font-size:11.5px;font-weight:800;color:#334155;white-space:nowrap;">🏠 ${esc(trKindShort(org))}</span>
+      ${st.map((k,i)=>`<span style="color:#a78bfa;font-weight:900;">→</span>${chip(k,i)}`).join('')}
+      <select class="fi" style="font-size:11px;padding:3px 5px;width:auto;" onchange="if(this.value){trStopAdd(this.value);this.value='';}">
+        <option value="">+ add stop</option>${opts}</select>
+      ${st.length<2?'<span style="font-size:10.5px;color:#b45309;font-weight:700;">⚠ Add at least 2 stops, or use a normal single-route transfer.</span>':''}
+    </div></div>`;
+}
+function trStopsRerender(){
+  const e = document.getElementById('ship-stops'); if(e) e.innerHTML = trStopBarHtml();
+  trRenderPallets();
+}
+function trStopAdd(k){
+  if(TR_STOP_KINDS.indexOf(k) < 0) return;
+  const st = trStopsOf({meta:_shipMeta});
+  if(st.length >= 4){ showToast('⚠ 4 stops is the most one truck should carry'); return; }
+  st.push(k); _shipMeta.stops = st; trStopsRerender();
+}
+function trStopMove(i, d){
+  const st = trStopsOf({meta:_shipMeta}); const j = i + d;
+  if(i<0 || i>=st.length || j<0 || j>=st.length) return;
+  const t = st[i]; st[i] = st[j]; st[j] = t; _shipMeta.stops = st;
+  /* 자리를 맞바꿨으니 그 두 자리를 가리키던 팔레트도 같이 바꿔준다 */
+  _shipPallets.forEach(p=>{ if(p.stop===i) p.stop=j; else if(p.stop===j) p.stop=i; });
+  trStopsRerender();
+}
+function trStopDel(i){
+  const st = trStopsOf({meta:_shipMeta});
+  if(i<0 || i>=st.length) return;
+  const nOn = _shipPallets.filter(p=>p.stop===i).length;
+  if(nOn && !confirm('⚠ ' + nOn + ' pallet(s) come off at ' + trKindShort(st[i]) + '.\n\n'
+    + 'Remove that stop? Those pallets lose their drop-off and you will have to set it again.')) return;
+  st.splice(i,1); _shipMeta.stops = st;
+  _shipPallets.forEach(p=>{ if(p.stop===i) p.stop=undefined; else if(p.stop>i) p.stop=p.stop-1; });
+  trStopsRerender();
+}
+/* 팔레트 머리에 붙는 「어디서 내리나」 (v1076) */
+function trPalletStopHtml(p){
+  if(!trIsMultiRoute(_shipRoute)) return '';
+  const st = trStopsOf({meta:_shipMeta});
+  if(!st.length) return '';
+  const cur = (p.stop >= 0 && p.stop < st.length) ? p.stop : -1;
+  const opts = st.map((k,i)=>`<option value="${i}"${i===cur?' selected':''}>↓ off at ${i+1} · ${esc(trKindShort(k))}</option>`).join('');
+  return `<span style="display:inline-flex;align-items:center;gap:4px;background:${cur<0?'#fef2f2':'#ede9fe'};border:1.5px solid ${cur<0?'#fca5a5':'#a78bfa'};border-radius:8px;padding:2px 4px 2px 8px;">`
+    + `<span style="font-size:10px;font-weight:800;color:${cur<0?'#b91c1c':'#5b21b6'};">🛛 DROP</span>`
+    + `<select class="fi" style="font-size:11px;padding:2px 4px;width:auto;font-weight:800;" onchange="trPalletStopSet('${p.id}',this.value)">`
+    + `<option value=""${cur<0?' selected':''}>— not set —</option>${opts}</select></span>`;
+}
+function trPalletStopSet(pid, v){
+  const p = _shipPallets.find(x=>x.id===pid); if(!p) return;
+  const n = Number(v);
+  p.stop = (String(v)==='' || !(n>=0)) ? undefined : n;
+  trRenderPallets();
+  try{ trSaveDraftLines(); }catch(e){}     /* 줄에 박아 바로 남긴다 */
 }
 async function trAddPallet(){
   const p = { id:'p_'+Math.random().toString(36).slice(2,9), label:'Pallet '+(_shipPallets.length+1), lines:[] };
@@ -28319,6 +28501,7 @@ function trRenderPallets(){
       <div style="background:${_spSrc?'#fffbeb':'#f3e8ff'};padding:8px 14px;display:flex;align-items:center;gap:10px;border-radius:6px 6px 0 0;flex-wrap:wrap;">
         <span style="font-weight:700;color:${_spSrc?'#b45309':'#7b1fa2'};">${_spSrc?'🏭 Bin':'📦'} ${esc(p.label)}</span>
         ${_spSrc ? hodgePalTag(p.label, 'SC') : ''}
+        ${trPalletStopHtml(p)}
         ${trDstKind(_shipRoute)!=='3P' ? '' : (p.hbin
           ? `<span title="This pallet's 3rd party bin. Write this number on the pallet." style="font-family:Consolas,monospace;font-size:15px;font-weight:900;letter-spacing:.5px;color:#fff;background:#b45309;border-radius:7px;padding:3px 11px;">🏭 ${esc(p.hbin)}</span>
         <button class="btn btn-sm" style="background:#fff7ed;color:#b45309;border-color:#fbbf24;font-weight:800;" onclick="trBinLabelPrint('${p.id}')" title="Print the ${esc(p.hbin)} bin label on plain A4 paper (2 per sheet) — you choose how many">🖨 Bin label</button>
@@ -29081,7 +29264,13 @@ function trPRResolveD(D){
 }
 function trPRPalletHtml(D, p){
   const _M = D.meta||{}, _R = TR_ROUTES[D.route]||TR_ROUTES.SC2CA;
-  const fromLbl = trKindShort(_R.from), toLbl = trKindShort(_R.dest);
+  /* 🛛 multi-stop 이면 이 팔레트가 **어디서 내리는지**를 종이에 박는다 (v1076).
+     ⚠ 기사는 화면을 안 본다. 종이에 없으면 엉뚱한 문 앞에 두고 간다 — 그게 이 기능에서
+     제일 비싼 사고다. 그래서 ROUTE 칸을 정차지까지 적는 칸으로 바꾼다. */
+  const _stA = trStopsOf({meta:_M});
+  const _stI = _stA.length ? trStopIdxOfPallet({meta:_M, lines:p.lines}, p) : -1;
+  const fromLbl = trKindShort(_R.from);
+  const toLbl = (_stI >= 0) ? trKindShort(_stA[_stI]) : trKindShort(_R.dest);
   const pBox = p.lines.reduce((s,l)=>s+trLineBoxes(l),0);
   const pPcs = p.lines.reduce((s,l)=>s+trLinePcs(l),0);
   const rows = [...p.lines].sort((a,b)=> String(a.style||'').localeCompare(String(b.style||'')) || bxBaseColor(String(a.color||'').toUpperCase()).localeCompare(bxBaseColor(String(b.color||'').toUpperCase())) || bxSizeCmp(a.size,b.size) ).map(l=>{
@@ -29105,7 +29294,10 @@ function trPRPalletHtml(D, p){
     <table style="width:100%;border-collapse:collapse;font-size:11px;margin-bottom:10px;">
       <tr>
         <td style="border:1px solid #333;padding:6px 8px;"><b>SHIPMENT #</b><br>${esc(D.no||'—')}</td>
-        <td style="border:1px solid #333;padding:6px 8px;"><b>ROUTE</b><br>${esc(fromLbl)} &rarr; ${esc(toLbl)}</td>
+        <td style="border:1px solid #333;padding:6px 8px;">${_stI < 0
+          ? `<b>ROUTE</b><br>${esc(fromLbl)} &rarr; ${esc(toLbl)}`
+          : `<b>DROP THIS PALLET AT</b><br><span style="font-size:14px;font-weight:900;">STOP ${_stI+1} · ${esc(toLbl)}</span>`
+          + `<div style="font-size:9.5px;">${esc(fromLbl)} &rarr; ${_stA.map((k,i)=>(i===_stI?'<b>['+esc(trKindShort(k))+']</b>':esc(trKindShort(k)))).join(' &rarr; ')}</div>`}</td>
         <td style="border:1px solid #333;padding:6px 8px;"><b>DATE</b><br>${new Date().toISOString().slice(0,10)}</td>
         <td style="border:1px solid #333;padding:6px 8px;"><b>NEEDED BY</b><br>${esc(_M.ship_date||'ASAP')}</td>
       </tr>
@@ -29790,9 +29982,14 @@ async function trRecvOpen(id){
   const _rvRoute = trRoute(rec), _rvDest = trDstKind(_rvRoute), _rvSrc = trSrcKind(_rvRoute);
   window._trRecvRoute = _rvRoute;
   const _recvP = (rec.meta&&rec.meta._recvP)||{};   // 자동저장된 입력 복원 (v452)
-  lines.forEach(l=>{ const lbl = l.pallet||'Pallet 1'; if(!palletMap[lbl]){ const ps=_recvP[lbl]||{}; palletMap[lbl] = { label:lbl, mode:ps.mode||'whole', bin:ps.bin||'', act:ps.act||'sc', lines:[] }; } palletMap[lbl].lines.push({...l, ca_bin: (l.ca_bin!=null && l.ca_bin!=='') ? l.ca_bin : ((trIsSpecKind(_rvDest)&&l.ret_bin)?String(l.ret_bin).toUpperCase():''), act: l.act||'sc', so_memo: l.so_memo||'', dmg_note: l.dmg_note||''}); });
+  /* 🛛 목적지가 팔레트마다 다를 수 있으니 줄별로 본다 (v1076) — 예전엔 길 하나로
+     정해 놓고 모든 줄에 같은 판정을 썼다. 정차지가 없으면 결과가 예전과 같다. */
+  lines.forEach(l=>{ const lbl = l.pallet||'Pallet 1'; if(!palletMap[lbl]){ const ps=_recvP[lbl]||{}; palletMap[lbl] = { label:lbl, mode:ps.mode||'whole', bin:ps.bin||'', act:ps.act||'sc', lines:[] }; }
+    const _lD = trStopKindOfLine(rec, l);
+    palletMap[lbl].lines.push({...l, ca_bin: (l.ca_bin!=null && l.ca_bin!=='') ? l.ca_bin : ((trIsSpecKind(_lD)&&l.ret_bin)?String(l.ret_bin).toUpperCase():''), act: l.act||'sc', so_memo: l.so_memo||'', dmg_note: l.dmg_note||''}); });
   _trRecvPallets = Object.values(palletMap);
-  if(trIsSpecKind(_rvDest)) _trRecvPallets.forEach(p=>{ const bs=[...new Set(p.lines.map(l=>l.ca_bin).filter(Boolean))]; if(bs.length===1) p.bin=bs[0]; });
+  _trRecvPallets.forEach(p=>{ if(!trIsSpecKind(trStopKindOfPallet(rec, p))) return;
+    const bs=[...new Set(p.lines.map(l=>l.ca_bin).filter(Boolean))]; if(bs.length===1) p.bin=bs[0]; });
   ['modal-tr','modal-trr'].forEach(x=>{ const e=document.getElementById(x); if(e) e.remove(); });
   const totP = lines.reduce((s,l)=>s+trLinePcs(l),0);
   const totB = lines.reduce((s,l)=>s+trLineBoxes(l),0);
@@ -29847,7 +30044,10 @@ function trRecvRender(){
     const isWhole = p.mode==='whole';
     let body;
     const _rt = window._trRecvRoute || 'SC2CA';
-    const _rtD = trDstKind(_rt), _rtS = trSrcKind(_rt);
+    /* 🛛 이 팔레트가 내리는 곳. 문구·bin 힌트·datalist·「반송인가」 판정이 전부
+       여기서 파생되므로, 이 줄만 바꾸면 받기 화면 전체가 정차지에 맞게 따라온다. */
+    const _rtD = trStopKindOfPallet(_trRecvRec, p), _rtS = trSrcKind(_rt);
+    const _stI = trStopIdxOfPallet(_trRecvRec, p);
     const _isRecall = trIsSpecKind(_rtS) && !trIsSpecKind(_rtD);
     const _dSpec = trIsSpecKind(_rtD);
     const _retName = _rtS==='LK' ? '3rd Party (CA)' : 'Hodge';
@@ -29914,8 +30114,9 @@ function trRecvRender(){
         }).join('')}</tbody></table>`;
     }
     return `<div style="border:2px solid #6ee7b7;border-radius:8px;background:#fff;">
-      <div style="background:#d1fae5;padding:8px 14px;display:flex;align-items:center;gap:10px;border-radius:6px 6px 0 0;">
+      <div style="background:#d1fae5;padding:8px 14px;display:flex;align-items:center;gap:10px;border-radius:6px 6px 0 0;flex-wrap:wrap;">
         <span style="font-weight:700;color:#047857;">📦 ${esc(p.label)}</span>
+        ${_stI < 0 ? '' : `<span style="background:#6d28d9;color:#fff;font-size:10.5px;font-weight:900;padding:2px 9px;border-radius:20px;white-space:nowrap;" title="This pallet comes off the truck here">🛛 ${esc(trStopTag(_stI, _rtD))}</span>`}
         <span style="color:var(--text2);font-size:11px;">${p.lines.length} line(s) · <b>${pPcs.toLocaleString()}</b> pcs</span>
         <div style="margin-left:auto;display:flex;gap:6px;align-items:center;flex-wrap:wrap;justify-content:flex-end;">
           <button class="btn btn-sm" style="${isWhole?'background:#0f766e;color:#fff;border-color:#0f766e;':''}" onclick="trRecvMode(${pi},'whole')">📦 Whole</button>
@@ -30000,7 +30201,11 @@ async function trRecvSplitLine(pi, li){
 // ✓ 라인 하나 처리(핵심) — 수량 쪼개기 · SC bin/PC Room/Ship Out(메모)/Hodge 반송/Damage (v426)
 async function trRecvApplyOne(pi, li){
   const p = _trRecvPallets[pi]; if(!p) return null; const l = p.lines[li]; if(!l || l._applied || trLineBoxes(l)<=0) return null;
-  const route = trRoute(_trRecvRec), dest = trDstKind(route), src = trSrcKind(route);
+  /* 🛛 목적지는 **그 팔레트가 내리는 곳**이다 (v1076).
+     여기가 재고를 실제로 옮기는 지점이라, 이 한 줄이 multi-stop 의 핵심이다.
+     정차지가 없는(=기존) 이송이면 `trDstKind(route)` 를 그대로 돌려받는다. */
+  const route = trRoute(_trRecvRec), src = trSrcKind(route);
+  const dest = trStopKindOfPallet(_trRecvRec, p);
   const isRecall = trIsSpecKind(src) && !trIsSpecKind(dest);
   const act = isRecall ? (l.act||'sc') : 'sc';
   const bin = String(l.ca_bin||'').trim().toUpperCase();
