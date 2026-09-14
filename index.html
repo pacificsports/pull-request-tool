@@ -203,7 +203,7 @@ body.po-dragging{user-select:none;}
   </span>
   <select id="lang-sel" onchange="setLang(this.value)" style="font-size:11px;padding:3px 6px;border-radius:5px;border:none;background:#1d3f66;color:#fff;"><option value="ko">한국어</option><option value="en">English</option><option value="es">Español</option></select>
   <button id="wide-btn" class="btn btn-sm" onclick="toggleWide()" title="화면 넓게 / 좁게 — 기본은 넓게 (이 브라우저에만 저장돼)" style="padding:2px 8px;font-size:10px;background:#1d3f66;color:#cfe0f2;border-color:#2b5384;">↔ Wide</button>
-  <span id="app-ver" style="font-size:10px;color:#9fb8d4;">v1094</span>
+  <span id="app-ver" style="font-size:10px;color:#9fb8d4;">v1095</span>
 </div>
 <script>
 // ↔ 넓게 보기 — 브라우저마다 따로 저장 (v793)
@@ -36207,6 +36207,10 @@ function openBatchShip(wh){
     <div style="padding:0 18px 4px;display:flex;align-items:center;gap:8px;flex-wrap:wrap;">
       <span style="font-size:11px;font-weight:700;color:var(--text2);">📎 Signed BOL (optional — attached to every selected order's Packing List)</span>
       <input type="file" id="bship-bol" accept="application/pdf,image/*" style="font-size:11px;">
+      <!-- 🚛 거래처가 BOL 을 안 보내올 때 우리가 만든다 (v1095) -->
+      <button class="btn btn-sm" id="bship-mkbol" style="background:#374151;color:#fff;border-color:#374151;font-weight:800;white-space:nowrap;"
+        onclick="openBatchBOL()" title="Make one Bill of Lading for this whole truck — use this when the customer does not send one. Print it, get it signed.">🚛 Create BOL</button>
+      <span style="font-size:10.5px;color:#92400e;">\u2190 when the customer doesn't send one</span>
       <label style="display:flex;align-items:center;gap:5px;font-size:11.5px;font-weight:700;color:#0e7490;margin-left:auto;cursor:pointer;">
         <input type="checkbox" id="bship-sendpl" onchange="bshipSendplChange(this)" style="width:14px;height:14px;accent-color:#0e7490;cursor:pointer;"> ${t('sendpl_cb')}
       </label>
@@ -36219,6 +36223,214 @@ function openBatchShip(wh){
   </div>`;
   document.body.appendChild(div);
   initModalDrag(div);
+}
+/* ═══ 🚛 Batch Ship 묶음 BOL (v1095) ════════════════════════════════════════
+   [stated] 하윤: "여기서 create bol도 있어야지 그래야 우리가 bol만들어서 싸인받고 하지"
+            "우리 거래처가 보내오지 않을때"
+   트럭 한 대 = BOL 한 장. 오더별 🚛 BOL(openBOL) 은 그대로 두고, 여기서는 이 묶음 전체를
+   한 장에 담는다 — 표에 PO 한 줄씩, 박스·개수·무게는 합계.
+   ⚠ 받는 곳(ship-to)마다 따로 나간다. 여러 곳이면 갈라서 만든다. */
+function bolShipAddr(m){
+  m = m || {};
+  return [m.shipName, m.shipAddr,
+          [m.shipCity, [String(m.shipState||'').toUpperCase(), m.shipZip].filter(Boolean).join(' ')].filter(Boolean).join(', ')]
+         .filter(Boolean).join('\n') || String(m.shipto||'') || String(m.cust||'');
+}
+function bolShipKey(m){ return bolShipAddr(m).replace(/\s+/g,' ').trim().toUpperCase() || '?'; }
+/* 고른 오더를 받는 곳별로 묶는다 */
+function bshipBolGroups(wh, bases){
+  const g = {}, order = [];
+  (bases||[]).forEach(b=>{
+    const r = (savedCache||[]).find(s=>s.base===b); if(!r) return;
+    const k = bolShipKey(r.meta);
+    if(!g[k]){ g[k] = { key:k, addr:bolShipAddr(r.meta), cust:(r.meta||{}).cust||'', bases:[], pos:[] }; order.push(k); }
+    g[k].bases.push(b);
+    g[k].pos.push((r.meta||{}).po || b);
+  });
+  return order.map(k=>g[k]);
+}
+/* 오더 하나의 박스·개수 — 오더별 BOL(buildBOLDoc) 과 **같은 셈법** */
+function bolBoxesOf(rec, wh){
+  const src = (rec.pl && rec.pl[wh] && (rec.pl[wh].lines||[]).length)
+    ? rec.pl[wh].lines : (rec.lines||[]).filter(l=>l.wh===wh);
+  const lines = plHealWh(rec, src.filter(l=>(l.qty||0)>0));
+  let full = 0; const pset = new Set(); let looseNoBox = 0;
+  lines.forEach(l=>{ const b = boxCalc(l); full += b.full||0; if((b.loose||0)>0){ if(l.pbox) pset.add(pboxKey(l)); else looseNoBox++; } });
+  return { boxes: full + pset.size + looseNoBox, pcs: lines.reduce((a,l)=>a+(Number(l.qty)||0),0) };
+}
+/* 창고가 실제로 포장한 박스·팔레트 수 (pr_pack). 없으면 null 로 두고 계산값을 쓴다. */
+async function bshipPackInfo(wh, bases){
+  const out = {};
+  try{
+    const r = await sbFetch('/rest/v1/pr_pack?wh=eq.'+encodeURIComponent(wh)
+      +'&base=in.('+(bases||[]).map(encodeURIComponent).join(',')+')&select=base,total_boxes,pallets,via');
+    const j = await r.json();
+    if(Array.isArray(j)) j.forEach(x=>{ out[x.base] = {
+      boxes: Number(x.total_boxes)||0,
+      pallets: (x.pallets==null ? null : Number(x.pallets)),
+      via: x.via||'' }; });
+  }catch(e){}
+  return out;
+}
+function buildBatchBOLDoc(wh, grp, b, pack, sh){
+  const recs = (grp.bases||[]).map(x=>(savedCache||[]).find(s=>s.base===x)).filter(Boolean);
+  const per = recs.map(r=>{
+    const c = bolBoxesOf(r, wh);
+    const pk = (pack||{})[r.base] || {};
+    return { po:(r.meta||{}).po || r.base, cust:(r.meta||{}).cust||'',
+             boxes: (pk.boxes>0 ? pk.boxes : c.boxes), pcs: c.pcs, fromPack: pk.boxes>0 };
+  });
+  const boxes = per.reduce((a,x)=>a+x.boxes,0);
+  const pcs   = per.reduce((a,x)=>a+x.pcs,0);
+  const num   = String(b.num||'').trim() || (plNum(grp.bases[0], wh) + '-BOL');
+  const dateStr = ((sh&&sh.date) ? new Date(sh.date+'T00:00:00') : new Date()).toLocaleDateString('en-US');
+  const box = (label, inner, extra) => '<div style="border:1.5px solid #111;'+(extra||'')+'"><div style="background:#111;color:#fff;font-size:10px;font-weight:800;letter-spacing:1px;padding:3px 8px;">'+label+'</div><div style="padding:8px 10px;font-size:12px;white-space:pre-line;min-height:58px;">'+inner+'</div></div>';
+  const chk = (l, on) => '<span style="display:inline-block;margin-right:14px;"><span style="display:inline-block;width:11px;height:11px;border:1.5px solid #111;vertical-align:-1px;margin-right:5px;'+(on?'background:#111;':'')+'"></span>'+(on?'<b>'+l+'</b>':l)+'</span>';
+  const orLine = (v, blank) => v ? '<b>'+esc(String(v))+'</b>' : blank;
+  const poList = per.map(x=>x.po).join(', ');
+  return '<div class="inv-doc">'
+    + '<div style="background:#0f2a4a;padding:12px 20px;display:flex;justify-content:space-between;align-items:center;">'
+      + '<img src="'+LOGO_B64+'" style="height:42px;width:auto;">'
+      + '<div style="color:#fff;font-size:22px;font-weight:800;letter-spacing:3px;">BILL OF LADING</div></div>'
+    + '<div style="display:flex;justify-content:space-between;gap:16px;background:#f5f7fa;border:1px solid var(--border);border-top:none;padding:10px 20px;margin-bottom:12px;">'
+      + '<div style="font-size:11px;color:#555;align-self:center;">Non-negotiable \u00b7 Subject to carrier terms and conditions</div>'
+      + '<div style="min-width:250px;">'
+        + '<div class="inv-meta-row"><span>BOL No.</span><span>'+esc(num)+'</span></div>'
+        + '<div class="inv-meta-row"><span>Date</span><span>'+dateStr+'</span></div>'
+        + '<div class="inv-meta-row"><span>Orders</span><span>'+per.length+' PO'+(per.length===1?'':'s')+'</span></div>'
+        + (b.pro ? '<div class="inv-meta-row"><span>PRO / Tracking #</span><span>'+esc(b.pro)+'</span></div>'
+                 : '<div class="inv-meta-row"><span>PRO #</span><span>____________________</span></div>')
+      + '</div></div>'
+    + '<div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:10px;margin-bottom:12px;">'
+      + box('SHIP FROM', esc('PEACE TEXTILE AMERICA, INC.\nd.b.a Pacific Sports\n' + (WH_ADDR[wh]||'')))
+      + box('SHIP TO (CONSIGNEE)', esc(grp.addr||''))
+      + box('FREIGHT CHARGES BILL TO', '&nbsp;')
+    + '</div>'
+    + '<div style="display:grid;grid-template-columns:1.4fr 1fr 1fr;gap:10px;margin-bottom:12px;">'
+      + box('CARRIER', esc(b.carrier||'') + '\nTrailer #: ' + orLine(b.trailer,'____________') + '\nSeal #: ' + orLine(b.seal,'____________'))
+      + box('FREIGHT CHARGE TERMS', chk('Prepaid', b.terms==='prepaid')+'<br>'+chk('Collect', b.terms==='collect')+'<br>'+chk('3rd Party', b.terms==='3rd'))
+      + box('SHIPMENT INFO', 'Total Boxes: <b>'+boxes+'</b>\nPallets: '+orLine(b.pallets,'____________')+'\nTotal Weight: '+orLine(b.weight? b.weight+' lbs':'','____________ lbs'))
+    + '</div>'
+    + '<table class="inv-tbl">'
+      + '<thead><tr><th>Handling Units</th><th>Package Type</th><th class="tl">Description of Commodity</th><th>NMFC / Class</th><th>Total Pcs</th><th>Weight (lbs)</th></tr></thead>'
+      + '<tbody>'
+      + per.map(x=>'<tr>'
+          + '<td style="font-weight:700;">'+x.boxes+'</td><td>Carton'+(x.boxes===1?'':'s')+'</td>'
+          + '<td class="tl">Apparel / Sportswear \u2014 PO '+esc(x.po)+' ('+esc(x.cust)+')</td>'
+          + '<td>49880 / '+orLine(b.cls,'_____')+'</td>'
+          + '<td style="font-weight:700;">'+x.pcs.toLocaleString()+'</td><td>__________</td></tr>').join('')
+      + '</tbody>'
+      + '<tfoot><tr><td style="font-weight:700;">'+boxes+'</td><td colspan="3" class="tl">TOTAL \u2014 '+per.length+' PO'+(per.length===1?'':'s')+': '+esc(poList)+'</td>'
+        + '<td>'+pcs.toLocaleString()+'</td><td>'+orLine(b.weight,'__________')+'</td></tr></tfoot>'
+    + '</table>'
+    + box('SPECIAL INSTRUCTIONS', b.notes ? esc(b.notes) : '&nbsp;', 'margin-top:12px;')
+    + '<div style="margin-top:26px;display:grid;grid-template-columns:1fr 1fr;gap:30px;page-break-inside:avoid;">'
+      + '<div><div style="border-bottom:1.5px solid #111;height:38px;"></div>'
+        + '<div style="display:flex;justify-content:space-between;margin-top:5px;"><span style="font-size:11px;font-weight:700;">Shipper Signature</span><span style="font-size:10px;color:#666;">Date: ____________</span></div>'
+        + '<div style="font-size:9px;color:#777;margin-top:3px;">This is to certify that the above named materials are properly classified, packaged, marked and labeled, and are in proper condition for transportation.</div></div>'
+      + '<div><div style="border-bottom:1.5px solid #111;height:38px;"></div>'
+        + '<div style="display:flex;justify-content:space-between;margin-top:5px;"><span style="font-size:11px;font-weight:700;">Carrier / Driver Signature</span><span style="font-size:10px;color:#666;">Pickup Date: ____________</span></div>'
+        + '<div style="font-size:9px;color:#777;margin-top:3px;">Carrier acknowledges receipt of packages and required placards. Property described above is received in good order, except as noted.</div></div>'
+    + '</div></div>';
+}
+/* Batch Ship 창에 지금 찍혀 있는 값 (운송사·날짜·PRO) */
+function bshipSharedNow(){
+  const v = document.querySelector('.bsv-cb:checked'), m = document.querySelector('.bsm-cb:checked');
+  const via = v ? v.value : '', method = m ? m.value : '';
+  return { via:via, method:method,
+           freightCo: (document.getElementById('bship-freightco')||{}).value || '',
+           date: (document.getElementById('bship-date')||{}).value || (typeof todayStr==='function'?todayStr():''),
+           pro: ((document.getElementById('bship-trk-all')||{}).value || '').trim(),
+           carrier: (via==='LTL' ? ((document.getElementById('bship-freightco')||{}).value||'') : [via,method].filter(Boolean).join(' ')) };
+}
+async function openBatchBOL(gi){
+  const bs = window._bship;
+  if(!bs || !(bs.bases||[]).length){ alert('🚛 Open CA/SC Batch Ship first.'); return; }
+  const groups = bshipBolGroups(bs.wh, bs.bases);
+  if(!groups.length){ alert('🚛 No order found for the BOL.'); return; }
+  const gidx = Math.max(0, Math.min(groups.length-1, Number(gi)||0));
+  const grp = groups[gidx];
+  const sh = bshipSharedNow();
+  const btn = document.getElementById('bship-mkbol');
+  if(btn && gi===undefined){ btn.disabled = true; btn.textContent = '⏳ …'; }
+  const pack = await bshipPackInfo(bs.wh, grp.bases);
+  if(btn){ btn.disabled = false; btn.innerHTML = '🚛 Create BOL'; }
+  window._bshipBolPack = pack;
+  window._bshipBolGroups = groups;
+  window._bshipBolGi = gidx;
+  /* 이미 쳐 둔 값이 있으면 그걸 다시 보여준다 (받는 곳별로 따로 보관) */
+  const store = (window._bshipBol = window._bshipBol || {});
+  const b = store[grp.key] || {};
+  const palSum = grp.bases.reduce((a,x)=>{ const p=(pack[x]||{}).pallets; return a + (p==null?0:p); }, 0);
+  const anyPal = grp.bases.some(x=>(pack[x]||{}).pallets != null);
+  const boxSrc = grp.bases.some(x=>((pack[x]||{}).boxes||0) > 0);
+  const per = grp.bases.map(x=>{
+    const r = (savedCache||[]).find(s=>s.base===x) || {};
+    const c = bolBoxesOf(r, bs.wh); const pk = pack[x]||{};
+    return { po:(r.meta||{}).po||x, boxes:(pk.boxes>0?pk.boxes:c.boxes), pcs:c.pcs, fromPack:pk.boxes>0 };
+  });
+  const totBox = per.reduce((a,x)=>a+x.boxes,0), totPcs = per.reduce((a,x)=>a+x.pcs,0);
+  const ex = document.getElementById('modal-bbol'); if(ex) ex.remove();
+  const div = document.createElement('div');
+  div.id = 'modal-bbol';
+  div.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,.55);z-index:140;display:flex;align-items:center;justify-content:center;';
+  div.innerHTML = '<div style="background:#fff;border-radius:12px;width:600px;max-width:94vw;max-height:92vh;overflow-y:auto;box-shadow:0 20px 60px rgba(0,0,0,.35);">'
+    + '<div style="background:#374151;color:#fff;padding:11px 16px;font-weight:800;">🚛 Bill of Lading \u2014 '+bs.wh+' truck \u00b7 '+grp.bases.length+' PO'+(grp.bases.length===1?'':'s')+'</div>'
+    + (groups.length>1
+        ? '<div style="background:#fffbeb;border-bottom:1px solid #fde68a;color:#92400e;padding:9px 16px;font-size:11.5px;font-weight:700;line-height:1.5;">'
+          + '\u26a0 '+groups.length+' different ship-to addresses in this batch. An LTL BOL goes <b>per consignee</b> \u2014 make one for each.<div style="margin-top:6px;display:flex;gap:6px;flex-wrap:wrap;">'
+          + groups.map((g,i)=>'<button class="btn btn-sm" style="'+(i===gidx?'background:#374151;color:#fff;border-color:#374151;':'')+'" onclick="openBatchBOL('+i+')">'
+              + esc(String(g.addr||'').split('\n')[0]||('Group '+(i+1)))+' ('+g.bases.length+')</button>').join('')
+          + '</div></div>'
+        : '')
+    + '<div style="padding:10px 16px 0;font-size:11.5px;color:#475569;line-height:1.6;">'
+      + '<b>Ship to</b><div style="white-space:pre-line;font-weight:700;color:#111;">'+esc(grp.addr||'')+'</div>'
+      + '<div style="margin-top:6px;">'+per.map(x=>esc(x.po)+' <span style="color:#94a3b8;">'+x.boxes+' box \u00b7 '+x.pcs.toLocaleString()+' pcs</span>').join(' &nbsp;|&nbsp; ')+'</div>'
+      + '<div style="margin-top:6px;font-weight:800;color:#111;">Total '+totBox+' box'+(totBox===1?'':'es')+' \u00b7 '+totPcs.toLocaleString()+' pcs'
+        + ' <span style="font-weight:600;color:'+(boxSrc?'#16a34a':'#b45309')+';">'+(boxSrc?'(box count from what the warehouse packed)':'(box count calculated from the order lines \u2014 nothing packed yet)')+'</span></div>'
+    + '</div>'
+    + '<div style="padding:12px 16px;display:grid;grid-template-columns:1fr 1fr;gap:10px;">'
+      + '<div class="ff" style="grid-column:span 2;"><label>BOL No.</label><input class="fi" id="bbol-num" value="'+esc(b.num || (plNum(grp.bases[0], bs.wh)+'-BOL'))+'" style="font-family:Consolas,monospace;"></div>'
+      + '<div class="ff" style="grid-column:span 2;"><label>Carrier</label><input class="fi" id="bbol-carrier" value="'+esc(b.carrier || sh.carrier || '')+'" placeholder="XPO, SAIA, ..."></div>'
+      + '<div class="ff"><label>PRO / Tracking #</label><input class="fi" id="bbol-pro" value="'+esc(b.pro || sh.pro || '')+'" style="font-family:Consolas,monospace;"></div>'
+      + '<div class="ff"><label>Trailer #</label><input class="fi" id="bbol-trailer" value="'+esc(b.trailer||'')+'"></div>'
+      + '<div class="ff"><label>Seal #</label><input class="fi" id="bbol-seal" value="'+esc(b.seal||'')+'"></div>'
+      + '<div class="ff"><label>Pallets'+(anyPal?' <span style="color:#16a34a;font-weight:700;">(packed: '+palSum+')</span>':'')+'</label><input class="fi num" id="bbol-pallets" value="'+esc(b.pallets || (anyPal?String(palSum):''))+'" style="text-align:center;"></div>'
+      + '<div class="ff"><label>Total Weight (lbs)</label><input class="fi num" id="bbol-weight" value="'+esc(b.weight||'')+'" style="text-align:center;"></div>'
+      + '<div class="ff"><label>NMFC Class</label><input class="fi" id="bbol-cls" value="'+esc(b.cls||'')+'" placeholder="77.5" style="text-align:center;"></div>'
+      + '<div class="ff" style="grid-column:span 2;"><label>Freight Terms</label><div style="display:flex;gap:10px;align-items:center;min-height:34px;font-size:12px;font-weight:700;">'
+        + [['prepaid','Prepaid'],['collect','Collect'],['3rd','3rd Party']].map(x=>'<label style="display:flex;align-items:center;gap:4px;cursor:pointer;"><input type="radio" name="bbol-terms" value="'+x[0]+'" '+(b.terms===x[0]?'checked':'')+' style="accent-color:#374151;">'+x[1]+'</label>').join('')
+      + '</div></div>'
+      + '<div class="ff" style="grid-column:span 2;"><label>Special Instructions</label><textarea class="fi" id="bbol-notes" rows="2" style="resize:vertical;">'+esc(b.notes||'')+'</textarea></div>'
+    + '</div>'
+    + '<div style="padding:0 16px 14px;display:flex;gap:8px;justify-content:flex-end;flex-wrap:wrap;">'
+      + '<button class="btn btn-sm" onclick="document.getElementById(\'modal-bbol\').remove()">Close</button>'
+      + '<button class="btn btn-sm btn-primary" onclick="saveBatchBOL(false)">💾 Keep</button>'
+      + '<button class="btn btn-sm" id="bbolpdf-btn" onclick="saveBatchBOL(\'pdf\')">⬇ PDF</button>'
+      + '<button class="btn btn-sm" style="background:#374151;color:#fff;border-color:#374151;font-weight:800;" onclick="saveBatchBOL(\'print\')">🖨 Print</button>'
+    + '</div></div>';
+  document.body.appendChild(div);
+  if(typeof initModalDrag==='function') initModalDrag(div);
+}
+async function saveBatchBOL(then){
+  const bs = window._bship; if(!bs) return;
+  const groups = window._bshipBolGroups || bshipBolGroups(bs.wh, bs.bases);
+  const grp = groups[window._bshipBolGi||0]; if(!grp) return;
+  const tr = document.querySelector('input[name="bbol-terms"]:checked');
+  const g = id => (document.getElementById(id)||{}).value || '';
+  const b = { num:g('bbol-num').trim(), carrier:g('bbol-carrier'), pro:g('bbol-pro').trim(),
+              trailer:g('bbol-trailer'), seal:g('bbol-seal'), pallets:g('bbol-pallets'),
+              weight:g('bbol-weight'), cls:g('bbol-cls'), terms: tr ? tr.value : '', notes:g('bbol-notes') };
+  window._bshipBol = window._bshipBol || {};
+  window._bshipBol[grp.key] = b;
+  /* 실제 출고할 때 오더마다 같은 BOL 값을 넣어 준다 — 나중에 오더 하나만 열어도 같은 종이가 나온다 */
+  window._bshipBolByBase = window._bshipBolByBase || {};
+  grp.bases.forEach(x=>{ window._bshipBolByBase[x] = b; });
+  const doc = buildBatchBOLDoc(bs.wh, grp, b, window._bshipBolPack||{}, bshipSharedNow());
+  const name = (b.num || (plNum(grp.bases[0], bs.wh)+'-BOL'));
+  if(then === 'print') printDocHtml(doc, name);
+  else if(then === 'pdf') await downloadPdfHtml(doc, name + '.pdf', document.getElementById('bbolpdf-btn'));
+  else showToast('💾 BOL kept \u2014 it will be saved onto these orders when you ship');
 }
 function bshipViaChange(el){
   document.querySelectorAll('.bsv-cb').forEach(c=>{ if(c!==el) c.checked = false; });
@@ -36284,6 +36496,10 @@ async function submitBatchShip(){
     const lines = (rec.lines||[]).filter(l=>l.wh===bs.wh && (l.qty||0)>0).map(l=>({style:l.style||'', desc:l.desc||'', color:l.color||'', size:l.size||'', qty:l.qty||0, price:l.price||0, ppb:l.ppb||72, pbox:l.pbox||''}));
     rec.pl = rec.pl || {};
     rec.pl[bs.wh] = { custEmail: em, serial: nextSerial(bs.wh), via: via, method: method, freightCo: freightCo, trackings: [(trk||trkAll||'')], date: date, note: '', files: JSON.parse(JSON.stringify(bolFiles)), lines: lines, savedAt: new Date().toISOString(), _completed: new Date().toISOString() };
+    /* 🚛 Create BOL 로 만들어 둔 값이 있으면 이 오더에도 붙인다 (v1095) — 나중에 오더
+       하나만 열어 🚛 BOL 을 눌러도 트럭에 실려 나간 그 종이와 같은 값이 나온다. */
+    const _bb = (window._bshipBolByBase||{})[base];
+    if(_bb) rec.pl[bs.wh].bol = JSON.parse(JSON.stringify(_bb));
     rec.inv = rec.inv || {};
     const exInv = rec.inv[bs.wh];
     if((!exInv || exInv.auto) && !invHasPay(exInv)){      // 결제된 인보이스는 다시 만들지 않는다 (v836)
