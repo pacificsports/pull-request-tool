@@ -203,7 +203,7 @@ body.po-dragging{user-select:none;}
   </span>
   <select id="lang-sel" onchange="setLang(this.value)" style="font-size:11px;padding:3px 6px;border-radius:5px;border:none;background:#1d3f66;color:#fff;"><option value="ko">한국어</option><option value="en">English</option><option value="es">Español</option></select>
   <button id="wide-btn" class="btn btn-sm" onclick="toggleWide()" title="화면 넓게 / 좁게 — 기본은 넓게 (이 브라우저에만 저장돼)" style="padding:2px 8px;font-size:10px;background:#1d3f66;color:#cfe0f2;border-color:#2b5384;">↔ Wide</button>
-  <span id="app-ver" style="font-size:10px;color:#9fb8d4;">v1093</span>
+  <span id="app-ver" style="font-size:10px;color:#9fb8d4;">v1094</span>
 </div>
 <script>
 // ↔ 넓게 보기 — 브라우저마다 따로 저장 (v793)
@@ -25123,7 +25123,9 @@ function bxRptStyleSizes(sty){
   (window.pcStore||[]).forEach(r=>{ if(String(r.style)===s) Object.keys(r.qty||{}).forEach(z=>{ if(Number((r.qty||{})[z])>0) set.add(String(z).toUpperCase()); }); });
   (window._bxRptIncLines||[]).forEach(l=>{ if(String(l.style)===s) set.add(String(l.size).toUpperCase()); });
   (window._bxRptExtraSz||[]).forEach(z=>set.add(z));
-  if(!set.size) ['S','M','L','XL','2XL'].forEach(z=>set.add(z));
+  /* ⚠ 기본값(S~2XL)은 **여기서 넣지 않는다** (v1094). 여기서 넣으면 뒤에서 skus 의
+     사이즈를 합칠 때 토들러 스타일에 XL 이 섞여 남는다. 아무것도 못 찾았을 때만
+     bxRptOpen 에서 마지막에 넣는다. */
   return set;
 }
 /* 스타일 → 품목명. v846 부터 우리가 정해 둔 품목명(STYLE_MASTER[4], 오더 화면의
@@ -25353,6 +25355,29 @@ async function bxRptOpen(_keepOff){
   window._bxRptInc = hasInc;
   const styleSz = {};
   rows.forEach(r=>{ if(!styleSz[r.s]) styleSz[r.s] = bxRptStyleSizes(r.s); });
+  /* ═══ 사이즈 칸은 **그 스타일이 나오는 사이즈** 로 만든다 (v1094) ═══
+     [stated] 하윤: "재고가 없는것도 사이즈 나오고 0으로 나오게"
+     위의 bxRptStyleSizes 는 **창고에 있는 것**만 안다. 그것만 쓰면 재고 0 인 사이즈는
+     칸이 아예 안 생겨서 거래처는 그 사이즈를 우리가 만드는지도 모른다 (1180 의 XL·3XL~5XL).
+     `skus` 가 정본이다 — 상품 페이지·웹사이트가 쓰는 그 표다.
+     ⚠ STYLE_MASTER 의 "2T-5T" 같은 범위 글자를 펴서 쓰면 안 된다. 5210 은 실제로
+       2T·3T·4T 뿐인데 범위대로 펴면 없는 5T 를 만들어낸다 (실측).
+     창고에 있는 사이즈는 버리지 않고 **합친다** — 표에 없어도 물건이 있으면 팔 수 있다. */
+  try{
+    const stys = [...new Set(rows.map(r=>r.s))].filter(Boolean);
+    if(stys.length){
+      const rs = await sbFetch('/rest/v1/skus?select=style_number,size&style_number=in.('
+                               + stys.map(encodeURIComponent).join(',') + ')&limit=20000');
+      if(rs.ok){
+        (await rs.json()).forEach(x=>{
+          const st = String(x.style_number), z = String(x.size||'').trim().toUpperCase();
+          if(z && styleSz[st]) styleSz[st].add(z);
+        });
+      }
+    }
+  }catch(e){}
+  /* skus 도 창고도 아무것도 못 준 스타일만 마지막 보루를 쓴다 */
+  rows.forEach(r=>{ if(styleSz[r.s] && !styleSz[r.s].size) ['S','M','L','XL','2XL'].forEach(z=>styleSz[r.s].add(z)); });
   const allSizes = bxRptSortSizes(new Set(rows.flatMap(r=>[...styleSz[r.s]])));
   window._bxRptRows = rows; window._bxRptSizes = allSizes; window._bxRptStyleSz = styleSz;
   /* 🔀 보여줄 차례 (v990). 줄 배열(_bxRptRows) 자체는 절대 섞지 않는다 — 사람이 친 숫자가
@@ -25583,7 +25608,11 @@ function bxRptDocHtml(){
   const gtot = stkRows.reduce((a,r)=>a+r.tot,0);
   const incRows = data.filter(r=>Object.keys(r.incVals||{}).length);
   const incGtot = incRows.reduce((a,r)=>a+r.incTot,0);
-  const szS = sizesAll.filter(z=>stkRows.some(r=>r.vals[z]!==undefined));
+  /* 예전에는 「아무 줄도 값이 없는 사이즈 칸」을 버렸다. 그러면 재고가 0 인 사이즈가
+     표에서 사라져 거래처가 그 사이즈의 존재 자체를 모른다 — 재고 0 은 숨길 일이 아니라
+     0 이라고 말할 일이다 (v1094). 재고 줄이 아예 없는 「오는 물량만」 리포트에서는
+     빈 배열이어야 아래 szI 가 Incoming 사이즈로 그린다. */
+  const szS = stkRows.length ? sizesAll.slice() : [];
   /* 🚢 Incoming 표는 위 In Stock 표와 **같은 사이즈 칸**을 쓴다 (v1031).
      들어오는 게 L·XL 뿐이라고 칸을 두 개만 그리면 위아래 표가 어긋나 보기 나쁘다.
      빈 사이즈는 위와 똑같이 '—' 로 찍힌다. 재고 줄이 아예 없는(=오는 물량만) 리포트일 때만
@@ -25651,6 +25680,20 @@ function bxRptDocHtml(){
     if(item < itemMin){ item = itemMin; sz = (100 - fixed - itemMin) / n; }
     return { st:7, col:15, wh:wWh, sz:sz, tot:10, item:item };
   };
+  /* 칸 하나의 표시 (v1094)
+       값이 있으면      → 그 값
+       나오는 사이즈인데 재고 없음 → 0  (연한 회색 — 검게 찍으면 숫자 있는 칸이 묻힌다)
+       안 나오는 사이즈  → —
+     ⚠ 0 과 — 은 **다른 말**이다. 안 나오는 사이즈에 0 을 찍으면 "지금만 없다" 로 읽혀서
+       Juvy(S·M·L) 줄에 2XL 주문이 들어온다. 이 구분을 없애면 안 된다. */
+  const SZOF = window._bxRptStyleSz || {};
+  const dCell = (r, valKey, z)=>{
+    const t = rptCellTxt(r, valKey, z);
+    if(t !== null) return t;
+    const set = SZOF[r.s];
+    return (set && set.has(z)) ? '<span style="color:#9ca3af;">0</span>'
+                               : '<span style="color:#d1d5db;">\u2014</span>';
+  };
   const nSz  = Math.max(szS.length, szI.length, 1);
   const shtW = Math.min(1240, 760 + Math.max(0, nSz - 6) * 60);
   const mkTable = (rws, szs, valKey, totKey, headBg, accent, gt)=>{
@@ -25675,7 +25718,7 @@ function bxRptDocHtml(){
       +'<td style="padding:6px 10px;color:#475569;">'+esc(bxRptType(r.s))+'</td>'
       +'<td style="padding:6px 10px;">'+esc(r.c)+'</td>'
       +(anyWh?whCell(r):'')
-      +szs.map(z=>'<td style="'+PZ+'text-align:center;">'+(rptCellTxt(r,valKey,z) || '<span style="color:#d1d5db;">—</span>')+'</td>').join('')
+      +szs.map(z=>'<td style="'+PZ+'text-align:center;">'+dCell(r,valKey,z)+'</td>').join('')
       +'<td style="padding:6px 10px;text-align:right;font-weight:700;color:'+accent+';">'+rptTotTxt(r,valKey,totKey)+'</td></tr>').join('')
     +'</tbody><tfoot><tr style="background:#f8fafc;font-weight:700;border-top:2px solid #e5e7eb;">'
     +'<td colspan="'+(3+(anyWh?1:0)+szs.length)+'" style="padding:8px 10px;text-align:right;">Total:</td>'
@@ -25762,18 +25805,27 @@ async function bxRptEmail(){
 function bxRptTsv(){
   const data = bxRptData(), sizes = window._bxRptSizes||[];
   const anyWh = data.some(r=>r.w!=='TOTAL');
+  /* 문서와 같은 규칙 (v1094): 나오는 사이즈인데 재고 없으면 0, 안 나오는 사이즈는 빈 칸.
+     엑셀에서는 빈 칸이 '—' 보다 낫다 — 더하기·필터가 그대로 먹는다. */
+  const _SZOF = window._bxRptStyleSz || {};
+  const tCell = (r, valKey, z)=>{
+    const t = rptCellTxt(r, valKey, z);
+    if(t !== null) return t.replace(/,/g,'');
+    const set = _SZOF[r.s];
+    return (set && set.has(z)) ? '0' : '';
+  };
   const head = ['STYLE','ITEM','COLOR'].concat(anyWh?['WH']:[]).concat(sizes).concat(['TOTAL']);
   const lines = [head.join('\t')];
   // v848: incoming 만 고른 줄은 재고 쪽에 빈 줄로 들어가면 안 된다
   data.filter(r=>r.w!=='INC' && Object.keys(r.vals||{}).length).forEach(r=>{
-    lines.push([r.s, bxRptType(r.s), r.c].concat(anyWh?[(r.w==='TOTAL'?'':r.w)]:[]).concat(sizes.map(z=>{const t=rptCellTxt(r,'vals',z); return t===null?'':t.replace(/,/g,'');})).concat([rptTotTxt(r,'vals','tot').replace(/,/g,'')]).join('\t'));
+    lines.push([r.s, bxRptType(r.s), r.c].concat(anyWh?[(r.w==='TOTAL'?'':r.w)]:[]).concat(sizes.map(z=>tCell(r,'vals',z))).concat([rptTotTxt(r,'vals','tot').replace(/,/g,'')]).join('\t'));
   });
   const incRows = data.filter(r=>Object.keys(r.incVals||{}).length);
   if(incRows.length){
     lines.push('');
     lines.push('INCOMING');
     incRows.forEach(r=>{
-      lines.push([r.s, bxRptType(r.s), r.c].concat(anyWh?[(r.w==='TOTAL'?'':(r.w==='INC'?'INCOMING':r.w))]:[]).concat(sizes.map(z=>{const t=rptCellTxt(r,'incVals',z); return t===null?'':t.replace(/,/g,'');})).concat([rptTotTxt(r,'incVals','incTot').replace(/,/g,'')]).join('\t'));
+      lines.push([r.s, bxRptType(r.s), r.c].concat(anyWh?[(r.w==='TOTAL'?'':(r.w==='INC'?'INCOMING':r.w))]:[]).concat(sizes.map(z=>tCell(r,'incVals',z))).concat([rptTotTxt(r,'incVals','incTot').replace(/,/g,'')]).join('\t'));
     });
   }
   return lines.join('\n');
