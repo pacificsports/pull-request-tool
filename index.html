@@ -204,7 +204,7 @@ body.po-dragging{user-select:none;}
   </span>
   <select id="lang-sel" onchange="setLang(this.value)" style="font-size:11px;padding:3px 6px;border-radius:5px;border:none;background:#1d3f66;color:#fff;"><option value="ko">한국어</option><option value="en">English</option><option value="es">Español</option></select>
   <button id="wide-btn" class="btn btn-sm" onclick="toggleWide()" title="화면 넓게 / 좁게 — 기본은 넓게 (이 브라우저에만 저장돼)" style="padding:2px 8px;font-size:10px;background:#1d3f66;color:#cfe0f2;border-color:#2b5384;">↔ Wide</button>
-  <span id="app-ver" style="font-size:10px;color:#9fb8d4;">v1106</span>
+  <span id="app-ver" style="font-size:10px;color:#9fb8d4;">v1107</span>
 </div>
 <script>
 // ↔ 넓게 보기 — 브라우저마다 따로 저장 (v793)
@@ -702,10 +702,11 @@ const WH_LIST = ['SC','CA','PD','BO','NA'];
 const WH_ADDR = {
   SC: '1605 South Guignard Parkway\nSumter SC 29150\nTel: (803) 773-2177',
   CA: '14129 The Merge Street, Unit B\nEastvale, CA 92880',
+  PD: '(Pending Delivery — arriving, then ships from Sumter SC)',
   BO: '(Back Order — Warehouse TBD)',
   NA: '(Not Available — will not ship)'
 };
-const WH_LABEL = { SC:'Sumter, SC', CA:'Eastvale, CA', BO:'Back Order', NA:'Not Available' };
+const WH_LABEL = { SC:'Sumter, SC', CA:'Eastvale, CA', PD:'Pending Delivery', BO:'Back Order', NA:'Not Available' };
 const LS_SAVED = 'psi_pull_requests';
 const LS_CODES = 'psi_customer_codes';
 const LS_DRAFT = 'psi_pr_draft';
@@ -2739,7 +2740,27 @@ function buildDocHtml(wh, opts){
   const partialBoxCnt = _pboxSet.size;
   const grandBoxes = tot.f + partialBoxCnt;
   const boWarn = wh==='BO' ? `<div style="margin-top:12px;padding:8px 12px;background:#fef2f2;border:1px solid #fecaca;border-radius:4px;font-size:11px;color:#b91c1c;font-weight:700;">⚠ BACK ORDER — To be fulfilled when stock is available</div>`
-    : wh==='NA' ? `<div style="margin-top:12px;padding:8px 12px;background:#f3f4f6;border:1px solid #d1d5db;border-radius:4px;font-size:11px;color:#374151;font-weight:700;">⛔ NOT AVAILABLE — These items are not carried / cannot be supplied. Customer has been notified.</div>` : '';
+    : wh==='NA' ? `<div style="margin-top:12px;padding:8px 12px;background:#f3f4f6;border:1px solid #d1d5db;border-radius:4px;font-size:11px;color:#374151;font-weight:700;">⛔ NOT AVAILABLE — These items are not carried / cannot be supplied. Customer has been notified.</div>`
+    /* 🚢 PD — 물건이 아직 창고에 없다. 종이에 크게 적어야 한다 (v1107).
+       ⚠ 이 띠가 없으면 창고에 없는 박스를 뽑으라고 종이가 나간다 — 1단계에서
+          "3단계가 제일 중요하다" 고 적어둔 바로 그 구멍이다. */
+    : wh==='PD' ? (()=>{
+        const rf = {}; let unk = 0;
+        lines.forEach(l=>{
+          let cm = null;
+          try{ cm = (typeof hiComingFor==='function') ? hiComingFor(bxStyleFor(l), bxColorFor(l), l.size, 'SC') : null; }catch(e){}
+          if(cm){ (cm.refs||[]).forEach(r=>{ rf[r] = (rf[r]||0) + (Number(cm.bx)||0); }); }
+          else unk++;
+        });
+        const rs = Object.keys(rf).sort();
+        return `<div style="margin-top:12px;padding:11px 14px;background:#ecfeff;border:2px solid #0891b2;border-radius:4px;color:#0e7490;">
+          <div style="font-size:14px;font-weight:900;letter-spacing:.5px;">🚢 ARRIVAL PENDING — DO NOT PULL YET</div>
+          <div style="font-size:11px;font-weight:700;margin-top:3px;">These goods are NOT in the warehouse yet. This sheet is the waiting list, not a pick list.</div>
+          ${rs.length ? `<div style="font-size:11px;font-weight:800;margin-top:5px;">Incoming: ${rs.map(r=>esc(r)+' ('+rf[r]+' bx)').join(' · ')}</div>` : ''}
+          ${unk ? `<div style="font-size:11px;font-weight:900;color:#b45309;margin-top:5px;">⚠ ${unk} line(s) have no open inbound — check with the office.</div>` : ''}
+          <div style="font-size:10.5px;font-weight:700;margin-top:6px;color:#155e75;">When the container is received: open the order, move these lines from PD to SC, assign the boxes and Save. A REV Pull Request for exactly this portion will print then. The packing list and invoice stay as one.</div>
+        </div>`;
+      })() : '';
   // ── 2페이지 분리용 (SC/CA): 1p = PC Room 낱장, 2p = 통박스 Pull + PC Room 이동(📌) ──
   const looseLines = lines.filter(l=>boxCalc(l).loose>0);
   const fullLines  = lines.filter(l=>boxCalc(l).full>0);
@@ -2841,8 +2862,8 @@ function buildDocHtml(wh, opts){
   return `<div class="inv-doc">
     <div style="background:#0f2a4a;padding:12px 20px;display:flex;justify-content:space-between;align-items:center;">
       <img src="${LOGO_B64}" style="height:42px;width:auto;">
-      <div style="color:#fff;font-size:24px;font-weight:800;letter-spacing:3px;">PULL REQUEST</div>
-    </div>
+      <div style="color:#fff;font-size:24px;font-weight:800;letter-spacing:3px;">${wh==='PD' ? 'ARRIVAL PENDING LIST' : 'PULL REQUEST'}</div>
+    </div>${wh==='PD' ? `<div style="background:#0891b2;color:#fff;padding:10px 20px;text-align:center;font-size:19px;font-weight:900;letter-spacing:2px;">\u{1F6A2} NOT IN THE WAREHOUSE YET — DO NOT PULL</div>` : ''}
     ${$('m-urgent') && $('m-urgent').checked ? `<div style="background:#dc2626;color:#fff;padding:10px 20px;text-align:center;font-size:20px;font-weight:900;letter-spacing:4px;">🔥 RUSH — PROCESS FIRST 🔥</div>` : ''}
     ${$('m-futureship') && $('m-futureship').value ? `<div style="background:#b45309;color:#fff;padding:9px 20px;text-align:center;font-size:16px;font-weight:900;letter-spacing:2px;">🚀 FUTURE SHIP DATE: ${new Date($('m-futureship').value+'T00:00:00').toLocaleDateString('en-US',{month:'long',day:'numeric',year:'numeric'})} — DO NOT SHIP BEFORE THIS DATE</div>` : ''}
     <div style="display:flex;justify-content:space-between;gap:16px;background:#f5f7fa;border:1px solid var(--border);border-top:none;padding:10px 20px;margin-bottom:14px;">
@@ -3220,6 +3241,59 @@ function revRowsHtml(rec, wh){
       ${note}
     </div>`;
   }).join('');
+}
+
+/* ═══════════ 🚢 PD 줄 — 아직 우리 창고에 없는 몫 (v1107) ═══════════
+   [stated] 하윤: "진행못하는거는 pending으로 살려놓는거지"
+   v1106 까지 PD 줄은 이 화면에 아예 없었다 (창고 줄이 SC·CA·BO·NA 만 돌아서).
+   창고가 「이 오더엔 아직 못 나가는 몫이 있다」 는 걸 알 수 있어야 한다.
+   ⚠ 읽기 전용이다 — 여기서 재고를 건드리는 일은 없다. 🖨 버튼은 PD 줄만 찍는다
+      (`printSavedPRWh` 의 차감은 SC/CA 에만 있다). */
+function pdLinesOf(rec){
+  return ((rec && rec.lines) || []).filter(l=>String((l&&l.wh)||'')==='PD' && (Number(l.qty)||0)>0);
+}
+function pdArrivals(rec){
+  const out = { pcs:0, n:0, refs:{}, unknown:0 };
+  pdLinesOf(rec).forEach(l=>{
+    out.pcs += Number(l.qty)||0; out.n++;
+    let cm = null;
+    try{ cm = (typeof hiComingFor==='function') ? hiComingFor(bxStyleFor(l), bxColorFor(l), l.size, 'SC') : null; }catch(e){}
+    if(cm){ (cm.refs||[]).forEach(r=>{ out.refs[r] = (out.refs[r]||0) + (Number(cm.bx)||0); }); }
+    else out.unknown++;
+  });
+  return out;
+}
+function pdRowHtml(rec){
+  const ls = pdLinesOf(rec);
+  if(!ls.length) return '';
+  const a  = pdArrivals(rec);
+  const rs = Object.keys(a.refs).sort();
+  const mp = (rec.meta && rec.meta._printed && rec.meta._printed['PD']) || {};
+  const pby = v => (v && v.by)
+    ? `<span style="font-size:9px;opacity:.9;font-weight:700;" title="${esc(String(v.by))} · ${esc(String(v.at||'').slice(0,16).replace('T',' '))}${v.manual?' (marked manually)':''}"> ✓${esc(String(v.by).split('@')[0])} ${String(v.at||'').slice(5,10)}</span>`
+    : '';
+  const what = ls.slice(0,3).map(l=>esc([l.style, l.color, l.size].filter(Boolean).join(' '))).join(' · ')
+             + (ls.length > 3 ? (' <span style="color:#94a3b8;">+' + (ls.length-3) + ' more</span>') : '');
+  const refChip = rs.length
+    ? rs.map(r=>`<span style="background:#0891b2;color:#fff;font-weight:900;border-radius:4px;padding:1px 8px;font-size:11px;white-space:nowrap;" title="PENDING inbound ${esc(r)} — ${a.refs[r]} box(es) of these items are on the way. Haiti stock arrives at SC.">🚢 ${esc(r)} · ${a.refs[r]}bx</span>`).join(' ')
+    : `<span style="background:#b45309;color:#fff;font-weight:900;border-radius:4px;padding:1px 8px;font-size:11px;white-space:nowrap;" title="No PENDING inbound in the system matches these items — check with the office before promising a date.">⚠ 예정 인바운드가 없다</span>`;
+  const unkChip = (rs.length && a.unknown)
+    ? `<span style="background:#fff7ed;color:#b45309;border:1px solid #fed7aa;font-weight:800;border-radius:4px;padding:1px 8px;font-size:10.5px;white-space:nowrap;">⚠ ${a.unknown}줄은 예정에 없다</span>`
+    : '';
+  const prC = mp.pr ? '#16a34a' : '#0891b2';
+  return `<div style="display:flex;align-items:center;gap:6px;flex-wrap:wrap;margin-top:4px;margin-left:26px;padding:5px 8px;background:#ecfeff;border:1px solid #67e8f9;border-left:4px solid #0891b2;border-radius:6px;">
+    <span class="chip chip-PD" style="min-width:34px;text-align:center;">PD</span>
+    <span style="font-weight:900;color:#0e7490;font-size:11.5px;white-space:nowrap;" title="Pending Delivery — ordered, not in the warehouse yet. Not on the packing list or invoice until it is moved to SC.">🚢 도착 대기 ${a.pcs.toLocaleString()} pcs · ${a.n}줄</span>
+    ${refChip}${unkChip}
+    <span style="font-size:11px;color:#475569;font-weight:700;">${what}</span>
+    <button class="btn btn-sm" style="background:${prC};color:#fff;border-color:${prC};font-weight:800;" onclick="docBtnClick('${esc(rec.base)}','PD','pr')" oncontextmenu="return docBtnMenu(event,'${esc(rec.base)}','PD','pr')" title="Only the PD lines — the waiting list. The sheet says DO NOT PULL, because the goods are not here. Right-click: ${mp.pr?'clear':'mark'} done.">\u{1F5A8} Pull Request${pby(mp.pr)}</button>
+    <span style="margin-left:auto;font-size:10.5px;color:#0e7490;font-weight:800;white-space:nowrap;">${mp.pr ? '✓ 창고가 이 목록을 받았다' : '⏳ 아직 안 줬다'}</span>
+    <div style="width:100%;margin-top:4px;padding:5px 9px;background:#fff;border:1px solid #a5f3fc;border-radius:6px;font-size:11px;font-weight:700;color:#155e75;">
+      물건이 도착하면 → <b>Open &amp; Edit</b> 에서 이 줄을 <b>PD → SC</b> 로 바꾸고 박스 지정하고 <b>Save</b>.
+      그러면 아래에 <b>↳ REV</b> 줄이 생기고 <b>그 몫만</b> 찍는 Pull Request 가 나온다.
+      패킹리스트와 인보이스는 계속 <b>한 개</b>다.
+    </div>
+  </div>`;
 }
 
 function revDirChip(n){
@@ -36055,6 +36129,9 @@ function recStatus(s){
   let whs = (s.whs||[]).filter(w=>w!=='BO' && w!=='NA' && w!=='PD');
   // 🚚 CA 통합 발송: SC 몫은 CA 문서로 합쳐지므로 SC를 상태 집계에서 제외 (CA 한 곳만 카운트)
   if(recShipFromCA(s) && whs.includes('CA')) whs = whs.filter(w=>w!=='SC');
+  /* 🚢 PD 만 있는 오더는 BACK ORDER 가 아니다 — 물건은 오는 중이고 날짜만 안 맞는 것이다 (v1107) */
+  if(!whs.length && (s.whs||[]).includes('PD') && !(s.whs||[]).includes('BO') && !(s.whs||[]).includes('NA'))
+    return { label: '🚢 ARRIVAL PENDING', color:'#0e7490', bg:'#cffafe' };
   if(!whs.length) return { label: t('st_bo'), color:'#b91c1c', bg:'#fee2e2' };
   const _locker = !!(s.meta && s.meta.lockerStock);
   const plDone = whs.filter(w=>(s.pl && s.pl[w] && s.pl[w].savedAt) || _locker).length;
@@ -38091,6 +38168,7 @@ function renderSaved(){
         ${(()=>{ const ws = whStatus(s, w); return `<span style="${plSaved?'':'margin-left:auto;'}padding:2px 10px;border-radius:20px;font-size:10.5px;font-weight:800;background:${ws.bg};color:${ws.color};white-space:nowrap;">${ws.label}</span>`; })()}
         </div>${revRowsHtml(s, w)}`;
       }).join('')}
+      ${pdRowHtml(s)}
       ${['BO','NA'].filter(w=>!whs.includes(w) && s.meta && s.meta._processed && s.meta._processed[w]).map(w=>{ const p = s.meta._processed[w]; return `<div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-top:6px;padding-top:6px;border-top:1px dashed var(--border);opacity:.75;">
         <span class="chip chip-${w}" style="min-width:34px;text-align:center;">${w}</span>
         <span class="muted" style="font-size:11.5px;">⚙ → <b style="font-family:Consolas,monospace;">${esc(p.to)}</b> (${esc(p.target||'')}, ${(p.q||0).toLocaleString()} pcs) ${fmtD(p.at)} split off</span>
