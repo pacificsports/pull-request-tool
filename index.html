@@ -203,7 +203,7 @@ body.po-dragging{user-select:none;}
   </span>
   <select id="lang-sel" onchange="setLang(this.value)" style="font-size:11px;padding:3px 6px;border-radius:5px;border:none;background:#1d3f66;color:#fff;"><option value="ko">한국어</option><option value="en">English</option><option value="es">Español</option></select>
   <button id="wide-btn" class="btn btn-sm" onclick="toggleWide()" title="화면 넓게 / 좁게 — 기본은 넓게 (이 브라우저에만 저장돼)" style="padding:2px 8px;font-size:10px;background:#1d3f66;color:#cfe0f2;border-color:#2b5384;">↔ Wide</button>
-  <span id="app-ver" style="font-size:10px;color:#9fb8d4;">v1099</span>
+  <span id="app-ver" style="font-size:10px;color:#9fb8d4;">v1100</span>
 </div>
 <script>
 // ↔ 넓게 보기 — 브라우저마다 따로 저장 (v793)
@@ -3972,23 +3972,27 @@ async function _saveCurrentInner(){
     /* 🧼 아직 아무것도 시작 안 한 오더면 '수정' 으로 낙인찍지 않는다 (v1060) */
     const _fresh = orderUntouched(existing, pre);
     window.__freshFix = _fresh;
+    /* ═══ 저장 전에 재고가 어떻게 움직이는지 보여주고 확인받는다 (v1100) ═══
+       [stated] 하윤: "pc room 이랑 full box 지정을 해서 save했는데 이거를 바꿔야 할때
+                재고 에러가 많이 헷갈리는거 같은데"
+       예전에는 `confirm()` 글자 두 종류뿐이라 "무엇이 어느 bin 에서 몇 개" 를 볼 수 없었다.
+       ⚠ 기존 "이미 뽑은 줄" 안내문은 버리지 않고 모달 위쪽에 그대로 옮긴다 —
+         잠긴 줄은 안 건드린다는 걸 알려주는 유일한 자리다 (v974). */
+    let _pulledHtml = null;
     if(_nF || _nM || _nL){
       const _what = [...new Set(_pF.concat(_pM).map(b=>String(b.style)+' '+String(b.color).toUpperCase()+' '+String(b.size).toUpperCase())
         .concat(_pL.map(x=>String(x.style)+' '+String(x.color).toUpperCase()+' '+String(x.size).toUpperCase())))];
-      if(!confirm('\u26A0 The lines you changed have already been pulled.\n\n'
-        + (_nF ? ('  \u2022 ' + _nF + ' full box(es) are out of their bins\n') : '')
-        + (_nM ? ('  \u2022 ' + _nM + ' box(es) were carried to the PC Room\n') : '')
-        + (_nL ? ('  \u2022 ' + _nL.toLocaleString() + ' loose pcs already taken off the PC Room count\n') : '')
-        + '\n' + _what.slice(0,6).map(s=>'    ' + s).join('\n') + (_what.length>6 ? ('\n    +' + (_what.length-6) + ' more') : '') + '\n'
-        + '\nOnly these are affected. Lines you did not open are left exactly as\n'
-        + 'the warehouse already has them'
-        + (_nSkip>0 ? (' (' + _nSkip + ' box(es) on locked lines stay put)') : '') + '.\n\n'
-        + 'Saving puts back only what this change no longer needs, then offers a\n'
-        + 'PUT BACK REQUEST for those goods.\n\n'
-        + 'Save the change?')) return;
-    } else {
-      if(!confirm(t('a_overwrite',{b:base}))) return;
+      _pulledHtml = '<b>\u26a0 고친 줄은 창고가 이미 뽑았어요.</b><br>'
+        + (_nF ? ('&nbsp;&nbsp;\u2022 풀박스 ' + _nF + '개가 bin 밖에 나와 있어요<br>') : '')
+        + (_nM ? ('&nbsp;&nbsp;\u2022 ' + _nM + '개는 PC Room 으로 옮겼어요<br>') : '')
+        + (_nL ? ('&nbsp;&nbsp;\u2022 낱장 ' + _nL.toLocaleString() + '장은 이미 PC Room 에서 빠졌어요<br>') : '')
+        + '&nbsp;&nbsp;&nbsp;&nbsp;' + esc(_what.slice(0,6).join(' &middot; ')) + (_what.length>6 ? (' +' + (_what.length-6)) : '') + '<br>'
+        + '여기만 영향을 받아요. 열지 않은 줄은 창고가 가진 그대로 남아요'
+        + (_nSkip>0 ? (' (잠긴 줄의 박스 ' + _nSkip + '개는 그대로)') : '') + '.';
     }
+    let _plan = null;
+    try{ _plan = await invPlanOnSave(rec, existing); }catch(e){ console.warn('invPlanOnSave', e); }
+    if(!(await openSavePlan({ base, plan:_plan, pulled:_pulledHtml }))) return;
     rec.pl = existing.pl || {}; rec.inv = existing.inv || {};
     rec.savedAt = existing.savedAt || rec.savedAt; // 접수 시각 유지 — 수정해도 새 오더처럼 안 보이게
     rec.history = existing.history || [];
@@ -6935,6 +6939,223 @@ async function pcFetchRowFresh(k){
   return null;
 }
 let _invSyncChain = Promise.resolve();
+/* ═══ 저장 전 재고 미리보기 (v1100) ═══
+   [stated] 하윤: "pc room 이랑 full box 지정을 해서 save했는데 이거를 바꿔야 할때
+            재고 에러가 많이 헷갈리는거 같은데"
+   ⚠⚠ 이 함수는 **아무것도 쓰지 않는다.** `_invSyncOnSaveInner` 와 **같은 계산**을
+      읽기 전용으로 돌려 "저장하면 이렇게 움직인다" 를 만든다. 계산 본체는 안 건드렸다.
+   🟡 그래서 둘은 한 쌍이다 — `_invSyncOnSaveInner` 를 고치면 이것도 같이 고칠 것. */
+async function invPlanOnSave(rec, existing){
+  const poN = String((rec.meta&&rec.meta.po)||'').trim();
+  if(!poN) return null;
+  const po = 'PO ' + poN;
+  const out = { full:[], pc:[], short:[], invWarn:[], po };
+
+  /* ── 풀박스: 필요한 박스 수 vs 이미 이 PO 로 나가 있는 박스 수 ── */
+  if(!bxLoaded) await bxFetchStore();
+  let outRows = [];
+  try{
+    const r = await sbFetch('/rest/v1/pr_boxes?select=id,style,color,size,pcs,loc,wh&status=eq.OUT&out_po=eq.'+encodeURIComponent(po));
+    if(r.ok) outRows = await r.json();
+  }catch(e){}
+  const need = {};
+  (rec.lines||[]).forEach(L=>{
+    const wh = String(L.wh||'SC').trim().toUpperCase()||'SC';
+    if(wh!=='SC' && wh!=='CA') return;
+    const full = boxCalc(L).full; if(!full) return;
+    const key = wh + '|' + bxK(bxStyleFor(L), bxBaseColor(bxColorFor(L)), L.size);
+    if(!need[key]) need[key] = {n:0, L, wh};
+    need[key].n += full;
+  });
+  const have = {};
+  outRows.forEach(b=>{ const key = bxWh(b)+'|'+bxK(b.style, bxBaseColor(b.color), b.size); (have[key] = have[key]||[]).push(b); });
+
+  Object.keys(need).forEach(key=>{
+    const diff = need[key].n - ((have[key]||[]).length);
+    if(diff <= 0) return;
+    const L = need[key].L, wh = need[key].wh, st = bxStyleFor(L);
+    /* 본체와 같은 순서로 어느 박스를 집을지까지 흉내낸다 — 사람이 bin 을 봐야 하니까 */
+    let take = [];
+    if(L.pickLocs && L.pickLocs.length){
+      L.pickLocs.forEach(g=>{
+        const pool = g.col ? bxLocListCol(st, g.col, L.size, wh, String(g.loc).toUpperCase())
+                           : bxLocList(st, L.color, L.size, wh, String(g.loc).toUpperCase());
+        take.push(...pool.slice(0, g.n));
+      });
+    }
+    if(take.length < diff){ const tk=new Set(take.map(b=>b.id));
+      take.push(...bxFind(st, bxColorFor(L), L.size, wh).filter(b=>!tk.has(b.id))); }
+    if(take.length < diff){ const tk=new Set(take.map(b=>b.id));
+      take.push(...bxFindBase(st, bxColorFor(L), L.size, wh).filter(b=>!tk.has(b.id))); }
+    take = take.slice(0, diff);
+    const bins = {}; take.forEach(b=>{ const l=String(b.loc||'?').toUpperCase(); bins[l]=(bins[l]||0)+1; });
+    out.full.push({ wh, style:st, color:String(L.color||'').toUpperCase(), size:String(L.size||'').toUpperCase(),
+                    dir:-1, n:take.length,
+                    bins:Object.keys(bins).map(l=>l+(bins[l]>1?(' \u00d7'+bins[l]):'')).join(', ') });
+    if(take.length < diff)
+      out.short.push({ kind:'box', wh, label:st+' '+String(L.color||'').toUpperCase()+' '+String(L.size||'').toUpperCase(),
+                       n:diff-take.length });
+  });
+  Object.keys(have).forEach(key=>{
+    const excess = have[key].length - (need[key] ? need[key].n : 0);
+    if(excess <= 0) return;
+    const back = have[key].slice(-excess);
+    const b0 = back[0]||{};
+    const bins = {}; back.forEach(b=>{ const l=String(b.loc||'?').toUpperCase(); bins[l]=(bins[l]||0)+1; });
+    out.full.push({ wh:bxWh(b0), style:b0.style, color:String(b0.color||'').toUpperCase(), size:String(b0.size||'').toUpperCase(),
+                    dir:+1, n:back.length,
+                    bins:Object.keys(bins).map(l=>l+(bins[l]>1?(' \u00d7'+bins[l]):'')).join(', ') });
+  });
+
+  /* ── PC Room 낱장: 본체와 같은 baseline(pr_pcmoves) 으로 delta 를 낸다 ── */
+  const cur = {};
+  (rec.lines||[]).forEach(L=>{
+    const whL = String(L.wh||'SC').trim().toUpperCase()||'SC';
+    if(whL!=='SC' && whL!=='CA') return;
+    const loose = boxCalc(L).loose; if(!loose) return;
+    const key = bxStyleFor(L)+'|'+bxColorFor(L)+'|'+String(L.size||'').trim().toUpperCase() + (whL==='CA' ? '|CA' : '') + (L.useB ? '|B' : '');
+    cur[key] = (cur[key]||0) + loose;
+  });
+  let poMoves = [], poFetched = false;
+  try{
+    const rmv = await sbFetch('/rest/v1/pr_pcmoves?select=style,color,size,wh,delta,note&note=ilike.'+encodeURIComponent(po+' %'));
+    if(rmv.ok){ poMoves = await rmv.json(); poFetched = true; }
+  }catch(e){}
+  const vColor = c => pcMergeColor(String(c||'')).toUpperCase();
+  const alreadyDeducted = (st,col,sz,whv)=>{
+    let sm=0; const bc=vColor(col), szU=String(sz||'').trim().toUpperCase();
+    poMoves.forEach(m=>{ const nt=String(m.note||'');
+      if(nt.indexOf(po+' ')!==0) return;
+      if(!/auto-deduct/i.test(nt) || /B-grade/i.test(nt)) return;
+      if(String(m.style||'').trim().toUpperCase()!==String(st||'').trim().toUpperCase()) return;
+      if(String(m.size||'').trim().toUpperCase()!==szU) return;
+      if(((String(m.wh||'SC').toUpperCase()==='CA')?'CA':'SC')!==whv) return;
+      if(vColor(m.color)!==bc) return;
+      sm += -(Number(m.delta)||0);
+    });
+    return Math.max(0, sm);
+  };
+  const prevSnap = (rec.meta && rec.meta._pcAuto && rec.meta._pcAuto.lines) || {};
+  const moveKeys = new Set();
+  poMoves.forEach(m=>{ const nt=String(m.note||'');
+    if(nt.indexOf(po+' ')!==0) return;
+    if(!/auto-deduct/i.test(nt) || /B-grade/i.test(nt)) return;
+    const st=String(m.style||'').trim(), col=String(m.color||'').trim().toUpperCase(), sz=String(m.size||'').trim().toUpperCase();
+    if(!st||!col||!sz) return;
+    moveKeys.add(st+'|'+col+'|'+sz + ((String(m.wh||'SC').toUpperCase()==='CA')?'|CA':''));
+  });
+  const pcKeys = new Set([].concat(Object.keys(prevSnap), Object.keys(cur), [...moveKeys]));
+  for(const key of pcKeys){
+    const parts = key.split('|');
+    const st = parts[0], col = parts[1], sz = parts[2];
+    const isB = parts.includes('B');
+    const whv = parts.includes('CA') ? 'CA' : 'SC';
+    const baseline = isB ? (prevSnap[key]||0) : (poFetched ? alreadyDeducted(st,col,sz,whv) : (prevSnap[key]||0));
+    const delta = (cur[key]||0) - baseline;
+    if(!delta) continue;
+    let row = null;
+    try{ row = await pcFetchRowFresh(pcKey(st, col, whv)); }catch(e){}
+    if(!row) row = (pcStore||[]).find(x=>x.k===pcKey(st, col, whv)) || null;
+    const bag = isB ? ((row&&row.bqty)||{}) : ((row&&row.qty)||{});
+    const old = Number(bag[sz]) || 0;
+    const nv = old - delta;
+    out.pc.push({ wh:whv, style:st, color:col, size:sz, isB, from:old, to:nv, delta:-delta });
+    if(nv < 0){
+      /* 낱장이 0 밑으로 간다 = 박스를 까야 한다. 그 창고에 깔 박스가 있는지도 같이 알려준다 */
+      let boxes = 0;
+      try{ boxes = (bxFind(st, col, sz, whv)||[]).length || (bxFindBase(st, col, sz, whv)||[]).length; }catch(e){}
+      out.short.push({ kind:'pc', wh:whv, label:st+' '+col+' '+sz, n:-nv, boxes });
+    }
+  }
+
+  /* ── 이미 인쇄된 인보이스가 있는 창고 (PO 91087 형) ── */
+  try{
+    const inv = (existing && existing.inv) || {};
+    Object.keys(inv).forEach(w=>{
+      const i = inv[w]||{};
+      if(i.printedAt || i.printed || i.no || i.savedAt)
+        out.invWarn.push({ wh:w, no:(i.no || plNum(rec.base, w) || '') });
+    });
+  }catch(e){}
+  return out;
+}
+/* 저장 전 확인 모달 — `confirm()` 두 개를 대신한다 (표를 보여줘야 해서).
+   ⚠ 계획이 없어도(계산 실패) 모달은 뜨고 저장을 막지 않는다. */
+function openSavePlan(info){
+  return new Promise(resolve=>{
+    const p = info.plan, pulled = info.pulled || null;
+    const ex = document.getElementById('modal-saveplan'); if(ex) ex.remove();
+    const esc2 = x => esc(String(x==null?'':x));
+    const nm = x => (Number(x)||0).toLocaleString();
+    const whTag = w => `<span style="background:${w==='CA'?'#9a3412':'#1d4ed8'};color:#fff;border-radius:4px;padding:0 5px;font-size:10px;font-weight:800;">${esc2(w)}</span>`;
+
+    const fullRows = (p&&p.full||[]).map(f=>`<tr style="border-bottom:1px solid #f1f5f9;">
+      <td style="padding:5px 8px;">${whTag(f.wh)}</td>
+      <td style="padding:5px 8px;font-weight:700;">${esc2(f.style)}</td>
+      <td style="padding:5px 8px;">${esc2(f.color)}</td>
+      <td style="padding:5px 8px;text-align:center;font-weight:700;">${esc2(f.size)}</td>
+      <td style="padding:5px 8px;text-align:right;font-weight:800;color:${f.dir<0?'#b91c1c':'#15803d'};white-space:nowrap;">
+        ${f.dir<0?'\u2212':'+'}${nm(f.n)} box${f.n===1?'':'es'}</td>
+      <td style="padding:5px 8px;font-size:11.5px;color:#475569;">${f.dir<0?'뽑는 자리':'되돌릴 자리'} ${esc2(f.bins||'?')}</td>
+    </tr>`).join('');
+
+    const pcRows = (p&&p.pc||[]).map(x=>`<tr style="border-bottom:1px solid #f1f5f9;">
+      <td style="padding:5px 8px;">${whTag(x.wh)}</td>
+      <td style="padding:5px 8px;font-weight:700;">${esc2(x.style)}</td>
+      <td style="padding:5px 8px;">${esc2(x.color)}${x.isB?' <span style="color:#b45309;font-weight:800;">B</span>':''}</td>
+      <td style="padding:5px 8px;text-align:center;font-weight:700;">${esc2(x.size)}</td>
+      <td style="padding:5px 8px;text-align:right;white-space:nowrap;font-variant-numeric:tabular-nums;">
+        ${nm(x.from)} \u2192 <strong style="color:${x.to<0?'#b91c1c':'#111'};">${nm(x.to)}</strong></td>
+      <td style="padding:5px 8px;text-align:right;font-weight:800;white-space:nowrap;color:${x.delta<0?'#b91c1c':'#15803d'};">
+        ${x.delta<0?'\u2212':'+'}${nm(Math.abs(x.delta))}</td>
+    </tr>`).join('');
+
+    const shortRows = (p&&p.short||[]).map(sh=> sh.kind==='pc'
+      ? `<div style="font-size:12.5px;color:#92400e;padding:2px 0;">\u26a0 <b>[${esc2(sh.wh)}] ${esc2(sh.label)}</b> \u2014 낱장이 <b>${nm(sh.n)}장 모자랍니다 \u2192 박스를 까야 합니다</b> (그 창고 풀박스 ${nm(sh.boxes)}개)</div>`
+      : `<div style="font-size:12.5px;color:#92400e;padding:2px 0;">\u26a0 <b>[${esc2(sh.wh)}] ${esc2(sh.label)}</b> \u2014 풀박스가 <b>${nm(sh.n)}개 모자랍니다</b></div>`
+    ).join('');
+
+    const invRows = (p&&p.invWarn||[]).map(i=>
+      `<div style="font-size:12.5px;color:#991b1b;padding:2px 0;">\u26a0 <b>[${esc2(i.wh)}]</b> 인보이스 <b>${esc2(i.no)}</b> 가 이미 나 있어요 \u2014 수정하면 청구가 어긋나니 accounting 과 맞춰봐야 해요</div>`).join('');
+
+    const box = (title, body, note) => body ? `<div style="margin-bottom:13px;">
+        <div style="font-size:11px;font-weight:800;letter-spacing:.07em;text-transform:uppercase;color:#475569;margin-bottom:5px;">${title}</div>
+        ${note?`<div style="font-size:11.5px;color:#64748b;margin-bottom:4px;">${note}</div>`:''}
+        <table width="100%" cellpadding="0" cellspacing="0" style="border-collapse:collapse;font-size:12.5px;border:1px solid #e2e8f0;border-radius:6px;overflow:hidden;">${body}</table>
+      </div>` : '';
+
+    const nothing = p && !p.full.length && !p.pc.length;
+    const div = document.createElement('div');
+    div.id = 'modal-saveplan';
+    div.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,.55);z-index:160;display:flex;align-items:center;justify-content:center;';
+    div.innerHTML = `<div style="background:#fff;border-radius:12px;width:820px;max-width:96vw;max-height:90vh;display:flex;flex-direction:column;box-shadow:0 20px 60px rgba(0,0,0,.35);">
+      <div style="background:#0f2a4a;color:#fff;border-radius:12px 12px 0 0;padding:11px 16px;font-weight:800;">
+        \ud83d\udce6 이렇게 바뀝니다 &mdash; ${esc2(info.base||'')}
+        <div style="font-weight:400;font-size:11.5px;color:#cbd5e1;margin-top:2px;">저장을 눌러야 재고가 움직입니다. 창고가 이미 뽑아 놓은 것은 건드리지 않아요.</div>
+      </div>
+      <div style="overflow-y:auto;flex:1;padding:15px 18px;background:#f8fafc;">
+        ${pulled ? `<div style="background:#fff7ed;border:1.5px solid #fdba74;border-radius:7px;padding:10px 13px;margin-bottom:13px;font-size:12.5px;color:#7c2d12;line-height:1.6;">${pulled}</div>` : ''}
+        ${(invRows||shortRows) ? `<div style="background:#fffbeb;border:1.5px solid #f59e0b;border-radius:7px;padding:10px 13px;margin-bottom:13px;">${invRows}${shortRows}</div>` : ''}
+        ${box('풀박스', fullRows, '')}
+        ${box('PC Room 낱장', pcRows, '')}
+        ${nothing ? `<div style="font-size:12.5px;color:#475569;padding:6px 2px;">재고는 움직이지 않아요 \u2014 숫자는 그대로이고 기록만 바뀝니다.</div>` : ''}
+        ${!p ? `<div style="font-size:12.5px;color:#92400e;padding:6px 2px;">\u26a0 재고 미리보기를 만들지 못했어요 (연결 문제). 저장하면 지금까지와 똑같이 동작해요.</div>` : ''}
+      </div>
+      <div style="padding:11px 16px;border-top:1px solid #e2e8f0;display:flex;gap:8px;justify-content:flex-end;">
+        <button class="btn" id="sp-no">취소</button>
+        <button class="btn btn-primary" id="sp-yes">이대로 저장</button>
+      </div>
+    </div>`;
+    document.body.appendChild(div);
+    const done = v => { const d=document.getElementById('modal-saveplan'); if(d) d.remove(); document.removeEventListener('keydown', onKey); resolve(v); };
+    function onKey(e){ if(e.key==='Escape') done(false); }
+    document.addEventListener('keydown', onKey);
+    div.querySelector('#sp-no').onclick = ()=>done(false);
+    div.querySelector('#sp-yes').onclick = ()=>done(true);
+    div.onclick = e=>{ if(e.target===div) done(false); };
+    try{ initModalDrag(div); }catch(e){}
+  });
+}
 function invSyncOnSave(rec){
   _invSyncChain = _invSyncChain.then(()=>_invSyncOnSaveInner(rec)).catch(e=>console.warn('invSync', e));
   return _invSyncChain;
