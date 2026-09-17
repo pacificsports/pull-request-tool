@@ -203,7 +203,7 @@ body.po-dragging{user-select:none;}
   </span>
   <select id="lang-sel" onchange="setLang(this.value)" style="font-size:11px;padding:3px 6px;border-radius:5px;border:none;background:#1d3f66;color:#fff;"><option value="ko">한국어</option><option value="en">English</option><option value="es">Español</option></select>
   <button id="wide-btn" class="btn btn-sm" onclick="toggleWide()" title="화면 넓게 / 좁게 — 기본은 넓게 (이 브라우저에만 저장돼)" style="padding:2px 8px;font-size:10px;background:#1d3f66;color:#cfe0f2;border-color:#2b5384;">↔ Wide</button>
-  <span id="app-ver" style="font-size:10px;color:#9fb8d4;">v1098</span>
+  <span id="app-ver" style="font-size:10px;color:#9fb8d4;">v1099</span>
 </div>
 <script>
 // ↔ 넓게 보기 — 브라우저마다 따로 저장 (v793)
@@ -6123,8 +6123,46 @@ function recAddr(meta, p){
   const line2 = [meta[p+'City'], [String(meta[p+'State']||'').toUpperCase(), meta[p+'Zip']].filter(Boolean).join(' ')].filter(Boolean).join(', ');
   return [meta[p+'Name'], meta[p+'Addr'], line2].filter(Boolean).join('\n');
 }
+// ═══ 박스 수 세기 — 거래처 컨펌 이멜용 (v1099, 2026-09-16) ═══
+/* [stated] 하윤: "confirmation 이멜에 full box 몇개 partial box 몇개 total box 몇개까지"
+   새 데이터가 필요 없다 — 오더 줄에 이미 다 있다:
+     `l.ppb`  = 박스입수(pcs/box), `autoPpb()` 가 정해서 줄에 박아 저장한다
+     `l.pbox` = 낱장을 어느 박스에 담았는지 적는 번호 (오더 화면 P.Box# 칸)
+   ⚠ 낱장을 "줄 수" 로 세지 않는다 — 여러 스타일·사이즈의 낱장을 **한 박스에 합쳐
+     담는다**. 그게 P.Box# 칸의 이유다. 줄마다 1박스로 세면 박스 수가 크게 부풀고,
+     거래처가 그 숫자로 운송료를 잡으면 틀린다.
+   ⚠ SC Box 1 과 CA Box 1 은 다른 박스다 — 번호는 창고별로 센다 (`pboxTotals` 와 같은 규칙).
+   ⚠ BO(백오더)·NA(품절)는 세지 않는다 — 안 나가는 물건이다.
+   낱장인데 pbox 번호가 없으면 몇 박스에 담을지 아무도 안 적은 것이라 창고별
+   `ceil(pcs/ppb)` 로 **추정**하고, 그 사실을 `est`/`unLines` 로 돌려서
+   **직원 화면에만** 경고를 띄운다 (이멜·PDF 에는 절대 안 넣는다).
+   실측 오더 400건: ppb 빠진 줄 0 · 낱장 3,158줄 중 번호 없는 것 21줄(오더 2건). */
+function _confBoxCount(lines, wh){
+  let full = 0, loosePcs = 0, unPcs = 0, unLines = 0, unPpb = 0;
+  const nums = new Set();
+  (lines||[]).forEach(l=>{
+    if(String(l.wh||'') !== wh) return;
+    const ppb = Number(l.ppb) || DEFAULT_PPB;
+    const q = Number(l.qty) || 0;
+    if(q <= 0) return;
+    full += Math.floor(q / ppb);
+    const rem = q % ppb;
+    if(!rem) return;
+    loosePcs += rem;
+    const bx = String(l.pbox||'').trim();
+    if(bx) nums.add(bx);
+    else { unPcs += rem; unLines++; unPpb = Math.max(unPpb, ppb); }
+  });
+  /* 번호 없는 낱장 — 한 박스에 몰아 담는 게 보통이니 ppb 기준으로 박스 수를 추정 */
+  const est = unPcs ? Math.max(1, Math.ceil(unPcs / (unPpb || DEFAULT_PPB))) : 0;
+  const partial = nums.size + est;
+  return { full, partial, total: full + partial, loosePcs, est, unLines };
+}
 // ═══ Order Summary (거래처 첨부용 — IMS 오더 컨펌 이멜 포맷) ═══
-function buildOrderSummaryHtml(rec){
+/* ⚠ `opts.staffWarn` 은 **직원 모달 전용**이다. PDF·인쇄·Copy Email 은 그냥 불러서
+     경고가 거래처로 나가지 않게 한다. */
+function buildOrderSummaryHtml(rec, opts){
+  opts = opts || {};
   const meta = rec.meta || {};
   const isRep = (typeof recIsReplace==='function') ? recIsReplace(rec) : !!(rec.meta && rec.meta._replaceOf);
   const lines = (rec.lines||[]).filter(l=>(l.qty||0)>0);
@@ -6178,6 +6216,18 @@ function buildOrderSummaryHtml(rec){
       <td style="padding:6px 10px;text-align:right;">${isRep?fmtAmt(0):fmtAmt(g.price)}</td>
       <td style="padding:6px 10px;text-align:right;font-weight:700;">${isRep?'FREE':(g.amt?fmtAmt(g.amt):'—')}</td>
     </tr>`).join('');
+  /* 박스 수 — 창고별로 세서 합친다 (BO·NA 는 세지 않는다) (v1099) */
+  const bxSC = _confBoxCount(lines, 'SC');
+  const bxCA = _confBoxCount(lines, 'CA');
+  const bxAll = { full: bxSC.full + bxCA.full, partial: bxSC.partial + bxCA.partial,
+                  total: bxSC.total + bxCA.total, est: bxSC.est + bxCA.est,
+                  unLines: bxSC.unLines + bxCA.unLines };
+  const bxLbl = b => `${b.full.toLocaleString()} full + ${b.partial.toLocaleString()} partial = <strong>${b.total.toLocaleString()} box${b.total===1?'':'es'}</strong>`;
+  /* ⚠ 이 경고는 직원이 보는 모달에서만 나오고 거래처 이멜·PDF 에는 절대 안 나간다 */
+  const bxWarn = (opts.staffWarn && bxAll.unLines) ? `<div style="background:#fef3c7;border:1.5px solid #f59e0b;border-radius:6px;padding:8px 14px;margin-bottom:16px;font-size:12px;color:#92400e;font-weight:700;">
+        ⚠ 직원용 &mdash; ${bxAll.unLines} loose line(s) have <b>no P.Box#</b>, so ${bxAll.est} partial box(es) are an <b>estimate</b> from pcs/box.
+        Fill in P.Box# on the order screen to make it exact. <i>(this note is not in the customer email or PDF)</i>
+      </div>` : '';
   return `<div style="font-family:'Pretendard Variable',Pretendard,Arial,sans-serif;max-width:880px;margin:0 auto;color:#111;font-size:13px;">
     <table width="100%" cellpadding="0" cellspacing="0" style="background:#0f2a4a;">
       <tr><td style="padding:12px 20px;"><span style="color:#fff;font-size:22px;font-weight:900;letter-spacing:2px;font-family:Helvetica,Arial,sans-serif;">PACIFIC SPORTS</span></td>
@@ -6197,10 +6247,15 @@ function buildOrderSummaryHtml(rec){
       <div style="background:#eff6ff;border:1px solid #bfdbfe;border-radius:6px;padding:10px 16px;margin-bottom:16px;">
         <div style="font-size:12px;font-weight:700;color:#1e40af;margin-bottom:6px;">📦 Shipping From</div>
         <ul style="margin:0;padding-left:16px;font-size:13px;">
-          <li style="margin:2px 0;"><span style="color:#1e40af;font-weight:700;">SC Warehouse (Sumter, SC):</span> <strong>${scT.toLocaleString()} pcs</strong></li>
-          <li style="margin:2px 0;"><span style="color:#ea580c;font-weight:700;">CA Warehouse (Eastvale, CA)${meta.lockerStock?' — Locker Stock':''}:</span> <strong>${caT.toLocaleString()} pcs</strong></li>
+          <li style="margin:2px 0;"><span style="color:#1e40af;font-weight:700;">SC Warehouse (Sumter, SC):</span> <strong>${scT.toLocaleString()} pcs</strong>${bxSC.total?`<span style="color:#1e40af;"> &middot; ${bxLbl(bxSC)}</span>`:''}</li>
+          <li style="margin:2px 0;"><span style="color:#ea580c;font-weight:700;">CA Warehouse (Eastvale, CA)${meta.lockerStock?' — Locker Stock':''}:</span> <strong>${caT.toLocaleString()} pcs</strong>${bxCA.total?`<span style="color:#ea580c;"> &middot; ${bxLbl(bxCA)}</span>`:''}</li>
         </ul>
+        <div style="border-top:1px solid #bfdbfe;margin-top:7px;padding-top:6px;font-size:13px;color:#1e3a8a;">
+          <strong>Total:</strong> <strong>${(scT+caT).toLocaleString()} pcs</strong>
+          &nbsp;&middot;&nbsp; <strong>${bxAll.total.toLocaleString()} box${bxAll.total===1?'':'es'}</strong>${bxAll.total?`<span style="color:#3b64b0;font-size:12px;"> (${bxAll.full.toLocaleString()} full + ${bxAll.partial.toLocaleString()} partial)</span>`:''}
+        </div>
       </div>
+      ${bxWarn}
       ${backSection}${naSection}
       ${String(meta.confNote||'').trim() ? `<div style="background:#fffbeb;border:1.5px solid #f59e0b;border-radius:6px;padding:11px 15px;margin-bottom:16px;">
         <div style="font-size:12px;font-weight:800;color:#92400e;margin-bottom:4px;">📝 Note from Pacific Sports</div>
@@ -6260,7 +6315,7 @@ function openOrderSummary(base){
         <button class="btn btn-sm" onclick="document.getElementById('modal-osum').remove()">✕</button>
       </span>
     </div>
-    <div id="osum-prev" style="overflow-y:auto;flex:1;padding:14px;background:#f5f7fa;">${buildOrderSummaryHtml(rec)}</div>
+    <div id="osum-prev" style="overflow-y:auto;flex:1;padding:14px;background:#f5f7fa;">${buildOrderSummaryHtml(rec, {staffWarn:true})}</div>
   </div>`;
   document.body.appendChild(div);
   initModalDrag(div);
@@ -6273,7 +6328,7 @@ async function saveConfNote(base){
     const r = await sbFetch('/rest/v1/pr_orders?base=eq.'+encodeURIComponent(base), {method:'PATCH', headers:{Prefer:'return=minimal'}, body:JSON.stringify({meta:rec.meta, updated_at:new Date().toISOString()})});
     if(!r.ok){ showToast('❌ Save failed'); return; }
   }catch(e){ showToast('❌ Save failed'); return; }
-  const pv = $('osum-prev'); if(pv) pv.innerHTML = buildOrderSummaryHtml(rec);
+  const pv = $('osum-prev'); if(pv) pv.innerHTML = buildOrderSummaryHtml(rec, {staffWarn:true});
   logHist(base, val ? ('Confirmation note saved: ' + val.slice(0,80)) : 'Confirmation note removed');
   showToast(val ? '✅ Note saved — will show on the confirmation' : '✅ Note removed — will be left off the confirmation');
 }
