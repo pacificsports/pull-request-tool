@@ -203,7 +203,7 @@ body.po-dragging{user-select:none;}
   </span>
   <select id="lang-sel" onchange="setLang(this.value)" style="font-size:11px;padding:3px 6px;border-radius:5px;border:none;background:#1d3f66;color:#fff;"><option value="ko">한국어</option><option value="en">English</option><option value="es">Español</option></select>
   <button id="wide-btn" class="btn btn-sm" onclick="toggleWide()" title="화면 넓게 / 좁게 — 기본은 넓게 (이 브라우저에만 저장돼)" style="padding:2px 8px;font-size:10px;background:#1d3f66;color:#cfe0f2;border-color:#2b5384;">↔ Wide</button>
-  <span id="app-ver" style="font-size:10px;color:#9fb8d4;">v1100</span>
+  <span id="app-ver" style="font-size:10px;color:#9fb8d4;">v1101</span>
 </div>
 <script>
 // ↔ 넓게 보기 — 브라우저마다 따로 저장 (v793)
@@ -21818,14 +21818,41 @@ async function txHoldRefresh(force){
   return TXHOLD;
 }
 function txHeld(id){ return TXHOLD.has(id); }
+/* ═══ 📦 박스 색인 — 재고 조회를 훑기에서 표 찾기로 (v1101) ═══
+   [stated] 하윤: "오더가 길어지니까 재고 지정하고 하는게 lag가 걸리는지 시간이 오래 걸리는데"
+   실측: `bxStore.filter()` 는 박스 **130,562개를 매번 처음부터** 훑는다 — 한 번 65ms.
+   줄 50개 오더는 줄×창고 = 100번을 부르니 `renderTable()` 이 **5.7초**였다
+   (그중 재고 조회가 3.7초. DOM·DB 는 문제가 아니었다).
+   색인은 **233ms 한 번** 만들고 그 뒤 조회는 0ms (2,000번 = 1ms).
+   ⚠⚠ 다시 만드는 기준은 **배열 자기 자신(`===`) + 길이**다. `bxStore` 는 코드 전체에서
+      제자리 변형이 없고 전부 `bxStore = ...` 재대입이라 이것으로 충분하다.
+      **`bxStore` 를 push/splice 로 제자리에서 고치는 코드를 넣지 말 것** — 색인이 낡는다.
+   ⚠ 돌려주는 건 **항상 새 배열**이다. 색인 속 배열을 그대로 주면 받은 쪽이 정렬하다가
+      색인을 망가트린다. 쌓는 순서는 `bxStore` 순서 그대로라 「오래된 것부터」가 안 깨진다. */
+let _bxIdx = null, _bxIdxRef = null, _bxIdxLen = -1;
+function bxIdx(){
+  if(_bxIdx && _bxIdxRef === bxStore && _bxIdxLen === bxStore.length) return _bxIdx;
+  const exact = new Map(), base = new Map();
+  for(let i=0;i<bxStore.length;i++){
+    const b = bxStore[i];
+    const ke = bxK(b.style, b.color, b.size);
+    let a = exact.get(ke); if(!a){ a = []; exact.set(ke, a); } a.push(b);
+    const kb = bxK(b.style, bxBaseColor(b.color), b.size);
+    let c = base.get(kb); if(!c){ c = []; base.set(kb, c); } c.push(b);
+  }
+  _bxIdx = { exact, base }; _bxIdxRef = bxStore; _bxIdxLen = bxStore.length;
+  return _bxIdx;
+}
 function bxFindBase(style, color, size, wh){
-  const st = String(style).trim().toUpperCase(), bc = bxBaseColor(color), sz = String(size||'').trim().toUpperCase();
+  const a = bxIdx().base.get(bxK(style, bxBaseColor(color), size));
+  if(!a) return [];
   const w = wh ? String(wh).trim().toUpperCase() : '';
-  return bxStore.filter(b=>String(b.style).trim().toUpperCase()===st && bxBaseColor(b.color)===bc && String(b.size).trim().toUpperCase()===sz && (!w || bxWh(b)===w));
+  return w ? a.filter(b=>bxWh(b)===w) : a.slice();
 }
 function bxLocListCol(style, colorFull, size, wh, loc){
-  const st = String(style).trim().toUpperCase(), c = String(colorFull).toUpperCase(), sz = String(size||'').trim().toUpperCase();
-  return bxStore.filter(b=>String(b.style).trim().toUpperCase()===st && String(b.color).toUpperCase()===c && String(b.size).trim().toUpperCase()===sz && bxWh(b)===wh && String(b.loc||'?').toUpperCase()===loc);
+  const a = bxIdx().exact.get(bxK(style, colorFull, size));
+  if(!a) return [];
+  return a.filter(b=>bxWh(b)===wh && String(b.loc||'?').toUpperCase()===loc);
 }
 /* ═══════════ 🏷 MAS 200 item code (v950) ═══════════
    품번 = H + 스타일 + 색약어 + 사이즈꼬리표.   예) H8368BLACKXS · H5230CHERRY2
@@ -23464,7 +23491,7 @@ function bxLotsOf(style, color, size, wh){
   return Object.entries(m).sort((a,b)=> b[1]-a[1] || a[0].localeCompare(b[0]));
 }
 function bxFindAll(style,color,size,wh){ const ex = bxFind(style,color,size,wh); const ids = new Set(ex.map(b=>b.id)); return ex.concat(bxFindBase(style,color,size,wh).filter(b=>!ids.has(b.id))); }
-function bxFind(style,color,size,wh){ const k = bxK(style,color,size); const w = wh ? String(wh).trim().toUpperCase() : ''; return bxStore.filter(b=>bxK(b.style,b.color,b.size)===k && (!w || bxWh(b)===w)); }
+function bxFind(style,color,size,wh){ const a = bxIdx().exact.get(bxK(style,color,size)); if(!a) return []; const w = wh ? String(wh).trim().toUpperCase() : ''; return w ? a.filter(b=>bxWh(b)===w) : a.slice(); }
 function bxLocsLabel(list, max){
   const locs = list.map(b=>String(b.loc||'?'));
   const m = max || 4;
@@ -23905,8 +23932,9 @@ async function bxShipOne(id){
   renderBoxRoom();
 }
 function bxLocList(style,color,size,wh,loc){
-  const k = bxK(style,color,size);
-  return bxStore.filter(b=>bxK(b.style,b.color,b.size)===k && bxWh(b)===wh && String(b.loc||'?').toUpperCase()===loc);
+  const a = bxIdx().exact.get(bxK(style,color,size));
+  if(!a) return [];
+  return a.filter(b=>bxWh(b)===wh && String(b.loc||'?').toUpperCase()===loc);
 }
 async function bxLocEdit(style,color,size,wh,loc){
   const list = bxLocList(style,color,size,wh,loc); if(!list.length) return;
