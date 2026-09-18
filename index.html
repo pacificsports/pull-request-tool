@@ -204,7 +204,7 @@ body.po-dragging{user-select:none;}
   </span>
   <select id="lang-sel" onchange="setLang(this.value)" style="font-size:11px;padding:3px 6px;border-radius:5px;border:none;background:#1d3f66;color:#fff;"><option value="ko">한국어</option><option value="en">English</option><option value="es">Español</option></select>
   <button id="wide-btn" class="btn btn-sm" onclick="toggleWide()" title="화면 넓게 / 좁게 — 기본은 넓게 (이 브라우저에만 저장돼)" style="padding:2px 8px;font-size:10px;background:#1d3f66;color:#cfe0f2;border-color:#2b5384;">↔ Wide</button>
-  <span id="app-ver" style="font-size:10px;color:#9fb8d4;">v1110</span>
+  <span id="app-ver" style="font-size:10px;color:#9fb8d4;">v1111</span>
 </div>
 <script>
 // ↔ 넓게 보기 — 브라우저마다 따로 저장 (v793)
@@ -15715,7 +15715,22 @@ async function webOrdersLoad(silent){
   }catch(e){ _webOrders = []; }
   const el = document.getElementById('kpi-web-n');
   if(el) el.textContent = woCount();
-  if(!silent && woCount()) { /* 조용히 — 알림은 타일 숫자로 */ }
+  /* 🌐 처리 안 한 웹 주문이 있으면 타일을 깜빡인다 (v1111) — 📦 Box Request 와 같은 방식.
+     숫자만 조용히 바뀌면 다른 탭에 앉아 있는 사람은 주문이 들어온 걸 모른다. */
+  try{ const _tile = document.getElementById('web-kpi');
+       if(_tile) _tile.classList.toggle('breq-blink', woCount() > 0); }catch(e){}
+  /* 새로 들어온 주문만 골라 한 번 알린다. 첫 조회는 기록만 하고 알리지 않는다 —
+     앱을 열 때마다 옛 주문으로 알림이 뜨면 아무도 안 보게 된다. */
+  try{
+    const _nums = (_webOrders||[]).map(o=>String(o.order_number||'')).filter(Boolean);
+    if(!window._woSeen){ window._woSeen = new Set(_nums); }
+    else {
+      const _fresh = _nums.filter(n=>!window._woSeen.has(n));
+      _fresh.forEach(n=>window._woSeen.add(n));
+      if(_fresh.length && typeof showToast==='function')
+        showToast('🌐 새 웹 주문 ' + _fresh.length + '건 — ' + _fresh.slice(0,2).join(', ') + ' · 🌐 Web Orders 에서 불러오세요');
+    }
+  }catch(e){}
   return _webOrders;
 }
 
@@ -37899,7 +37914,7 @@ function renderKpi(){
     ${numTile('↩ Pending Return', pret.toLocaleString(), '#ea580c', '#fff7ed', "kpiPendingReturns()")}
     ${numTile('💳 Refund Pending', refund.toLocaleString(), '#7c2d12', '#faf5ff')}
     ${`<div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;align-items:stretch;">`
-      + numTile('🌐 Web Orders', '<span id="kpi-web-n">'+woCount()+'</span>', '#0d9488', '#f0fdfa', "webOrdersOpen()")
+      + numTile('🌐 Web Orders', '<span id="kpi-web-n">'+woCount()+'</span>', '#0d9488', '#f0fdfa', "webOrdersOpen()", 'id="web-kpi"', woCount()>0?'breq-blink':'')
       + numTile('📝 Web Signups', '<span id="kpi-webapp-n">'+((typeof waCount==='function')?waCount():0)+'</span>', '#7c3aed', '#faf5ff', "webAppsOpen()")
       + `</div>`}
     ${laneTile('📦 SC · UPS ready', scUps, '#1d4ed8', "laneListOpen('SC',false)")}
@@ -38592,6 +38607,22 @@ initAuth();
 try{ const sv = localStorage.getItem('pr_view'); if(sv && sv !== 'orders') showView(sv); }catch(e){}
 // 📋 Work Queue 초기 로드 — 로그인(SESS) 되면 한 번 채우고, 이후 탭 전환/데이터 변경 때 갱신
 (function wqInit(){ let tries=0; const t=setInterval(()=>{ tries++; if(typeof SESS!=='undefined' && SESS){ clearInterval(t); if(typeof wqLoad==='function') wqLoad(true); } else if(tries>40){ clearInterval(t); } }, 500); })();
+
+/* 🌐 웹 주문·가입 신청 초기 로드 (v1111)
+   전에는 renderDash() 안에서만 켜져서, 📊 Dashboard 탭을 한 번도 안 열면
+   영원히 안 읽어왔다. 그러면 Orders 화면의 🌐 Web Orders 타일이 계속 0 이고,
+   결제까지 끝난 주문이 있어도 아무도 모른다 (2026-09-18 WEB-260918-TEDX 가 그렇게 묻혔다).
+   renderDash 쪽 블록은 _woLoaded/_waLoaded 로 막혀 있으니 두 번 안 돈다.
+   ⚠ 주소에 #weborders 가 있으면 읽어온 뒤 바로 창까지 열어준다 — 직원 알림 메일의
+      버튼이 이 주소로 온다. */
+(function webInit(){ let tries=0; const t=setInterval(()=>{ tries++;
+  if(typeof SESS!=='undefined' && SESS){ clearInterval(t);
+    const _deep = (function(){ try{ return /weborders/i.test(String(location.hash||'')); }catch(e){ return false; } })();
+    try{ if(!window._woLoaded){ window._woLoaded = 1;
+      webOrdersLoad(true).then(()=>{ if(_deep && typeof webOrdersOpen==='function'){ try{ history.replaceState(null,'',location.pathname+location.search); }catch(e){} webOrdersOpen(); } }).catch(()=>{});
+      setInterval(()=>webOrdersLoad(true), 120000); } }catch(e){}
+    try{ if(!window._waLoaded){ window._waLoaded = 1; webAppsLoad(true); setInterval(()=>webAppsLoad(true), 120000); } }catch(e){}
+  } else if(tries>40){ clearInterval(t); } }, 500); })();
 
 // ═══ 자동 새로고침: 다른 직원이 저장한 오더가 자동으로 나타나게 ═══
 let _lastEditTs = 0;
