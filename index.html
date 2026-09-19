@@ -204,7 +204,7 @@ body.po-dragging{user-select:none;}
   </span>
   <select id="lang-sel" onchange="setLang(this.value)" style="font-size:11px;padding:3px 6px;border-radius:5px;border:none;background:#1d3f66;color:#fff;"><option value="ko">한국어</option><option value="en">English</option><option value="es">Español</option></select>
   <button id="wide-btn" class="btn btn-sm" onclick="toggleWide()" title="화면 넓게 / 좁게 — 기본은 넓게 (이 브라우저에만 저장돼)" style="padding:2px 8px;font-size:10px;background:#1d3f66;color:#cfe0f2;border-color:#2b5384;">↔ Wide</button>
-  <span id="app-ver" style="font-size:10px;color:#9fb8d4;">v1116</span>
+  <span id="app-ver" style="font-size:10px;color:#9fb8d4;">v1117</span>
 </div>
 <script>
 // ↔ 넓게 보기 — 브라우저마다 따로 저장 (v793)
@@ -11429,12 +11429,21 @@ async function lblEstimate(opts){
   }
   const wt=Math.max(1, Math.round(totalWt));
   const sf=window._lblShipFrom||window._lblOrigin;   // 요금 출발지 (이관이면 CA)
-  const sig=[sf,window._lblService||'03',wt,shipTo.zip,shipTo.state].join('|');
+  /* 🚚 UPS 는 실무게와 부피무게(가로×세로×높이÷139) 중 **큰 쪽**으로 청구한다.
+     우리 상자는 크고 가벼워서 거의 항상 부피무게가 이긴다 (인보이스 16건 전수 확인).
+     그래서 치수를 같이 보내야 견적이 실제 청구액과 맞는다. (v1117) */
+  const _dims = boxes.map(b=>({ l:+b.l||0, w:+b.w||0, h:+b.h||0, wt:Math.max(1,Math.round(+b.wt||0)) }));
+  const sig=[sf,window._lblService||'03',wt,shipTo.zip,shipTo.state,
+             _dims.map(d=>d.l+'x'+d.w+'x'+d.h+'@'+d.wt).join(',')].join('|');
   if(opts.auto && sig===window._lblEstSig && window._lblEstHtml && !/⏳|❌/.test(window._lblEstHtml)) return;  // 같은 값이면 재호출 안 함
   window._lblEstReq=(window._lblEstReq||0)+1; const myReq=window._lblEstReq;
   setEst('⏳ Checking UPS…');
   try{
     const body={ shipTo }; body[sf==='CA'?'caLbs':'scLbs']=wt;
+    /* 치수가 다 들어간 박스만 보낸다. 하나라도 비어 있으면 아예 안 보내고
+       옛 방식(무게만)으로 간다 — 반쪽짜리 치수로 견적이 틀리는 게 더 나쁘다. */
+    if(_dims.length && _dims.every(d=>d.l>0&&d.w>0&&d.h>0))
+      body[sf==='CA'?'caBoxes':'scBoxes']=_dims;
     const r=await fetch(UPS_LABEL_URL.replace('/label','/rates'), {method:'POST',headers:wkHdr(),body:JSON.stringify(body)});
     const j=await r.json();
     if(myReq!==window._lblEstReq) return;   // 더 최근 요청이 있으면 이 결과는 버림
