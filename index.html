@@ -204,7 +204,7 @@ body.po-dragging{user-select:none;}
   </span>
   <select id="lang-sel" onchange="setLang(this.value)" style="font-size:11px;padding:3px 6px;border-radius:5px;border:none;background:#1d3f66;color:#fff;"><option value="ko">한국어</option><option value="en">English</option><option value="es">Español</option></select>
   <button id="wide-btn" class="btn btn-sm" onclick="toggleWide()" title="화면 넓게 / 좁게 — 기본은 넓게 (이 브라우저에만 저장돼)" style="padding:2px 8px;font-size:10px;background:#1d3f66;color:#cfe0f2;border-color:#2b5384;">↔ Wide</button>
-  <span id="app-ver" style="font-size:10px;color:#9fb8d4;">v1114</span>
+  <span id="app-ver" style="font-size:10px;color:#9fb8d4;">v1116</span>
 </div>
 <script>
 // ↔ 넓게 보기 — 브라우저마다 따로 저장 (v793)
@@ -375,6 +375,13 @@ try{ applyWide(localStorage.getItem('psx_wide') !== '0'); }catch(e){ applyWide(t
       <span id="wh-summary" style="margin-left:auto;display:inline-flex;gap:6px;align-items:center;"></span>
       <button class="btn" id="po-cancel-btn" style="display:none;border-color:#fca5a5;color:#b91c1c;font-weight:700;" onclick="cancelModify()" title="Throw away everything you changed here and close — the order goes back exactly as it was">✕ Cancel</button>
       <button class="btn btn-primary" onclick="saveCurrent()" data-i18n="save">💾 Save</button>
+    </div>
+    <!-- 🌐 손님이 체크아웃에서 쓴 메모 (v1115) — 읽기 전용.
+         ⚠ 아래 📝 Customer Note 와 절대 섞지 말 것. 그건 우리가 손님에게 보내는 글이다.
+         전에는 이 글이 Web Orders 창에만 있고 불러오면 사라져서 직원이 볼 방법이 없었다. -->
+    <div id="m-webnote-box" style="display:none;margin-top:10px;gap:10px;align-items:flex-start;background:#f5f3ff;border:1px solid #c4b5fd;border-radius:8px;padding:8px 12px;">
+      <span style="font-size:12px;font-weight:800;color:#5b21b6;white-space:nowrap;margin-top:1px;">🌐 From the customer</span>
+      <span id="m-webnote" style="flex:1;font-size:12.5px;color:#4c1d95;font-weight:700;white-space:pre-wrap;"></span>
     </div>
     <div style="margin-top:10px;display:flex;gap:10px;align-items:flex-start;background:#fffbeb;border:1px solid #fcd34d;border-radius:8px;padding:8px 12px;">
       <span style="font-size:12px;font-weight:800;color:#92400e;white-space:nowrap;margin-top:7px;">📝 Customer Note</span>
@@ -3190,6 +3197,52 @@ function revTruckState(rec){
   return { on:true, status: String((t && t.status) || ''), ship: String((t && t.ship) || '') };
 }
 
+/* 🔄 스타일만 통째로 바뀐 것인가 — '교체' 판정 (v1116).
+   조건: 되돌리는 쪽이 전부 한 스타일 · 새로 뽑는 쪽이 전부 다른 한 스타일이고,
+         (색|사이즈) 별 수량이 양쪽에서 정확히 짝이 맞는다.
+   ⚠ 하나라도 안 맞으면 null 을 돌려준다 — 그때는 예전처럼 양쪽을 다 보여줘야 한다.
+      '교체' 라고 잘못 말하는 것이 아무 말 안 하는 것보다 나쁘다. */
+function revSwapOf(rec, wh, rv){
+  try{
+    const d = revRowDelta(rec, wh, rv);
+    if(!d.plus || !d.minus || d.plus !== d.minus) return null;
+    const outQ = {}, inQ = {};
+    let sOut = null, sIn = null, ok = true;
+    d.items.forEach(it=>{
+      const st = String(it.style||'');
+      const k  = String(it.color||'') + '|' + String(it.size||'');
+      if(it.d < 0){
+        if(sOut === null) sOut = st; else if(sOut !== st) ok = false;
+        outQ[k] = (outQ[k]||0) + (-it.d);
+      }else{
+        if(sIn === null) sIn = st; else if(sIn !== st) ok = false;
+        inQ[k] = (inQ[k]||0) + it.d;
+      }
+    });
+    if(!ok || !sOut || !sIn || sOut === sIn) return null;
+    const ko = Object.keys(outQ), ki = Object.keys(inQ);
+    if(ko.length !== ki.length || !ko.length) return null;
+    if(ko.some(k=>outQ[k] !== inQ[k])) return null;
+    const cols = [...new Set(d.items.map(it=>String(it.color||'')).filter(Boolean))];
+    return { from:sOut, to:sIn, pcs:d.plus, sizes:ko.length, color: cols.length===1 ? cols[0] : '' };
+  }catch(e){ return null; }
+}
+/* ⚠⚠ 창고가 들고 있는 Pull Request 가 이 수정보다 오래된 것인가 (v1116).
+   PO 80054191 에서 실제로 난 일: 19:56 에 1368 종이를 프린트해 창고에 줬고
+   20:43 에 전부 8368 로 바꿨다. 그런데 그 줄의 Pull Request 는 계속 **초록색**이라
+   "끝난 일" 로 보였다. 창고는 틀린 종이를 들고 있는데 화면이 조용했다. */
+function whPaperStale(rec, wh){
+  try{
+    const mp = (((rec && rec.meta && rec.meta._printed) || {})[wh]) || {};
+    const t  = (mp.pr && mp.pr.at) ? Date.parse(mp.pr.at) : 0;
+    if(!t) return null;
+    const after = (((rec.meta || {})._revs) || []).filter(rv=>{
+      const rt = Date.parse(String(rv && rv.at || '')); return rt && rt > t;
+    });
+    if(!after.length) return null;
+    return { ns: after.map(rv=>rv.n).join(', '), at: after[after.length-1].at, printedAt: mp.pr.at };
+  }catch(e){ return null; }
+}
 function revRowsHtml(rec, wh){
   const rows = revRowsFor(rec, wh);
   if(!rows.length) return '';
@@ -3200,10 +3253,29 @@ function revRowsHtml(rec, wh){
     const key = revRowKey(wh, rv.n);
     const mp  = revPrnOf(rec, wh, rv.n);
     const d   = revRowDelta(rec, wh, rv);
-    const chips = (d.plus ? `<span style="background:#1d4ed8;color:#fff;font-weight:900;border-radius:4px;padding:1px 8px;font-size:11px;white-space:nowrap;">➕ ${d.plus.toLocaleString()} pcs</span>` : '')
-                + (d.minus ? `<span style="background:#b45309;color:#fff;font-weight:900;border-radius:4px;padding:1px 8px;font-size:11px;white-space:nowrap;">↩ put back ${d.minus.toLocaleString()} pcs</span>` : '');
-    const what = d.items.slice(0,3).map(x=>esc([x.style, x.color, x.size].filter(Boolean).join(' '))).join(' · ')
-               + (d.items.length > 3 ? (' <span style="color:#94a3b8;">+' + (d.items.length-3) + ' more</span>') : '');
+    /* 🔄 v1116 — 스타일 교체는 한 칩·한 줄로 읽히게. 아니면 양쪽에 이름표를 붙인다.
+       전에는 `➕ 869` 와 `↩ put back 869` 가 나란히 뜨고 글자는 되돌리는 쪽만 나와서
+       "더했다 뺐다?" + "REV 가 1368 짜리인가?" 로 읽혔다. */
+    const sw = revSwapOf(rec, wh, rv);
+    const chips = sw
+      ? `<span style="background:#6d28d9;color:#fff;font-weight:900;border-radius:4px;padding:1px 9px;font-size:11px;white-space:nowrap;" title="Same colour, same sizes, same quantity — only the style number changed. The old style goes back on the shelf and the new one gets pulled.">🔄 SWAP ${sw.pcs.toLocaleString()} pcs</span>`
+      : ((d.plus ? `<span style="background:#1d4ed8;color:#fff;font-weight:900;border-radius:4px;padding:1px 8px;font-size:11px;white-space:nowrap;">➕ pull ${d.plus.toLocaleString()} pcs</span>` : '')
+       + (d.minus ? `<span style="background:#b45309;color:#fff;font-weight:900;border-radius:4px;padding:1px 8px;font-size:11px;white-space:nowrap;">↩ put back ${d.minus.toLocaleString()} pcs</span>` : ''));
+    const _side = (arr, lab, col) => {
+      if(!arr.length) return '';
+      const txt = arr.slice(0,3).map(x=>esc([x.style, x.color, x.size].filter(Boolean).join(' '))).join(' · ')
+                + (arr.length > 3 ? (' <span style="color:#94a3b8;font-weight:600;">+' + (arr.length-3) + ' more</span>') : '');
+      return `<span style="font-size:11px;color:#475569;font-weight:700;white-space:nowrap;"><b style="color:${col};">${lab}</b> ${txt}</span>`;
+    };
+    const what = sw
+      ? `<span style="font-size:11.5px;color:#475569;font-weight:700;">`
+        + `<b style="color:#b45309;font-family:Consolas,monospace;">${esc(sw.from)}</b>`
+        + ` <span style="color:#6d28d9;font-weight:900;">→</span> `
+        + `<b style="color:#1d4ed8;font-family:Consolas,monospace;">${esc(sw.to)}</b>`
+        + (sw.color ? ('  ' + esc(sw.color)) : '')
+        + ` <span style="color:#94a3b8;font-weight:600;">· ${sw.sizes} size${sw.sizes>1?'s':''} · ${sw.pcs.toLocaleString()} pcs</span></span>`
+      : (_side(d.items.filter(x=>x.d < 0), '↩ put back', '#b45309')
+         + _side(d.items.filter(x=>x.d > 0), '➕ pull', '#1d4ed8'));
     const tk = revTruckState(rec);
     /* 되돌릴 물건이 트럭 안이면 이 줄은 잠근다 — SC 창고엔 그 물건이 없다 */
     const locked = (wh === 'SC' && tk.on && tk.status === 'transit' && d.minus > 0);
@@ -3222,7 +3294,13 @@ function revRowsHtml(rec, wh){
     return `<div style="display:flex;align-items:center;gap:6px;flex-wrap:wrap;margin-top:4px;margin-left:26px;padding:5px 8px;background:#fffbeb;border:1px solid #fcd34d;border-left:4px solid #b45309;border-radius:6px;">
       <span style="font-weight:900;color:#b45309;font-size:11.5px;white-space:nowrap;" title="Changed ${esc(when)} by ${esc(who)} — this is its own piece of work. The original ${wh} row above is untouched.">↳ REV ${rv.n}</span>
       ${chips}
-      <span style="font-size:11px;color:#475569;font-weight:700;">${what}</span>
+      ${what}
+      ${(()=>{ /* ↩ v1116 — 되돌릴 물건이 있으면 그 종이를 여기서 바로 뽑게. 전에는 맨 윗줄에만
+           배지가 있어서 REV 줄과 연결이 안 보였다. */
+        if(!d.minus || locked) return '';
+        if(typeof putBackPending !== 'function' || !putBackPending(rec)) return '';
+        return `<button class="btn btn-sm" style="background:#b45309;color:#fff;border-color:#b45309;font-weight:800;" onclick="putBackAsk('${esc(rec.base)}')" title="Print the sheet that tells the warehouse which bin each box goes back into">↩ Put Back Request</button>`;
+      })()}
       <button class="btn btn-sm"${dis} style="background:${prC};color:#fff;border-color:${prC};font-weight:800;${locked?'cursor:not-allowed;opacity:.6;':''}" onclick="revPrintPR('${esc(rec.base)}','${wh}',${rv.n})" oncontextmenu="return docBtnMenu(event,'${esc(rec.base)}','${esc(key)}','pr')" title="Only what changed in REV ${rv.n} — pull AND put-back on one sheet. Give the warehouse this, not the whole order. Right-click: ${mp.pr?'clear':'mark'} done.">\u{1F5A8} Pull Request${pby(mp.pr)}</button>
       <button class="btn btn-sm"${dis} style="background:${lbC};color:#fff;border-color:${lbC};${locked?'cursor:not-allowed;opacity:.6;':''}" onclick="revLabelClick('${esc(rec.base)}','${wh}',${rv.n})" oncontextmenu="return docBtnMenu(event,'${esc(rec.base)}','${esc(key)}','label')" title="Right-click: ${mp.label?'clear':'mark'} done">\u{1F3F7} Box Label${pby(mp.label)}</button>
       <button class="btn btn-sm"${dis} style="background:${locked?'#cbd5e1':'#0f766e'};color:#fff;border-color:${locked?'#cbd5e1':'#0f766e'};${locked?'cursor:not-allowed;opacity:.6;':''}" onclick="revLabelClick('${esc(rec.base)}','${wh}',${rv.n},'full')" title="Small 2x1 label for individual full boxes">\u{1F3F7} Full Box</button>
@@ -3631,12 +3709,42 @@ function emailDoc(wh){
 // ═══════════════ 저장 / 불러오기 ═══════════════
 function getMeta(){
   const g = id => $(id).value;
-  return { cust:g('m-cust'), po:g('m-po'), date:g('m-date'), podate:g('m-podate'), via:g('m-via'), billName:g('m-bill-name'),
+  const _m = { cust:g('m-cust'), po:g('m-po'), date:g('m-date'), podate:g('m-podate'), via:g('m-via'), billName:g('m-bill-name'),
            billAddr:g('m-bill-addr'), billCity:g('m-bill-city'), billState:g('m-bill-state'), billZip:g('m-bill-zip'),
            shipName:g('m-ship-name'), shipAddr:g('m-ship-addr'), shipCity:g('m-ship-city'), shipState:g('m-ship-state'), shipZip:g('m-ship-zip'), webCust: !!($('m-webcust') && $('m-webcust').checked), urgent: !!($('m-urgent') && $('m-urgent').checked), lockerStock: !!($('m-locker') && $('m-locker').checked), cc: !!($('m-cc') && $('m-cc').checked), futureShip: ($('m-futureship') && $('m-futureship').value) || '', confNote: ($('m-confnote') && $('m-confnote').value) || '' };
+  /* 🌐 웹 오더에서 온, 화면에 칸이 없는 값들 (v1115).
+     [Import] 할 때 `_webHold` 에 담아 두고 여기서 meta 에 붙인다.
+       · custEmail — Packing List 의 손님 메일 칸. 전에는 빈칸이라 직원이 손으로 쳤다.
+       · webNote   — 손님이 체크아웃에서 쓴 메모. 전에는 불러오면 사라졌다.
+       · webShip   — 손님이 고른 배송 방법 원문 ('UPS Ground' 등) -> PL 의 METHOD.
+       · webPaid   — 이미 카드로 받은 금액. 운임을 또 청구하지 않게 하는 근거.
+     ⚠ PO 가 다르면 안 붙인다 — 다른 오더를 만들던 중이면 남의 값이 새면 안 된다.
+     ⚠ 두 번째 저장부터는 `existing.meta` 가 이미 들고 있다 (saveOrder 가 깔고 덮는다). */
+  try{
+    if(_webHold && _webHold.po && _webHold.po === String(_m.po||'').trim().toUpperCase()){
+      if(_webHold.custEmail) _m.custEmail = _webHold.custEmail;
+      if(_webHold.webNote)   _m.webNote   = _webHold.webNote;
+      if(_webHold.webShip)   _m.webShip   = _webHold.webShip;
+      if(_webHold.webPaid)   _m.webPaid   = _webHold.webPaid;
+    }
+  }catch(e){}
+  return _m;
+}
+/* 손님이 쓴 메모를 오더 화면에 띄운다 (v1115). 없으면 줄 자체를 숨긴다. */
+function webNoteShow(txt){
+  try{
+    const box = document.getElementById('m-webnote-box'), el = document.getElementById('m-webnote');
+    if(!box || !el) return;
+    const t = String(txt == null ? '' : txt).trim();
+    el.textContent = t;
+    box.style.display = t ? 'flex' : 'none';
+  }catch(e){}
 }
 function setMeta(m){
   $('m-cust').value=m.cust||''; $('m-po').value=m.po||''; $('m-date').value=m.date||todayStr(); $('m-podate').value=m.podate||''; $('m-via').value=normVia(m.via)||''; syncViaBoxes(); if($('m-webcust')) $('m-webcust').checked = !!m.webCust; if($('m-urgent')) $('m-urgent').checked = !!m.urgent; if($('m-locker')) $('m-locker').checked = !!m.lockerStock; if($('m-cc')) $('m-cc').checked = !!m.cc; if($('m-futureship')) $('m-futureship').value = m.futureShip || ''; if($('m-confnote')) $('m-confnote').value = m.confNote || '';
+  /* 🌐 저장된 웹 오더를 다시 열 때도 손님 메모를 띄운다.
+     ⚠ 웹 오더가 아니면 빈 값이 들어와 줄이 숨는다 — 앞 오더의 메모가 남으면 안 된다 (v1115) */
+  try{ webNoteShow(m && m.webNote); }catch(e){}
   // 구버전 저장분 호환 (billto/shipto 한 줄짜리)
   if(m.billto && !m.billAddr){ fillAddr('bill', m.billto); } else {
     $('m-bill-name').value=m.billName||''; $('m-bill-addr').value=m.billAddr||''; $('m-bill-city').value=m.billCity||''; $('m-bill-state').value=m.billState||''; $('m-bill-zip').value=m.billZip||'';
@@ -7811,6 +7919,16 @@ function openPLInner(base){
     let _tr = (i.trackings&&i.trackings.length?i.trackings:(i.tracking?[i.tracking]:[])).filter(Boolean);
     let _via = normVia(i.via||((rec.meta&&rec.meta.via)||''));
     let _method = i.method||'';
+    /* 🚚 웹 오더는 손님이 고른 배송 방법이 meta.webShip 에 있다 (v1115).
+       UPS 라벨을 아직 안 만들었어도 Packing List 의 METHOD 가 맞게 찍힌다.
+       ⚠ 이미 저장된 PL 의 method 가 있으면 그걸 존중한다 (위 `i.method`). */
+    if(!_method){
+      const _ws = String((rec.meta && rec.meta.webShip) || '');
+      if(/next\s*day/i.test(_ws)) _method = 'Next Day';
+      else if(/2nd\s*day|second\s*day/i.test(_ws)) _method = '2nd Day';
+      else if(/3\s*day|3rd\s*day|three\s*day/i.test(_ws)) _method = '3rd Day';
+      else if(/ground/i.test(_ws)) _method = 'Ground';
+    }
     const _uwLabel = _isRev ? null : upsForWh(rec, w);   // 창고별/레거시 모두 지원 — 이 창고에서 만든 UPS 라벨 (REV 문서는 자기 트래킹을 직접 넣는다)
     if(!_tr.length && _uwLabel && (_uwLabel.tracking||[]).length){
       _tr = _uwLabel.tracking.slice();
@@ -15684,7 +15802,34 @@ function renderWeb(){
    재고는 일부러 안 잡는다 (2026-08-26 결정). 도매라 동시 주문이 드물고,
    모자라면 백오더로 처리하면 되기 때문. 대신 여기서 재고 부족을 미리 보여준다. */
 let _webOrders = [];
-function woCount(){ return (_webOrders||[]).length; }
+/* 🌐 [Import] 할 때 담아 두는, 화면에 칸이 없는 값들 (v1115). getMeta() 가 꺼내 쓴다. */
+let _webHold = null;
+/* 🌐 이 웹 주문이 psflowx 로 이미 들어왔나 (v1115).
+   전에는 `status` 만 봤다. 그런데 status 는 송장을 찍고 Complete 할 때만 `shipped` 로
+   바뀌므로, 불러와 저장까지 한 주문이 며칠씩 목록에 남아 타일이 계속 깜빡였다.
+   더 나쁜 건 그 사이에 다른 직원이 [Import] 를 또 눌러 **같은 오더가 PO 두 개로**
+   생길 수 있었다는 것이다.
+   ⚠ psflowx 에서 취소된 오더는 '처리됐다' 로 보지 않는다 — 웹쪽 취소·환불이 아직
+      안 끝났으니 다시 할 일로 올려서 사람 눈에 띄게 한다.
+      (실제로 W10001 이 psflowx 취소 + web_orders 'new' 로 어긋나 있었다) */
+function woDone(o){
+  try{
+    const po = String((o && o.order_number) || '').trim().toUpperCase();
+    if(!po) return false;
+    const hit = (savedCache||[]).find(x=>String(((x.meta)||{}).po||'').trim().toUpperCase() === po);
+    if(!hit) return false;
+    if(typeof recCancelled === 'function' && recCancelled(hit)) return false;
+    return true;
+  }catch(e){ return false; }
+}
+function woTodo(){ return (_webOrders||[]).filter(o=>!woDone(o)); }
+function woCount(){ return woTodo().length; }
+/* 타일 숫자·깜빡임을 다시 그린다. savedCache 가 늦게 올라오므로 저장목록 쪽에서도 부른다 */
+function woPaintTile(){
+  try{ const el = document.getElementById('kpi-web-n'); if(el) el.textContent = woCount(); }catch(e){}
+  try{ const t = document.getElementById('web-kpi');
+       if(t) t.classList.toggle('breq-blink', woCount() > 0); }catch(e){}
+}
 function woNum(o){ return String((o&&o.order_number)||'').trim(); }
 function woCust(o){ return String((o&&(o.company_name||o.contact_name))||'').trim() || '(no name)'; }
 function woWh(v){ return String(v||'SC').trim().toUpperCase()==='CA' ? 'CA' : 'SC'; }
@@ -15719,22 +15864,23 @@ async function webOrdersLoad(silent){
       + '&order=created_at.desc&limit=60');
     _webOrders = r.ok ? (await r.json()) : [];
   }catch(e){ _webOrders = []; }
-  const el = document.getElementById('kpi-web-n');
-  if(el) el.textContent = woCount();
   /* 🌐 처리 안 한 웹 주문이 있으면 타일을 깜빡인다 (v1111) — 📦 Box Request 와 같은 방식.
-     숫자만 조용히 바뀌면 다른 탭에 앉아 있는 사람은 주문이 들어온 걸 모른다. */
-  try{ const _tile = document.getElementById('web-kpi');
-       if(_tile) _tile.classList.toggle('breq-blink', woCount() > 0); }catch(e){}
+     숫자만 조용히 바뀌면 다른 탭에 앉아 있는 사람은 주문이 들어온 걸 모른다.
+     v1115: 숫자·깜빡임을 woPaintTile() 한 군데로 모았다. 이미 불러온 주문은 안 센다. */
+  woPaintTile();
   /* 새로 들어온 주문만 골라 한 번 알린다. 첫 조회는 기록만 하고 알리지 않는다 —
      앱을 열 때마다 옛 주문으로 알림이 뜨면 아무도 안 보게 된다. */
   try{
-    const _nums = (_webOrders||[]).map(o=>String(o.order_number||'')).filter(Boolean);
+    /* v1115: 아직 안 불러온 것만 알린다 — 이미 처리한 오더로 알림이 뜨면 아무도 안 본다 */
+    const _nums = woTodo().map(o=>String(o.order_number||'')).filter(Boolean);
     if(!window._woSeen){ window._woSeen = new Set(_nums); }
     else {
       const _fresh = _nums.filter(n=>!window._woSeen.has(n));
       _fresh.forEach(n=>window._woSeen.add(n));
       if(_fresh.length && typeof showToast==='function')
-        showToast('🌐 새 웹 주문 ' + _fresh.length + '건 — ' + _fresh.slice(0,2).join(', ') + ' · 🌐 Web Orders 에서 불러오세요');
+        showToast('🌐 ' + _fresh.length + ' new web order' + (_fresh.length>1?'s':'') + ' — '
+                  + _fresh.slice(0,2).join(', ') + (_fresh.length>2?' +'+(_fresh.length-2):'')
+                  + ' · open 🌐 Web Orders to import');
     }
   }catch(e){}
   return _webOrders;
@@ -15947,6 +16093,14 @@ async function webOrderCancelDo(id){
 function webOrdersOpen(){
   const rows = (_webOrders||[]).map(o=>{
     const ls = woLines(o);
+    /* v1115: 이미 psflowx 로 들어온 주문인지. 들어왔으면 [Import] 를 [Open] 으로 바꾼다 —
+       목록에서 지우지는 않는다 (취소 요청이 오면 여기서 취소해야 하니까). */
+    const _psb = (function(){ try{ return webOrderPsBase(o); }catch(e){ return null; } })();
+    const _cxl = (function(){ try{
+      if(!_psb) return false;
+      const hit = (savedCache||[]).find(x=>x.base === _psb);
+      return !!(hit && typeof recCancelled === 'function' && recCancelled(hit));
+    }catch(e){ return false; } })();
     let short = 0;
     const lineHtml = ls.map(l=>{
       const av = woAvail(l.style, l.color, l.size, l.wh);
@@ -15973,7 +16127,13 @@ function webOrdersOpen(){
       +   (where?'<span style="font-size:11px;color:#94a3b8;">'+esc(where)+'</span>':'')
       +   '<span style="font-size:11px;color:#94a3b8;">'+esc(String(o.paid_at||o.created_at||'').slice(0,10))+'</span>'
       +   (o.total_amount!=null?'<span style="font-family:Consolas,monospace;font-size:11.5px;font-weight:800;">$'+Number(o.total_amount).toLocaleString(undefined,{maximumFractionDigits:2})+'</span>':'')
-      +   '<button onclick="webOrderImport(\''+esc(String(o.id))+'\')" style="margin-left:auto;background:#0d9488;color:#fff;border:none;border-radius:8px;padding:6px 14px;font-size:12px;font-weight:800;cursor:pointer;">Import ›</button>'
+      +   (_psb
+            ? ((_cxl
+                 ? '<span title="This order was cancelled on the psflowx side — the web order and the card still need finishing" style="margin-left:auto;font-size:11px;font-weight:800;color:#b91c1c;background:#fef2f2;border:1px solid #fca5a5;border-radius:20px;padding:3px 10px;white-space:nowrap;">⚠ Cancelled in psflowx</span>'
+                 : '<span title="Already imported into psflowx as '+esc(String(_psb))+' — do not import it again" style="margin-left:auto;font-size:11px;font-weight:800;color:#15803d;background:#f0fdf4;border:1px solid #86efac;border-radius:20px;padding:3px 9px;white-space:nowrap;font-family:Consolas,monospace;">✓ '+esc(String(_psb))+'</span>')
+               + '<button onclick="webOrderGo(\''+esc(String(o.id))+'\')" style="background:#0f2a4a;color:#fff;border:none;border-radius:8px;padding:6px 13px;font-size:12px;font-weight:800;cursor:pointer;">Open ›</button>'
+               + '<button onclick="webOrderReimport(\''+esc(String(o.id))+'\')" title="Import again — fills the form with these lines a second time. Only do this if the first import was thrown away." style="background:#fff;color:#64748b;border:1px solid #cbd5e1;border-radius:8px;padding:6px 8px;font-size:12px;font-weight:700;cursor:pointer;">↻</button>')
+            : '<button onclick="webOrderImport(\''+esc(String(o.id))+'\')" style="margin-left:auto;background:#0d9488;color:#fff;border:none;border-radius:8px;padding:6px 14px;font-size:12px;font-weight:800;cursor:pointer;">Import ›</button>')
       +   '<button onclick="webOrderCancelOpen(\''+esc(String(o.id))+'\')" title="The customer asked to cancel — this also puts the money back on their card" style="background:#fff;color:#b91c1c;border:1px solid #fca5a5;border-radius:8px;padding:6px 11px;font-size:12px;font-weight:800;cursor:pointer;">✕ Cancel</button>'
       + '</div>'
       + (short ? '<div style="font-size:11px;font-weight:800;color:#b91c1c;margin-top:5px;">⚠ '+short+' line'+(short>1?'s':'')+' short on stock — may ship as backorder</div>' : '')
@@ -15982,8 +16142,13 @@ function webOrdersOpen(){
       + '</div>';
   }).join('') || '<div style="padding:24px;text-align:center;color:#94a3b8;font-size:13px;">No new web orders 🎉</div>';
 
-  kpiShell('modal-weborders', '🌐 Web Orders ('+woCount()+')', '#0d9488', rows,
-    'Paid orders from the web shop. The order confirmation email has already gone to the customer. [Import] fills the order form — check the warehouse, set the P.BOX, and save: from there it is exactly like any other PO. [✕ Cancel] puts the money back on the card and tells the customer.');
+  /* v1115: 제목은 **할 일 개수**다. 이미 psflowx 로 들어온 줄도 목록에는 남겨 두므로
+     (취소 요청이 오면 여기서 취소해야 한다) 줄 수와 개수가 다를 수 있다 — 그래서 같이 적는다. */
+  const _nTodo = woCount(), _nAll = (_webOrders||[]).length, _nIn = _nAll - _nTodo;
+  kpiShell('modal-weborders',
+    '🌐 Web Orders (' + _nTodo + (_nIn > 0 ? (' to do · ' + _nIn + ' already in psflowx') : '') + ')',
+    '#0d9488', rows,
+    'Paid orders from the web shop. The order confirmation email has already gone to the customer. [Import] fills the order form — check the warehouse, set the P.BOX, and save: from there it is exactly like any other PO. An order already pulled into psflowx shows its Pull Request number and [Open] instead — do not import it twice. [✕ Cancel] puts the money back on the card and tells the customer.');
 }
 
 // PO PDF 파싱이 끝났을 때와 같은 상태로 오더 폼을 채운다
@@ -16008,6 +16173,33 @@ function webOrderImport(id){
   if($$('m-po'))      $$('m-po').value      = woNum(o);
   if($$('m-podate'))  $$('m-podate').value  = String(o.paid_at||o.created_at||'').slice(0,10);
   if($$('m-date'))    $$('m-date').value    = todayStr();
+  /* 🚚 손님이 체크아웃에서 고른 배송 방법을 그대로 켠다 (v1115).
+     전에는 비어 있어서 Packing List 의 VIA 와 PDF 의 Via 칸이 빈 줄로 나갔다. */
+  try{
+    const _v = normVia(o.shipping_method);
+    if($$('m-via')){ $$('m-via').value = _v || ''; if(typeof syncViaBoxes==='function') syncViaBoxes(); }
+  }catch(e){}
+  /* 💳 이미 카드로 받은 돈이다. 안 켜면 저장 목록의 Credit Card 필터에 안 걸리고,
+     직원이 미수금으로 착각할 수 있다. */
+  try{ if($$('m-cc')) $$('m-cc').checked = true; }catch(e){}
+  /* 🌐 웹에서 온 오더 — 저장 줄에 WEBSITE 도장이 붙고 Website 필터에 걸린다.
+     전에는 거래처 카드에 webCust 가 켜져 있을 때만 붙어서, 웹 주문인데도 일반 PO 와
+     구분이 안 됐다 (W10001 이 실제로 그랬다). */
+  try{ if($$('m-webcust')) $$('m-webcust').checked = true; }catch(e){}
+  /* 📝 손님 메일 · 손님 메모 · 배송방법 · 받은 금액은 화면에 칸이 없다.
+     여기 담아 두고 getMeta() 가 저장할 때 meta 에 붙인다.
+     ⚠ 목록 조회(webOrdersLoad)의 select 에 있는 칸만 쓴다 — 없는 칸을 넣으면 400 이 나서
+        목록이 통째로 비어 버린다 (v1111 사고와 같은 종류). card_last4 · transaction_id 는
+        그 select 에 없다 — 필요한 쪽(webOrderRow)이 따로 읽는다. */
+  _webHold = {
+    po:        String(woNum(o)||'').trim().toUpperCase(),
+    custEmail: String(o.email||'').trim(),
+    webNote:   String(o.notes||'').trim(),
+    webShip:   String(o.shipping_method||'').trim(),
+    webPaid:   { amount: Number(o.total_amount)||0, ship: Number(o.shipping_cost)||0,
+                 pcs: Number(o.total_pcs)||0, at: o.paid_at || o.created_at || null }
+  };
+  try{ webNoteShow(o.notes); }catch(e){}
 
   const st = o.ship_to || {};
   // 이름 칸은 직접 넣는다 — fillAddr 의 '숫자 없는 첫 줄' 휴리스틱은
@@ -16029,7 +16221,27 @@ function webOrderImport(id){
   try{ updateNumPreview(); }catch(e){}
   try{ saveDraft(); }catch(e){}
   const m=document.getElementById('modal-weborders'); if(m) m.remove();
-  showToast('🌐 '+woNum(o)+' 불러왔어 — 창고 확인하고 📦 P.BOX 지정한 뒤 저장해');
+  showToast('🌐 ' + woNum(o) + ' imported — check the warehouse, set the 📦 P.BOX, then save'
+          + (String(o.notes||'').trim() ? ' · 📝 customer note carried over' : ''));
+}
+
+/* ═══ 이미 psflowx 로 들어온 주문 (v1115) ═══ */
+/* 두 번 불러오는 대신 그 오더를 연다 */
+function webOrderGo(id){
+  const o = (_webOrders||[]).find(x=>String(x.id)===String(id));
+  const b = o ? webOrderPsBase(o) : null;
+  if(!b){ showToast('⚠ Could not find that order in psflowx'); return; }
+  const m = document.getElementById('modal-weborders'); if(m) m.remove();
+  try{ loadSaved(b); }catch(e){ showToast('⚠ ' + (e.message || String(e))); }
+}
+/* 그래도 다시 불러와야 할 때 — 경고를 한 번 받고 간다 */
+function webOrderReimport(id){
+  const o = (_webOrders||[]).find(x=>String(x.id)===String(id));
+  const b = o ? webOrderPsBase(o) : null;
+  if(b && !confirm('This web order is already in psflowx as ' + b + '.\n\n'
+    + 'Importing again fills the form with the same lines. If you save it under a NEW Pull Request '
+    + 'number, the same goods get pulled twice.\n\nImport anyway?')) return;
+  webOrderImport(id);
 }
 
 /* ═══════════ 🆕 웹 가입 신청 (v1039) ═══════════
@@ -38514,6 +38726,7 @@ function renderSaved(){
       ${whs.map(w=>`<span class="chip chip-${w}">${w}</span>`).join('')}
       ${recHasPendingReturn(s) ? `<span style="background:#ea580c;color:#fff;font-size:10.5px;font-weight:900;padding:3px 10px;border-radius:20px;white-space:nowrap;box-shadow:0 1px 3px rgba(234,88,12,.4);" title="Return pending — RA# ${esc((recReturns(s).find(r=>r.status==='pending')||{}).ra||'')} · awaiting goods">↩ RETURN PENDING</span>` : ''}
       ${s.meta.webCust ? `<span style="background:#0e7490;color:#fff;font-size:10.5px;font-weight:900;padding:3px 10px;border-radius:20px;white-space:nowrap;letter-spacing:0.5px;box-shadow:0 1px 3px rgba(14,116,144,.4);">🌐 WEBSITE</span>` : ''}
+      ${(s.meta.webNote && String(s.meta.webNote).trim()) ? `<span title="What the customer typed at checkout" style="background:#f5f3ff;color:#5b21b6;border:1px solid #c4b5fd;font-size:10.5px;font-weight:800;padding:3px 9px;border-radius:20px;white-space:nowrap;max-width:230px;overflow:hidden;text-overflow:ellipsis;">📝 ${esc(String(s.meta.webNote).trim().slice(0,44))}</span>` : ''}
       ${putBackPending(s) ? `<span title="The order changed — stock came off the books but is still out of its bin. Click to print the Put Back Request." style="background:#b45309;color:#fff;font-size:10.5px;font-weight:900;padding:3px 10px;border-radius:20px;white-space:nowrap;cursor:pointer;box-shadow:0 1px 3px rgba(180,83,9,.4);" onclick="event.stopPropagation();putBackAsk('${esc(s.base)}')">↩ PUT BACK NEEDED</span>` : ''}
       ${recShipFromCA(s) ? (()=>{ const st=(s.meta&&s.meta._scToCA&&s.meta._scToCA.status)||''; const lab=st==='arrived'?'🚚 SC→CA · ✓ ARRIVED CA':(st==='transit'?'🚚 SC→CA · IN TRANSIT':'🚚 SC→CA · SHIP FROM CA'); const bg=st==='arrived'?'#166534':(st==='transit'?'#7c3aed':'#b45309'); return `<span style="background:${bg};color:#fff;font-size:10.5px;font-weight:900;padding:3px 10px;border-radius:20px;white-space:nowrap;box-shadow:0 1px 3px rgba(0,0,0,.25);" title="SC→CA transfer — packed in SC, rides the SC→CA truck, ships out combined from CA (CA just receives &amp; reships, no CA inventory)">${lab}</span>`; })() : ''}
       ${s.meta.futureShip ? `<span style="background:${new Date(s.meta.futureShip+'T00:00:00')>new Date()?'#2563eb':'#16a34a'};color:#fff;font-size:10.5px;font-weight:900;padding:3px 10px;border-radius:20px;white-space:nowrap;box-shadow:0 1px 3px rgba(37,99,235,.35);" title="Customer-requested ship date">🚀 SHIP ${new Date(s.meta.futureShip+'T00:00:00').toLocaleDateString('en-US',{month:'numeric',day:'numeric',year:'2-digit'})}</span>` : ''}
@@ -38556,7 +38769,11 @@ function renderSaved(){
         const mp = (s.meta && s.meta._printed && s.meta._printed[w]) || {};
         const locker = !!(s.meta && s.meta.lockerStock);   // 🔒 locker = 거래처 창고 위탁 · 우리 창고 처리 안 함 (v422)
         const pby = v => (v && v.by) ? `<span style="font-size:9px;opacity:.9;font-weight:700;" title="${esc(String(v.by))} · ${esc(String(v.at||'').slice(0,16).replace('T',' '))}${v.manual?' (marked manually)':''}"> ✓${esc(String(v.by).split('@')[0])} ${String(v.at||'').slice(5,10)}</span>` : '';
-        const c = (mp.pr || locker) ? '#16a34a' : (w==='SC'?'#1d4ed8':(w==='CA'?'#c2410c':(w==='BO'?'#dc2626':'#6b7280')));
+        /* ⚠⚠ v1116 — 종이를 찍은 뒤에 오더가 바뀌었으면 **초록(끝난 일)으로 보이면 안 된다.**
+           PO 80054191: 19:56 에 1368 종이를 창고에 줬고 20:43 에 전부 8368 로 바꿨는데
+           이 버튼이 계속 초록이라 아무도 몰랐다. 주황으로 바꾸고 아래에 배지를 붙인다. */
+        const _stale = (typeof whPaperStale === 'function') ? whPaperStale(s, w) : null;
+        const c = _stale ? '#b45309' : ((mp.pr || locker) ? '#16a34a' : (w==='SC'?'#1d4ed8':(w==='CA'?'#c2410c':(w==='BO'?'#dc2626':'#6b7280'))));
         const plSaved = s.pl && s.pl[w] && s.pl[w].savedAt;
         const invPr = s.inv && s.inv[w] && s.inv[w].printed;
         const consolSC = recShipFromCA(s) && w==='SC' && (s.whs||[]).includes('CA');   // 🚚 SC 몫은 CA로 통합 — 고객문서(패킹/인보이스) 없음, pull request만 (CA 몫 있을 때만)
@@ -38565,6 +38782,7 @@ function renderSaved(){
         <span class="chip chip-${w}" style="min-width:34px;text-align:center;">${w}</span>
         ${(w!=='BO' && w!=='NA' && w!=='PD' && !consolSC) ? tdBtn(s.base, w) + pcrChip(s.base, w) : ''}
         <button class="btn btn-sm" style="background:${c};color:#fff;border-color:${c};" onclick="docBtnClick('${esc(s.base)}','${w}','pr')" oncontextmenu="return docBtnMenu(event,'${esc(s.base)}','${w}','pr')" title="The WHOLE order for ${w}. Right-click: ${mp.pr?'clear':'mark'} done (green)">🖨 Pull Request${pby(mp.pr)}</button>
+        ${_stale ? `<span title="The sheet the warehouse is holding was printed ${esc(String(_stale.printedAt||'').slice(0,16).replace('T',' '))}, but the order changed afterwards (REV ${esc(_stale.ns)}). Give them the REV sheet below — or reprint this one." style="padding:3px 10px;border-radius:20px;font-size:10.5px;font-weight:900;background:#fef2f2;color:#b91c1c;border:1.5px solid #fca5a5;white-space:nowrap;">⚠ paper is OLD — changed after printing (REV ${esc(_stale.ns)})</span>` : ''}
         ${'' /* v1054 — 이 버튼은 아래 ↳ REV 줄로 옮겼다. 원래 줄에 얹혀 있으면 끝난 일인지 알 수가 없었다. */}
         ${w==='BO' ? (()=>{ const days = Math.floor((Date.now() - new Date(s.savedAt||s.meta.date||Date.now()).getTime())/86400000); const c2 = days>=14?'#dc2626':(days>=7?'#ea580c':'#6b7280'); return `<span style="padding:2px 8px;border-radius:20px;font-size:10px;font-weight:800;background:#fff;color:${c2};border:1.5px solid ${c2};white-space:nowrap;${days>=14?'animation:overdue-pulse 1s ease-in-out infinite;':''}">⏳ Day ${days}</span>`; })() : ''}
         ${(w==='BO'||w==='NA') ? `<button class="btn btn-sm" style="background:#f5f3ff;color:#6d28d9;border-color:#c4b5fd;font-weight:700;" onclick="processFromWh('${esc(s.base)}','${w}','SC')" title="Stock arrived — split into a separate order (-${w==='BO'?'B':'N'}) and ship from SC">⚙ Process from SC</button><button class="btn btn-sm" style="background:#fff7ed;color:#c2410c;border-color:#fed7aa;font-weight:700;" onclick="processFromWh('${esc(s.base)}','${w}','CA')" title="Stock arrived — split into a separate order (-${w==='BO'?'B':'N'}) and ship from CA">⚙ Process from CA</button><button class="btn btn-sm" style="background:#fee2e2;color:#b91c1c;border-color:#fca5a5;font-weight:700;" onclick="boAltFromList('${esc(s.base)}')" title="Replace a back-ordered item with an in-stock alternative (style / color / size / qty), then finish the order">⇄ Alternate</button>` : ''}
@@ -38634,6 +38852,9 @@ function renderSaved(){
       ${collapsed ? '' : g.htmls.join('')}
     </div>`;
   }).join('') : `<div class="muted">${q ? '🔍 No results for "' + esc(savedQuery.trim()) + '"' : t('saved_empty')}</div>`;
+  /* 🌐 v1115 — savedCache 는 부팅할 때 웹 주문 조회보다 늦게 올라온다. 저장목록을
+     다시 그리는 이 시점에 타일을 한 번 더 세야 '이미 불러온 주문'이 빠진다. */
+  try{ woPaintTile(); }catch(e){}
 }
 const dateCollapse = {};
 function loadXlsxLib(){
