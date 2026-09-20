@@ -204,7 +204,7 @@ body.po-dragging{user-select:none;}
   </span>
   <select id="lang-sel" onchange="setLang(this.value)" style="font-size:11px;padding:3px 6px;border-radius:5px;border:none;background:#1d3f66;color:#fff;"><option value="ko">한국어</option><option value="en">English</option><option value="es">Español</option></select>
   <button id="wide-btn" class="btn btn-sm" onclick="toggleWide()" title="화면 넓게 / 좁게 — 기본은 넓게 (이 브라우저에만 저장돼)" style="padding:2px 8px;font-size:10px;background:#1d3f66;color:#cfe0f2;border-color:#2b5384;">↔ Wide</button>
-  <span id="app-ver" style="font-size:10px;color:#9fb8d4;">v1119</span>
+  <span id="app-ver" style="font-size:10px;color:#9fb8d4;">v1120</span>
 </div>
 <script>
 // ↔ 넓게 보기 — 브라우저마다 따로 저장 (v793)
@@ -11244,7 +11244,12 @@ async function openLabelModal(base, forceWh){
   window._lblService = _svc;
   window._lblTest = false;
   const bill0 = custUpsFor(rec.meta.cust);
-  window._lblBillMode = (_lblResult&&_lblResult.billing) || bill0.mode || 'shipper';
+  /* 🌐 웹 주문(손님이 체크아웃에서 이미 운임을 냈다)이면 Website 를 기본으로 고른다 (v1120).
+     이미 라벨을 만든 적이 있으면 그때 쓴 방식이 우선이다 - 과거 기록을 바꾸지 않는다. */
+  const _wp0 = (function(){ try{ return webPaidFreight(rec, window._lblOrigin); }catch(e){ return null; } })();
+  window._lblBillMode = (_lblResult&&_lblResult.billing)
+    || (_wp0!=null ? 'web' : null)
+    || bill0.mode || 'shipper';
   window._lblUpsAcct = bill0.account || '';
   window._lblUpsZip = bill0.zip || '';
   lblRender();
@@ -11261,7 +11266,11 @@ function lblRender(){
   div.id = 'modal-upslabel';
   div.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,.55);z-index:140;display:flex;overflow-y:auto;padding:16px;';
   div.onclick = e=>{ if(e.target===div) div.remove(); };
-  const bmode = window._lblBillMode==='receiver' ? 'receiver' : (window._lblBillMode==='free' ? 'free' : 'shipper');
+  /* 이 창고에서 손님이 웹으로 이미 낸 운임. null 이면 일반 PO 오더다 (v1120) */
+  const _webPaid = (function(){ try{ return webPaidFreight(rec, window._lblOrigin); }catch(e){ return null; } })();
+  const bmode = window._lblBillMode==='receiver' ? 'receiver'
+              : (window._lblBillMode==='free' ? 'free'
+              : ((window._lblBillMode==='web' && _webPaid!=null) ? 'web' : 'shipper'));
   const _bBtn = (m,lab)=>`<button class="btn btn-sm" onclick="lblSetBill('${m}')" style="flex:1;min-width:110px;${bmode===m?'background:#7c2d12;color:#fff;border-color:#7c2d12;':''}">${lab}</button>`;
   const billBox = `
     <div style="background:#fff7ed;border:1px solid #fed7aa;border-radius:9px;padding:9px 11px;">
@@ -11270,8 +11279,10 @@ function lblRender(){
         ${_bBtn('shipper','OUR UPS # · charge invoice')}
         ${_bBtn('receiver',"Customer's UPS #")}
         ${_bBtn('free','🎁 Free shipping')}
+        ${_webPaid!=null ? _bBtn('web','🌐 WEBSITE · paid') : ''}
       </div>
-      ${bmode==='receiver' ? `
+      ${bmode==='web' ? `<div style="font-size:10.5px;color:#15803d;margin-top:6px;font-weight:700;">🌐 손님이 웹에서 이미 <b>$${Number(_webPaid).toFixed(2)}</b> 를 냈습니다 — 인보이스 운임은 <b>이 금액 그대로</b> 들어갑니다 (핸들링 없음). 라벨은 우리 UPS 계정으로 나갑니다.</div>`
+      : bmode==='receiver' ? `
         <div style="display:flex;gap:7px;margin-top:8px;">
           <input class="fi" id="lbl-ups-acct" value="${esc(window._lblUpsAcct||'')}" oninput="window._lblUpsAcct=this.value.toUpperCase();this.value=this.value.toUpperCase();" placeholder="Customer UPS Account #" style="font-size:12px;flex:1.4;text-transform:uppercase;">
           <input class="fi" id="lbl-ups-zip" value="${esc(window._lblUpsZip||'')}" oninput="window._lblUpsZip=this.value;" placeholder="UPS acct ZIP" style="font-size:12px;flex:1;">
@@ -11331,7 +11342,7 @@ function lblRender(){
   const costHtml = _lblResult && (_oc!=null || _c.published!=null) ? `
       <div style="margin-top:7px;padding-top:7px;border-top:1px dashed #86efac;font-size:11.5px;color:#166534;">
         ${_oc!=null?`<div>💰 UPS cost (our rate): <b>${money(_oc)}</b>${_c.published!=null&&_c.published!==_oc?` <span style="color:#64748b;">· list ${money(_c.published)}</span>`:''}</div>`:''}
-        ${(function(){ const _wp = webPaidFreight(_lblRec, _lblResult.origin); return (_wp!=null && _lblResult.billing==='shipper')
+        ${(function(){ const _wp = webPaidFreight(_lblRec, _lblResult.origin); return (_wp!=null && (_lblResult.billing==='shipper' || _lblResult.billing==='web'))
           ? `<div style="margin-top:2px;">🌐 손님이 웹에서 이미 낸 운임: <b style="color:#15803d;">${money(_wp)}</b> <span style="color:#64748b;">— 인보이스엔 이 금액이 들어갑니다</span></div><div style="margin-top:1px;color:#64748b;font-size:10.5px;">이번 라벨 정가 ${money(_lblResult.listCost!=null?_lblResult.listCost:0)}${_oc!=null?` · UPS 실비 ${money(_oc)} · 마진 ${money(_wp-_oc)}`:''}</div>`
           : ''; })()}
         ${_lblResult.billing==='shipper' && _lblResult.billShip>0 && webPaidFreight(_lblRec, _lblResult.origin)==null
@@ -11433,7 +11444,7 @@ function lblSyncBill(){
   const a = document.getElementById('lbl-ups-acct'); if(a) window._lblUpsAcct = (a.value||'').toUpperCase();
   const z = document.getElementById('lbl-ups-zip'); if(z) window._lblUpsZip = z.value||'';
 }
-function lblSetBill(m){ lblSyncBoxes(); lblSyncBill(); window._lblBillMode = (m==='receiver'?'receiver':(m==='free'?'free':'shipper')); lblRender(); }
+function lblSetBill(m){ lblSyncBoxes(); lblSyncBill(); window._lblBillMode = (m==='receiver'?'receiver':(m==='free'?'free':(m==='web'?'web':'shipper'))); lblRender(); }
 async function lblSetOrigin(w){ lblSyncBill(); window._lblOrigin = w; window._lblShipFrom = lblShipFromFor(_lblRec, w); await lblLoadBoxes(_lblBase, w); lblRender(); }
 function lblPrintPackingList(){
   const rec = _lblRec; if(!rec){ if(typeof showToast==='function') showToast('⚠ No order loaded'); return; }
@@ -11571,11 +11582,16 @@ async function lblCreate(){
     const listCost = (cost.published!=null ? cost.published : cost.negotiated);   // UPS 정가
     const boxCount = boxes.length;
     const isFree = window._lblBillMode==='free';   // 🎁 우리가 배송비 부담 — 우리 계정으로 나가지만 인보이스엔 청구 안 함
-    const handling = isFree ? 0 : Math.round(boxCount * shipHandlingRate() * 100)/100;   // 박스당 핸들링
+    /* 🌐 웹 주문: 라벨은 우리 계정으로 나가지만 인보이스 운임은 손님이 웹에서 낸 금액이다.
+       핸들링도 안 붙인다 — 손님은 이미 결제를 끝냈고 금액을 바꿀 수 없다 (v1120). */
+    const _isWeb = window._lblBillMode==='web';
+    const _webNow = _isWeb ? (function(){ try{ return webPaidFreight(rec, window._lblOrigin); }catch(e){ return null; } })() : null;
+    const handling = (isFree||_webNow!=null) ? 0 : Math.round(boxCount * shipHandlingRate() * 100)/100;   // 박스당 핸들링
     // 우리 계정(shipper)로 보낼 때만 인보이스에 청구 (고객 계정이면 고객이 직접 UPS에 지불, free면 우리가 부담) — 정가 + 핸들링
-    const billShip = (!isFree && j.billing==='shipper' && listCost!=null) ? Math.round((Math.ceil(listCost*100)/100 + handling)*100)/100 : 0;
+    const billShip = (_webNow!=null) ? _webNow
+                   : ((!isFree && j.billing==='shipper' && listCost!=null) ? Math.round((Math.ceil(listCost*100)/100 + handling)*100)/100 : 0);
     _lblResult = { tracking:j.tracking||[], labels:j.labels||[], service:j.service||window._lblService,
-      origin:window._lblOrigin, shipFrom:window._lblShipFrom||window._lblOrigin, billing:(isFree?'free':j.billing), test:!!j.test, shipmentId:j.shipmentId||null,
+      origin:window._lblOrigin, shipFrom:window._lblShipFrom||window._lblOrigin, billing:(isFree?'free':(_webNow!=null?'web':j.billing)), test:!!j.test, shipmentId:j.shipmentId||null,
       cost, ourCost, listCost, boxCount, handling, billShip,
       at:new Date().toISOString(), by:(SESS&&SESS.email)||'' };
     if(!j.test) await lblSaveTracking();   // 실제 라벨만 주문에 저장 (테스트는 저장 안 함)
