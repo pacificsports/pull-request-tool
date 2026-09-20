@@ -204,7 +204,7 @@ body.po-dragging{user-select:none;}
   </span>
   <select id="lang-sel" onchange="setLang(this.value)" style="font-size:11px;padding:3px 6px;border-radius:5px;border:none;background:#1d3f66;color:#fff;"><option value="ko">한국어</option><option value="en">English</option><option value="es">Español</option></select>
   <button id="wide-btn" class="btn btn-sm" onclick="toggleWide()" title="화면 넓게 / 좁게 — 기본은 넓게 (이 브라우저에만 저장돼)" style="padding:2px 8px;font-size:10px;background:#1d3f66;color:#cfe0f2;border-color:#2b5384;">↔ Wide</button>
-  <span id="app-ver" style="font-size:10px;color:#9fb8d4;">v1118</span>
+  <span id="app-ver" style="font-size:10px;color:#9fb8d4;">v1119</span>
 </div>
 <script>
 // ↔ 넓게 보기 — 브라우저마다 따로 저장 (v793)
@@ -3718,6 +3718,7 @@ function getMeta(){
        · webNote   — 손님이 체크아웃에서 쓴 메모. 전에는 불러오면 사라졌다.
        · webShip   — 손님이 고른 배송 방법 원문 ('UPS Ground' 등) -> PL 의 METHOD.
        · webPaid   — 이미 카드로 받은 금액. 운임을 또 청구하지 않게 하는 근거.
+       · webLegs   — 창고별로 받은 운임. 인보이스 운임을 이걸로 못박는다 (v1119).
      ⚠ PO 가 다르면 안 붙인다 — 다른 오더를 만들던 중이면 남의 값이 새면 안 된다.
      ⚠ 두 번째 저장부터는 `existing.meta` 가 이미 들고 있다 (saveOrder 가 깔고 덮는다). */
   try{
@@ -3726,9 +3727,29 @@ function getMeta(){
       if(_webHold.webNote)   _m.webNote   = _webHold.webNote;
       if(_webHold.webShip)   _m.webShip   = _webHold.webShip;
       if(_webHold.webPaid)   _m.webPaid   = _webHold.webPaid;
+      if(_webHold.webLegs)   _m.webLegs   = _webHold.webLegs;
     }
   }catch(e){}
   return _m;
+}
+/* 🌐 이 창고 몫으로 손님이 **웹에서 이미 낸 운임**. 웹 주문이 아니면 null (v1119).
+   W10004 에서 드러난 구멍을 막는다 - 손님이 $43.14 를 냈는데 라벨 화면이 새로 계산한
+   $43.11 을 인보이스에 또 넣고 있었다. 직원이 손으로 인보이스를 내면 운임을 두 번 받는다.
+   ⚠ 창고별 금액(webLegs)이 있으면 그걸 쓴다. 없는 옛 주문은 운임을 한 번만 받았으므로
+      한 창고만 나갈 때에 한해 전체 운임(webPaid.ship)을 쓴다 - 양쪽으로 나뉘면
+      어느 쪽에 얼마인지 알 수 없어 안 쓴다(그때는 ✅ Complete 자동 인보이스가 맞춰 준다). */
+function webPaidFreight(rec, wh){
+  try{
+    const m = (rec && rec.meta) || {};
+    const w = String(wh||'').toUpperCase();
+    const legs = m.webLegs;
+    if(legs && legs[w] != null) return Math.round(Number(legs[w])*100)/100;
+    const ship = Number((m.webPaid && m.webPaid.ship) || 0);
+    if(!(ship > 0)) return null;
+    const whs = Array.isArray(rec.whs) ? rec.whs : [];
+    if(whs.length > 1) return null;        // 양쪽으로 나뉜 옛 주문 - 못 가른다
+    return Math.round(ship*100)/100;
+  }catch(e){ return null; }
 }
 /* 손님이 쓴 메모를 오더 화면에 띄운다 (v1115). 없으면 줄 자체를 숨긴다. */
 function webNoteShow(txt){
@@ -7942,8 +7963,13 @@ function openPLInner(base){
     const _uw = _isRev ? null : upsForWh(rec, w);
     const _appr = _isRev ? null : (rec.meta && rec.meta._shipApproval);
     if(_fr===0 && !(iv.savedAt)){
+      /* 🌐 웹 주문이면 **손님이 이미 낸 운임**이 최우선 (v1119).
+         직원이 BILLING 버튼을 뭘 눌렀든 인보이스 운임은 받은 금액과 같아야 한다.
+         이게 없으면 라벨 정가가 들어가서 운임을 두 번 받게 된다. */
+      const _wp = _isRev ? null : webPaidFreight(rec, w);
+      if(_wp != null) _fr = _wp;
       // 🎁 free 배송(우리 부담) 또는 고객 UPS# 청구면 인보이스 배송비 0 — 라벨의 실제 billing이 최우선
-      if(_uw && (_uw.billing==='free' || _uw.billing==='receiver')) _fr = 0;
+      else if(_uw && (_uw.billing==='free' || _uw.billing==='receiver')) _fr = 0;
       else if(_appr && Number(_appr.amount)>0 && _appr.status!=='declined' && (!_appr.wh || _appr.wh===w)) _fr = Number(_appr.amount);
       else if(_uw && _uw.billing==='shipper' && Number(_uw.billShip)>0) _fr = Number(_uw.billShip);
     }
@@ -11305,7 +11331,10 @@ function lblRender(){
   const costHtml = _lblResult && (_oc!=null || _c.published!=null) ? `
       <div style="margin-top:7px;padding-top:7px;border-top:1px dashed #86efac;font-size:11.5px;color:#166534;">
         ${_oc!=null?`<div>💰 UPS cost (our rate): <b>${money(_oc)}</b>${_c.published!=null&&_c.published!==_oc?` <span style="color:#64748b;">· list ${money(_c.published)}</span>`:''}</div>`:''}
-        ${_lblResult.billing==='shipper' && _lblResult.billShip>0
+        ${(function(){ const _wp = webPaidFreight(_lblRec, _lblResult.origin); return (_wp!=null && _lblResult.billing==='shipper')
+          ? `<div style="margin-top:2px;">🌐 손님이 웹에서 이미 낸 운임: <b style="color:#15803d;">${money(_wp)}</b> <span style="color:#64748b;">— 인보이스엔 이 금액이 들어갑니다</span></div><div style="margin-top:1px;color:#64748b;font-size:10.5px;">이번 라벨 정가 ${money(_lblResult.listCost!=null?_lblResult.listCost:0)}${_oc!=null?` · UPS 실비 ${money(_oc)} · 마진 ${money(_wp-_oc)}`:''}</div>`
+          : ''; })()}
+        ${_lblResult.billing==='shipper' && _lblResult.billShip>0 && webPaidFreight(_lblRec, _lblResult.origin)==null
           ? `<div style="margin-top:2px;">🧾 Invoice shipping: <b style="color:#7c2d12;">${money(_lblResult.billShip)}</b> <span style="color:#64748b;">= list ${money(_lblResult.listCost!=null?_lblResult.listCost:_lblResult.billShip)}${_lblResult.handling>0?` + handling ${money(_lblResult.handling)} (${_lblResult.boxCount}×${money(shipHandlingRate())})`:''}</span></div><div style="margin-top:1px;color:#64748b;font-size:10.5px;">→ auto-fills this order's ${esc(_lblResult.origin)} invoice freight${_oc!=null?` · our cost ${money(_oc)}, margin ${money(_lblResult.billShip-_oc)}`:''}</div>`
           : (_lblResult.billing==='receiver' ? `<div style="margin-top:2px;color:#64748b;">Billed to customer's UPS # — not added to invoice.</div>`
           : (_lblResult.billing==='free' ? `<div style="margin-top:2px;color:#15803d;font-weight:700;">🎁 Free shipping — Pacific Sports absorbs ${_oc!=null?money(_oc):'the cost'}. No freight on the invoice.</div>` : ''))}
@@ -11464,7 +11493,13 @@ async function lblEstimate(opts){
       const _bill=Math.round((Math.ceil(_list*100)/100 + _bc*_h)*100)/100;
       if(_mode==='free') custLine=` <span style="color:#15803d;font-weight:700;">· 🎁 customer $0 (free ship)</span>`;
       else if(_mode==='receiver') custLine=` <span style="color:#64748b;">· customer billed to their own UPS #</span>`;
-      else custLine=`<div style="margin-top:3px;font-size:12px;"><b style="color:#0e7490;">🧾 Customer charge: ${money(_bill)}</b> <span style="color:#94a3b8;font-size:10.5px;">(UPS list ${money(_list)} + $${_h}×${_bc} box)</span></div>`;
+      else {
+        /* 🌐 웹 주문은 손님이 체크아웃에서 이미 운임을 냈다 - 그 금액이 인보이스에 들어간다 (v1119) */
+        const _wpe = webPaidFreight(_lblRec, window._lblShipFrom||window._lblOrigin);
+        custLine = (_wpe != null)
+          ? `<div style="margin-top:3px;font-size:12px;"><b style="color:#15803d;">🌐 손님이 웹에서 이미 낸 운임: ${money(_wpe)}</b> <span style="color:#94a3b8;font-size:10.5px;">(인보이스엔 이 금액이 들어갑니다 · 이번 라벨 정가 ${money(_list)})</span></div>`
+          : `<div style="margin-top:3px;font-size:12px;"><b style="color:#0e7490;">🧾 Customer charge: ${money(_bill)}</b> <span style="color:#94a3b8;font-size:10.5px;">(UPS list ${money(_list)} + $${_h}×${_bc} box)</span></div>`;
+      }
     }
     setEst((svc?`💵 <b>${(UPS_SERVICES.find(x=>x.code===sc)||{}).name||sc}: ${money(svc.total)}</b> <span style="color:#64748b;">(our rate, est.)</span>`:'selected service N/A') + (others?` <span style="color:#94a3b8;">· ${others}</span>`:'') + custLine);
   }catch(e){ if(myReq===window._lblEstReq) setEst('<span style="color:#b91c1c;">❌ '+e.message+'</span>'); }
@@ -15869,7 +15904,7 @@ function woLines(o){
 async function webOrdersLoad(silent){
   try{
     const r = await sbFetch('/rest/v1/web_orders?status=in.(new,accepted,partial)'
-      + '&select=id,order_number,company_name,contact_name,email,phone,items,total_pcs,total_amount,ship_to,shipping_method,shipping_cost,notes,status,created_at,paid_at'
+      + '&select=id,order_number,company_name,contact_name,email,phone,items,total_pcs,total_amount,ship_to,shipping_method,shipping_cost,shipping_legs,notes,status,created_at,paid_at'
       + '&order=created_at.desc&limit=60');
     _webOrders = r.ok ? (await r.json()) : [];
   }catch(e){ _webOrders = []; }
@@ -16206,7 +16241,10 @@ function webOrderImport(id){
     webNote:   String(o.notes||'').trim(),
     webShip:   String(o.shipping_method||'').trim(),
     webPaid:   { amount: Number(o.total_amount)||0, ship: Number(o.shipping_cost)||0,
-                 pcs: Number(o.total_pcs)||0, at: o.paid_at || o.created_at || null }
+                 pcs: Number(o.total_pcs)||0, at: o.paid_at || o.created_at || null },
+    /* 창고별로 받은 운임. 한 오더가 SC/CA 양쪽에서 나가면 창고마다 금액이 다르다.
+       인보이스 운임을 이 값으로 못박는 근거가 된다 (v1119). */
+    webLegs:   (o.shipping_legs && typeof o.shipping_legs === 'object') ? o.shipping_legs : null
   };
   try{ webNoteShow(o.notes); }catch(e){}
 
