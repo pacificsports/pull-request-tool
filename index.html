@@ -204,7 +204,7 @@ body.po-dragging{user-select:none;}
   </span>
   <select id="lang-sel" onchange="setLang(this.value)" style="font-size:11px;padding:3px 6px;border-radius:5px;border:none;background:#1d3f66;color:#fff;"><option value="ko">한국어</option><option value="en">English</option><option value="es">Español</option></select>
   <button id="wide-btn" class="btn btn-sm" onclick="toggleWide()" title="화면 넓게 / 좁게 — 기본은 넓게 (이 브라우저에만 저장돼)" style="padding:2px 8px;font-size:10px;background:#1d3f66;color:#cfe0f2;border-color:#2b5384;">↔ Wide</button>
-  <span id="app-ver" style="font-size:10px;color:#9fb8d4;">v1132</span>
+  <span id="app-ver" style="font-size:10px;color:#9fb8d4;">v1133</span>
 </div>
 <script>
 // ↔ 넓게 보기 — 브라우저마다 따로 저장 (v793)
@@ -38714,6 +38714,7 @@ function renderKpi(){
   const _oW = {SC:0, CA:0}, _pW = {SC:0, CA:0};
   /* 💵 TO PULL 금액 (v1132) — 건수와 같은 몫만 더한다 (저장된 pl 이 없는 레그) */
   let _oAmt = 0; const _oWAmt = {SC:0, CA:0};
+  let _rushAmt = 0;   /* 🔥 RUSH 금액 (v1133) — TO PULL 과 같은 기준의 부분집합 */
   if(!window._bulkBasesLoaded && typeof loadBulkBases==='function') loadBulkBases();   // LTL 처리 판정용 bulk 목록 로드
   let scUps=0, scLtl=0, caUps=0, caLtl=0;   // 준비된(packed, 미진행) 물량 — 창고×배송방식 (v675/v677)
   cache.forEach(s=>{
@@ -38740,6 +38741,7 @@ function renderKpi(){
       recOpenLegs(s).forEach(w=>{ _oW[w]++; });
       /* 💵 같은 판정으로 금액 (v1132): 줄의 창고에 저장된 pl 이 없으면 아직 뽑을 몫이다.
          ⚠ 여기서 창고 매핑은 recOpenLegs 와 같아야 한다 — Ship-from-CA 는 CA 로 센다. */
+      let _ordAmt = 0;
       (s.lines||[]).forEach(l=>{
         if(!l) return;
         const w = (String(l.wh||'SC').trim().toUpperCase())||'SC';
@@ -38747,10 +38749,13 @@ function renderKpi(){
         if(s.pl && s.pl[w] && s.pl[w].savedAt) return;
         const amt = (Number(l.qty)||0) * (Number(l.price)||0);
         if(!amt) return;
-        _oAmt += amt;
+        _ordAmt += amt;
         const eff = (w==='SC' && s.meta && s.meta._shipFromCA) ? 'CA' : w;
         _oWAmt[eff] += amt;
       });
+      _oAmt += _ordAmt;
+      /* 🔥 rush 금액은 rush 건수와 같은 조건으로 (v1133) — 같은 몫을 본다 */
+      if(s.meta && s.meta.urgent) _rushAmt += _ordAmt;
       /* 🧺 PC Room 은 물건이 실제로 있는 창고에서 준비한다 —
          Ship-from-CA 여도 준비는 SC 에서 했으므로 진짜 창고로 센다 */
       (s.whs||[]).forEach(w=>{
@@ -38780,8 +38785,12 @@ function renderKpi(){
   const CELL='min-width:0;border-radius:8px;padding:8px 13px;box-sizing:border-box;';
   const EMPTY='<div></div>';
   // 숫자-상단 타일 (row1 · row2 lane · row3 box request)
-  const numTile=(label,nHtml,color,bg,click,idAttr,cls)=>`<div ${idAttr||''} ${cls?`class="${cls}"`:''} ${click?`onclick="${click}"`:''} title="${click?'click':''}" style="${CELL}background:${bg};border:1px solid ${color}44;border-left:5px solid ${color};${click?'cursor:pointer;':''}">
+  /* 💵 금액은 큰 숫자 **아래 줄**에 (v1133) — TO PULL 타일과 같은 모양으로 통일.
+     [stated] 하윤: "invoice not printed에 나오는 금액도 큰숫자 아래 나오게 통일성 있게" */
+  const tileMoney=(v,color,tip)=>`<div${tip?` title="${tip}"`:''} style="font-size:12.5px;font-family:Consolas,monospace;font-weight:800;color:${color};opacity:.85;margin-top:4px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">${invNpMoney(v)}</div>`;
+  const numTile=(label,nHtml,color,bg,click,idAttr,cls,money,moneyTip)=>`<div ${idAttr||''} ${cls?`class="${cls}"`:''} ${click?`onclick="${click}"`:''} title="${click?'click':''}" style="${CELL}background:${bg};border:1px solid ${color}44;border-left:5px solid ${color};${click?'cursor:pointer;':''}">
     <div style="font-size:23px;font-weight:900;color:${color};line-height:1;">${nHtml}</div>
+    ${money ? tileMoney(money, color, moneyTip) : ''}
     <div style="font-size:10px;font-weight:800;color:#4b5563;letter-spacing:.3px;margin-top:4px;text-transform:uppercase;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">${label}</div></div>`;
   /* Open Orders 전용 타일 — 큰 숫자 + 창고 쪼개기 + PC Room 준비 수.
      준비가 하나도 없으면 그 줄은 아예 안 그린다 (0 만 늘어놓으면 읽을 게 없다). */
@@ -38800,7 +38809,7 @@ function renderKpi(){
         <span style="font-size:23px;font-weight:900;color:#1d4ed8;line-height:1;">${sum.toLocaleString()}</span>
         <span style="font-size:10px;font-weight:800;color:#4b5563;letter-spacing:.3px;text-transform:uppercase;">To Pull</span>
       </div>
-      ${amt ? `<div title="Value of everything still to be pulled \u2014 SC ${invNpMoney(wAmt.SC||0)} \u00b7 CA ${invNpMoney(wAmt.CA||0)}" style="font-size:12.5px;font-family:Consolas,monospace;font-weight:800;color:#1e40af;opacity:.85;margin-top:4px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">${invNpMoney(amt)}</div>` : ''}
+      ${amt ? tileMoney(amt, '#1e40af', 'Value of everything still to be pulled \u2014 SC ' + invNpMoney(wAmt.SC||0) + ' \u00b7 CA ' + invNpMoney(wAmt.CA||0)) : ''}
       <div style="display:flex;gap:9px;font-size:11px;font-family:Consolas,monospace;font-weight:700;color:#334155;margin-top:5px;">
         ${seg('SC', (oW.SC||0), '#1d4ed8', "kpiOpenLegs('SC')")}${seg('CA', (oW.CA||0), '#c2410c', "kpiOpenLegs('CA')")}
       </div>
@@ -38831,8 +38840,8 @@ function renderKpi(){
     <div style="font-size:10px;font-weight:800;color:${color};letter-spacing:.3px;margin-top:4px;text-transform:uppercase;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">${label}</div></div>`;
   const _kpiHtml = newsBarHtml() + `<div style="display:grid;grid-template-columns:repeat(6,minmax(0,1fr));gap:8px;margin-bottom:8px;align-items:stretch;">
     ${openTile(open, _oW, _pW, _oAmt, _oWAmt)}
-    ${numTile('🔥 Rush', rush.toLocaleString(), '#dc2626', '#fef2f2', "kpiOpenOrders(true)")}
-    ${numTile('🧾 Invoice Not Printed', uninv.toLocaleString() + (uninv ? '<span style="font-size:12.5px;font-family:Consolas,monospace;font-weight:800;margin-left:6px;opacity:.82;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;" title="Total of every invoice waiting to be printed">' + invNpMoney(uninvAmt) + '</span>' : ''), '#c2410c', '#fff7ed', "invNpOpen()")}
+    ${numTile('🔥 Rush', rush.toLocaleString(), '#dc2626', '#fef2f2', "kpiOpenOrders(true)", '', '', _rushAmt, 'Value still to be pulled on rush orders')}
+    ${numTile('🧾 Invoice Not Printed', uninv.toLocaleString(), '#c2410c', '#fff7ed', "invNpOpen()", '', '', uninvAmt, 'Total of every invoice waiting to be printed')}
     ${numTile('↩ Pending Return', pret.toLocaleString(), '#ea580c', '#fff7ed', "kpiPendingReturns()")}
     ${numTile('💳 Refund Pending', refund.toLocaleString(), '#7c2d12', '#faf5ff')}
     ${`<div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;align-items:stretch;">`
