@@ -204,7 +204,7 @@ body.po-dragging{user-select:none;}
   </span>
   <select id="lang-sel" onchange="setLang(this.value)" style="font-size:11px;padding:3px 6px;border-radius:5px;border:none;background:#1d3f66;color:#fff;"><option value="ko">한국어</option><option value="en">English</option><option value="es">Español</option></select>
   <button id="wide-btn" class="btn btn-sm" onclick="toggleWide()" title="화면 넓게 / 좁게 — 기본은 넓게 (이 브라우저에만 저장돼)" style="padding:2px 8px;font-size:10px;background:#1d3f66;color:#cfe0f2;border-color:#2b5384;">↔ Wide</button>
-  <span id="app-ver" style="font-size:10px;color:#9fb8d4;">v1129</span>
+  <span id="app-ver" style="font-size:10px;color:#9fb8d4;">v1130</span>
 </div>
 <script>
 // ↔ 넓게 보기 — 브라우저마다 따로 저장 (v793)
@@ -3069,7 +3069,8 @@ function revPlLines(rec, wh, n){
       && String(l.size||'')===String(sn.size||''));
     out.push({ style: sn.style||'', desc: sn.desc||((L&&L.desc)||''), color: sn.color||'', size: sn.size||'',
                qty: d, price: (L&&Number(L.price))||0, ppb: Number(sn.ppb)||((L&&L.ppb)||72),
-               pbox: sn.pbox||((L&&L.pbox)||''), wh: wh });
+               /* P.Box# 는 지금 오더 줄이 이긴다 (v1130) — 눈금의 값은 수정 전 번호일 수 있다 */
+               pbox: (L && L.pbox) || sn.pbox || '', wh: wh });
   });
   return out;
 }
@@ -3186,6 +3187,49 @@ async function revPrintPR(base, wh, n){
    되돌리기(put back) REV 는 나갈 물건이 없어서 revPlLines() 가 빈 배열이다.
    그럴 때는 모달을 아예 열지 않는다 — 나가지 않는 물건에 라벨을 뽑을 이유가 없다.
    (SC REV 2 가 그 경우였는데 창고 줄 3박스가 그대로 나왔다.) */
+/* 📦 이 REV 몫이 그 창고의 **기존 박스**에 들어가는가 (v1130).
+   확인하는 것은 짐작이 아니라 사실 두 개다:
+     ① 그 창고에 저장된 패킹리스트가 아직 없다 — 있으면 그 문서는 얼려둔 것이고
+        REV 몫은 그 안에 없으니 따로 나가는 게 맞다 (v1067 의 이유)
+     ② REV 가 쓴 P.Box# 가 그 창고의 다른(REV 아닌) 줄에도 이미 있다
+   맞으면 그 번호의 박스 전체를 돌려준다. 안 맞으면 null -> 예전 동작 그대로. */
+function revMergeBoxes(rec, wh, src){
+  try{
+    if(window._blMode === 'full') return null;        // 풀박스 라벨은 번호를 코드가 매긴다
+    const W = String(wh||'').trim().toUpperCase();
+    const pl = (rec.pl && rec.pl[wh]) || null;
+    if(pl && (pl._completed || (Array.isArray(pl.lines) && pl.lines.length))) return null;   // 1
+    const want = new Set((src||[]).map(x=>String(x.pbox||'').trim()).filter(Boolean));
+    if(!want.size) return null;
+    const legAll = (rec.lines||[]).filter(l=>String(l.wh||'SC').trim().toUpperCase()===W && (Number(l.qty)||0)>0);
+    if(!legAll.length) return null;
+    const isRev = l => (src||[]).some(x=>String(x.style||'')===String(l.style||'')
+                        && String(x.color||'')===String(l.color||'')
+                        && String(x.size||'')===String(l.size||''));
+    const others = legAll.filter(l=>!isRev(l) && want.has(String(l.pbox||'').trim()));
+    if(!others.length) return null;                   // 2
+    const ordered = blOrderLike(legAll, rec, wh);
+    const all = calcPartialBoxesFromLines(ordered, wh);
+    const boxes = all.filter(b=>want.has(String(b.boxNum||'').trim()));
+    if(!boxes.length) return null;
+    return {
+      boxes: boxes,
+      src:   ordered.filter(l=>want.has(String(l.pbox||'').trim())),
+      nums:  boxes.map(b=>String(b.boxNum)),
+      legN:  all.filter(b=>String(b.wh||'').trim().toUpperCase()===W).length,
+      revPcs:(src||[]).reduce((a,x)=>a+(Number(x.qty)||0), 0)
+    };
+  }catch(e){ return null; }
+}
+/* 초록 안내 — 이건 박스 전체라고 못 박아 준다 (v1130) */
+function blRevMergeNote(wh, n, mg){
+  const pcs = (mg.src||[]).reduce((a,l)=>a+(Number(l.qty)||0), 0);
+  return '<div style="background:#ecfdf5;border-bottom:1px solid #a7f3d0;padding:8px 14px;font-size:11.5px;'
+    + 'color:#065f46;font-weight:700;line-height:1.55;">\u21B3 <b>REV ' + esc(n) + '</b> goes into '
+    + '<b>existing box ' + esc(mg.nums.join(', ')) + '</b> of ' + esc(wh) + ' \u2014 this label is the '
+    + '<b>whole box</b> (' + pcs + ' pcs, of which REV ' + esc(n) + ' adds <b>' + mg.revPcs + '</b>).'
+    + ' Do <b>not</b> make a new box.</div>';
+}
 function revLabelClick(base, wh, n, mode){
   const rec = (typeof getSaved==='function' ? getSaved() : (savedCache||[])).find(s=>s.base===base);
   if(!rec) return;
@@ -3196,9 +3240,14 @@ function revLabelClick(base, wh, n, mode){
   }
   window._blMode = (mode==='full') ? 'full' : 'box';
   window._blCtx = { base: base, wh: wh, rev: n };
-  const boxes = (window._blMode==='full') ? calcFullBoxesFromLines(src, wh) : calcPartialBoxesFromLines(src, wh);
+  /* 기존 박스에 들어가는 경우면 박스 전체를 준다 (v1130) */
+  const _mg = revMergeBoxes(rec, wh, src);
+  const boxes = _mg ? _mg.boxes
+    : ((window._blMode==='full') ? calcFullBoxesFromLines(src, wh) : calcPartialBoxesFromLines(src, wh));
+  const _lbl = _mg ? _mg.src : src;
   openBoxLabelModal(boxes, { customer_po: (rec.meta&&rec.meta.po)||'', customer_name: (rec.meta&&rec.meta.cust)||'',
-    boxGuess: blBoxGuess(src), warn: blRevNote(wh, n, src) + blBoxGapNote(wh, boxes) });
+    boxGuess: blBoxGuess(_lbl),
+    warn: (_mg ? blRevMergeNote(wh, n, _mg) : blRevNote(wh, n, src)) + blBoxGapNote(wh, boxes) });
   if(!mode){ try{ markDocPrinted(base, revRowKey(wh, n), 'label'); }catch(e){} }
 }
 
