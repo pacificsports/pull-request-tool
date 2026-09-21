@@ -204,7 +204,7 @@ body.po-dragging{user-select:none;}
   </span>
   <select id="lang-sel" onchange="setLang(this.value)" style="font-size:11px;padding:3px 6px;border-radius:5px;border:none;background:#1d3f66;color:#fff;"><option value="ko">한국어</option><option value="en">English</option><option value="es">Español</option></select>
   <button id="wide-btn" class="btn btn-sm" onclick="toggleWide()" title="화면 넓게 / 좁게 — 기본은 넓게 (이 브라우저에만 저장돼)" style="padding:2px 8px;font-size:10px;background:#1d3f66;color:#cfe0f2;border-color:#2b5384;">↔ Wide</button>
-  <span id="app-ver" style="font-size:10px;color:#9fb8d4;">v1133</span>
+  <span id="app-ver" style="font-size:10px;color:#9fb8d4;">v1134</span>
 </div>
 <script>
 // ↔ 넓게 보기 — 브라우저마다 따로 저장 (v793)
@@ -2117,8 +2117,14 @@ function allocSplit(i, targetWh){
   if(typeof saveDraft==='function') saveDraft();
   showToast('✂ '+l.style+' '+l.size+': '+(keep>0?cur+' '+keep.toLocaleString()+' + ':'')+targetWh+' '+rest.toLocaleString());
 }
-function openSplitLine(i){
-  const l = poLines[i]; if(!l) return;
+/* ✂ 쪼개기가 다루는 배열 (v1134) — 아무것도 안 주면 예전처럼 poLines.
+   [stated] 하윤: "지금 경우 SC 랑 CA양쪽에서 나가야하는데 지금은 그게 안되는거 같으니까"
+   Replace 모달에서 부를 때만 'rp' 를 넘긴다. 새 모달을 또 만들지 않고 이것을 같이 쓴다 —
+   창고별 재고 표시·자동 채우기·합 검사가 이미 다 들어 있다. */
+function spArr(tgt){ return (String(tgt||'')==='rp') ? (window._rpLines||[]) : poLines; }
+function openSplitLine(i, tgt){
+  window._spTgt = String(tgt||'');
+  const l = spArr(window._spTgt)[i]; if(!l) return;
   const ex = document.getElementById('modal-split'); if(ex) ex.remove();
   _lineAvailCache = {};                     // 지금 있는 재고로 다시 잰다 (v938)
   const tot = Number(l.qty)||0;
@@ -2200,16 +2206,33 @@ function openSplitLine(i){
   splitSum();
 }
 function applySplitLine(i){
-  const l = poLines[i]; if(!l) return;
+  const tgt = String(window._spTgt||'');
+  const A = spArr(tgt);
+  const l = A[i]; if(!l) return;
   const tot = Number(l.qty)||0;
   const parts = ['SC','CA','BO','NA'].map(w=>({ wh: w, q: parseInt(($('sp-'+w)||{}).value)||0 })).filter(p=>p.q>0);
   const sum = parts.reduce((a,p)=>a+p.q,0);
   if(sum !== tot){ showToast('⚠ Sum does not match line qty (' + tot.toLocaleString() + ')'); return; }
-  const newLines = parts.map(p=>({ ...JSON.parse(JSON.stringify(l)), qty: p.q, wh: p.wh }));
-  poLines.splice(i, 1, ...newLines);
+  const newLines = parts.map(p=>{
+    const n = { ...JSON.parse(JSON.stringify(l)), qty: p.q, wh: p.wh };
+    if(tgt === 'rp'){
+      /* ⚠⚠ 이미 실행된 물리 이동은 복사하지 않는다 (v1134).
+         pcMoveData 가 두 줄에 붙으면 ↩ 되돌리기가 같은 박스를 두 번 되돌린다.
+         pickLocs 도 예약이라 새 줄에서 다시 골라야 한다. P Box# 도 줄마다 다르다. */
+      delete n.pickLocs; delete n.pcMove; delete n.pcMoveData; delete n.pcMoveWh;
+      delete n._fbForce; delete n.pcMovePrintedN;
+      n.pbox = '';
+      /* ⚠ 쪼갠 몫이 이 줄의 상한이다 — 합쳐서 출고 수량을 넘지 못하게 (조용히 깎지 않고 표시한다) */
+      n._spCap = p.q;
+    }
+    return n;
+  });
+  A.splice(i, 1, ...newLines);
   const m = document.getElementById('modal-split'); if(m) m.remove();
-  renderTable(); updateNumPreview(); renderDocs();
-  showToast('✂ Split into ' + parts.map(p=>p.wh + ' ' + p.q.toLocaleString()).join(' / ') + ' — press Save to apply');
+  if(tgt === 'rp'){ _lineAvailCache = {}; rpRender(); }
+  else { renderTable(); updateNumPreview(); renderDocs(); }
+  showToast('✂ Split into ' + parts.map(p=>p.wh + ' ' + p.q.toLocaleString()).join(' / ')
+    + (tgt === 'rp' ? ' — assign 📍 / 📌 on each line' : ' — press Save to apply'));
 }
 // Line Items 표: Tab = 아래 칸(같은 열 다음 줄)으로 이동, Shift+Tab = 위 칸
 (function(){
@@ -4799,7 +4822,7 @@ function replaceOrderOpen(base){
   div.onclick = e=>{ if(e.target===div) div.remove(); };
   div.innerHTML = `<style>#modal-replace thead th{position:sticky;top:0;z-index:6;background:var(--header);color:#fff;box-shadow:0 2px 4px rgba(15,42,74,.25);}</style><div style="background:#fff;border-radius:12px;max-width:1180px;width:100%;max-height:92vh;display:flex;flex-direction:column;overflow:hidden;">
     <div style="background:#be123c;color:#fff;padding:10px 16px;font-weight:800;">🔁 Replace (defect replacement) · ${esc((rec.meta&&rec.meta.cust)||'')} — PO ${esc((rec.meta&&rec.meta.po)||'')}
-      <div style="font-weight:400;font-size:11px;color:#fecdd3;">Set the replace qty and process every line right here — assign SC / CA / BO / NA (live stock shows under the box). Use 📍 to pick full-box locations and 📌 to move a box into PC Room, just like a normal order. Sending a DIFFERENT item? Press \u21C4 on that line (or \uFF0B below the table) \u2014 what was defective stays on the record. On save, stock is deducted and boxes move to PC Room. Free (PO# + R), no invoice.</div></div>
+      <div style="font-weight:400;font-size:11px;color:#fecdd3;">Set the replace qty and process every line right here — assign SC / CA / BO / NA (live stock shows under the box). Use 📍 to pick full-box locations and 📌 to move a box into PC Room, just like a normal order. Need it to ship from BOTH warehouses? Press \u2702 on that line to split the qty across SC / CA. Sending a DIFFERENT item? Press \u21C4 on that line (or \uFF0B below the table) \u2014 what was defective stays on the record. On save, stock is deducted and boxes move to PC Room. Free (PO# + R), no invoice.</div></div>
     <div style="overflow:auto;padding:0 16px 10px;flex:1;">
       <table class="etbl" style="font-size:11.5px;white-space:nowrap;">
         <thead><tr>
@@ -4963,7 +4986,7 @@ function rpRowHtml(l,i){
   const dot = '<span style="color:#cbd5e1;">·</span>';
   return `<tr id="rp-row-${i}" style="${l.wh==='BO'?'background:#fef2f2;':''}">
     ${l.alt ? rpAltCellsHtml(l,i) : rpFixedCellsHtml(l,i)}
-    <td style="font-family:Consolas,monospace;color:#64748b;">${l.added?'<span style="color:#cbd5e1;">\u2014</span>':(l.shipped||0).toLocaleString()}${(!l.added&&l.srcWh)?`<div style="font-family:system-ui;font-size:9px;font-weight:800;color:${l.srcWh==='CA'?'#c2410c':'#1d4ed8'};">from ${esc(l.srcWh)}</div>`:''}</td>
+    <td style="font-family:Consolas,monospace;color:#64748b;">${l.added?'<span style="color:#cbd5e1;">\u2014</span>':(l.shipped||0).toLocaleString()}${(!l.added&&l.srcWh)?`<div style="font-family:system-ui;font-size:9px;font-weight:800;color:${l.srcWh==='CA'?'#c2410c':'#1d4ed8'};">from ${esc(l.srcWh)}</div>`:''}${rpSplitCell(l,i)}</td>
     <td style="background:#fff1f2;"><input class="fi num" type="number" min="0" ${(l.alt||l.added)?'':`max="${l.shipped}"`} value="${l.qty||''}" onchange="rpUpd(${i},'qty',this.value)" style="width:66px;font-weight:800;">${(l.alt||l.added)?`<div style="margin-top:3px;display:flex;align-items:center;gap:2px;"><span style="font-size:10px;font-weight:800;color:#92400e;">$</span><input class="fi num" type="number" min="0" step="0.01" value="${l.price?Number(l.price).toFixed(2):''}" onchange="rpUpd(${i},'price',this.value)" style="width:58px;font-weight:800;" title="Different item \u2014 this line IS invoiced. Prefilled from this customer's price list; change it if needed."></div>`:`<div style="margin-top:3px;font-size:9.5px;font-weight:800;color:#be123c;" title="Like-for-like replacement \u2014 free, invoiced at $0.00">free $0.00</div>`}</td>
     <td><input class="fi num" value="${l.ppb||DEFAULT_PPB}" onchange="rpUpd(${i},'ppb',this.value)" style="width:52px;"></td>
     <td id="rp-fb-${i}" style="font-family:Consolas,monospace;">${rpFbCellInner(l,b,i)||dot}</td>
@@ -5000,6 +5023,24 @@ function rpLsCellInner(l, b, i){
     + (b.loose && (l.wh==='SC' || l.wh==='CA') ? `<button class="btn btn-sm" style="border:none;padding:0 3px;font-size:11px;" onclick="rpToPcFromEditor(${i})" title="If PC Room stock is short: move 1 full box (pick a location) into PC Room (deducts full box + receives to PC, immediate)">\u{1F4CD}</button>` : '')
     + ((l.pcMove&&l.pcMove.length) ? `<div style="font-size:9px;line-height:1.3;color:#7c3aed;font-weight:800;white-space:nowrap;">\u{1F9FA} ${l.pcMove.map(g=>(g.pin?'✂':'')+esc(g.loc)+(g.n>1?' ×'+g.n:'')).join(' · ')}${(l.pcMoveData&&l.pcMoveData.length)?`<button class="btn btn-sm" style="border:none;padding:0 3px;font-size:10px;color:#b91c1c;" onclick="rpMoveUndo(${i})" title="Undo this box move — boxes back to full-box stock, PC Room minus">↩</button>`:''}</div>` : '')
     + pcStockHint(l, b, null);
+}
+/* ✂ 한 줄을 SC/CA 로 쪼개기 (v1134) — 일반 오더의 Split Qty 모달을 그대로 쓴다.
+   쪼갠 뒤에는 줄마다 창고가 하나씩이라 📍 풀박스 · 📌 PC Room 이 정상으로 돈다. */
+function rpSplitCell(l, i){
+  const cap = Number(l._spCap)||0;
+  const canSplit = (Number(l.qty)||0) > 1;
+  return '<div style="font-family:system-ui;margin-top:2px;white-space:nowrap;">'
+    + (canSplit
+        ? '<button class="btn btn-sm" style="border:none;padding:0 3px;font-size:11px;color:#7c3aed;" onclick="rpSplitOpen(' + i + ')"'
+          + ' title="Split this replace qty across SC / CA / BO / NA — each part becomes its own line with its own box picks">\u2702</button>'
+        : '')
+    + (cap ? '<span style="font-size:9px;font-weight:800;color:#7c3aed;" title="This line came from a split — its qty cannot go above the piece it was given">max ' + cap.toLocaleString() + '</span>' : '')
+    + '</div>';
+}
+function rpSplitOpen(i){
+  const l = (window._rpLines||[])[i]; if(!l) return;
+  if((Number(l.qty)||0) < 2){ showToast('\u26A0 Enter the replace qty first — then \u2702 splits it across warehouses'); return; }
+  openSplitLine(i, 'rp');
 }
 function rpFbUnlock(i){ const l=(window._rpLines||[])[i]; if(!l) return; l._fbForce=true; rpRerenderRow(i); showToast('🔓 Full box pick unlocked for this line — 📍 now active'); }
 async function rpPickFromEditor(i){
@@ -5058,7 +5099,12 @@ function rpUpd(i, field, val){
   const l=(window._rpLines||[])[i]; if(!l) return;
   /* ⚠ 원래 줄만 출고 수량으로 묶는다. 물건을 바꾼 줄·새로 넣은 줄은 상한이 없다 (v1090) */
   if(field==='qty'){ const q = Math.max(0, parseInt(val)||0);
-    l.qty = (l.alt || l.added) ? q : Math.min(q, l.shipped); }
+    /* ⚠ 쪼개진 줄은 「쪼갤 때 받은 몫」이 상한이다 (v1134) — 안 그러면 두 줄을 각각
+       출고 수량까지 올려서 없는 물건을 교체로 보낼 수 있다 */
+    const cap = Number(l._spCap)||0;
+    l.qty = cap ? Math.min(q, cap) : ((l.alt || l.added) ? q : Math.min(q, l.shipped));
+    if(cap && q > cap) showToast('\u26A0 This split line is capped at ' + cap.toLocaleString()
+      + ' pcs \u2014 change the other split line, or press \u2702 again to re-split'); }
   else if(field==='ppb') l.ppb = Math.max(1, parseInt(val)||DEFAULT_PPB);
   else if(field==='pbox'){ l.pbox = String(val||'').trim(); }
   else if(field==='price'){ l.price = Math.max(0, Math.round((parseFloat(val)||0)*100)/100); }
