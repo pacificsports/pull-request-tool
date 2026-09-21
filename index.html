@@ -204,7 +204,7 @@ body.po-dragging{user-select:none;}
   </span>
   <select id="lang-sel" onchange="setLang(this.value)" style="font-size:11px;padding:3px 6px;border-radius:5px;border:none;background:#1d3f66;color:#fff;"><option value="ko">한국어</option><option value="en">English</option><option value="es">Español</option></select>
   <button id="wide-btn" class="btn btn-sm" onclick="toggleWide()" title="화면 넓게 / 좁게 — 기본은 넓게 (이 브라우저에만 저장돼)" style="padding:2px 8px;font-size:10px;background:#1d3f66;color:#cfe0f2;border-color:#2b5384;">↔ Wide</button>
-  <span id="app-ver" style="font-size:10px;color:#9fb8d4;">v1130</span>
+  <span id="app-ver" style="font-size:10px;color:#9fb8d4;">v1132</span>
 </div>
 <script>
 // ↔ 넓게 보기 — 브라우저마다 따로 저장 (v793)
@@ -3308,8 +3308,17 @@ function whPaperStale(rec, wh){
     const after = (((rec.meta || {})._revs) || []).filter(rv=>{
       const rt = Date.parse(String(rv && rv.at || '')); return rt && rt > t;
     });
-    if(!after.length) return null;
-    return { ns: after.map(rv=>rv.n).join(', '), at: after[after.length-1].at, printedAt: mp.pr.at };
+    /* 📦 v1131 — P.Box# 만 바뀐 저장은 REV 를 안 만든다. 그래도 창고 종이에는
+       Partial Box# 가 찍혀 나가므로 그 종이는 낡은 것이다. 같이 본다. */
+    const pc = ((rec.meta || {})._pboxChg) || null;
+    const pt = pc && pc.at ? Date.parse(String(pc.at)) : 0;
+    const pboxNew = !!(pt && pt > t);
+    if(!after.length && !pboxNew) return null;
+    if(!after.length) return { ns: '', pbox: true, at: pc.at, printedAt: mp.pr.at };
+    return { ns: after.map(rv=>rv.n).join(', '),
+             pbox: pboxNew && pt > Date.parse(String(after[after.length-1].at || '')) ? true : false,
+             at: (pboxNew && pt > Date.parse(String(after[after.length-1].at || ''))) ? pc.at : after[after.length-1].at,
+             printedAt: mp.pr.at };
   }catch(e){ return null; }
 }
 function revRowsHtml(rec, wh){
@@ -4392,6 +4401,19 @@ async function _saveCurrentInner(){
         keys.push(k);
       });
       const prev = (existing.meta && Array.isArray(existing.meta._revs)) ? existing.meta._revs : [];
+      /* 📦 P.Box# 만 바뀐 저장은 REV 를 만들지 않는다 (v1131).
+         REV 줄은 창고에 나갈 **새 일감**을 적는 자리다. P.Box# 는 "몇 번 박스에 담아라"
+         라는 포장 지시일 뿐 뽑을 물건이 한 장도 안 바뀐다.
+         판정은 짐작이 아니다 — 품목·창고별 수량 묶음(keys)이 비었고, 줄 변경이 전부 pbox 다.
+         ⚠ 기록은 남겨야 하므로 meta._pboxChg 를 찍고, whPaperStale 이 그것도 본다
+           (창고 종이에는 Partial Box# 가 찍혀 나가므로 종이는 여전히 낡았다). */
+      const _pboxOnly = !keys.length && lineCh.length > 0 && lineCh.every(c=>c.kind==='pbox');
+      window.__pboxOnlyFix = _pboxOnly;
+      if(_pboxOnly){
+        rec.meta = { ...rec.meta, _pboxChg: { at: new Date().toISOString(),
+                                              by: (SESS && SESS.email) || '', n: lineCh.length } };
+        if(existing.meta && existing.meta._revs) rec.meta = { ...rec.meta, _revs: existing.meta._revs };
+      } else {
       rec.meta = { ...rec.meta, _revs: prev.concat([{
         n: prev.length + 1,
         at: new Date().toISOString(),
@@ -4399,6 +4421,7 @@ async function _saveCurrentInner(){
         keys, lines: snap,
         changes: lineCh.map(c=>({item:c.item, field:c.field, from:c.from, to:c.to, kind:c.kind}))
       }]).slice(-30) };
+      }
     } else if(existing.meta && existing.meta._revs){
       rec.meta = { ...rec.meta, _revs: existing.meta._revs };
     }
@@ -4417,7 +4440,8 @@ async function _saveCurrentInner(){
   // 자동 내부 알림은 보류 (거래처 이멜에 전직원 CC로 대체) — 켜려면 아래 주석 해제
   // if(!existing) notifyNewPR(rec);
   if(existing && orderChanges.length) notifyModified(rec, orderChanges);
-  logHist(base, existing ? ((window.__freshFix ? 'Order corrected before anything was pulled — no revision (' : 'Order modified (') + orderChanges.length + ' changes)') : 'Order created');
+  logHist(base, existing ? ((window.__freshFix ? 'Order corrected before anything was pulled — no revision ('
+    : (window.__pboxOnlyFix ? 'P.Box# only — no revision (' : 'Order modified (')) + orderChanges.length + ' changes)') : 'Order created');
   clearOrderForm();           // 폼 즉시 비우기 — 느린 재고 동기화를 기다리지 않고 바로 다음 오더 입력 가능 (v494)
   invSyncOnSave(rec);         // 저장 = 재고 자동 반영 (풀박스 차감/정산 + PC Room 자투리) — 백그라운드 실행 (rec 스냅샷 기준이라 폼 비워도 안전)
 }
@@ -38688,6 +38712,8 @@ function renderKpi(){
   // 창고별 미완 건수와 그중 PC Room 이 준비해 둔 건수.
   // 한 오더가 SC·CA 를 다 갖고 있으면 양쪽에 한 건씩 — "그 창고에서 처리할 일"이 기준이라 그게 맞다.
   const _oW = {SC:0, CA:0}, _pW = {SC:0, CA:0};
+  /* 💵 TO PULL 금액 (v1132) — 건수와 같은 몫만 더한다 (저장된 pl 이 없는 레그) */
+  let _oAmt = 0; const _oWAmt = {SC:0, CA:0};
   if(!window._bulkBasesLoaded && typeof loadBulkBases==='function') loadBulkBases();   // LTL 처리 판정용 bulk 목록 로드
   let scUps=0, scLtl=0, caUps=0, caLtl=0;   // 준비된(packed, 미진행) 물량 — 창고×배송방식 (v675/v677)
   cache.forEach(s=>{
@@ -38712,6 +38738,19 @@ function renderKpi(){
     if(recReturns(s).some(r=>r && r.status==='received' && r.cc && !r.refunded)) refund++;
     if(!done && !shipped){
       recOpenLegs(s).forEach(w=>{ _oW[w]++; });
+      /* 💵 같은 판정으로 금액 (v1132): 줄의 창고에 저장된 pl 이 없으면 아직 뽑을 몫이다.
+         ⚠ 여기서 창고 매핑은 recOpenLegs 와 같아야 한다 — Ship-from-CA 는 CA 로 센다. */
+      (s.lines||[]).forEach(l=>{
+        if(!l) return;
+        const w = (String(l.wh||'SC').trim().toUpperCase())||'SC';
+        if(w!=='SC' && w!=='CA') return;
+        if(s.pl && s.pl[w] && s.pl[w].savedAt) return;
+        const amt = (Number(l.qty)||0) * (Number(l.price)||0);
+        if(!amt) return;
+        _oAmt += amt;
+        const eff = (w==='SC' && s.meta && s.meta._shipFromCA) ? 'CA' : w;
+        _oWAmt[eff] += amt;
+      });
       /* 🧺 PC Room 은 물건이 실제로 있는 창고에서 준비한다 —
          Ship-from-CA 여도 준비는 SC 에서 했으므로 진짜 창고로 센다 */
       (s.whs||[]).forEach(w=>{
@@ -38750,7 +38789,7 @@ function renderKpi(){
      예전에는 큰 숫자가 「오더 개수」, 아래가 「창고 일감 개수」라 단위가 서로 달랐다.
      그래서 3 + 12 이 27 과 안 맞아 보여 보는 사람이 계속 숫자를 의심하게 됐다.
      이제 위아래가 같은 단위라 항상 합이 맞는다 — 이름도 그에 맞춰 TO PULL 로. */
-  const openTile=(tot,oW,pW)=>{
+  const openTile=(tot,oW,pW,amt,wAmt)=>{
     const pTot = (pW.SC||0) + (pW.CA||0);
     const sum  = (oW.SC||0) + (oW.CA||0);
     const seg = (lab,v,c,click) => '<span style="white-space:nowrap;'+(click?'cursor:pointer;text-decoration:underline dotted;text-underline-offset:2px;':'')+'"'
@@ -38761,6 +38800,7 @@ function renderKpi(){
         <span style="font-size:23px;font-weight:900;color:#1d4ed8;line-height:1;">${sum.toLocaleString()}</span>
         <span style="font-size:10px;font-weight:800;color:#4b5563;letter-spacing:.3px;text-transform:uppercase;">To Pull</span>
       </div>
+      ${amt ? `<div title="Value of everything still to be pulled \u2014 SC ${invNpMoney(wAmt.SC||0)} \u00b7 CA ${invNpMoney(wAmt.CA||0)}" style="font-size:12.5px;font-family:Consolas,monospace;font-weight:800;color:#1e40af;opacity:.85;margin-top:4px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">${invNpMoney(amt)}</div>` : ''}
       <div style="display:flex;gap:9px;font-size:11px;font-family:Consolas,monospace;font-weight:700;color:#334155;margin-top:5px;">
         ${seg('SC', (oW.SC||0), '#1d4ed8', "kpiOpenLegs('SC')")}${seg('CA', (oW.CA||0), '#c2410c', "kpiOpenLegs('CA')")}
       </div>
@@ -38790,7 +38830,7 @@ function renderKpi(){
     <div style="font-size:23px;font-weight:900;color:${color};line-height:1;">${icon}</div>
     <div style="font-size:10px;font-weight:800;color:${color};letter-spacing:.3px;margin-top:4px;text-transform:uppercase;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">${label}</div></div>`;
   const _kpiHtml = newsBarHtml() + `<div style="display:grid;grid-template-columns:repeat(6,minmax(0,1fr));gap:8px;margin-bottom:8px;align-items:stretch;">
-    ${openTile(open, _oW, _pW)}
+    ${openTile(open, _oW, _pW, _oAmt, _oWAmt)}
     ${numTile('🔥 Rush', rush.toLocaleString(), '#dc2626', '#fef2f2', "kpiOpenOrders(true)")}
     ${numTile('🧾 Invoice Not Printed', uninv.toLocaleString() + (uninv ? '<span style="font-size:12.5px;font-family:Consolas,monospace;font-weight:800;margin-left:6px;opacity:.82;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;" title="Total of every invoice waiting to be printed">' + invNpMoney(uninvAmt) + '</span>' : ''), '#c2410c', '#fff7ed', "invNpOpen()")}
     ${numTile('↩ Pending Return', pret.toLocaleString(), '#ea580c', '#fff7ed', "kpiPendingReturns()")}
@@ -39241,7 +39281,7 @@ function renderSaved(){
         <span class="chip chip-${w}" style="min-width:34px;text-align:center;">${w}</span>
         ${(w!=='BO' && w!=='NA' && w!=='PD' && !consolSC) ? tdBtn(s.base, w) + pcrChip(s.base, w) : ''}
         <button class="btn btn-sm" style="background:${c};color:#fff;border-color:${c};" onclick="docBtnClick('${esc(s.base)}','${w}','pr')" oncontextmenu="return docBtnMenu(event,'${esc(s.base)}','${w}','pr')" title="The WHOLE order for ${w}. Right-click: ${mp.pr?'clear':'mark'} done (green)">🖨 Pull Request${pby(mp.pr)}</button>
-        ${_stale ? `<span title="The sheet the warehouse is holding was printed ${esc(String(_stale.printedAt||'').slice(0,16).replace('T',' '))}, but the order changed afterwards (REV ${esc(_stale.ns)}). Give them the REV sheet below — or reprint this one." style="padding:3px 10px;border-radius:20px;font-size:10.5px;font-weight:900;background:#fef2f2;color:#b91c1c;border:1.5px solid #fca5a5;white-space:nowrap;">⚠ paper is OLD — changed after printing (REV ${esc(_stale.ns)})</span>` : ''}
+        ${_stale ? `<span title="The sheet the warehouse is holding was printed ${esc(String(_stale.printedAt||'').slice(0,16).replace('T',' '))}, but the order changed afterwards (${_stale.ns ? 'REV ' + esc(_stale.ns) : 'P.Box# changed'}). ${_stale.ns ? 'Give them the REV sheet below — or reprint this one.' : 'Reprint this one — the box numbers on it are old.'}" style="padding:3px 10px;border-radius:20px;font-size:10.5px;font-weight:900;background:#fef2f2;color:#b91c1c;border:1.5px solid #fca5a5;white-space:nowrap;">⚠ paper is OLD — changed after printing (${_stale.ns ? 'REV ' + esc(_stale.ns) : 'P.Box#'})</span>` : ''}
         ${'' /* v1054 — 이 버튼은 아래 ↳ REV 줄로 옮겼다. 원래 줄에 얹혀 있으면 끝난 일인지 알 수가 없었다. */}
         ${w==='BO' ? (()=>{ const days = Math.floor((Date.now() - new Date(s.savedAt||s.meta.date||Date.now()).getTime())/86400000); const c2 = days>=14?'#dc2626':(days>=7?'#ea580c':'#6b7280'); return `<span style="padding:2px 8px;border-radius:20px;font-size:10px;font-weight:800;background:#fff;color:${c2};border:1.5px solid ${c2};white-space:nowrap;${days>=14?'animation:overdue-pulse 1s ease-in-out infinite;':''}">⏳ Day ${days}</span>`; })() : ''}
         ${(w==='BO'||w==='NA') ? `<button class="btn btn-sm" style="background:#f5f3ff;color:#6d28d9;border-color:#c4b5fd;font-weight:700;" onclick="processFromWh('${esc(s.base)}','${w}','SC')" title="Stock arrived — split into a separate order (-${w==='BO'?'B':'N'}) and ship from SC">⚙ Process from SC</button><button class="btn btn-sm" style="background:#fff7ed;color:#c2410c;border-color:#fed7aa;font-weight:700;" onclick="processFromWh('${esc(s.base)}','${w}','CA')" title="Stock arrived — split into a separate order (-${w==='BO'?'B':'N'}) and ship from CA">⚙ Process from CA</button><button class="btn btn-sm" style="background:#fee2e2;color:#b91c1c;border-color:#fca5a5;font-weight:700;" onclick="boAltFromList('${esc(s.base)}')" title="Replace a back-ordered item with an in-stock alternative (style / color / size / qty), then finish the order">⇄ Alternate</button>` : ''}
