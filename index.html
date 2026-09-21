@@ -204,7 +204,7 @@ body.po-dragging{user-select:none;}
   </span>
   <select id="lang-sel" onchange="setLang(this.value)" style="font-size:11px;padding:3px 6px;border-radius:5px;border:none;background:#1d3f66;color:#fff;"><option value="ko">한국어</option><option value="en">English</option><option value="es">Español</option></select>
   <button id="wide-btn" class="btn btn-sm" onclick="toggleWide()" title="화면 넓게 / 좁게 — 기본은 넓게 (이 브라우저에만 저장돼)" style="padding:2px 8px;font-size:10px;background:#1d3f66;color:#cfe0f2;border-color:#2b5384;">↔ Wide</button>
-  <span id="app-ver" style="font-size:10px;color:#9fb8d4;">v1128</span>
+  <span id="app-ver" style="font-size:10px;color:#9fb8d4;">v1129</span>
 </div>
 <script>
 // ↔ 넓게 보기 — 브라우저마다 따로 저장 (v793)
@@ -2263,6 +2263,26 @@ async function loadPriceList(){
     if(r.ok){ PRICE_MAP = {}; (await r.json()).forEach(function(row){ PRICE_MAP[String(row.style_number||'').trim()] = row; }); }
   }catch(e){}
 }
+/* 원가 없는 스타일 목록 (v1129). `styles` 는 원가 때문에 이메일 화이트리스트
+   3명만 볼 수 있어서, 그것만 쓰면 다른 직원 화면이 백지가 된다.
+   `styles_safe` 는 같은 145줄에서 원가만 빠진 뷰다 — 번호·설명·카테고리가 동일. */
+let SAFE_MAP = {};
+async function loadStyleSafe(){
+  try{
+    const r = await sbFetch('/rest/v1/styles_safe?select=style_number,description,category,size_range,pcs_per_box,pcs_per_box_large,pcs_per_box_youth&limit=1000');
+    if(r.ok){ SAFE_MAP = {}; (await r.json()).forEach(function(row){ SAFE_MAP[String(row.style_number||'').trim()] = row; }); }
+  }catch(e){}
+}
+/* 스타일 하나의 이름·카테고리·사이즈범위 — 볼 수 있는 출처에서 가져온다 */
+function psMeta(st){
+  const k = String(st||'').trim();
+  const s = SAFE_MAP[k] || {}, c = PRICE_MAP[k] || {}, m = STYLE_MASTER[k] || [];
+  return {
+    desc: styleItem(k) || s.description || c.description || '',
+    cat:  s.category   || c.category   || m[0] || '',
+    sr:   s.size_range || m[1] || ''
+  };
+}
 function ourMinPrice(style, size){
   const row = PRICE_MAP[String(style||'').trim()]; if(!row) return null;
   const s = String(size||'').toUpperCase();
@@ -3956,7 +3976,7 @@ async function doResetPw(){
   finally{ btn.disabled = false; btn.textContent = 'Change Password →'; }
 }
 async function enterApp(){
-  loadStyleCloud(); loadPriceList();
+  loadStyleCloud(); loadPriceList(); loadStyleSafe();
   loadCustomers();
   $('login-page').style.display = 'none';
   $('app-main').style.display = 'block';
@@ -36412,10 +36432,12 @@ function custPsPrice(cust, style, size){
   const p = ps.rows[String(style).trim()]; if(!p || p.included === false) return null;
   const s = String(size||'').toUpperCase();
   const row = PRICE_MAP[String(style).trim()] || {};
-  const kid = /kid|toddler|juvy|youth/i.test(row.category||'');
+  /* 카테고리는 원가를 못 보는 직원도 알아야 한다 — SAFE_MAP/STYLE_MASTER 로 물러난다 (v1129) */
+  const _cat = row.category || psMeta(style).cat || '';
+  const kid = /kid|toddler|juvy|youth/i.test(_cat);
   const num = v => (v==null||v===''||isNaN(parseFloat(v))) ? null : Math.round(parseFloat(v)*100)/100;
   if(kid){
-    const cat = (row.category||'').toLowerCase();
+    const cat = _cat.toLowerCase();
     if(cat.includes('toddler')) return num(p.price_toddler);
     if(cat.includes('juvy')) return num(p.price_juvy);
     if(cat.includes('youth')) return num(p.price_youth);
@@ -36524,8 +36546,14 @@ function psFabric(style){ const st=String(style||'').trim(); const ov=(typeof ge
 function psRows(){
   const q = _psQ.trim().toLowerCase();
   const ps = _imsPS[_psGk] || {rows:{}};
-  return Object.values(PRICE_MAP)
-    .map(r=>({ st: String(r.style_number).trim(), desc: styleItem(r.style_number) || r.description || '', cat: r.category||'', row: r, p: ps.rows[String(r.style_number).trim()] || null }))
+  /* 출처 순서 (v1129): 원가 없는 목록 -> 원가 목록 -> 코드에 박아둔 목록.
+     하윤처럼 원가를 보는 사람도 SAFE_MAP 이 같은 145줄이라 화면이 안 바뀐다. */
+  const keys = Object.keys(SAFE_MAP).length  ? Object.keys(SAFE_MAP)
+             : Object.keys(PRICE_MAP).length ? Object.keys(PRICE_MAP)
+             : Object.keys(STYLE_MASTER);
+  return keys
+    .map(st=>{ const mt = psMeta(st);
+      return { st: st, desc: mt.desc, cat: mt.cat, sr: mt.sr, row: PRICE_MAP[st] || {}, p: ps.rows[st] || null }; })
     .filter(x=>{
       if(q && !sMatch(q, x.st+' '+x.desc)) return false;
       if(_psFilter==='on') return !!(x.p && x.p.included);
@@ -36577,7 +36605,14 @@ function renderPsSheet(){
     }
     const b = num(p.base_price);
     const auto = s2 => b!=null ? '$'+(b+psUp(s2)).toFixed(2) : '—';
-    const has = f => { const c=x.row['cost_'+f]; return c!=null && Number(c)>0; };
+    /* 원가가 보이면 예전 판정 그대로. 원가를 못 보는 직원은 사이즈 범위로 판정한다
+       (그러지 않으면 4XL·5XL 칸이 통째로 사라진다) — v1129 */
+    const has = f => {
+      const c = x.row['cost_'+f];
+      if(c != null && Number(c) > 0) return true;
+      if(Object.keys(x.row).length) return false;
+      return /5XL/i.test(String(x.sr||''));
+    };
     return `<tr>${common}
       <td style="white-space:nowrap;"><span style="color:#94a3b8;">$</span> ${inp(x.st,'base_price',p.base_price,'—')}</td>
       <td>${inp(x.st,'price_2xl',p.price_2xl,auto('2XL'))}</td>
