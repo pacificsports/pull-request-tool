@@ -204,7 +204,7 @@ body.po-dragging{user-select:none;}
   </span>
   <select id="lang-sel" onchange="setLang(this.value)" style="font-size:11px;padding:3px 6px;border-radius:5px;border:none;background:#1d3f66;color:#fff;"><option value="ko">한국어</option><option value="en">English</option><option value="es">Español</option></select>
   <button id="wide-btn" class="btn btn-sm" onclick="toggleWide()" title="화면 넓게 / 좁게 — 기본은 넓게 (이 브라우저에만 저장돼)" style="padding:2px 8px;font-size:10px;background:#1d3f66;color:#cfe0f2;border-color:#2b5384;">↔ Wide</button>
-  <span id="app-ver" style="font-size:10px;color:#9fb8d4;">v1126</span>
+  <span id="app-ver" style="font-size:10px;color:#9fb8d4;">v1127</span>
 </div>
 <script>
 // ↔ 넓게 보기 — 브라우저마다 따로 저장 (v793)
@@ -8282,6 +8282,123 @@ async function plBatchMates(base, wh, custEm){
   }catch(e){}
   return out;
 }
+/* ─────────────────────────────────────────────────────────────────────
+   ✅ Complete 확인 창 (v1127) — 브라우저 confirm 두 번을 창 하나로.
+   답을 Promise 로 돌려준다: null = 취소, {holdForMates:bool} = 진행.
+   ⚠ 여기서는 **아무것도 바꾸지 않는다** — 보여주고 묻기만 한다.
+   ───────────────────────────────────────────────────────────────────── */
+function plCompleteAsk(o){
+  return new Promise(resolve=>{
+    document.getElementById('modal-plc')?.remove();
+    let done = false;
+    const onKey = e => { if(e.key === 'Escape') fin(null); };
+    const fin = v => {
+      if(done) return; done = true;
+      document.removeEventListener('keydown', onKey);
+      document.getElementById('modal-plc')?.remove();
+      delete window._plcGo; delete window._plcNo;
+      resolve(v);
+    };
+    window._plcNo = () => fin(null);
+    window._plcGo = () => {
+      const r = document.querySelector('input[name="plc-mate"]:checked');
+      fin({ holdForMates: r ? r.value === 'wait' : false });
+    };
+
+    const money = v => (typeof webMoney === 'function') ? webMoney(v)
+      : ('$' + Number(v||0).toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2}));
+    const card = (tone, head, body) => {
+      const c = tone === 'warn' ? ['#fffbeb','#fcd34d','#92400e']
+              : tone === 'bad'  ? ['#fef2f2','#fca5a5','#991b1b']
+              : tone === 'good' ? ['#f0fdf4','#86efac','#166534']
+              :                   ['#f8fafc','#e2e8f0','#334155'];
+      return `<div style="background:${c[0]};border:1px solid ${c[1]};border-radius:9px;padding:11px 14px;margin:0 0 11px;">
+        <div style="font-size:11px;font-weight:800;letter-spacing:.08em;text-transform:uppercase;color:${c[2]};margin-bottom:5px;">${head}</div>
+        <div style="font-size:13px;color:#1e293b;line-height:1.6;">${body}</div></div>`;
+    };
+    const row = (k, v, strong) => `<tr>
+      <td style="padding:4px 0;color:#64748b;font-size:12.5px;">${k}</td>
+      <td style="padding:4px 0;text-align:right;font-family:Consolas,monospace;font-size:13px;${strong?'font-weight:800;color:#0f2a4a;':''}">${v}</td></tr>`;
+
+    /* 📧 받는 사람 */
+    let html = o.wantSend
+      ? card('good', 'Email', '📧 Packing List' + (o.wp && !o.wp.block ? ' + Invoice' : '')
+          + ' &rarr; <b>' + esc(o.toEmail) + '</b>')
+      : card('', 'Email', 'No email &mdash; the <b>Email PL + Invoice to customer</b> checkbox is off.'
+          + (o.isWeb ? '<br><span style="color:#92400e;">🌐 This is a web order &mdash; without the email nothing goes back to the customer\'s My Account.</span>' : ''));
+
+    /* 📦 박스 QR */
+    html += o.blTotal > 0
+      ? card('', 'Box QR', '📦 <b>' + o.blTotal + '</b> box QR label' + (o.blTotal>1?'s':'') + ' linked &mdash; when the customer scans one they will see the customer name and PO #.')
+      : card('warn', 'Box QR', '⚠ No box QR is linked to this order (packing was not scanned, or these are PC Room boxes).<br>Complete still works, but a customer scanning a label will not see the customer name or PO #.');
+
+    /* 🌐 웹 오더 금액 */
+    if(o.wp && o.wp.notFound){
+      html += card('bad', 'Web order', '⚠ Web order <b>' + esc(o.wp.po||'') + '</b> was not found &mdash; no invoice will be attached. Only the Packing List goes out.');
+    } else if(o.wp && o.wp.block){
+      html += card('bad', 'Web order &middot; invoice skipped',
+        '⚠ An invoice here would charge <b>more than was paid</b>, so none is issued. Only the Packing List goes out.'
+        + '<table style="width:100%;border-collapse:collapse;margin-top:7px;">'
+        + row('Paid by card', money(o.wp.card))
+        + row('Already invoiced', money(o.wp.before))
+        + row('This one', money(o.wp.total))
+        + row('Total', money(o.wp.after) + '  (' + money(o.wp.over) + ' over)', true)
+        + '</table>'
+        + '<div style="margin-top:6px;font-size:12px;">Check it and send the invoice with the 📧 button instead.</div>');
+    } else if(o.wp){
+      const left = Math.max(0, Math.round((o.wp.card - o.wp.after)*100)/100);
+      html += card('good', 'Web order &middot; invoice goes out too',
+        '<table style="width:100%;border-collapse:collapse;">'
+        + row('Goods', money(o.wp.goods))
+        + row('Freight', o.wp.freight > 0 ? money(o.wp.freight)
+            : '<span style="color:#64748b;">&mdash; already on the other warehouse invoice</span>')
+        + row('This invoice', money(o.wp.total), true)
+        + '</table>'
+        + '<div style="border-top:1px solid #86efac;margin:7px 0 5px;"></div>'
+        + '<table style="width:100%;border-collapse:collapse;">'
+        + row('Paid by card', money(o.wp.card))
+        + row('Remaining', money(left), left > 0.005)
+        + '</table>'
+        + (left > 0.005 ? '<div style="margin-top:6px;font-size:12px;color:#92400e;">' + money(left)
+            + ' is still unbilled &mdash; it belongs to the other warehouse or to a back order.</div>' : ''));
+    }
+
+    /* 📦 한 박스 묶음 — 여기서 고른다 (전에는 두 번째 팝업) */
+    const matesLeft = (o.matesLeft || []);
+    if(matesLeft.length){
+      html += card('warn', 'One box, several POs (' + esc(o.matesRef||'') + ''+')',
+        'These POs ship in the same box and are <b>not Complete yet</b>:<br>'
+        + '<b>' + matesLeft.map(m=>'PO ' + esc(String(m.po))).join('</b> &middot; <b>') + '</b>'
+        + '<div style="margin-top:9px;">'
+        + '<label style="display:block;margin-bottom:5px;cursor:pointer;"><input type="radio" name="plc-mate" value="wait" checked style="accent-color:#0f2a4a;"> '
+        + 'Wait &mdash; send <b>one</b> email when the last PO is completed <span style="color:#166534;font-weight:700;">(recommended)</span></label>'
+        + '<label style="display:block;cursor:pointer;"><input type="radio" name="plc-mate" value="now" style="accent-color:#0f2a4a;"> '
+        + 'Send this PO on its own now</label></div>');
+    } else if((o.matesAll||[]).length){
+      html += card('', 'One box, several POs (' + esc(o.matesRef||'') + ')',
+        'Every other PO in this box is already Complete &mdash; <b>one email</b> covers all '
+        + ((o.matesAll||[]).length + 1) + ' POs.');
+    }
+
+    const div = document.createElement('div');
+    div.id = 'modal-plc';
+    div.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,.55);z-index:140;display:flex;align-items:center;justify-content:center;';
+    div.innerHTML = `<div style="background:#fff;border-radius:12px;width:620px;max-width:95vw;max-height:88vh;display:flex;flex-direction:column;box-shadow:0 20px 60px rgba(0,0,0,.35);">
+      <div style="background:#14532d;color:#fff;border-radius:12px 12px 0 0;padding:12px 18px;font-weight:800;display:flex;justify-content:space-between;align-items:center;">
+        <span>✅ Complete packing list &mdash; ${esc(o.cust||'')} &middot; PO ${esc(o.po||'')} &middot; ${esc(o.wh||'')}</span>
+        <button onclick="window._plcNo&&window._plcNo()" style="background:none;border:none;color:#fff;font-size:17px;cursor:pointer;">✕</button></div>
+      <div style="overflow-y:auto;flex:1;padding:15px 18px 6px;">${html}</div>
+      <div style="padding:11px 18px;border-top:1px solid #e2e8f0;display:flex;gap:8px;justify-content:flex-end;">
+        <button class="btn" onclick="window._plcNo&&window._plcNo()">Not yet</button>
+        <button class="btn btn-primary" id="plc-go" style="background:#14532d;border-color:#14532d;font-weight:800;" onclick="window._plcGo&&window._plcGo()">✅ Complete ${esc(o.wh||'')}</button>
+      </div></div>`;
+    document.body.appendChild(div);
+    if(typeof initModalDrag === 'function') initModalDrag(div);
+    document.addEventListener('keydown', onKey);
+    setTimeout(()=>{ const b = document.getElementById('plc-go'); if(b) b.focus(); }, 30);
+  });
+}
+
 async function completePL(){
   const rec = savedCache.find(s=>s.base===plBase); if(!rec) return;
   plFieldsToDraft();
@@ -8293,12 +8410,16 @@ async function completePL(){
   /* 📦 이 창고 몫으로 QR 이 몇 박스나 연결돼 있는지 미리 보여준다 (v865).
      스캔을 건너뛰고 포장했으면 여기서 0 으로 보이니까 바로 알 수 있다. */
   const _bl = await boxLinkCount(plBase, plWh);
-  const _blMsg = _bl.total>0
-    ? ('\n\n📦 박스 QR ' + _bl.total + '개 연결됨 — Complete 하면 손님이 QR 을 찍었을 때\n   거래처 이름과 PO# 가 보입니다.')
-    : '\n\n⚠ 이 오더에 연결된 박스 QR 이 없습니다 (포장할 때 스캔을 안 했거나 PC Room 박스).\n   Complete 는 그대로 진행되지만, 손님이 QR 을 찍어도 거래처·PO 는 안 나옵니다.';
   /* 🌐 웹 오더면 인보이스 미리보기를 같은 확인창에 보여준다 (v1109) — 여기서는 아직 아무것도 안 바꾼다 */
   const _wp = wantSend ? await webInvPreview(rec, plWh) : null;
-  if(!confirm('✅ Mark ' + plWh + ' Packing List Complete?' + (wantSend ? '\n📧 Email to customer: ' + custEm : '\n(No email — checkbox unchecked)') + _blMsg + ((_wp && _wp.msg) || ''))) return;
+  /* 📦 한 박스로 묶인 PO 도 **창을 띄우기 전에** 조회한다 (v1127).
+     전에는 Complete 를 다 해놓고 나서 두 번째 팝업으로 물어서 왔다 갔다가 됐다. */
+  const _mates = wantSend ? await plBatchMates(plBase, plWh, custEm) : { ref:'', mates:[] };
+  const _matesLeft = _mates.mates.filter(m=>!m.done);
+  const _ans = await plCompleteAsk({ wh:plWh, cust:(rec.meta&&rec.meta.cust)||'', po:(rec.meta&&rec.meta.po)||plBase,
+    toEmail:custEm, wantSend:wantSend, isWeb:(function(){ try{ return !!webPoOf(rec); }catch(e){ return false; } })(),
+    blTotal:(_bl&&_bl.total)||0, wp:_wp, matesRef:_mates.ref, matesAll:_mates.mates, matesLeft:_matesLeft });
+  if(!_ans) return;
   d._completed = new Date().toISOString();
   boxLinkShip(plBase, plWh, rec);   // 📦 진짜 나갔다 — 박스 QR 을 손님에게 열어준다 (v865)
   tdClearDone(plBase, plWh);                        // 나간 창고 몫의 Today / PC Room 표시를 끈다 (v818)
@@ -8309,10 +8430,10 @@ async function completePL(){
        LTL 배치는 원래 거래처당 한 통으로 나간다(sendBatchPLEmail). 그런데 UPS 배치는
        PO 를 하나씩 Complete 하다 보니, 같은 거래처에게 같은 박스 이야기를 두 번 세 번 보냈다.
        받는 쪽에서는 몇 개가 오는 건지 알 수 없다. */
-    const _mates = await plBatchMates(plBase, plWh, custEm);
+    /* _mates 는 위에서(창 띄우기 전에) 이미 조회했다 (v1127) */
     let _alone = true;
     if(_mates.mates.length){
-      const _left = _mates.mates.filter(m=>!m.done);
+      const _left = _matesLeft;
       if(!_left.length){
         showToast('📧 Sending one email for ' + (_mates.mates.length+1) + ' POs...');
         try{
@@ -8322,14 +8443,9 @@ async function completePL(){
         }catch(e){ alert('📧 Email failed: ' + e.message + '\n(Still marked Complete — use Resend PL to retry)'); }
         _alone = false;
       } else {
-        /* 아직 안 끝난 PO 가 있다. 여기서 조용히 안 보내면 영영 안 나갈 수도 있으니
-           사람이 고르게 한다 — 기다릴지, 지금 따로 보낼지. */
-        const _wait = confirm('📦 이 오더는 한 박스로 함께 나가는 묶음의 일부입니다 (' + _mates.ref + ').\n\n'
-          + '아직 Complete 안 된 PO:\n' + _left.map(m=>'· PO ' + m.po).join('\n')
-          + '\n\n[확인] 기다렸다가 마지막 PO 를 Complete 할 때 한 통으로 보냅니다 (권장)\n'
-          + '[취소] 지금 이 PO 만 따로 보냅니다');
-        if(_wait){
-          showToast('📧 보류 — 나머지 ' + _left.length + '개가 Complete 되면 한 통으로 나갑니다');
+        /* 아직 안 끝난 PO 가 있다 — 어떻게 할지는 위 확인 창에서 이미 골랐다 (v1127) */
+        if(_ans.holdForMates){
+          showToast('📧 Held — one email goes out when the remaining ' + _left.length + ' PO(s) are Complete');
           try{ logHist(plBase, 'PL email held — waiting for PO '+_left.map(m=>m.po).join(', ')+' (same box, one email)'); }catch(_){}
           _alone = false;
         }
@@ -8345,27 +8461,27 @@ async function completePL(){
         showToast('✅ Complete — ' + (_iss ? ('PL + Invoice ' + _iss.invNo) : 'Packing List') + ' sent → ' + custEm);
       }catch(e){ alert('📧 Email failed: ' + e.message + '\n(Still marked Complete — use Resend PL to retry)'); }
       if(_iss){
-        if(_iss.pdfFailed) alert('⚠ 인보이스 PDF 를 못 만들어서 메일에 안 붙었습니다 (PL 은 나갔습니다).\n인보이스 ' + _iss.invNo + ' 은 발행됐으니 📧 버튼으로 다시 보내세요.');
+        if(_iss.pdfFailed) alert('⚠ The invoice PDF could not be built, so it was not attached (the Packing List did go out).\nInvoice ' + _iss.invNo + ' is issued — resend it with the 📧 button.');
         await webOrderPushBack(rec, plWh, _iss.dInv, _iss.invNo, _wp.total);
         /* 마지막 창고까지 다 나갔는데 금액이 모자라면 — BO 이거나 환불할 돈이다 */
         const _left = (rec.whs||[]).filter(w => w !== plWh && !(rec.pl && rec.pl[w] && rec.pl[w]._completed));
         const _short = Math.round((_wp.card - _wp.after) * 100) / 100;
         if(!_left.length && _short > 0.005){
-          alert('⚠ 이 오더는 이제 다 나갔는데 금액이 안 맞습니다.\n\n'
-            + '카드로 받음      ' + webMoney(_wp.card) + '\n'
-            + '인보이스 합계    ' + webMoney(_wp.after) + '\n'
-            + '차액            ' + webMoney(_short) + '\n\n'
-            + 'BO 로 나중에 나갈 몫이면 그때 인보이스가 붙습니다.\n'
-            + '아니면 ' + webMoney(_short) + ' 을 환불해야 합니다.');
+          alert('⚠ This order has now shipped in full, but the money does not match.\n\n'
+            + 'Paid by card      ' + webMoney(_wp.card) + '\n'
+            + 'Invoiced total    ' + webMoney(_wp.after) + '\n'
+            + 'Difference        ' + webMoney(_short) + '\n\n'
+            + 'If the rest goes out later as a back order, its invoice covers it.\n'
+            + 'Otherwise ' + webMoney(_short) + ' has to be refunded.');
         }
       }
     } else if(_wp && !_wp.block){
       /* 묶음 발송이면 금액 배분이 꼬여서 자동 인보이스를 건너뛴다 */
-      showToast('🌐 묶음 발송이라 인보이스는 자동으로 안 붙었어 — 📧 버튼으로 따로 보내');
+      showToast('🌐 One email for several POs — the invoice was not attached automatically. Send it with the 📧 button.');
     }
   } else {
     showToast('✅ Packing List marked Complete');
-    if(webPoOf(rec)) showToast('🌐 메일을 안 보내서 웹사이트에 반영이 안 됐어 — 손님 My Account 에 아직 안 뜬다');
+    if(webPoOf(rec)) showToast('🌐 No email was sent, so nothing went back to the website — the customer My Account is still unchanged');
   }
   renderSaved(); renderPL();
 }
@@ -12251,7 +12367,8 @@ async function webInvPreview(rec, wh){
   const lines = (d.lines||[]).filter(l=>(Number(l.qty)||0)>0);
   if(!lines.length) return null;
   const wo = await webOrderRow(po);
-  if(!wo) return { block:true, msg:'\n\n⚠ 웹 주문 ' + po + ' 을 못 찾았어 — 인보이스는 자동으로 안 붙어' };
+  if(!wo) return { block:true, notFound:true, po:po,
+    msg:'\n\nWeb order ' + po + ' not found - no invoice will be attached' };
   const goods   = Math.round(lines.reduce((a,l)=>a+(Number(l.qty)||0)*(Number(l.price)||0),0)*100)/100;
   /* 🚚 운임: 체크아웃이 창고별로 받아놓았으면(`shipping_legs`) 그대로 쓴다.
      없던 옛 주문은 운임을 한 번만 받았으니 **아직 아무 인보이스에도 안 붙었을 때만** 붙인다.
@@ -12268,21 +12385,23 @@ async function webInvPreview(rec, wh){
   const over   = Math.round((after - card)*100)/100;
   /* ⚠ 받은 돈보다 많이 청구하는 일은 절대 없어야 한다 */
   if(over > 0.005){
-    return { block:true, wo:wo, msg:'\n\n⚠ 인보이스를 안 냅니다 — 받은 돈보다 많아집니다'
-      + '\n   카드로 받음    ' + webMoney(card)
-      + '\n   이미 인보이스  ' + webMoney(before)
-      + '\n   이번           ' + webMoney(total)
-      + '\n   합계           ' + webMoney(after) + '  (' + webMoney(over) + ' 초과)'
-      + '\n   PL 만 나갑니다 — 인보이스는 📧 버튼으로 확인하고 보내세요.' };
+    return { block:true, wo:wo, goods:goods, freight:freight, total:total,
+      card:card, before:before, after:after, over:over,
+      msg:'\n\nNo invoice - it would exceed what was paid'
+      + '\n   Paid by card     ' + webMoney(card)
+      + '\n   Already invoiced ' + webMoney(before)
+      + '\n   This one         ' + webMoney(total)
+      + '\n   Total            ' + webMoney(after) + '  (' + webMoney(over) + ' over)' };
   }
   return { wo:wo, goods:goods, freight:freight, total:total, card:card, before:before, after:after,
-    msg:'\n\n🌐 웹 오더 — 인보이스도 같이 나갑니다'
-      + '\n   물건           ' + webMoney(goods)
-      + (freight > 0 ? ('\n   운임           ' + webMoney(freight))
-                     : '\n   운임           — (다른 창고 인보이스에 이미 붙었음)')
-      + '\n   이번 인보이스  ' + webMoney(total)
-      + '\n   카드로 받음    ' + webMoney(card)
-      + '\n   남은 금액      ' + webMoney(Math.max(0, Math.round((card - after)*100)/100)) };
+    over:0,
+    msg:'\n\nWeb order - the invoice goes out too'
+      + '\n   Goods            ' + webMoney(goods)
+      + (freight > 0 ? ('\n   Freight          ' + webMoney(freight))
+                     : '\n   Freight          - (already on the other warehouse invoice)')
+      + '\n   This invoice     ' + webMoney(total)
+      + '\n   Paid by card     ' + webMoney(card)
+      + '\n   Remaining        ' + webMoney(Math.max(0, Math.round((card - after)*100)/100)) };
 }
 /* 인보이스 번호를 실제로 발급하고 PAID 를 기록한다. DB 저장이 안 되면 되돌린다. */
 async function webIssueInvoice(rec, wh, pv){
@@ -12306,10 +12425,10 @@ async function webIssueInvoice(rec, wh, pv){
   const rows = r.ok ? await r.json().catch(()=>[]) : [];
   if(!r.ok || !rows.length){
     if(had) rec.inv[wh] = cur; else delete rec.inv[wh];
-    alert('⚠ 인보이스 번호 저장 실패 — PL 만 보냅니다.\n인보이스는 📧 버튼으로 직접 보내세요.');
+    alert('⚠ Could not save the invoice number — only the Packing List will be sent.\nSend the invoice yourself with the 📧 button.');
     return null;
   }
-  logHist(rec.base, '웹 오더 인보이스 발행 ' + invNo + ' — ' + wh + ' ' + webMoney(pv.total) + ' (Complete 와 함께)');
+  logHist(rec.base, 'Web order invoice issued ' + invNo + ' — ' + wh + ' ' + webMoney(pv.total) + ' (with Complete)');
   return { invNo: invNo, total: pv.total,
            dInv: { ...d, freight: pv.freight, invNo: invNo, termType: 'cc', termDays: 0 } };
 }
