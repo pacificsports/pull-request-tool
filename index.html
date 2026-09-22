@@ -30837,6 +30837,103 @@ async function trQrLinePrint(){
   try{ logHist && logHist('', 'Box QR stickers printed \u2014 ' + what + ' x' + n + ' @ ' + q + ' pcs/box (' + (_shipNo||'') + ')'); }catch(e){}
 }
 
+/* ⬛ 고른 줄 여러 개를 한 번에 QR (v1140, 2026-09-22) ──────────────────
+   [stated] 하윤: "저렇케 여러개 선택해서 QR code 누르면 모듈에 select된게 다 떠서
+                   거기서 수정할꺼 하고 프린트 할수있게"
+   ⚠ trPbGather 를 쓰지 않는다 — 그건 is_manual 줄을 버린다 (Put Back 전용. 손으로
+     넣은 줄은 되돌릴 bin 이 없으니까). QR 은 오히려 손으로 넣은 줄이 더 필요하다
+     — 그 박스들은 아직 스티커가 없다. 그래서 여기는 거르지 않고 다 담는다.
+   ⚠ Stickers 를 0 으로 두면 그 줄은 빠진다 — 세 줄 골랐다가 한 줄만 빼고 싶을 때. */
+function trQrSelGather(){
+  const out = [];
+  trPbChecks().forEach(cb=>{
+    const pid = cb.getAttribute('data-pid'), li = Number(cb.getAttribute('data-li'));
+    const p = _shipPallets.find(x=>x.id===pid); if(!p) return;
+    const l = (p.lines||[])[li]; if(!l) return;
+    out.push({ pid:pid, li:li, style:l.style, color:l.color, size:l.size,
+      bin:String(l.bin||'').toUpperCase(),
+      n:(trLineBoxes(l)||1), q:(trLinePpb(l)||72),
+      hasQr: !l.is_manual && (l.ids||[]).length >= 1 });
+  });
+  return out;
+}
+function trQrSelOpen(){
+  const rows = trQrSelGather();
+  if(!rows.length){ showToast('⚠ No lines selected'); return; }
+  window._qsRows = rows;
+  const anyQr = rows.some(r=>r.hasQr);
+  const ex = document.getElementById('modal-qsel'); if(ex) ex.remove();
+  const div = document.createElement('div'); div.id = 'modal-qsel';
+  div.style.cssText = 'position:fixed;inset:0;background:rgba(15,23,42,.6);z-index:140;display:flex;align-items:center;justify-content:center;padding:12px;';
+  const body = rows.map((r,i)=>`<tr>
+    <td style="text-align:center;">${r.hasQr
+      ? '<span title="This line came from a bin scan - its boxes already carry a QR" style="color:#b91c1c;font-weight:900;">⚠</span>'
+      : '<span title="Hand-entered line - these boxes have no QR yet" style="color:#16a34a;font-weight:900;">●</span>'}</td>
+    <td style="font-family:Consolas,monospace;font-weight:700;">#${esc(r.style)}</td>
+    <td>${esc(bxBaseColor(r.color))}</td>
+    <td style="text-align:center;">${esc(r.size)}</td>
+    <td style="text-align:center;color:#64748b;">${esc(r.bin||'—')}</td>
+    <td style="text-align:center;"><input class="fi" type="number" min="0" max="500" value="${r.n}" oninput="trQrSelEdit(${i},'n',this.value)" style="width:64px;text-align:center;font-weight:800;font-size:12px;padding:3px 4px;"></td>
+    <td style="text-align:center;"><input class="fi" type="number" min="1" max="9999" value="${r.q}" oninput="trQrSelEdit(${i},'q',this.value)" style="width:70px;text-align:center;font-weight:800;font-size:12px;padding:3px 4px;"></td>
+    <td id="qs-p-${i}" style="text-align:right;font-family:Consolas,monospace;font-weight:700;">${(r.n*r.q).toLocaleString()}</td>
+  </tr>`).join('');
+  div.innerHTML = `<div style="background:#fff;border-radius:12px;max-width:760px;width:100%;max-height:90vh;display:flex;flex-direction:column;overflow:hidden;">
+    <div style="background:#6d28d9;color:#fff;padding:12px 18px;font-size:15px;font-weight:800;display:flex;align-items:center;gap:8px;">⬛ Box QR — selected lines <span style="font-size:11px;font-weight:400;color:#ddd6fe;">— set the sticker count and pcs per box for each line</span>
+      <button class="btn btn-sm" style="margin-left:auto;background:transparent;color:#ddd6fe;border-color:#a78bfa;" onclick="document.getElementById('modal-qsel').remove()">✕</button></div>
+    <div style="padding:14px 18px;overflow-y:auto;">
+      <table class="etbl" style="font-size:11.5px;"><thead><tr><th style="width:26px;"></th><th class="tl">Style</th><th class="tl">Color</th><th>Size</th><th>Bin</th><th>Stickers</th><th>Pcs / box</th><th>Pcs</th></tr></thead>
+      <tbody>${body}</tbody></table>
+      <div id="qs-sum" style="margin-top:10px;font-size:13px;font-weight:800;color:#4c1d95;"></div>
+      ${anyQr?`<div style="margin-top:10px;background:#fef2f2;border:1px solid #fecaca;border-radius:9px;padding:10px 12px;font-size:11.5px;color:#b91c1c;line-height:1.5;">
+        <b>⚠ The ⚠ lines already carry a QR.</b> Those came from a bin scan, so every box already has a carton number. A second sticker on the same box is counted as two boxes when the truck is scanned — set those rows to <b>0</b> unless the boxes really have no sticker yet.</div>`:''}
+      <div class="muted" style="font-size:10.5px;margin-top:8px;line-height:1.45;">Set <b>Stickers</b> to <b>0</b> to leave a line out. Every sticker gets a new carton number — printing one does not add inventory, a sticker only becomes a box when it is scanned. Goes to the 2" x 2" printer — load 2" x 2" label stock first.</div>
+    </div>
+    <div style="padding:12px 18px;border-top:1px solid #eee;display:flex;gap:8px;justify-content:flex-end;flex-wrap:wrap;">
+      <button class="btn" onclick="document.getElementById('modal-qsel').remove()">Cancel</button>
+      <button class="btn" style="background:#6d28d9;color:#fff;border-color:#6d28d9;font-weight:800;" onclick="trQrSelPrint()">🖨 Print all</button>
+    </div></div>`;
+  document.body.appendChild(div);
+  trQrSelSum();
+}
+function trQrSelEdit(i, f, v){
+  const r = (window._qsRows||[])[i]; if(!r) return;
+  let n = parseInt(v, 10); if(!(n >= 0)) n = 0;
+  /* ⚠ 여기서 q 를 1 로 올려 붙이지 말 것 — 타이핑 중에 지우면 값이 튄다.
+     0 은 그대로 두고 인쇄할 때 줄 이름을 대며 막는다. */
+  if(f === 'n'){ if(n > 500) n = 500; r.n = n; }
+  else { if(n > 9999) n = 9999; r.q = n; }
+  const c = document.getElementById('qs-p-' + i); if(c) c.textContent = (r.n * r.q).toLocaleString();
+  trQrSelSum();
+}
+function trQrSelSum(){
+  const el = document.getElementById('qs-sum'); if(!el) return;
+  const rows = (window._qsRows||[]);
+  const nb = rows.reduce((a,r)=>a + (r.n||0), 0);
+  const np = rows.reduce((a,r)=>a + (r.n||0)*(r.q||0), 0);
+  const ln = rows.filter(r=>(r.n||0) > 0).length;
+  el.innerHTML = '⬛ <b>' + nb + '</b> sticker(s) over <b>' + ln + '</b> line(s) &nbsp;·&nbsp; '
+    + np.toLocaleString() + ' pcs total';
+}
+async function trQrSelPrint(){
+  const rows = (window._qsRows||[]).filter(r=>(r.n||0) > 0);
+  if(!rows.length){ showToast('⚠ Every line is set to 0 stickers'); return; }
+  const bad = rows.find(r=>!((r.q||0) > 0));
+  if(bad){ showToast('⚠ Pcs / box missing on #' + bad.style + ' ' + bxBaseColor(bad.color) + ' ' + bad.size); return; }
+  const total = rows.reduce((a,r)=>a + r.n, 0);
+  const ex = document.getElementById('modal-qsel'); if(ex) ex.remove();
+  let prnMatch = '.66';
+  try{ prnMatch = localStorage.getItem('bl_printer_binqr_match') || '.66'; }catch(e){}
+  window._blMode = 'full';                       /* 해상도를 2x2 쪽 기준으로 (줄 하나 인쇄와 같다) */
+  try{ await blDpiSync(); }catch(e){}
+  const parts = [];
+  rows.forEach(r=>{ for(let k=0; k<r.n; k++)
+    parts.push(buildBoxQr2x2Zpl({ styleNum:r.style, color:r.color, size:r.size, qty:r.q }, ctnNew())); });
+  const ok = await sendToZebraBrowserPrint(parts.filter(Boolean).join('\n'), total, prnMatch);
+  if(!ok) return;
+  showToast('⬛ ' + total + ' QR sticker(s) — ' + rows.length + ' line(s)');
+  try{ logHist && logHist('', 'Box QR stickers printed — ' + rows.length + ' selected line(s), ' + total + ' sticker(s) (' + (_shipNo||'') + ')'); }catch(e){}
+}
+
 function trQrPallet(pid){
   const p = _shipPallets.find(x=>x.id===pid); if(!p) return;
   return trQrLines(p.lines, p.label);
@@ -31054,8 +31151,9 @@ function trPbBarHtml(){
   return `<div id="tr-pb-bar" style="display:none;align-items:center;gap:10px;flex-wrap:wrap;background:#fff7ed;border:1.5px solid #fdba74;border-radius:10px;padding:8px 12px;margin-bottom:10px;">
     <span style="font-size:16px;">☑</span>
     <span style="font-size:12.5px;font-weight:800;color:#9a3412;"><b id="tr-pb-count">0</b> line(s) selected</span>
-    <span style="font-size:11px;color:#9a3412;">print a Pull Request for just these lines, or put them back to a bin</span>
+    <span style="font-size:11px;color:#9a3412;">print a Pull Request, print box QR stickers, or put them back to a bin</span>
     <button class="btn btn-sm" style="margin-left:auto;background:#166534;color:#fff;border-color:#166534;font-weight:800;" onclick="trPRSelected()">🖨 Pull Request (selected)</button>
+    <button class="btn btn-sm" style="background:#6d28d9;color:#fff;border-color:#6d28d9;font-weight:800;" onclick="trQrSelOpen()" title="Print box QR stickers for every selected line - each line gets its own sticker count and pcs per box">⬛ Box QR (selected)</button>
     <button class="btn btn-sm" style="background:#c2410c;color:#fff;border-color:#c2410c;font-weight:800;" onclick="trPutBackOpen()">↩ Put Back Request</button>
     <button class="btn btn-sm" onclick="trPbClear()">Clear</button>
   </div>`;
@@ -31114,6 +31212,9 @@ function trPutBackOpen(pid, li){
   const rows = trPbGather(pid, li);
   if(!rows.length){ showToast('⚠ No stock lines selected'); return; }
   window._pbRows = rows;
+  /* v1140: 이제 손으로 넣은 줄도 체크박스로 고를 수 있다 → 그 줄은 되돌릴 bin 이
+     없어서 trPbGather 가 버린다. 몇 줄이 빠졌는지 화면에 적어 준다. */
+  const _pbDrop = Math.max(0, ((pid!=null && li!=null) ? 1 : trPbChecks().length) - rows.length);
   const ex = document.getElementById('modal-pb'); if(ex) ex.remove();
   const div = document.createElement('div'); div.id='modal-pb';
   div.style.cssText='position:fixed;inset:0;background:rgba(15,23,42,.6);z-index:130;display:flex;align-items:center;justify-content:center;padding:12px;';
@@ -31131,6 +31232,7 @@ function trPutBackOpen(pid, li){
     <div style="padding:14px 18px;overflow-y:auto;">
       <table class="etbl" style="font-size:11.5px;"><thead><tr><th class="tl">Style</th><th class="tl">Color</th><th>Size</th><th>From</th><th>Put back qty</th><th>To bin 📍</th></tr></thead>
       <tbody>${body}</tbody></table>
+      ${_pbDrop?`<div style="margin-top:8px;background:#fef2f2;border:1px solid #fecaca;border-radius:8px;padding:8px 10px;font-size:11px;color:#b91c1c;font-weight:700;">⚠ ${_pbDrop} hand-entered line(s) left out — a manual line has no bin to go back to.</div>`:''}
       <div class="muted" style="font-size:10.5px;margin-top:8px;line-height:1.4;"><b>Confirm</b> moves the boxes back into that bin (return to stock) <b>and auto-prints</b> the request sheet — so the sheet is never missed. Use 🖨 Print request only if you want it earlier. Partial quantities keep the rest on the transfer.</div>
     </div>
     <div style="padding:12px 18px;border-top:1px solid #eee;display:flex;gap:8px;justify-content:flex-end;flex-wrap:wrap;">
@@ -31591,7 +31693,7 @@ function trRenderPallets(){
           <td style="padding:4px 6px;text-align:center;"><input class="fi" type="number" min="0" value="${Number(l.boxes)||0}" onchange="trManualEdit('${p.id}',${li},'boxes',this.value)" style="width:56px;font-size:11px;padding:3px 5px;text-align:center;font-weight:800;"></td>
           <td style="text-align:right;font-family:Consolas,monospace;font-weight:700;">${trLinePcs(l).toLocaleString()}</td>
           <td style="padding:4px 6px;text-align:center;"><input class="fi" type="number" min="1" value="${Number(l.ppb)||72}" onchange="trManualEdit('${p.id}',${li},'ppb',this.value)" style="width:52px;font-size:11px;padding:3px 5px;text-align:center;"></td>
-          <td style="text-align:center;white-space:nowrap;">${_noPR?'':trQrLineBtn(p.id, li)}</td>
+          <td style="text-align:center;white-space:nowrap;">${_noPR?'':trQrLineBtn(p.id, li)}<input type="checkbox" class="tr-pb" data-pid="${p.id}" data-li="${li}" onchange="trPbSync()" title="Select for a batch Box QR / Pull Request" style="width:14px;height:14px;accent-color:#6d28d9;cursor:pointer;vertical-align:middle;"></td>
           <td style="text-align:center;"><button onclick="trDelLine('${p.id}',${li})" style="border:none;background:none;color:#e53935;cursor:pointer;font-weight:800;">✕</button></td>
           </tr>`;
         }
