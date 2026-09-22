@@ -10777,8 +10777,10 @@ async function ssccReserve(count){
   const key = '@ssccseq:' + ext;
   let last = 0, got = false;
   try{
-    const r = await fetch(SB_URL + '/rest/v1/pr_config?select=v&k=eq.' + encodeURIComponent(key),
-      { headers:{ apikey:SB_KEY, Authorization:'Bearer ' + SB_KEY } });
+    /* ⚠⚠ sbFetch 로 읽는다. anon 이면 빈 배열이 와서 last=0 인데 got=true 가 되어
+       "번호 0번부터 다시" 가 된다 — 이미 찍은 카톤과 겹친다 (2026-09-22).
+       ⓘ 지금 이 함수를 부르는 곳은 없다 (카톤번호는 ctnNew 가 만든다). 되살릴 때를 위해 고쳐둔다. */
+    const r = await sbFetch('/rest/v1/pr_config?select=v&k=eq.' + encodeURIComponent(key));
     if(r.ok){ const j = await r.json(); last = parseInt((j[0]||{}).v, 10) || 0; got = true; }
   }catch(e){}
   /* 서버를 못 읽었으면 찍지 않는다. 아무 번호나 만들면 남이 쓴 번호와 겹치고,
@@ -10787,18 +10789,16 @@ async function ssccReserve(count){
   const start = last + 1, end = start + n - 1;
   if(end > 99999){ showToast('⚠ Carton numbers ' + ext + '-xxxxx are used up — tell Hyun'); return null; }
   try{
-    const w = await fetch(SB_URL + '/rest/v1/pr_config?on_conflict=k', { method:'POST',
-      headers:{ apikey:SB_KEY, Authorization:'Bearer ' + SB_KEY, 'Content-Type':'application/json',
-                Prefer:'resolution=merge-duplicates,return=minimal' },
+    const w = await sbFetch('/rest/v1/pr_config?on_conflict=k', { method:'POST',
+      headers:{ Prefer:'resolution=merge-duplicates,return=minimal' },
       body: JSON.stringify([{ k:key, v:String(end), updated_at:new Date().toISOString() }]) });
     if(!w.ok) throw new Error('HTTP ' + w.status);
   }catch(e){ showToast('⚠ Could not move the carton counter — not printing so the numbers cannot repeat'); return null; }
   /* 누가 어느 번호를 뽑았는지 — 확장자리를 나누는 대신 이걸로 남긴다 */
   try{
     const who = (typeof SESS !== 'undefined' && SESS && SESS.email) ? SESS.email : '';
-    await fetch(SB_URL + '/rest/v1/pr_config?on_conflict=k', { method:'POST',
-      headers:{ apikey:SB_KEY, Authorization:'Bearer ' + SB_KEY, 'Content-Type':'application/json',
-                Prefer:'resolution=merge-duplicates,return=minimal' },
+    await sbFetch('/rest/v1/pr_config?on_conflict=k', { method:'POST',
+      headers:{ Prefer:'resolution=merge-duplicates,return=minimal' },
       body: JSON.stringify([{ k:'@ssccblk:' + ext + '-' + String(start).padStart(5,'0'),
                               v: ext + '|' + start + '|' + end + '|' + who + '|' + new Date().toISOString(),
                               updated_at:new Date().toISOString() }]) });
@@ -10828,8 +10828,7 @@ function fbQrText(it, sscc, po){
 /* 다음에 나갈 번호가 몇 번인지 — 라벨을 뽑기 전에 보여주기 위한 것뿐이다 */
 async function ssccPeek(){
   try{
-    const r = await fetch(SB_URL + '/rest/v1/pr_config?select=v&k=eq.' + encodeURIComponent('@ssccseq:' + SSCC_EXT),
-      { headers:{ apikey:SB_KEY, Authorization:'Bearer ' + SB_KEY } });
+    const r = await sbFetch('/rest/v1/pr_config?select=v&k=eq.' + encodeURIComponent('@ssccseq:' + SSCC_EXT));
     if(!r.ok) return null;
     const j = await r.json();
     return (parseInt((j[0]||{}).v, 10) || 0) + 1;
@@ -11526,9 +11525,20 @@ const UPS_SERVICES = [
 ];
 let _lblBase='', _lblRec=null, _lblBoxes=[], _lblResult=null;
 let _shipHandling=null;   // 서버 저장된 박스당 핸들링($). null이면 기본값(UPS_HANDLING_PER_BOX) 사용
-function shipHandlingRate(){ const v=Number(_shipHandling); return (isFinite(v)&&v>=0)?v:UPS_HANDLING_PER_BOX; }
+/* ⚠⚠ Number(null) 은 NaN 이 아니라 **0** 이다 (2026-09-22).
+   그래서 예전 코드는 "아직 못 불러왔다(null)" 를 "박스당 $0" 으로 읽어서
+   인보이스 운임에 핸들링을 한 푼도 안 붙였다. 실측: DB 5, 기본값 5, 나온 값 0.
+   ⚠ 반드시 null/undefined 를 **먼저** 걸러야 한다. Number() 에 맡기지 말 것. */
+function shipHandlingRate(){
+  if(_shipHandling === null || _shipHandling === undefined) return UPS_HANDLING_PER_BOX;
+  const v = Number(_shipHandling);
+  return (isFinite(v) && v >= 0) ? v : UPS_HANDLING_PER_BOX;
+}
 async function loadShipHandling(){
-  try{ const r=await fetch(SB_URL+'/rest/v1/pr_config?k=eq.ship_handling&select=v',{headers:{apikey:SB_KEY,Authorization:'Bearer '+SB_KEY}}); const j=await r.json(); if(Array.isArray(j)&&j[0]&&j[0].v!=null) _shipHandling=Number(j[0].v); }catch(e){}
+  /* ⚠ sbFetch (로그인 직원 토큰) 로 읽는다 — anon 은 이 키를 못 읽어서 **빈 배열**이
+     오고, 저장해 둔 값이 한 번도 안 불려왔다. 저장(saveShipHandling)은 원래부터
+     sbFetch 라 읽기/쓰기가 짝이 안 맞았다 (2026-09-22). */
+  try{ const r=await sbFetch('/rest/v1/pr_config?k=eq.ship_handling&select=v'); const j=await r.json(); if(Array.isArray(j)&&j[0]&&j[0].v!=null) _shipHandling=Number(j[0].v); }catch(e){}
   return shipHandlingRate();
 }
 async function saveShipHandling(v){
@@ -30790,8 +30800,8 @@ async function hbHistOpen(){
   const ex = document.getElementById('modal-hbhist'); if(ex) ex.remove();
   let rows = [];
   try{
-    const r = await fetch(SB_URL + '/rest/v1/pr_config?select=k,v&k=like.@hbinlog:*&order=k.desc&limit=500',
-      { headers:{ apikey:SB_KEY, Authorization:'Bearer ' + SB_KEY } });
+    /* ⚠ anon 은 @hbinlog:* 을 못 읽는다 — 그래서 이력 표가 늘 비어 있었다 (2026-09-22) */
+    const r = await sbFetch('/rest/v1/pr_config?select=k,v&k=like.@hbinlog:*&order=k.desc&limit=500');
     if(r.ok) rows = await r.json();
   }catch(e){}
   const parsed = rows.map(x=>{
