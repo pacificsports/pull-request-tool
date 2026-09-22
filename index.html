@@ -204,7 +204,7 @@ body.po-dragging{user-select:none;}
   </span>
   <select id="lang-sel" onchange="setLang(this.value)" style="font-size:11px;padding:3px 6px;border-radius:5px;border:none;background:#1d3f66;color:#fff;"><option value="ko">한국어</option><option value="en">English</option><option value="es">Español</option></select>
   <button id="wide-btn" class="btn btn-sm" onclick="toggleWide()" title="화면 넓게 / 좁게 — 기본은 넓게 (이 브라우저에만 저장돼)" style="padding:2px 8px;font-size:10px;background:#1d3f66;color:#cfe0f2;border-color:#2b5384;">↔ Wide</button>
-  <span id="app-ver" style="font-size:10px;color:#9fb8d4;">v1150</span>
+  <span id="app-ver" style="font-size:10px;color:#9fb8d4;">v1151</span>
 </div>
 <script>
 // ↔ 넓게 보기 — 브라우저마다 따로 저장 (v793)
@@ -30568,6 +30568,37 @@ async function trBuilderOpen(existingId, route){
       if(!palletMap[lbl]){ palletMap[lbl] = { id:'p_'+Math.random().toString(36).slice(2,9), label:lbl, lines:[] }; _shipPallets.push(palletMap[lbl]); }
       palletMap[lbl].lines.push({...l});
     });
+    /* 🏭 줄이 없어진 팔레트도 번호만 들고 되살린다 (v1151).
+       ⭐ 산도는 **bin 번호**다. 줄에 이미 그 번호가 있으면 그 팔레트가 이미 있는 것이니
+          **새로 만들지 않는다** — 이것이 v1148 의 복사 사고를 막는 핵심이다.
+       ⚠ 기존 팔레트 순서는 절대 재정렬하지 않는다 (번호만 들은 팔레트를 뒤에 붙인다).
+       ⚠ 옌 키 `_hbins`(이름표 지도)는 읽지 않는다 — 남아 있어도 무시된다. */
+    try{
+      const _pbRaw = (_shipMeta && Array.isArray(_shipMeta._palBins)) ? _shipMeta._palBins : [];
+      const _have = new Set();
+      _shipPallets.forEach(p=>(p.lines||[]).forEach(l=>{
+        const b = String((l&&l.ca_bin)||'').trim().toUpperCase();
+        if(/^H\d+$/.test(b)) _have.add(b);
+      }));
+      const _want = [];
+      _pbRaw.forEach(x=>{
+        const b = String(x||'').trim().toUpperCase();
+        if(/^H\d+$/.test(b) && !_have.has(b) && _want.indexOf(b) < 0) _want.push(b);
+      });
+      if(_want.length > 30){
+        console.warn('_palBins 가 비정상적으로 많다 — 복원을 건너뛴다:', _want.length);
+      }else{
+        /* 줄을 쥔 팔레트에 번호가 빠져 있으면 줄의 ca_bin 에서 먼저 되찾는다 */
+        _shipPallets.forEach(p=>{
+          if(p.hbin) return;
+          const b = (p.lines||[]).map(l=>String((l&&l.ca_bin)||'').trim().toUpperCase()).find(x=>/^H\d+$/.test(x));
+          if(b) p.hbin = b;
+        });
+        _want.forEach(b=>{
+          _shipPallets.push({ id:'p_'+Math.random().toString(36).slice(2,9), label:'', lines:[], hbin:b });
+        });
+      }
+    }catch(e){ console.warn('palBins 복원 실패(무시):', e); }
     if(!trSrcAutoPallet(_shipRoute)) _shipPallets.forEach((p,i)=>p.label='Pallet '+(i+1));
     /* 저장해둔 정차지를 팔레트에 되살린다 — 줄의 `stop` 이 1순위 (v1076) */
     if(trIsMultiRoute(_shipRoute)){
@@ -30668,11 +30699,21 @@ function trCaptureInfo(){
      (SC-3P-260922-0924: 62줄 -> 124줄, Pallet 13~16 이 1~4 의 복사본, 같은 H 번호 중복).
      다시 만들 때는 이름표가 아니라 **hbin 값**을 신원으로 쓰고, 줄에 이미 있는 hbin 에는
      절대 새 팔레트를 만들지 않을 것. */
+  /* 🏭 팔레트가 직은 H bin 번호를 meta 에 남긴다 (v1151).
+     없으면 **줄 없는 팔레트가 사라지며 번호도 함께 사라진다** (trLinesFlat 은 줄만 내보낸다).
+     ⚠⚠ **이름표를 산도로 쓰지 말 것.** v1148 은 {이름표: 번호} 지도를 섬다가 사공을 냈다 —
+        trBuilderOpen 이 여느라마다 이름을 다시 매기니 이름이 어긋나면 복원 쪽이 팔레트를
+        새로 만들어 줄이 통째 복사됐다 (62줄 -> 124줄). 그래서 지금은 **번호 그 자신**만 담는다. */
+  const _palBins = [];
+  (_shipPallets||[]).forEach(function(p){
+    var b = String((p && p.hbin) || '').trim().toUpperCase();
+    if(/^H\d+$/.test(b) && _palBins.indexOf(b) < 0) _palBins.push(b);
+  });
   const _stops = trIsMultiRoute(_shipRoute) ? trStopsOf({meta:_shipMeta}) : null;
   let _palStop;
   if(_stops && _stops.length){ _palStop = {};
     _shipPallets.forEach(p=>{ if(p.stop >= 0 && p.stop < _stops.length) _palStop[p.label] = Number(p.stop); }); }
-  _shipMeta = { route:_shipRoute, ship_date:v('ship-date'), eta:v('ship-eta'), seal:v('ship-seal'), carrier:v('ship-carrier'), driver:v('ship-driver'), phone:v('ship-phone'), truck:v('ship-truck'), pro:v('ship-pro'), notes:v('ship-notes'), bolFiles:(_shipMeta&&_shipMeta.bolFiles)||[], orderShip:(_shipMeta&&_shipMeta.orderShip)||[], designatedByPallet:(_shipMeta&&_shipMeta.designatedByPallet)||undefined,
+  _shipMeta = { route:_shipRoute, ship_date:v('ship-date'), eta:v('ship-eta'), seal:v('ship-seal'), carrier:v('ship-carrier'), driver:v('ship-driver'), phone:v('ship-phone'), truck:v('ship-truck'), pro:v('ship-pro'), notes:v('ship-notes'), bolFiles:(_shipMeta&&_shipMeta.bolFiles)||[], ...(_palBins.length ? { _palBins:_palBins } : {}), orderShip:(_shipMeta&&_shipMeta.orderShip)||[], designatedByPallet:(_shipMeta&&_shipMeta.designatedByPallet)||undefined,
     ...(_stops && _stops.length ? { stops:_stops, palletStop:_palStop } : {}) };
 }
 async function _trEnsureRow(){
