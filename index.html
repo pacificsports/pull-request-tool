@@ -30676,20 +30676,26 @@ async function trBuilderClose(){
    누가 먼저 채갔으면 한 번 더 시도한다. 그래도 안 되면 번호를 안 준다 —
    겹친 H bin 은 서로 다른 팔레트를 같은 칸으로 만들어버려서 되돌리기가 제일 어렵다. */
 const HBIN_SEED = 2970;                      // 아직 안 쓴 첫 번호
+/* ⚠⚠ 반드시 sbFetch (로그인 직원 토큰) 로 읽는다 (v1144, 2026-09-22).
+   예전에는 anon 키로 읽었는데 pr_config 의 RLS 가 anon 을 막아서 **빈 배열**이 왔다.
+   그러면 "줄이 없다" 로 읽혀 기본값(HBIN_SEED 2970) 이 나갔고, 실제 카운터가 2997 인데
+   버튼에는 "next H2970" 이 찍혔다. 쓰기까지 열려 있었다면 이미 팔레트에 붙은 번호를
+   다시 내줄 뻔했다.
+   ⚠ anon 키(SB_KEY)를 Authorization 에 다시 넣지 말 것. */
 async function _hbGet(k, dflt){
   try{
-    const r = await fetch(SB_URL + '/rest/v1/pr_config?select=v&k=eq.' + encodeURIComponent(k),
-      { headers:{ apikey:SB_KEY, Authorization:'Bearer ' + SB_KEY } });
+    const r = await sbFetch('/rest/v1/pr_config?select=v&k=eq.' + encodeURIComponent(k));
     if(!r.ok) return null;
     const j = await r.json();
     return j.length ? String(j[0].v == null ? '' : j[0].v) : dflt;
   }catch(e){ return null; }
 }
+/* 쓰기도 같은 이유로 sbFetch (v1144). anon 으로는 조용히 실패해서
+   "Could not reach the server" 만 뜨고 번호를 못 받았다. */
 async function _hbPut(k, v){
   try{
-    const r = await fetch(SB_URL + '/rest/v1/pr_config?on_conflict=k', { method:'POST',
-      headers:{ apikey:SB_KEY, Authorization:'Bearer ' + SB_KEY, 'Content-Type':'application/json',
-                Prefer:'resolution=merge-duplicates,return=minimal' },
+    const r = await sbFetch('/rest/v1/pr_config?on_conflict=k', { method:'POST',
+      headers:{ Prefer:'resolution=merge-duplicates,return=minimal' },
       body: JSON.stringify([{ k, v:String(v), updated_at:new Date().toISOString() }]) });
     return r.ok;
   }catch(e){ return false; }
@@ -30824,11 +30830,17 @@ async function hbHistOpen(){
   document.body.appendChild(d);
 }
 /* 다음에 나갈 번호가 뭔지 — 보여주기만 한다 (가져가지 않는다) */
+/* ⚠⚠ 못 읽으면 **아무것도 안 보여준다** (v1144). 기본값(2970)을 보여주면 이미 나간
+   번호를 다음 번호인 것처럼 적어 놓게 된다 — 실제로 그래서 H2970 이 찍혀 있었다. */
 async function hbPeek(){
-  const free = _hbFreeParse(await _hbGet('@hbin:free', '[]')).sort((a,b)=>a-b);
+  const freeRaw = await _hbGet('@hbin:free', '[]');
+  if(freeRaw === null) return '';
+  const free = _hbFreeParse(freeRaw).sort((a,b)=>a-b);
   if(free.length) return 'H' + free[0];
   const nx = await _hbGet('@hbin:next', String(HBIN_SEED));
-  return nx === null ? '' : ('H' + (parseInt(nx, 10) || HBIN_SEED));
+  if(nx === null) return '';
+  const n = parseInt(nx, 10);
+  return n > 0 ? ('H' + n) : '';
 }
 /* ═══════════ ⬛ 이송 팔레트 박스 전부에 QR 스티커 (v1079) ═══════════
    [stated] 하윤: "여기 full box qr code print할수있게도 만들어줘" (이송 빌더에서)
