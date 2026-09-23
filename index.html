@@ -217,7 +217,7 @@ body.po-dragging{user-select:none;}
   </span>
   <select id="lang-sel" onchange="setLang(this.value)" style="font-size:11px;padding:3px 6px;border-radius:5px;border:none;background:#1d3f66;color:#fff;"><option value="ko">한국어</option><option value="en">English</option><option value="es">Español</option></select>
   <button id="wide-btn" class="btn btn-sm" onclick="toggleWide()" title="화면 넓게 / 좁게 — 기본은 넓게 (이 브라우저에만 저장돼)" style="padding:2px 8px;font-size:10px;background:#1d3f66;color:#cfe0f2;border-color:#2b5384;">↔ Wide</button>
-  <span id="app-ver" style="font-size:10px;color:#9fb8d4;">v1161</span>
+  <span id="app-ver" style="font-size:10px;color:#9fb8d4;">v1162</span>
 </div>
 <script>
 // ↔ 넓게 보기 — 브라우저마다 따로 저장 (v793)
@@ -11989,7 +11989,11 @@ async function upsAdSave(){
     tracking:R.tracking, shipment_id:R.shipmentId,
     cost_negotiated:R.ourCost==null?null:Number(R.ourCost),
     cost_published:R.listCost==null?null:Number(R.listCost),
-    box_count:R.boxCount, created_by:(SESS&&SESS.email)||''
+    box_count:R.boxCount, created_by:(SESS&&SESS.email)||'',
+    /* UPSAD-v6 - 라벨 그림(ZPL base64)도 같이 적는다.
+       이게 있어야 Completed 탭에서 다시 뽑고 PDF 로 받고 이메일에 붙일 수 있다.
+       한 장에 몇 KB 라 양은 문제가 안 된다. */
+    labels:R.labels || []
   };
   try{
     const r = await sbFetch('/rest/v1/' + UPSAD_TBL, { method:'POST',
@@ -12035,8 +12039,9 @@ async function upsAdPdf(){
    우리가 이미 쓰는 길만 쓴다: psmWrap 겉옷 + /send-pl 워커 + STAFF_EMAILS 사본.
    주의: 받는 사람을 거래처 카드에서 미리 채우지 않는다 - 거래처 카드에 우리 직원
      주소가 들어 있는 곳이 있어서(EOI) 엉뚱한 데로 나갈 수 있다. 사람이 직접 친다. */
-async function upsAdLabelPdfB64(){
-  const R = _upsAd && _upsAd.res;
+async function upsAdLabelPdfB64(labelsIn){
+  /* UPSAD-v6 - labelsIn 을 주면 그것으로, 안 주면 지금 만든 라벨로 (Completed 탭 공용) */
+  const R = labelsIn ? { labels: labelsIn } : (_upsAd && _upsAd.res);
   if(!R || !(R.labels||[]).length) return null;
   let zpl = '';
   try{ zpl = R.labels.map(b64=>atob(b64)).join('\n'); }catch(e){ return null; }
@@ -12053,66 +12058,250 @@ async function upsAdEmail(){
   const R = _upsAd && _upsAd.res; if(!R) return;
   const raw = String((document.getElementById('uad-email')||{}).value || '');
   const to = raw.split(',').map(e=>e.trim()).filter(e=>e.indexOf('@') > 0);
-  if(!to.length){ showToast('⚠ Type an email address'); return; }
+  if(!to.length){ showToast('\u26a0 Type an email address'); return; }
   const btn = document.getElementById('uad-emailbtn');
-  if(btn){ btn.disabled = true; btn.textContent = '⏳ Sending...'; }
-  const svcName = (UPSAD_SVC.find(x=>x[0]===R.service)||['','?'])[1];
-  const rows = (R.tracking||[]).map((t,i)=>'<tr style="background:' + (i % 2 ? '#faf9f5' : '#fdfdfb') + ';">'
+  if(btn){ btn.disabled = true; btn.textContent = '\u23f3 Sending...'; }
+  try{
+    /* UPSAD-v6 - Completed 탭과 같은 함수를 쓴다 */
+    const out = await upsAdMailFor({ tracking:R.tracking, labels:R.labels, service:R.service,
+      origin:R.origin, reference:_upsAd.ref, shipmentId:R.shipmentId, test:!!R.test }, to);
+    _upsAd.res.emailedTo = to.join(', ');
+    _upsAd.res.emailedAt = new Date().toISOString();
+    _upsAd.res.emailedPdf = !!out.pdf;
+    showToast('\u2709 Sent to ' + to.join(', ') + (out.pdf ? ' (label attached)' : ' (no PDF attached)'));
+  }catch(e){
+    showToast('\u274c Email failed \u2014 ' + String(e.message||e).slice(0,70));
+  }
+  upsAdRender();
+}
+
+/* ═══ UPSAD-v6 - 이메일·취소 알맹이 (새 라벨 화면과 Completed 탭이 같이 쓴다) ═══
+   rec = { tracking[], labels[], service, origin, reference, shipmentId, test } */
+async function upsAdMailFor(rec, to){
+  const trk = (rec.tracking||[]).filter(Boolean);
+  const ref = String(rec.reference||'').trim();
+  const svcName = (UPSAD_SVC.find(x=>x[0]===rec.service)||['','?'])[1];
+  const rows = trk.map((t,i)=>'<tr style="background:' + (i % 2 ? '#faf9f5' : '#fdfdfb') + ';">'
       + psmTd('Box ' + (i+1)) + psmTd(psmTrackLinks([t], 'UPS')) + '</tr>').join('');
-  const inner = psmHead((R.tracking||[]).length + ' UPS label' + ((R.tracking||[]).length===1?'':'s') + ' ready',
-                        'UPS ' + esc(svcName) + ' · from our ' + esc(R.origin) + ' warehouse')
-    + psmP('Here ' + ((R.tracking||[]).length===1 ? 'is the tracking number' : 'are the tracking numbers')
-           + ' for this shipment' + (String(_upsAd.ref||'').trim() ? (' (<b>' + esc(String(_upsAd.ref).trim()) + '</b>)') : '') + '.')
+  const inner = psmHead(trk.length + ' UPS label' + (trk.length===1?'':'s') + ' ready',
+                        'UPS ' + esc(svcName) + ' \u00b7 from our ' + esc(rec.origin||'') + ' warehouse')
+    + psmP('Here ' + (trk.length===1 ? 'is the tracking number' : 'are the tracking numbers')
+           + ' for this shipment' + (ref ? (' (<b>' + esc(ref) + '</b>)') : '') + '.')
     + psmList(psmTh('Package') + psmTh('Tracking #'), rows);
   let pdf = null;
-  try{ pdf = await upsAdLabelPdfB64(); }catch(e){}
+  try{ pdf = await upsAdLabelPdfB64(rec.labels); }catch(e){}
   const body = {
     to: to,
-    subject: 'UPS label — ' + (String(_upsAd.ref||'').trim() || (R.tracking||[])[0] || 'shipment') + ' (Pacific Sports)',
+    subject: 'UPS label \u2014 ' + (ref || trk[0] || 'shipment') + ' (Pacific Sports)',
     html: psmWrap('UPS Label', inner
-      + (pdf ? psmP('The 4x6 shipping label is attached as a PDF — print it at 100% (do not scale).')
+      + (pdf ? psmP('The 4x6 shipping label is attached as a PDF \u2014 print it at 100% (do not scale).')
              : psmP('Ask us for the printed label if you need the 4x6 PDF.'))
       + psmP('Questions about this shipment? Just reply to this email.')),
     reply_to: (typeof STAFF_EMAILS !== 'undefined' ? STAFF_EMAILS : undefined),
     bcc: (typeof STAFF_EMAILS !== 'undefined' ? STAFF_EMAILS : undefined)
   };
-  if(pdf) body.attachments = [{ filename: 'ups-' + ((R.tracking||['label'])[0]) + '.pdf', content: pdf }];
-  try{
-    const r = await fetch('https://po-confirm-email.hjbae.workers.dev/send-pl', {
-      method:'POST', headers:{ 'Content-Type':'application/json' }, body: JSON.stringify(body) });
-    if(!r.ok){ const e = await r.json().catch(()=>({})); throw new Error(e.error || e.message || ('HTTP ' + r.status)); }
-    _upsAd.res.emailedTo = to.join(', ');
-    _upsAd.res.emailedAt = new Date().toISOString();
-    _upsAd.res.emailedPdf = !!pdf;
-    showToast('✉ Sent to ' + to.join(', ') + (pdf ? ' (label attached)' : ' (no PDF attached)'));
-    /* 기록에도 남긴다. 컬럼이 없으면 조용히 지나간다 - 메일은 이미 나갔다. */
-    if(R.shipmentId && !R.test){
-      try{ await sbFetch('/rest/v1/' + UPSAD_TBL + '?shipment_id=eq.' + encodeURIComponent(R.shipmentId),
-        { method:'PATCH', headers:{ Prefer:'return=minimal' },
-          body: JSON.stringify({ emailed_to: to.join(', '), emailed_at: _upsAd.res.emailedAt }) }); }catch(e){}
-    }
-  }catch(e){
-    showToast('❌ Email failed — ' + String(e.message||e).slice(0,70));
+  if(pdf) body.attachments = [{ filename: 'ups-' + (trk[0] || 'label') + '.pdf', content: pdf }];
+  const r = await fetch('https://po-confirm-email.hjbae.workers.dev/send-pl', {
+    method:'POST', headers:{ 'Content-Type':'application/json' }, body: JSON.stringify(body) });
+  if(!r.ok){ const e = await r.json().catch(()=>({})); throw new Error(e.error || e.message || ('HTTP ' + r.status)); }
+  /* 기록에도 남긴다. shipment_id 가 있는 진짜 라벨만. */
+  if(rec.shipmentId && !rec.test){
+    try{ await sbFetch('/rest/v1/' + UPSAD_TBL + '?shipment_id=eq.' + encodeURIComponent(rec.shipmentId),
+      { method:'PATCH', headers:{ Prefer:'return=minimal' },
+        body: JSON.stringify({ emailed_to: to.join(', '), emailed_at: new Date().toISOString() }) }); }catch(e){}
   }
+  return { pdf: !!pdf };
+}
+/* 워커에 취소를 보내고 DB 에 도장을 찍는다. 부르기 전에 사람에게 물어봐야 한다. */
+async function upsAdVoidFor(rec){
+  const r = await fetch(UPS_LABEL_URL.replace('/label','/void'), { method:'POST', headers:wkHdr(),
+    body: JSON.stringify({ shipmentId:rec.shipmentId, tracking:rec.tracking }) });
+  const j = await r.json();
+  if(!j || !j.ok) throw new Error((j && j.error) || 'Void failed');
+  const at = new Date().toISOString();
+  try{ await sbFetch('/rest/v1/' + UPSAD_TBL + '?shipment_id=eq.' + encodeURIComponent(rec.shipmentId),
+    { method:'PATCH', headers:{ Prefer:'return=minimal' },
+      body:JSON.stringify({ voided_at:at, voided_by:(SESS&&SESS.email)||'' }) }); }catch(e){}
+  return at;
+}
+function upsAdVoidAsk(rec){
+  return confirm('Void this UPS shipment?\n\n' + (rec.tracking||[]).join(', ')
+    + '\n\nThe label becomes unusable. Throw away any printed copy.');
+}
+
+/* ═══ UPSAD-v6 - 📋 Completed 탭 ═══════════════════════════════════════ */
+let _upsAdTab = 'new';
+let _upsAdHist = { rows:null, busy:false, err:'', q:'', emailAt:null };
+
+function upsAdTabGo(t){
+  _upsAdTab = (t === 'done') ? 'done' : 'new';
+  if(_upsAdTab === 'done' && !_upsAdHist.rows && !_upsAdHist.busy) upsAdHistLoad();
+  else upsAdRender();
+}
+function upsAdTabBar(){
+  const tb = (t, label) => '<button class="btn btn-sm" onclick="upsAdTabGo(\'' + t + '\')" style="font-weight:800;font-size:12px;'
+    + (_upsAdTab===t ? 'background:#7c2d12;border-color:#7c2d12;color:#fff;' : '') + '">' + label + '</button>';
+  return '<div style="display:flex;gap:6px;margin:0 0 12px;">'
+    + tb('new', '\u{1F3F7} New label') + tb('done', '\u{1F4CB} Completed') + '</div>';
+}
+async function upsAdHistLoad(){
+  _upsAdHist.busy = true; _upsAdHist.err = '';
   upsAdRender();
+  try{
+    const cols = 'id,created_at,created_by,origin,service,bill_mode,bill_account,reference,memo,customer,'
+               + 'ship_to,packages,tracking,shipment_id,cost_negotiated,cost_published,box_count,'
+               + 'voided_at,voided_by,emailed_to,emailed_at,labels';
+    const r = await sbFetch('/rest/v1/' + UPSAD_TBL + '?select=' + cols + '&order=id.desc&limit=200');
+    if(!r.ok){
+      /* labels 컬럼이 아직 없으면 그것만 빼고 다시 (SQL 을 안 돌린 사이에도 목록은 보여야 한다) */
+      const r2 = await sbFetch('/rest/v1/' + UPSAD_TBL + '?select=' + cols.replace(',labels','') + '&order=id.desc&limit=200');
+      if(!r2.ok) throw new Error('HTTP ' + r.status);
+      _upsAdHist.rows = await r2.json();
+    } else {
+      _upsAdHist.rows = await r.json();
+    }
+  }catch(e){ _upsAdHist.rows = []; _upsAdHist.err = String(e.message||e).slice(0,90); }
+  _upsAdHist.busy = false;
+  upsAdRender();
+}
+function upsAdHistRec(row){
+  return { tracking:row.tracking||[], labels:row.labels||[], service:row.service,
+           origin:row.origin, reference:row.reference, shipmentId:row.shipment_id, test:false };
+}
+function upsAdHistFind(id){ return (_upsAdHist.rows||[]).find(x=>String(x.id)===String(id)); }
+function upsAdHistQ(){
+  const e = document.getElementById('uad-hq'); if(e) _upsAdHist.q = e.value;
+  upsAdRender();
+}
+async function upsAdHistPrint(id){
+  const row = upsAdHistFind(id); if(!row) return;
+  if(!(row.labels||[]).length){ showToast('\u26a0 This label was made before we started keeping the label image \u2014 tracking only'); return; }
+  let zpl = '';
+  try{ zpl = row.labels.map(b64=>atob(b64)).join('\n'); }catch(e){ showToast('Label decode error'); return; }
+  await sendToZebraBrowserPrint(zpl, row.labels.length);
+}
+async function upsAdHistPdf(id){
+  const row = upsAdHistFind(id); if(!row) return;
+  if(!(row.labels||[]).length){ showToast('\u26a0 No label image kept for this one \u2014 tracking only'); return; }
+  const b64 = await upsAdLabelPdfB64(row.labels);
+  if(!b64){
+    let zpl=''; try{ zpl = row.labels.map(x=>atob(x)).join('\n'); }catch(e){ return; }
+    _lblSaveBlob(new Blob([zpl],{type:'text/plain'}), 'ups-' + ((row.tracking||['label'])[0]) + '.zpl');
+    showToast('\u26a0 PDF service failed \u2014 downloaded the raw ZPL'); return;
+  }
+  const bin = atob(b64); const arr = new Uint8Array(bin.length);
+  for(let i=0;i<bin.length;i++) arr[i] = bin.charCodeAt(i);
+  _lblSaveBlob(new Blob([arr],{type:'application/pdf'}), 'ups-' + ((row.tracking||['label'])[0]) + '.pdf');
+}
+function upsAdHistEmailOpen(id){ _upsAdHist.emailAt = String(id); upsAdRender(); }
+function upsAdHistEmailCancel(){ _upsAdHist.emailAt = null; upsAdRender(); }
+async function upsAdHistEmailSend(id){
+  const row = upsAdHistFind(id); if(!row) return;
+  const raw = String((document.getElementById('uad-hmail')||{}).value || '');
+  const to = raw.split(',').map(e=>e.trim()).filter(e=>e.indexOf('@') > 0);
+  if(!to.length){ showToast('\u26a0 Type an email address'); return; }
+  const btn = document.getElementById('uad-hmailbtn');
+  if(btn){ btn.disabled = true; btn.textContent = '\u23f3 Sending...'; }
+  try{
+    const out = await upsAdMailFor(upsAdHistRec(row), to);
+    row.emailed_to = to.join(', '); row.emailed_at = new Date().toISOString();
+    _upsAdHist.emailAt = null;
+    showToast('\u2709 Sent to ' + to.join(', ') + (out.pdf ? ' (label attached)' : ' (no PDF attached)'));
+  }catch(e){ showToast('\u274c Email failed \u2014 ' + String(e.message||e).slice(0,70)); }
+  upsAdRender();
+}
+async function upsAdHistVoid(id){
+  const row = upsAdHistFind(id); if(!row) return;
+  if(!row.shipment_id){ showToast('\u26a0 No shipment id \u2014 cannot void this one'); return; }
+  if(row.voided_at){ showToast('Already voided'); return; }
+  const rec = upsAdHistRec(row);
+  if(!upsAdVoidAsk(rec)) return;
+  try{
+    row.voided_at = await upsAdVoidFor(rec);
+    row.voided_by = (SESS&&SESS.email)||'';
+    showToast('\u2705 Voided');
+  }catch(e){ showToast('\u274c ' + String(e.message||e).slice(0,70)); }
+  upsAdRender();
+}
+function upsAdHistHtml(){
+  const H = _upsAdHist;
+  const money = n => (n==null ? '\u2014' : ('$' + Number(n).toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2})));
+  const bar = '<div style="display:flex;gap:7px;align-items:center;flex-wrap:wrap;margin-bottom:9px;">'
+    + '<input id="uad-hq" class="fi" value="' + esc(H.q||'') + '" oninput="upsAdHistQ()" placeholder="Find \u2014 reference, customer, 1Z, city, memo" style="font-size:12px;padding:5px 7px;width:320px;">'
+    + '<button class="btn btn-sm" onclick="upsAdHistLoad()" style="font-weight:700;">\u21bb Refresh</button>'
+    + '<span style="font-size:11px;color:#6b7280;">newest 200 \u00b7 this screen never changes inventory</span></div>';
+  if(H.busy) return bar + '<div style="padding:16px;color:#6b7280;font-size:12px;">\u23f3 Loading...</div>';
+  if(H.err) return bar + '<div style="padding:12px;background:#fef2f2;border:1px solid #fecaca;border-radius:6px;font-size:12px;color:#991b1b;font-weight:700;">\u274c ' + esc(H.err) + '</div>';
+  const q = String(H.q||'').trim().toLowerCase();
+  const all = H.rows || [];
+  const rows = !q ? all : all.filter(r=>{
+    const st = r.ship_to || {};
+    const hay = [r.reference, r.memo, r.customer, (r.tracking||[]).join(' '), r.shipment_id,
+                 st.name, st.company, st.city, st.state, st.zip, r.created_by, r.origin].join(' ').toLowerCase();
+    return hay.indexOf(q) >= 0;
+  });
+  if(!all.length) return bar + '<div style="padding:16px;color:#6b7280;font-size:12px;">No UPS labels made from this screen yet.</div>';
+  if(!rows.length) return bar + '<div style="padding:16px;color:#6b7280;font-size:12px;">Nothing matches \u201c' + esc(H.q) + '\u201d.</div>';
+  const body = rows.map(r=>{
+    const st = r.ship_to || {};
+    const vd = !!r.voided_at;
+    const hasLbl = (r.labels||[]).length > 0;
+    const d = new Date(r.created_at);
+    const dt = isNaN(d) ? '' : (d.getMonth()+1) + '/' + d.getDate() + '/' + String(d.getFullYear()).slice(2)
+             + ' ' + d.toLocaleTimeString([], { hour:'numeric', minute:'2-digit' });
+    const trk = (r.tracking||[]).map(t=>'<a href="https://www.ups.com/track?tracknum=' + encodeURIComponent(t)
+        + '" target="_blank" rel="noopener" style="font-family:Consolas,monospace;font-weight:800;color:' + (vd?'#9ca3af':'#1d4ed8') + ';">'
+        + esc(t) + '</a>').join('<br>');
+    /* UPSAD-v6b - 단추는 한 줄로. 접히면 줄 높이가 두 배가 되고 눌러야 할 것이 어디 있는지 흐려진다. */
+    const acts = '<div style="display:flex;gap:4px;flex-wrap:nowrap;justify-content:flex-end;">'
+      + '<button class="btn btn-sm" onclick="upsAdHistPrint(' + r.id + ')" title="' + (hasLbl?'Print the 4x6 again':'No label image kept for this one') + '" style="font-size:10.5px;'
+        + (hasLbl?'':'opacity:.45;') + '">\u{1F5A8}</button>'
+      + '<button class="btn btn-sm" onclick="upsAdHistPdf(' + r.id + ')" title="' + (hasLbl?'Download the 4x6 PDF':'No label image kept') + '" style="font-size:10.5px;'
+        + (hasLbl?'':'opacity:.45;') + '">\u2b07</button>'
+      + '<button class="btn btn-sm" onclick="upsAdHistEmailOpen(' + r.id + ')" title="Email this label" style="font-size:10.5px;">\u2709</button>'
+      + (!vd && r.shipment_id ? '<button class="btn btn-sm" onclick="upsAdHistVoid(' + r.id + ')" title="Void with UPS" style="font-size:10.5px;color:#b91c1c;">\u2715</button>' : '')
+      + '</div>';
+    const mailPane = (String(_upsAdHist.emailAt) === String(r.id))
+      ? '<tr><td colspan="7" style="padding:7px 8px;background:#f0fdfa;border-bottom:1px solid #e5e7eb;">'
+        + '<div style="display:flex;gap:6px;align-items:center;flex-wrap:wrap;">'
+        + '<span style="font-size:11.5px;font-weight:800;color:#0f766e;">\u2709 Email ' + esc((r.tracking||[])[0]||'') + '</span>'
+        + '<input id="uad-hmail" class="fi" value="" placeholder="name@company.com (comma for more)" style="font-size:12px;padding:5px 7px;width:280px;">'
+        + '<button class="btn btn-sm" id="uad-hmailbtn" onclick="upsAdHistEmailSend(' + r.id + ')" style="background:#0f766e;border-color:#0f766e;color:#fff;font-weight:800;">Send</button>'
+        + '<button class="btn btn-sm" onclick="upsAdHistEmailCancel()">Cancel</button>'
+        + '<span style="font-size:11px;color:#6b7280;">' + (hasLbl ? '4x6 PDF attached' : 'tracking only \u2014 no label image kept') + ' \u00b7 our staff get a copy</span>'
+        + '</div></td></tr>' : '';
+    const td = (h, extra) => '<td style="padding:6px 8px;border-bottom:1px solid #eef0f3;font-size:11.5px;vertical-align:top;' + (extra||'') + '">' + h + '</td>';
+    return '<tr style="' + (vd ? 'background:#f9fafb;color:#9ca3af;' : '') + '">'
+      + td(esc(dt) + '<div style="font-size:10px;color:#9ca3af;">' + esc(String(r.created_by||'').split('@')[0]) + '</div>', 'white-space:nowrap;')
+      + td('<b>' + esc(r.reference||'') + '</b>' + (r.memo ? ('<div style="font-size:10.5px;color:#6b7280;">' + esc(r.memo) + '</div>') : ''))
+      + td(esc(st.name||r.customer||'') + '<div style="font-size:10.5px;color:#6b7280;">' + esc([st.city, st.state, st.zip].filter(Boolean).join(' ')) + '</div>')
+      + td(esc(r.origin||'') + ' \u00b7 ' + esc((UPSAD_SVC.find(x=>x[0]===r.service)||['','?'])[1])
+          + '<div style="font-size:10.5px;color:#6b7280;">' + r.box_count + ' box(es) \u00b7 ' + (r.bill_mode==='receiver'?'receiver pays':'we pay') + '</div>', 'white-space:nowrap;')
+      + td(trk + (vd ? '<div style="font-size:10.5px;font-weight:800;color:#b91c1c;">VOIDED</div>' : '')
+          + (r.emailed_to ? ('<div style="font-size:10px;color:#059669;font-weight:700;">\u2713 ' + esc(r.emailed_to) + '</div>') : ''))
+      + td(money(r.cost_negotiated) + (r.cost_published!=null ? ('<div style="font-size:10px;color:#9ca3af;">list ' + money(r.cost_published) + '</div>') : ''), 'text-align:right;white-space:nowrap;font-variant-numeric:tabular-nums;')
+      + td(acts, 'text-align:right;white-space:nowrap;')
+      + '</tr>' + mailPane;
+  }).join('');
+  const th = t => '<th style="text-align:left;padding:4px 8px;font-size:10px;color:#6b7280;text-transform:uppercase;letter-spacing:.05em;font-weight:800;">' + t + '</th>';
+  return bar
+    + '<div style="overflow-x:auto;"><table style="width:100%;border-collapse:collapse;">'
+    + '<thead><tr style="background:#f8fafc;">' + th('When') + th('Reference') + th('Ship to') + th('From / service') + th('Tracking')
+    + '<th style="text-align:right;padding:4px 8px;font-size:10px;color:#6b7280;text-transform:uppercase;letter-spacing:.05em;font-weight:800;white-space:nowrap;">Our cost</th>'
+    + '<th style="width:132px;"></th></tr></thead><tbody>' + body + '</tbody></table></div>'
+    + (q ? ('<div style="margin-top:7px;font-size:11px;color:#6b7280;">' + rows.length + ' of ' + all.length + ' shown</div>') : '');
 }
 
 async function upsAdVoid(){
   const R = _upsAd && _upsAd.res;
   if(!R || !R.shipmentId){ showToast('Nothing to void'); return; }
-  if(!confirm('Void this UPS shipment?\n\n' + (R.tracking||[]).join(', ')
-    + '\n\nThe label becomes unusable. Throw away any printed copy.')) return;
+  const rec = { tracking:R.tracking, shipmentId:R.shipmentId };
+  if(!upsAdVoidAsk(rec)) return;
   try{
-    const r = await fetch(UPS_LABEL_URL.replace('/label','/void'), { method:'POST', headers:wkHdr(),
-      body: JSON.stringify({ shipmentId:R.shipmentId, tracking:R.tracking }) });
-    const j = await r.json();
-    if(!j || !j.ok){ showToast('❌ ' + ((j&&j.error)||'Void failed')); return; }
-    _upsAd.res.voided = new Date().toISOString();
-    try{ await sbFetch('/rest/v1/' + UPSAD_TBL + '?shipment_id=eq.' + encodeURIComponent(R.shipmentId),
-      { method:'PATCH', headers:{ Prefer:'return=minimal' },
-        body:JSON.stringify({ voided_at:new Date().toISOString(), voided_by:(SESS&&SESS.email)||'' }) }); }catch(e){}
-    showToast('✅ Voided');
-  }catch(e){ showToast('❌ Void failed'); }
+    /* UPSAD-v6 - Completed 탭과 같은 함수를 쓴다 */
+    _upsAd.res.voided = await upsAdVoidFor(rec);
+    showToast('\u2705 Voided');
+  }catch(e){ showToast('\u274c ' + String(e.message||e).slice(0,70)); }
   upsAdRender();
 }
 
@@ -12120,6 +12309,7 @@ function upsAdOpen(){
   const ex = document.getElementById('modal-upsad'); if(ex) ex.remove();
   _upsAd = upsAdBlank();
   _upsAdRateSig = ''; clearTimeout(window._upsAdRateT);   /* UPSAD-v2 */
+  _upsAdTab = 'new'; _upsAdHist.emailAt = null;           /* UPSAD-v6 */
   upsAdMyBoxLoad();                                      /* UPSAD-v3 - 저장된 박스 치수 */
   const d = document.createElement('div');
   d.id = 'modal-upsad';
@@ -12137,6 +12327,8 @@ function upsAdOpen(){
 function upsAdRender(){
   const box = document.getElementById('upsad-body'); if(!box || !_upsAd) return;
   const A = _upsAd, R = A.res;
+  /* UPSAD-v6 - 📋 Completed 탭. 여기서 바로 갈라져 나간다 (아래 새 라벨 화면은 그대로) */
+  if(_upsAdTab === 'done'){ box.innerHTML = upsAdTabBar() + upsAdHistHtml(); return; }
   const inp = (id, v, ph, w) => '<input id="' + id + '" class="fi" value="' + esc(String(v==null?'':v))
     + '" placeholder="' + esc(ph||'') + '" style="font-size:12px;padding:5px 7px;' + (w?('width:'+w+';'):'width:100%;') + '">';
   /* UPSAD-FIX2 - 칸 위 작은 이름표. 값이 들어가면 placeholder 가 사라져서
@@ -12236,7 +12428,7 @@ function upsAdRender(){
       + '</div>' + warnSave + '</div>';
   })() : '';
 
-  box.innerHTML =
+  box.innerHTML = upsAdTabBar() +
     '<div style="display:flex;gap:16px;align-items:flex-end;flex-wrap:wrap;">'
     + '<div><div style="font-size:10.5px;font-weight:800;color:#6b7280;letter-spacing:.06em;">SHIP FROM</div><div style="display:flex;gap:5px;margin-top:3px;">' + ob('SC') + ob('CA') + '</div></div>'
     + '<div><div style="font-size:10.5px;font-weight:800;color:#6b7280;letter-spacing:.06em;">SERVICE</div>'
