@@ -217,7 +217,7 @@ body.po-dragging{user-select:none;}
   </span>
   <select id="lang-sel" onchange="setLang(this.value)" style="font-size:11px;padding:3px 6px;border-radius:5px;border:none;background:#1d3f66;color:#fff;"><option value="ko">한국어</option><option value="en">English</option><option value="es">Español</option></select>
   <button id="wide-btn" class="btn btn-sm" onclick="toggleWide()" title="화면 넓게 / 좁게 — 기본은 넓게 (이 브라우저에만 저장돼)" style="padding:2px 8px;font-size:10px;background:#1d3f66;color:#cfe0f2;border-color:#2b5384;">↔ Wide</button>
-  <span id="app-ver" style="font-size:10px;color:#9fb8d4;">v1162</span>
+  <span id="app-ver" style="font-size:10px;color:#9fb8d4;">v1163</span>
 </div>
 <script>
 // ↔ 넓게 보기 — 브라우저마다 따로 저장 (v793)
@@ -12062,9 +12062,11 @@ async function upsAdEmail(){
   const btn = document.getElementById('uad-emailbtn');
   if(btn){ btn.disabled = true; btn.textContent = '\u23f3 Sending...'; }
   try{
-    /* UPSAD-v6 - Completed 탭과 같은 함수를 쓴다 */
-    const out = await upsAdMailFor({ tracking:R.tracking, labels:R.labels, service:R.service,
-      origin:R.origin, reference:_upsAd.ref, shipmentId:R.shipmentId, test:!!R.test }, to);
+    /* UPSAD-v6 - Completed 탭과 같은 함수를 쓴다 · UPSAD-v7 - 제목과 붙임은 화면에서 */
+    const subj = String((document.getElementById('uad-subj')||{}).value || '');
+    const att  = document.getElementById('uad-att');
+    const out = await upsAdMailFor(upsAdResRec(), to,
+      { subject: subj, attach: att ? !!att.checked : true });
     _upsAd.res.emailedTo = to.join(', ');
     _upsAd.res.emailedAt = new Date().toISOString();
     _upsAd.res.emailedPdf = !!out.pdf;
@@ -12077,26 +12079,48 @@ async function upsAdEmail(){
 
 /* ═══ UPSAD-v6 - 이메일·취소 알맹이 (새 라벨 화면과 Completed 탭이 같이 쓴다) ═══
    rec = { tracking[], labels[], service, origin, reference, shipmentId, test } */
-async function upsAdMailFor(rec, to){
+/* UPSAD-v7 (2026-09-23) - 메일 제목 기본값.
+   [stated] 하윤: "회사 이름 나오고 샘플이라고 나오게 ... Mad Engine-Samples 뭐 이런식으로"
+   참고번호에 이미 회사 이름이 들어 있으면 두 번 적지 않는다. 화면에서 고칠 수 있다. */
+/* UPSAD-v7 - 지금 만든 라벨을 메일 함수가 받는 모양으로 (company 를 같이 넘긴다) */
+function upsAdResRec(){
+  const R = (_upsAd && _upsAd.res) || {};
+  return { tracking:R.tracking, labels:R.labels, service:R.service, origin:R.origin,
+           reference:_upsAd.ref, shipmentId:R.shipmentId, test:!!R.test,
+           company:(_upsAd.to.comp || _upsAd.to.name || _upsAd.cust || '') };
+}
+function upsAdMailSubj(rec){
+  const ref = String((rec && rec.reference) || '').trim();
+  const co  = String((rec && rec.company) || '').trim();
+  if(co && ref && ref.toLowerCase().indexOf(co.toLowerCase()) < 0) return co + ' \u2014 ' + ref;
+  return ref || co || 'Your package from Pacific Sports';
+}
+
+/* rec = { tracking[], labels[], service, origin, reference, company, shipmentId, test }
+   opts = { subject, attach }  (attach 를 안 주면 라벨 그림이 있으면 붙인다) */
+async function upsAdMailFor(rec, to, opts){
+  opts = opts || {};
   const trk = (rec.tracking||[]).filter(Boolean);
   const ref = String(rec.reference||'').trim();
   const svcName = (UPSAD_SVC.find(x=>x[0]===rec.service)||['','?'])[1];
   const rows = trk.map((t,i)=>'<tr style="background:' + (i % 2 ? '#faf9f5' : '#fdfdfb') + ';">'
       + psmTd('Box ' + (i+1)) + psmTd(psmTrackLinks([t], 'UPS')) + '</tr>').join('');
-  const inner = psmHead(trk.length + ' UPS label' + (trk.length===1?'':'s') + ' ready',
-                        'UPS ' + esc(svcName) + ' \u00b7 from our ' + esc(rec.origin||'') + ' warehouse')
-    + psmP('Here ' + (trk.length===1 ? 'is the tracking number' : 'are the tracking numbers')
-           + ' for this shipment' + (ref ? (' (<b>' + esc(ref) + '</b>)') : '') + '.')
-    + psmList(psmTh('Package') + psmTh('Tracking #'), rows);
   let pdf = null;
-  try{ pdf = await upsAdLabelPdfB64(rec.labels); }catch(e){}
+  const wantPdf = (opts.attach === undefined) ? true : !!opts.attach;
+  if(wantPdf){ try{ pdf = await upsAdLabelPdfB64(rec.labels); }catch(e){} }
+  /* UPSAD-v7 - 거래처가 읽는 말투. "라벨이 만들어졌다" 가 아니라 "물건이 나갔다". */
+  const inner = psmHead('Your package is on the way',
+                        'UPS ' + esc(svcName) + ' \u00b7 shipped from our ' + esc(rec.origin||'') + ' warehouse')
+    + psmP('We shipped <b>' + trk.length + '</b> package' + (trk.length===1?'':'s') + ' to you'
+           + (ref ? (' (<b>' + esc(ref) + '</b>)') : '')
+           + '. Use the tracking number below to follow it.')
+    + psmList(psmTh('Package') + psmTh('Tracking #'), rows)
+    + (pdf ? psmP('The 4x6 shipping label is attached as a PDF \u2014 print it at 100% (do not scale).') : '')
+    + psmP('Questions about this shipment? Just reply to this email.');
   const body = {
     to: to,
-    subject: 'UPS label \u2014 ' + (ref || trk[0] || 'shipment') + ' (Pacific Sports)',
-    html: psmWrap('UPS Label', inner
-      + (pdf ? psmP('The 4x6 shipping label is attached as a PDF \u2014 print it at 100% (do not scale).')
-             : psmP('Ask us for the printed label if you need the 4x6 PDF.'))
-      + psmP('Questions about this shipment? Just reply to this email.')),
+    subject: String(opts.subject || upsAdMailSubj(rec)).trim().slice(0,150) || upsAdMailSubj(rec),
+    html: psmWrap('Package shipped', inner),
     reply_to: (typeof STAFF_EMAILS !== 'undefined' ? STAFF_EMAILS : undefined),
     bcc: (typeof STAFF_EMAILS !== 'undefined' ? STAFF_EMAILS : undefined)
   };
@@ -12104,7 +12128,6 @@ async function upsAdMailFor(rec, to){
   const r = await fetch('https://po-confirm-email.hjbae.workers.dev/send-pl', {
     method:'POST', headers:{ 'Content-Type':'application/json' }, body: JSON.stringify(body) });
   if(!r.ok){ const e = await r.json().catch(()=>({})); throw new Error(e.error || e.message || ('HTTP ' + r.status)); }
-  /* 기록에도 남긴다. shipment_id 가 있는 진짜 라벨만. */
   if(rec.shipmentId && !rec.test){
     try{ await sbFetch('/rest/v1/' + UPSAD_TBL + '?shipment_id=eq.' + encodeURIComponent(rec.shipmentId),
       { method:'PATCH', headers:{ Prefer:'return=minimal' },
@@ -12112,6 +12135,7 @@ async function upsAdMailFor(rec, to){
   }
   return { pdf: !!pdf };
 }
+
 /* 워커에 취소를 보내고 DB 에 도장을 찍는다. 부르기 전에 사람에게 물어봐야 한다. */
 async function upsAdVoidFor(rec){
   const r = await fetch(UPS_LABEL_URL.replace('/label','/void'), { method:'POST', headers:wkHdr(),
@@ -12165,8 +12189,11 @@ async function upsAdHistLoad(){
   upsAdRender();
 }
 function upsAdHistRec(row){
+  const st = row.ship_to || {};
   return { tracking:row.tracking||[], labels:row.labels||[], service:row.service,
-           origin:row.origin, reference:row.reference, shipmentId:row.shipment_id, test:false };
+           origin:row.origin, reference:row.reference, shipmentId:row.shipment_id, test:false,
+           /* UPSAD-v7 - 제목 기본값에 쓴다 */
+           company:(st.company || st.name || row.customer || '') };
 }
 function upsAdHistFind(id){ return (_upsAdHist.rows||[]).find(x=>String(x.id)===String(id)); }
 function upsAdHistQ(){
@@ -12203,7 +12230,10 @@ async function upsAdHistEmailSend(id){
   const btn = document.getElementById('uad-hmailbtn');
   if(btn){ btn.disabled = true; btn.textContent = '\u23f3 Sending...'; }
   try{
-    const out = await upsAdMailFor(upsAdHistRec(row), to);
+    const hs = String((document.getElementById('uad-hsubj')||{}).value || '');
+    const ha = document.getElementById('uad-hatt');
+    const out = await upsAdMailFor(upsAdHistRec(row), to,
+      { subject: hs, attach: ha ? !!ha.checked : true });
     row.emailed_to = to.join(', '); row.emailed_at = new Date().toISOString();
     _upsAdHist.emailAt = null;
     showToast('\u2709 Sent to ' + to.join(', ') + (out.pdf ? ' (label attached)' : ' (no PDF attached)'));
@@ -12265,10 +12295,17 @@ function upsAdHistHtml(){
       ? '<tr><td colspan="7" style="padding:7px 8px;background:#f0fdfa;border-bottom:1px solid #e5e7eb;">'
         + '<div style="display:flex;gap:6px;align-items:center;flex-wrap:wrap;">'
         + '<span style="font-size:11.5px;font-weight:800;color:#0f766e;">\u2709 Email ' + esc((r.tracking||[])[0]||'') + '</span>'
-        + '<input id="uad-hmail" class="fi" value="" placeholder="name@company.com (comma for more)" style="font-size:12px;padding:5px 7px;width:280px;">'
+        + '<input id="uad-hmail" class="fi" value="" placeholder="name@company.com (comma for more)" style="font-size:12px;padding:5px 7px;width:260px;">'
         + '<button class="btn btn-sm" id="uad-hmailbtn" onclick="upsAdHistEmailSend(' + r.id + ')" style="background:#0f766e;border-color:#0f766e;color:#fff;font-weight:800;">Send</button>'
         + '<button class="btn btn-sm" onclick="upsAdHistEmailCancel()">Cancel</button>'
-        + '<span style="font-size:11px;color:#6b7280;">' + (hasLbl ? '4x6 PDF attached' : 'tracking only \u2014 no label image kept') + ' \u00b7 our staff get a copy</span>'
+        + (hasLbl ? ('<label style="display:flex;align-items:center;gap:4px;font-size:11px;color:#374151;font-weight:700;cursor:pointer;">'
+            + '<input type="checkbox" id="uad-hatt" checked style="width:14px;height:14px;"> \u{1F4CE} 4x6 PDF</label>')
+          : '<span style="font-size:11px;color:#6b7280;">tracking only \u2014 no label image kept</span>')
+        + '</div>'
+        /* UPSAD-v7 - 제목도 여기서 고친다 */
+        + '<div style="display:flex;gap:6px;align-items:center;margin-top:5px;">'
+        + '<span style="font-size:10.5px;font-weight:800;color:#6b7280;letter-spacing:.06em;white-space:nowrap;">SUBJECT</span>'
+        + '<input id="uad-hsubj" class="fi" value="' + esc(upsAdMailSubj(upsAdHistRec(r))) + '" style="font-size:12px;padding:5px 7px;flex:1;max-width:440px;">'
         + '</div></td></tr>' : '';
     const td = (h, extra) => '<td style="padding:6px 8px;border-bottom:1px solid #eef0f3;font-size:11.5px;vertical-align:top;' + (extra||'') + '">' + h + '</td>';
     return '<tr style="' + (vd ? 'background:#f9fafb;color:#9ca3af;' : '') + '">'
@@ -12417,11 +12454,18 @@ function upsAdRender(){
       + '</div>'
       /* UPSAD-v5 - 바로 이메일로 보내기. 받는 사람은 사람이 직접 친다. */
       + '<div style="margin-top:11px;padding-top:10px;border-top:1px solid ' + (R.test?'#ddd6fe':'#a7f3d0') + ';">'
-      + '<div style="font-size:10.5px;font-weight:800;color:#6b7280;letter-spacing:.06em;">EMAIL THIS LABEL</div>'
+      + '<div style="font-size:10.5px;font-weight:800;color:#6b7280;letter-spacing:.06em;">EMAIL THIS SHIPMENT</div>'
       + '<div style="display:flex;gap:7px;align-items:center;margin-top:4px;flex-wrap:wrap;">'
       + '<input id="uad-email" class="fi" value="' + esc(R.emailedTo||'') + '" placeholder="name@company.com (comma for more)" style="font-size:12px;padding:5px 7px;width:300px;">'
       + '<button class="btn btn-sm" id="uad-emailbtn" onclick="upsAdEmail()" style="font-weight:800;">✉ Send</button>'
-      + '<span style="font-size:11px;color:#6b7280;">4x6 PDF attached · our staff get a copy</span>'
+      + '<label style="display:flex;align-items:center;gap:4px;font-size:11px;color:#374151;font-weight:700;cursor:pointer;">'
+      + '<input type="checkbox" id="uad-att" checked style="width:14px;height:14px;"> 📎 Attach 4x6 PDF</label>'
+      + '<span style="font-size:11px;color:#6b7280;">our staff get a copy</span>'
+      + '</div>'
+      /* UPSAD-v7 - [stated] 하윤: "이멜 타이틀을 직접 원하는걸로 적은후에 발송" */
+      + '<div style="margin-top:5px;display:flex;gap:6px;align-items:center;">'
+      + '<span style="font-size:10.5px;font-weight:800;color:#6b7280;letter-spacing:.06em;white-space:nowrap;">SUBJECT</span>'
+      + '<input id="uad-subj" class="fi" value="' + esc(upsAdMailSubj(upsAdResRec())) + '" style="font-size:12px;padding:5px 7px;flex:1;max-width:460px;">'
       + '</div>'
       + (R.emailedTo ? ('<div style="margin-top:5px;font-size:11.5px;color:#065f46;font-weight:700;">✓ Sent to ' + esc(R.emailedTo)
           + (R.emailedPdf ? ' with the label PDF' : ' (no PDF attached)') + '</div>') : '')
