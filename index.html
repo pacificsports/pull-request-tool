@@ -217,7 +217,7 @@ body.po-dragging{user-select:none;}
   </span>
   <select id="lang-sel" onchange="setLang(this.value)" style="font-size:11px;padding:3px 6px;border-radius:5px;border:none;background:#1d3f66;color:#fff;"><option value="ko">한국어</option><option value="en">English</option><option value="es">Español</option></select>
   <button id="wide-btn" class="btn btn-sm" onclick="toggleWide()" title="화면 넓게 / 좁게 — 기본은 넓게 (이 브라우저에만 저장돼)" style="padding:2px 8px;font-size:10px;background:#1d3f66;color:#cfe0f2;border-color:#2b5384;">↔ Wide</button>
-  <span id="app-ver" style="font-size:10px;color:#9fb8d4;">v1159</span>
+  <span id="app-ver" style="font-size:10px;color:#9fb8d4;">v1161</span>
 </div>
 <script>
 // ↔ 넓게 보기 — 브라우저마다 따로 저장 (v793)
@@ -11607,6 +11607,86 @@ function upsPackName(code){ const h = UPS_PACKAGING.find(x=>x.code===String(code
    ═══════════════════════════════════════════════════════════════════════ */
 const UPSAD_TBL = 'pr_ups_adhoc';
 const UPSAD_SVC = [['03','Ground'],['12','3 Day Select'],['02','2nd Day Air'],['01','Next Day Air']];
+/* UPSAD-v3 (2026-09-23) - 우리가 실제로 쓰는 박스 치수.
+   [stated] 하윤: "우리 sample box사이즈는 13x11x2이야"
+   UPS 포장 코드에는 이런 것이 없다. UPS 에게는 늘 02(우리 박스) + 치수를 보내고
+   이름은 우리 쪽에서만 붙인다. pr_config 의 ups_box_presets 한 줄에 저장한다. */
+const UPSAD_BOX_SEED = [{ n:'Sample box', l:13, w:11, h:2 }];
+const UPSAD_BOX_KEY = 'ups_box_presets';
+let _upsAdMyBox = UPSAD_BOX_SEED.slice();
+async function upsAdMyBoxLoad(){
+  try{
+    const r = await sbFetch('/rest/v1/pr_config?select=v&k=eq.' + encodeURIComponent(UPSAD_BOX_KEY));
+    if(!r.ok) return;
+    const j = await r.json();
+    if(!Array.isArray(j) || !j.length || j[0].v == null) return;   /* 없으면 씨앗값 그대로 */
+    const a = JSON.parse(String(j[0].v));
+    if(Array.isArray(a)) _upsAdMyBox = a.filter(x=>x && x.n && x.l>0 && x.w>0 && x.h>0)
+      .map(x=>({ n:String(x.n).slice(0,28), l:Number(x.l), w:Number(x.w), h:Number(x.h) }));
+  }catch(e){}
+  if(document.getElementById('upsad-body')) upsAdRender();
+}
+async function upsAdMyBoxSave(){
+  try{
+    const r = await sbFetch('/rest/v1/pr_config?on_conflict=k', { method:'POST',
+      headers:{ Prefer:'resolution=merge-duplicates,return=representation' },
+      body: JSON.stringify([{ k:UPSAD_BOX_KEY, v:JSON.stringify(_upsAdMyBox),
+                              updated_at:new Date().toISOString() }]) });
+    const j = r.ok ? await r.json() : null;
+    /* PostgREST 는 0 줄이 바뀌어도 200 을 준다 - 돌려받은 줄로 확인한다 */
+    return !!(r.ok && Array.isArray(j) && j.length);
+  }catch(e){ return false; }
+}
+/* 이 박스 치수가 저장된 것 중 하나와 똑같으면 그 번호. 아니면 -1.
+   (b.my 같은 표시를 따로 안 둔다 - 치수를 손으로 고치면 저절로 어긋나야 한다) */
+function upsAdMyBoxIdx(b){
+  if(String(b.pkg||'02') !== '02') return -1;
+  for(let i=0;i<_upsAdMyBox.length;i++){
+    const m = _upsAdMyBox[i];
+    if(Number(b.l)===Number(m.l) && Number(b.w)===Number(m.w) && Number(b.h)===Number(m.h)) return i;
+  }
+  return -1;
+}
+function upsAdPkgChange(i, v){
+  upsAdSync();
+  const b = _upsAd.boxes[i]; if(!b) return;
+  const m = String(v||'').match(/^my:(\d+)$/);
+  if(m && _upsAdMyBox[+m[1]]){
+    const p = _upsAdMyBox[+m[1]];
+    b.pkg = '02'; b.l = p.l; b.w = p.w; b.h = p.h;   /* 무게는 건드리지 않는다 */
+  } else {
+    b.pkg = String(v||'02');
+  }
+  _upsAdRateSig = '';
+  upsAdRender();
+}
+/* 이름 붙여 저장하는 작은 칸 (prompt 창을 쓰지 않는다) */
+function upsAdSaveOpen(i){ upsAdSync(); _upsAd.saveBox = i; _upsAd.saveName = ''; upsAdRender(); }
+function upsAdSaveCancel(){ _upsAd.saveBox = null; upsAdRender(); }
+async function upsAdSaveDo(){
+  upsAdSync();
+  const i = _upsAd.saveBox, b = (i==null) ? null : _upsAd.boxes[i];
+  if(!b){ upsAdSaveCancel(); return; }
+  const nm = String((document.getElementById('uad-savename')||{}).value || '').trim().slice(0,28);
+  if(!nm){ showToast('⚠ Give the box a name'); return; }
+  if(!(Number(b.l)>0 && Number(b.w)>0 && Number(b.h)>0)){ showToast('⚠ Enter L x W x H first'); return; }
+  const row = { n:nm, l:Number(b.l), w:Number(b.w), h:Number(b.h) };
+  const keep = _upsAdMyBox.slice();
+  const at = _upsAdMyBox.findIndex(x=>String(x.n).toLowerCase() === nm.toLowerCase());
+  if(at >= 0) _upsAdMyBox[at] = row; else _upsAdMyBox.push(row);
+  if(await upsAdMyBoxSave()){ _upsAd.saveBox = null; showToast('💾 Saved: ' + nm + ' ' + row.l + 'x' + row.w + 'x' + row.h); }
+  else { _upsAdMyBox = keep; showToast('❌ Could not save the box size'); }
+  upsAdRender();
+}
+async function upsAdMyBoxDel(i){
+  const p = _upsAdMyBox[i]; if(!p) return;
+  if(!confirm('Remove the saved box size?\n\n' + p.n + '  ' + p.l + ' x ' + p.w + ' x ' + p.h
+              + '\n\nBoxes already typed in keep their numbers.')) return;
+  const keep = _upsAdMyBox.slice();
+  _upsAdMyBox.splice(i,1);
+  if(!(await upsAdMyBoxSave())){ _upsAdMyBox = keep; showToast('❌ Could not save'); }
+  upsAdRender();
+}
 let _upsAd = null;
 
 function upsAdBlank(){
@@ -11615,6 +11695,7 @@ function upsAdBlank(){
            to:{ name:'', comp:'', a1:'', a2:'', city:'', state:'', zip:'', phone:'' },
            boxes:[{ l:12, w:10, h:6, wt:5, pkg:'02' }],
            test:false, rate:null, rateErr:'', rateBusy:false,
+           saveBox:null,                        /* UPSAD-v3 - 치수 저장칸 */
            res:null, saveErr:'' };
 }
 
@@ -11674,7 +11755,8 @@ function upsAdSync(){
   });
   _upsAd.boxes.forEach((b,i)=>{
     ['l','w','h','wt'].forEach(k=>{ const v = g('uad-'+k+i); if(v !== undefined) b[k] = Number(v)||0; });
-    const p = g('uad-pkg'+i); if(p !== undefined) b.pkg = String(p);
+    /* UPSAD-v3 - 목록 값이 my:n (우리가 저장한 박스) 이면 UPS 코드는 02 다 */
+    const p = g('uad-pkg'+i); if(p !== undefined) b.pkg = /^my:/.test(p) ? '02' : String(p);
   });
   const t = document.getElementById('uad-test'); if(t) _upsAd.test = !!t.checked;
 }
@@ -11780,6 +11862,18 @@ function upsAdRateSoon(){
   window._upsAdRateT = setTimeout(()=>{ upsAdSync(); upsAdRate({ auto:true }); }, 700);
 }
 
+/* UPSAD-v4 - 모자란 것 목록만 다시 칠한다 (화면 전체를 다시 그리지 않는다) */
+function upsAdProbPaint(){
+  const el = document.getElementById('uad-probs'); if(!el || !_upsAd) return;
+  if(_upsAd.res){ el.innerHTML = ''; return; }
+  const probs = upsAdProblems();
+  el.innerHTML = probs.length
+    ? '<div style="margin:10px 0;padding:8px 12px;background:#fff7ed;border:1px solid #fed7aa;border-radius:6px;font-size:11.5px;color:#9a3412;">'
+      + '<b>Still needed (' + probs.length + ')</b><ul style="margin:4px 0 0 16px;padding:0;">'
+      + probs.map(x=>'<li>' + esc(x) + '</li>').join('') + '</ul></div>'
+    : '';
+}
+
 /* 요금만 다시 칠한다 - upsAdRender() 를 부르면 안 된다.
    화면을 다시 그리면 사람이 치고 있던 칸이 새로 만들어져 글쇠 초점이 날아간다. */
 function upsAdEstPaint(){
@@ -11839,21 +11933,14 @@ async function upsAdCreate(){
   const bill = _upsAd.billMode==='receiver'
       ? ('RECEIVER pays — their UPS account ' + _upsAd.acct)
       : 'WE pay (our UPS account)';
-  /* ⚠ 돈이 나가고 진짜 발송이 만들어진다 — 다 적어서 한 번 물어본다. */
-  const ask = (_upsAd.test ? '🧪 TEST MODE — no real label, nothing saved.\n\n' : '')
-    + 'Create ' + n + ' UPS label(s)?\n\n'
-    + 'From: ' + _upsAd.origin + '\n'
-    + 'To:   ' + t.name + (t.company?(' / '+t.company):'') + '\n'
-    + '      ' + t.addr1 + (t.addr2?(' '+t.addr2):'') + '\n'
-    + '      ' + t.city + ', ' + t.state + ' ' + t.zip + '\n'
-    + 'Service: ' + svc + '\n'
-    + (function(){ const s = upsAdRateFor(_upsAd.service);      /* UPSAD-v2 - 값을 알면 적어 준다 */
-        return s ? ('Our cost: $' + Number(s.total).toFixed(2)
-                    + '  (UPS list $' + Number(s.list!=null?s.list:s.total).toFixed(2) + ')\n') : ''; })()
-    + 'Billing: ' + bill + '\n'
-    + 'Reference: ' + String(_upsAd.ref||'').trim().slice(0,35)
-    + (_upsAd.test ? '' : '\n\n⚠ This is a real shipment and a real charge.');
-  if(!confirm(ask)) return;
+  /* UPSAD-v4 (2026-09-23) - 확인창을 없앴다.
+     [stated] 하윤: "이 pop up뜨는거는 필요없고"
+     창에 적혀 있던 것(출발 창고/받는 곳/서비스/우리 원가/청구/참고번호)은
+     바로 위 화면에 다 보인다. 한 번 더 읽히는 것 말고 하는 일이 없었다.
+     주의: 이제 한 번 누르면 바로 진짜 라벨이다. 잘못 나오면 Void 로 취소한다.
+     주의: 이 자리에 다시 confirm 을 넣지 말 것 - 일부러 뺀 것이다.
+     (svc / bill / t / n 은 아래 기록과 화면 문구에서 계속 쓴다) */
+  void svc; void bill;
   const btn = document.getElementById('uad-create');
   if(btn){ btn.disabled=true; btn.textContent='⏳ Contacting UPS...'; }
   try{
@@ -11943,6 +12030,73 @@ async function upsAdPdf(){
     _lblSaveBlob(new Blob([zpl],{type:'text/plain'}), 'ups-' + (R.tracking||['label'])[0] + '.zpl');
   }
 }
+/* UPSAD-v5 (2026-09-23) - 만든 라벨을 바로 이메일로 보낸다.
+   [stated] 하윤: "우리가 원하는 이멜에 우리가 이멜 보내는방식대로 이멜 바로 전송"
+   우리가 이미 쓰는 길만 쓴다: psmWrap 겉옷 + /send-pl 워커 + STAFF_EMAILS 사본.
+   주의: 받는 사람을 거래처 카드에서 미리 채우지 않는다 - 거래처 카드에 우리 직원
+     주소가 들어 있는 곳이 있어서(EOI) 엉뚱한 데로 나갈 수 있다. 사람이 직접 친다. */
+async function upsAdLabelPdfB64(){
+  const R = _upsAd && _upsAd.res;
+  if(!R || !(R.labels||[]).length) return null;
+  let zpl = '';
+  try{ zpl = R.labels.map(b64=>atob(b64)).join('\n'); }catch(e){ return null; }
+  try{
+    const r = await fetch('https://api.labelary.com/v1/printers/8dpmm/labels/4x6/',
+      { method:'POST', headers:{ 'Accept':'application/pdf' }, body:zpl });
+    if(!r.ok) return null;
+    const buf = new Uint8Array(await r.arrayBuffer());
+    let s = ''; for(let i=0;i<buf.length;i++) s += String.fromCharCode(buf[i]);
+    return btoa(s);
+  }catch(e){ return null; }
+}
+async function upsAdEmail(){
+  const R = _upsAd && _upsAd.res; if(!R) return;
+  const raw = String((document.getElementById('uad-email')||{}).value || '');
+  const to = raw.split(',').map(e=>e.trim()).filter(e=>e.indexOf('@') > 0);
+  if(!to.length){ showToast('⚠ Type an email address'); return; }
+  const btn = document.getElementById('uad-emailbtn');
+  if(btn){ btn.disabled = true; btn.textContent = '⏳ Sending...'; }
+  const svcName = (UPSAD_SVC.find(x=>x[0]===R.service)||['','?'])[1];
+  const rows = (R.tracking||[]).map((t,i)=>'<tr style="background:' + (i % 2 ? '#faf9f5' : '#fdfdfb') + ';">'
+      + psmTd('Box ' + (i+1)) + psmTd(psmTrackLinks([t], 'UPS')) + '</tr>').join('');
+  const inner = psmHead((R.tracking||[]).length + ' UPS label' + ((R.tracking||[]).length===1?'':'s') + ' ready',
+                        'UPS ' + esc(svcName) + ' · from our ' + esc(R.origin) + ' warehouse')
+    + psmP('Here ' + ((R.tracking||[]).length===1 ? 'is the tracking number' : 'are the tracking numbers')
+           + ' for this shipment' + (String(_upsAd.ref||'').trim() ? (' (<b>' + esc(String(_upsAd.ref).trim()) + '</b>)') : '') + '.')
+    + psmList(psmTh('Package') + psmTh('Tracking #'), rows);
+  let pdf = null;
+  try{ pdf = await upsAdLabelPdfB64(); }catch(e){}
+  const body = {
+    to: to,
+    subject: 'UPS label — ' + (String(_upsAd.ref||'').trim() || (R.tracking||[])[0] || 'shipment') + ' (Pacific Sports)',
+    html: psmWrap('UPS Label', inner
+      + (pdf ? psmP('The 4x6 shipping label is attached as a PDF — print it at 100% (do not scale).')
+             : psmP('Ask us for the printed label if you need the 4x6 PDF.'))
+      + psmP('Questions about this shipment? Just reply to this email.')),
+    reply_to: (typeof STAFF_EMAILS !== 'undefined' ? STAFF_EMAILS : undefined),
+    bcc: (typeof STAFF_EMAILS !== 'undefined' ? STAFF_EMAILS : undefined)
+  };
+  if(pdf) body.attachments = [{ filename: 'ups-' + ((R.tracking||['label'])[0]) + '.pdf', content: pdf }];
+  try{
+    const r = await fetch('https://po-confirm-email.hjbae.workers.dev/send-pl', {
+      method:'POST', headers:{ 'Content-Type':'application/json' }, body: JSON.stringify(body) });
+    if(!r.ok){ const e = await r.json().catch(()=>({})); throw new Error(e.error || e.message || ('HTTP ' + r.status)); }
+    _upsAd.res.emailedTo = to.join(', ');
+    _upsAd.res.emailedAt = new Date().toISOString();
+    _upsAd.res.emailedPdf = !!pdf;
+    showToast('✉ Sent to ' + to.join(', ') + (pdf ? ' (label attached)' : ' (no PDF attached)'));
+    /* 기록에도 남긴다. 컬럼이 없으면 조용히 지나간다 - 메일은 이미 나갔다. */
+    if(R.shipmentId && !R.test){
+      try{ await sbFetch('/rest/v1/' + UPSAD_TBL + '?shipment_id=eq.' + encodeURIComponent(R.shipmentId),
+        { method:'PATCH', headers:{ Prefer:'return=minimal' },
+          body: JSON.stringify({ emailed_to: to.join(', '), emailed_at: _upsAd.res.emailedAt }) }); }catch(e){}
+    }
+  }catch(e){
+    showToast('❌ Email failed — ' + String(e.message||e).slice(0,70));
+  }
+  upsAdRender();
+}
+
 async function upsAdVoid(){
   const R = _upsAd && _upsAd.res;
   if(!R || !R.shipmentId){ showToast('Nothing to void'); return; }
@@ -11966,6 +12120,7 @@ function upsAdOpen(){
   const ex = document.getElementById('modal-upsad'); if(ex) ex.remove();
   _upsAd = upsAdBlank();
   _upsAdRateSig = ''; clearTimeout(window._upsAdRateT);   /* UPSAD-v2 */
+  upsAdMyBoxLoad();                                      /* UPSAD-v3 - 저장된 박스 치수 */
   const d = document.createElement('div');
   d.id = 'modal-upsad';
   d.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,.55);z-index:130;display:flex;align-items:center;justify-content:center;';
@@ -11998,24 +12153,53 @@ function upsAdRender(){
     const num = (k,v) => '<input id="uad-' + k + i + '" class="fi" type="number" min="0" step="0.1" value="' + (v==null?'':v)
       + '" ' + (dims||k==='wt' ? '' : 'disabled ') + 'style="font-size:12px;padding:4px 5px;width:62px;text-align:center;'
       + (dims||k==='wt' ? '' : 'background:#f3f4f6;color:#9ca3af;') + '">';
-    const pkgs = UPS_PACKAGING.map(p=>'<option value="' + p.code + '"' + (String(b.pkg)===p.code?' selected':'') + '>'
-      + esc(p.name + upsPackNote(p.code)) + '</option>').join('');
+    /* UPSAD-v3 - 우리가 저장한 박스를 목록 맨 위에. 고르면 UPS 에는 02 로 가고 치수만 채워진다. */
+    const myAt = upsAdMyBoxIdx(b);
+    const myPkgs = _upsAdMyBox.length
+      ? '<optgroup label="OUR SAVED BOXES">'
+        + _upsAdMyBox.map((m,mi)=>'<option value="my:' + mi + '"' + (myAt===mi?' selected':'') + '>'
+            + esc('📐 ' + m.n + '  ' + m.l + 'x' + m.w + 'x' + m.h) + '</option>').join('')
+        + '</optgroup><optgroup label="UPS PACKAGING">' : '';
+    const pkgs = myPkgs + UPS_PACKAGING.map(p=>'<option value="' + p.code + '"'
+        + ((myAt < 0 && String(b.pkg)===p.code) ? ' selected' : '') + '>'
+      + esc(p.name + upsPackNote(p.code)) + '</option>').join('') + (myPkgs ? '</optgroup>' : '');
     const warn = upsPackOkFor(b.pkg, A.service) ? '' :
       '<div style="font-size:10.5px;color:#b91c1c;font-weight:700;">⚠ UPS declines this packaging on ' + esc((UPSAD_SVC.find(x=>x[0]===A.service)||['','?'])[1]) + '</div>';
     return '<tr><td style="padding:4px 3px;font-weight:800;color:#7c2d12;font-size:11.5px;">' + (i+1) + '</td>'
-      + '<td style="padding:4px 3px;"><select id="uad-pkg' + i + '" class="fi" onchange="upsAdSync();upsAdRender();" style="font-size:11.5px;padding:4px 5px;max-width:210px;">' + pkgs + '</select>' + warn + '</td>'
+      + '<td style="padding:4px 3px;"><select id="uad-pkg' + i + '" class="fi" onchange="upsAdPkgChange(' + i + ',this.value)" style="font-size:11.5px;padding:4px 5px;max-width:230px;">' + pkgs + '</select>' + warn + '</td>'
       + '<td style="padding:4px 3px;">' + num('l',b.l) + '</td><td style="padding:4px 3px;">' + num('w',b.w) + '</td>'
       + '<td style="padding:4px 3px;">' + num('h',b.h) + '</td><td style="padding:4px 3px;">' + num('wt',b.wt) + '</td>'
       + '<td style="padding:4px 3px;white-space:nowrap;">'
+      + '<button class="btn btn-sm" onclick="upsAdSaveOpen(' + i + ')" title="Save this size with a name so you can pick it next time" style="font-size:11px;">💾</button> '
       + '<button class="btn btn-sm" onclick="upsAdBoxCopy(' + i + ')" title="Copy this box" style="font-size:11px;">⧉</button> '
       + (A.boxes.length>1 ? '<button class="btn btn-sm" onclick="upsAdBoxDel(' + i + ')" title="Remove" style="font-size:11px;color:#b91c1c;">✕</button>' : '')
       + '</td></tr>';
   }).join('');
 
+  /* UPSAD-v3 - 치수에 이름을 붙여 저장하는 칸 (박스 줄의 저장 단추로 열린다) */
+  const savePane = (A.saveBox != null && A.boxes[A.saveBox] && !R) ? (function(){
+    const b = A.boxes[A.saveBox];
+    return '<div style="margin-top:8px;padding:9px 12px;background:#f0fdfa;border:1px solid #99f6e4;border-radius:6px;">'
+      + '<div style="font-size:11.5px;font-weight:800;color:#0f766e;">💾 Save box ' + (A.saveBox+1)
+      + ' size (' + (b.l||0) + ' x ' + (b.w||0) + ' x ' + (b.h||0) + ') for next time</div>'
+      + '<div style="display:flex;gap:6px;align-items:center;margin-top:6px;">'
+      + '<input id="uad-savename" class="fi" value="" placeholder="Name it - e.g. Sample box" style="font-size:12px;padding:5px 7px;width:230px;">'
+      + '<button class="btn btn-sm" onclick="upsAdSaveDo()" style="background:#0f766e;border-color:#0f766e;color:#fff;font-weight:800;">Save</button>'
+      + '<button class="btn btn-sm" onclick="upsAdSaveCancel()">Cancel</button></div>'
+      + (_upsAdMyBox.length ? '<div style="margin-top:7px;font-size:11px;color:#0f766e;">Saved now: '
+          + _upsAdMyBox.map((m,mi)=>'<span style="display:inline-block;background:#fff;border:1px solid #99f6e4;border-radius:11px;padding:1px 4px 1px 8px;margin:2px 4px 2px 0;font-weight:700;">'
+            + esc(m.n + ' ' + m.l + 'x' + m.w + 'x' + m.h)
+            + ' <button onclick="upsAdMyBoxDel(' + mi + ')" title="Remove" style="background:none;border:none;color:#b91c1c;cursor:pointer;font-weight:800;padding:0 3px;">✕</button></span>').join('')
+          + '</div>' : '')
+      + '</div>';
+  })() : '';
+
   const probs = upsAdProblems();
-  const probHtml = (probs.length && !R) ? '<div style="margin:10px 0;padding:8px 12px;background:#fff7ed;border:1px solid #fed7aa;border-radius:6px;font-size:11.5px;color:#9a3412;">'
-    + '<b>Still needed (' + probs.length + ')</b><ul style="margin:4px 0 0 16px;padding:0;">'
-    + probs.map(x=>'<li>' + esc(x) + '</li>').join('') + '</ul></div>' : '';
+  /* UPSAD-v4 - 모자란 것 목록은 이 칸에 upsAdProbPaint() 가 따로 칠한다.
+     [버그] Reference 를 쳐도 "Still needed: Reference" 가 안 없어졌다 -
+     그 칸에는 화면 값을 상태로 옮겨 줄 계기가 없었기 때문. 아래에서 듣기를 붙인다. */
+  const probHtml = '<div id="uad-probs"></div>';
+  void probs;
 
   /* UPSAD-v2 - 요금은 이 빈 칸에 upsAdEstPaint() 가 따로 칠한다.
      여기서 값을 그리지 않는 이유: 요금이 올 때마다 화면을 다시 그리면
@@ -12038,6 +12222,17 @@ function upsAdRender(){
       + '<button class="btn btn-sm" onclick="upsAdPdf()">⬇ PDF</button>'
       + (R.shipmentId && !R.voided && !R.test ? '<button class="btn btn-sm" onclick="upsAdVoid()" style="color:#b91c1c;">✕ Void</button>' : '')
       + '<button class="btn btn-sm" onclick="upsAdOpen()">➕ Another label</button>'
+      + '</div>'
+      /* UPSAD-v5 - 바로 이메일로 보내기. 받는 사람은 사람이 직접 친다. */
+      + '<div style="margin-top:11px;padding-top:10px;border-top:1px solid ' + (R.test?'#ddd6fe':'#a7f3d0') + ';">'
+      + '<div style="font-size:10.5px;font-weight:800;color:#6b7280;letter-spacing:.06em;">EMAIL THIS LABEL</div>'
+      + '<div style="display:flex;gap:7px;align-items:center;margin-top:4px;flex-wrap:wrap;">'
+      + '<input id="uad-email" class="fi" value="' + esc(R.emailedTo||'') + '" placeholder="name@company.com (comma for more)" style="font-size:12px;padding:5px 7px;width:300px;">'
+      + '<button class="btn btn-sm" id="uad-emailbtn" onclick="upsAdEmail()" style="font-weight:800;">✉ Send</button>'
+      + '<span style="font-size:11px;color:#6b7280;">4x6 PDF attached · our staff get a copy</span>'
+      + '</div>'
+      + (R.emailedTo ? ('<div style="margin-top:5px;font-size:11.5px;color:#065f46;font-weight:700;">✓ Sent to ' + esc(R.emailedTo)
+          + (R.emailedPdf ? ' with the label PDF' : ' (no PDF attached)') + '</div>') : '')
       + '</div>' + warnSave + '</div>';
   })() : '';
 
@@ -12082,6 +12277,7 @@ function upsAdRender(){
     + '<th style="padding:2px 3px;">L</th><th style="padding:2px 3px;">W</th><th style="padding:2px 3px;">H</th><th style="padding:2px 3px;">lb</th><th></th></tr></thead>'
     + '<tbody>' + boxRows + '</tbody></table>'
     + '<button class="btn btn-sm" onclick="upsAdBoxAdd()" style="margin-top:5px;font-size:11.5px;font-weight:700;">➕ Add a box</button>'
+    + savePane
 
     + '<div style="margin-top:14px;display:grid;grid-template-columns:1fr 1fr;gap:8px;">'
     + '<div><div style="font-size:10.5px;font-weight:800;color:#b45309;letter-spacing:.06em;">REFERENCE * — shows on the UPS invoice</div>'
@@ -12091,18 +12287,26 @@ function upsAdRender(){
 
     + probHtml + rate
 
-    + (R ? '' : '<div style="margin-top:14px;display:flex;gap:8px;align-items:center;">'
-      + '<button class="btn btn-sm" id="uad-create" onclick="upsAdCreate()" style="background:#7c2d12;border-color:#7c2d12;color:#fff;font-weight:800;">🏷 Create label</button>'
-      + '<span style="font-size:11px;color:#9ca3af;">⚠ This does not touch inventory.</span></div>')
+    /* UPSAD-v5 - [stated] 하윤: "create label버튼 오른쪽으로 옮겨주고" */
+    + (R ? '' : '<div style="margin-top:14px;display:flex;gap:8px;align-items:center;justify-content:space-between;">'
+      + '<span style="font-size:11px;color:#9ca3af;">⚠ This does not touch inventory.</span>'
+      + '<button class="btn btn-sm" id="uad-create" onclick="upsAdCreate()" style="background:#7c2d12;border-color:#7c2d12;color:#fff;font-weight:800;">🏷 Create label</button></div>')
     + resHtml;
 
   /* UPSAD-v2 - 단추 없이 저절로 요금이 뜨게 한다.
      주의: 여기서 upsAdRender() 를 다시 부르는 길이 생기면 안 된다 (초점이 날아간다) -
        upsAdRate 는 끝에 upsAdEstPaint() 만 부른다. 같은 값이면 다시 안 부른다. */
   if(!R){
-    const ids = ['uad-name','uad-a1','uad-a2','uad-city','uad-state','uad-zip'];
-    _upsAd.boxes.forEach((b,i)=>['l','w','h','wt'].forEach(k=>ids.push('uad-'+k+i)));
-    ids.forEach(id=>{ const e = document.getElementById(id); if(e) e.addEventListener('input', upsAdRateSoon); });
+    /* 요금에 영향을 주는 칸 - 치면 조금 뒤 UPS 에 다시 물어본다 */
+    const rateIds = ['uad-name','uad-a1','uad-a2','uad-city','uad-state','uad-zip'];
+    _upsAd.boxes.forEach((b,i)=>['l','w','h','wt'].forEach(k=>rateIds.push('uad-'+k+i)));
+    rateIds.forEach(id=>{ const e = document.getElementById(id); if(e) e.addEventListener('input', upsAdRateSoon); });
+    /* UPSAD-v4 - 모자란 것 목록에 영향을 주는 칸은 더 많다 (Reference 가 빠져 있었다).
+       치는 즉시 상태로 옮기고 목록만 다시 칠한다. */
+    const probIds = rateIds.concat(['uad-ref','uad-acct','uad-bzip']);
+    probIds.forEach(id=>{ const e = document.getElementById(id); if(!e) return;
+      e.addEventListener('input', ()=>{ upsAdSync(); upsAdProbPaint(); }); });
+    upsAdProbPaint();
     upsAdEstPaint();
     setTimeout(()=>upsAdRate({ auto:true }), 0);
   }
