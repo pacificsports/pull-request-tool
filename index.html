@@ -204,7 +204,7 @@ body.po-dragging{user-select:none;}
   </span>
   <select id="lang-sel" onchange="setLang(this.value)" style="font-size:11px;padding:3px 6px;border-radius:5px;border:none;background:#1d3f66;color:#fff;"><option value="ko">한국어</option><option value="en">English</option><option value="es">Español</option></select>
   <button id="wide-btn" class="btn btn-sm" onclick="toggleWide()" title="화면 넓게 / 좁게 — 기본은 넓게 (이 브라우저에만 저장돼)" style="padding:2px 8px;font-size:10px;background:#1d3f66;color:#cfe0f2;border-color:#2b5384;">↔ Wide</button>
-  <span id="app-ver" style="font-size:10px;color:#9fb8d4;">v1152</span>
+  <span id="app-ver" style="font-size:10px;color:#9fb8d4;">v1153</span>
 </div>
 <script>
 // ↔ 넓게 보기 — 브라우저마다 따로 저장 (v793)
@@ -4451,6 +4451,11 @@ async function _saveCurrentInner(){
   }
   /* 화면에서만 쓰는 잠금 표시는 DB 에 남기지 않는다 (v966) */
   (rec.lines||[]).forEach(L=>{ if(L){ delete L._lk; delete L._was; } });
+  /* 🔒 Locker stock 은 저장하는 순간 Packing List 까지 같이 만든다 (2026-09-23) */
+  try{
+    const _lm = lockerAutoPl(rec);
+    if(_lm) logHist(rec.base, 'Locker stock — Packing List auto-created (' + _lm + ')');
+  }catch(e){ console.warn('lockerAutoPl 실패(무시):', e); }
   const ok = await upsertRec(rec);
   if(!ok){ alert(t('save_fail')); return; }
   // 전체 리스트 재다운로드 없이 로컬 캐시만 갱신 (11MB 다운로드 제거 — 저장 즉시 반영)
@@ -8097,6 +8102,49 @@ function printSavedPR(base){
   (rec.whs && rec.whs.length ? rec.whs : ['SC']).forEach((wh, i)=>{
     setTimeout(()=>printSavedPRWh(base, wh), i*600);
   });
+}
+/* 🔒 Locker stock 오더의 Packing List 를 자동으로 만든다 (2026-09-23)
+   [stated] 하윤: "Locker stock은 거래처가 우리 물건 빼서 쓰고 알려주면 우리가 청구하는거여서
+                  우리가 PO넣으면 바로 packing list랑 invoice까지 자동으로 거기에 맞쳐서
+                  생산되는게 맞아"
+   Locker = 거래처 자기 창고에 위탁해 둔 우리 물건. 거래처가 꺼내 쓰고 알려주면 우리가 청구한다.
+   그래서 우리가 포장할 게 없다 — PO 가 곧 "빼 갔다"는 통보다.
+   ⚠⚠ 이건 재고 움직임이 **아니다.** locker PL 은 박스를 쥐지 않는다 (0808MP58209 의 pl.CA 에
+      boxIds·boxes 가 없는 것을 실측으로 확인했다). 물건은 이미 거래처 창고에서 빠졌다.
+   ⚠ 인보이스 번호는 자동으로 붙이지 않는다 [하윤 결정] — PL 이 생기면 그 오더가
+     🧾 Invoice Not Printed 목록·타일에 저절로 뜨고, 사람이 인쇄할 때 번호가 붙는다.
+   ⚠ sendPl:false — 거래처에 패킹리스트 메일을 보내지 않는다. 우리가 보낸 물건이 아니다.
+   ⚠⚠ 이미 PL 이 있으면 **절대** 건드리지 않는다. 사람이 만든 것이 언제나 이긴다.
+   ⚠ SC·CA 만 만든다 (BO·NA·PD 는 아직 물건이 없는 몫이다).
+   ⚠ `_completed` 를 같이 넣는다 — 나갈 물건이 없으니 그 오더는 「뽑을 일」 목록에서 빠져야 한다.
+     그래서 Orders 탭의 열린 건수가 locker 오더만큼 줄어드는데, 그게 맞는 숫자다. */
+function lockerAutoPl(rec){
+  if(!rec || !rec.meta || !rec.meta.lockerStock) return 0;
+  rec.pl = rec.pl || {};
+  const now = new Date().toISOString();
+  let made = 0;
+  (rec.whs||[]).forEach(w=>{
+    if(w !== 'SC' && w !== 'CA') return;
+    if(rec.pl[w] && rec.pl[w].savedAt) return;            // 사람이 만든 PL 은 손대지 않는다
+    const lines = (rec.lines||[])
+      .filter(l => l && String(l.wh||'').trim().toUpperCase() === w && (Number(l.qty)||0) > 0)
+      .map(l => ({ style:l.style||'', desc:l.desc||'', color:l.color||'', size:l.size||'',
+                   qty:l.qty||0, price:l.price||0, ppb:l.ppb||72, pbox:l.pbox||'', wh:l.wh||'' }));
+    if(!lines.length) return;
+    rec.pl[w] = {
+      custEmail: (rec.meta.custEmail||'')
+                 || ((typeof custEmailFor === 'function' && custEmailFor(rec.meta.cust)) || ''),
+      serial: (typeof nextSerial === 'function') ? nextSerial(w) : '',
+      via: (typeof normVia === 'function') ? (normVia(rec.meta.via||'') || '') : (rec.meta.via||''),
+      method: '', freightCo: '', trackings: [''],
+      date: rec.meta.date || ((typeof todayStr === 'function') ? todayStr() : String(now).slice(0,10)),
+      note: 'Locker stock — the customer pulled this from their own locker.',
+      files: [], lines: lines, sendPl: false,
+      savedAt: now, _completed: now, _locker: true
+    };
+    made++;
+  });
+  return made;
 }
 function nextSerial(wh){
   if(wh !== 'SC' && wh !== 'CA') return '';
@@ -29837,15 +29885,66 @@ async function wpSaleSave(){
     try{ logHist && logHist('', 'Web sale edited — ' + st + (cl?(' '+cl):'') + (sz?(' '+sz):'')); }catch(e){}
   }catch(e){ if(m) m.textContent = '저장 실패 — ' + e.message; }
 }
+/* 🗑 세일 삭제 — 확인 팝업 없이 바로 지운다 (2026-09-23)
+   [stated] 하윤: "저 팝업 안뜨게해줘. 삭제누르면 그냥 삭제 되게"
+   ⚠ 이 DELETE 는 Save changes 를 안 기다리고 곧바로 DB 로 간다. 그래서 팝업만 빼면
+     잘못 누른 세일을 되살릴 길이 화면에 없어진다 — 되돌리기 단추를 대신 둔다.
+     (막는 게 아니라 이미 지운 것을 한 번에 되살리는 것이다) */
+let _wpSDel = null;                       // 방금 지운 줄 — 되돌리기용
 async function wpSaleDel(id){
-  if(!confirm('이 세일을 지울까? (정상가로 돌아가)')) return;
+  const gone = (_wpSales||[]).find(x=>String(x.id) === String(id)) || null;
   try{
     const r = await sbFetch('/rest/v1/sale_prices?id=eq.' + encodeURIComponent(id), { method:'DELETE' });
     if(!r.ok) throw new Error(String(r.status));
     _wpSales = _wpSales.filter(x=>String(x.id) !== String(id));
     if(String(_wpSEdit||'') === String(id)) _wpSEdit = null;   /* 고치던 줄을 지웠다 (v1142) */
     wpRender('');
+    _wpSDel = gone;
+    wpSaleDelToast(gone);
   }catch(e){ alert('삭제 실패 — ' + e.message); }
+}
+/* 지웠다고 알리고 되돌릴 기회를 준다. 8초 (기본 알림 4초보다 길게 — 누를 시간이 필요하다) */
+function wpSaleDelToast(gone){
+  const old = document.getElementById('wp-sdel-toast'); if(old) old.remove();
+  if(!gone) return;
+  const what = [ String(gone.style_number||''),
+                 gone.color || '모든 색상',
+                 gone.size  || '모든 사이즈' ].filter(Boolean).join(' · ');
+  const box = document.createElement('div');
+  box.id = 'wp-sdel-toast';
+  box.style.cssText = 'position:fixed;bottom:20px;right:20px;background:#0f2a4a;color:#fff;'
+    + 'padding:10px 14px;border-radius:8px;font-size:12px;font-weight:700;z-index:999999;'
+    + 'box-shadow:0 4px 12px rgba(0,0,0,.25);display:flex;align-items:center;gap:10px;';
+  const txt = document.createElement('span');
+  txt.textContent = '🗑 세일 지웠어 — ' + what;
+  const btn = document.createElement('button');
+  btn.textContent = '↩ 되돌리기';
+  btn.style.cssText = 'background:#fff;color:#0f2a4a;border:none;border-radius:6px;'
+    + 'padding:4px 10px;font-size:11.5px;font-weight:800;cursor:pointer;';
+  btn.onclick = function(){ box.remove(); wpSaleUndel(); };
+  box.appendChild(txt); box.appendChild(btn);
+  document.body.appendChild(box);
+  setTimeout(()=>{ if(box.parentNode) box.remove(); }, 8000);
+}
+/* 방금 지운 세일을 다시 넣는다. ⚠ 같은 id 로 넣지 않는다 — id 는 DB 가 준다 */
+async function wpSaleUndel(){
+  const g = _wpSDel; if(!g){ showToast('되돌릴 세일이 없어'); return; }
+  const body = { style_number: g.style_number, color: g.color || null,
+                 size: g.size || null, ends_on: g.ends_on || null };
+  if(g.percent_off != null) body.percent_off = g.percent_off;
+  if(g.sale_price  != null) body.sale_price  = g.sale_price;
+  try{
+    const r = await sbFetch('/rest/v1/sale_prices',
+      { method:'POST', headers:{ Prefer:'return=representation' }, body: JSON.stringify(body) });
+    if(!r.ok) throw new Error(r.status + ' ' + (await r.text()).slice(0,120));
+    const d = await r.json();
+    /* ⚠⚠ PostgREST 는 0줄을 넣어도 200 을 줄 수 있다 — 돌아온 줄로 확인한다 */
+    if(!Array.isArray(d) || !d.length) throw new Error('0줄이 들어갔어 (권한이나 값 문제)');
+    _wpSales.push(d[0]);
+    _wpSDel = null;
+    wpRender('');
+    showToast('↩ 되살렸어 — ' + String(body.style_number||''));
+  }catch(e){ alert('되돌리기 실패 — ' + e.message + '\n\n세일을 다시 걸어줘.'); }
 }
 
 // ═══ Cost & Margin editor (v571) — owner/accounting 전용. styles 테이블의 사이즈별 원가+최소마진 편집 ═══
@@ -38243,21 +38342,34 @@ function icBuild(){
 function invNpAmt(rec, wh){
   const pl = rec && rec.pl && rec.pl[wh];
   const iv = (rec && rec.inv && rec.inv[wh]) || {};
-  const lines = (Array.isArray(iv.lines) && iv.lines.length) ? iv.lines : ((pl && pl.lines) || []);
+  let lines = (Array.isArray(iv.lines) && iv.lines.length) ? iv.lines : ((pl && pl.lines) || []);
+  /* 🔒 locker stock 은 PL 이 없을 수 있다 (예전 버전에서 저장된 것) — 그러면 오더 줄로 센다.
+     ⚠ 그 창고 몫만. 안 그러면 SC·CA 를 같이 가진 오더에서 금액이 두 배가 된다. */
+  if(!lines.length && rec && rec.meta && rec.meta.lockerStock)
+    lines = (rec.lines||[]).filter(l => l && String(l.wh||'').trim().toUpperCase() === wh);
   return lines.reduce((a,l)=>a+(Number(l.qty)||0)*(Number(l.price)||0), 0) + (Number(iv.freight)||0);
 }
 function invNpList(){
   const out = [];
   (typeof savedCache!=='undefined' ? savedCache : []).forEach(s=>{
     if(typeof recRepFree==='function' && recRepFree(s)) return;   /* 값 받는 교체는 미청구 목록에 남아야 한다 (v1090) */
+    /* 🔒 locker stock 은 우리가 포장할 게 없어서 PL 이 없을 수 있다 — 그래도 청구해야 한다.
+       ⚠⚠ 이 예외가 없어서 locker 오더 6건이 이 목록에 한 번도 안 들어갔고,
+          PO 58328 $17,492.40 이 어느 화면에도 안 보였다 (2026-09-23 하윤이 잡아냄).
+       ⚠ 예외를 열었으니 BO·NA·PD 를 **명시적으로** 걸러야 한다 — 예전엔 그 몫에 PL 이
+         없다는 이유로 저절로 빠졌다. 안 걸면 아직 물건도 없는 몫이 청구 대기로 뜬다. */
+    const _locker = !!(s.meta && s.meta.lockerStock);
     (s.whs||[]).forEach(w=>{
+      if(w === 'BO' || w === 'NA' || w === 'PD') return;
       const pl = s.pl && s.pl[w];
-      if(!pl || !pl.savedAt) return;
+      if((!pl || !pl.savedAt) && !_locker) return;
       if(s.inv && s.inv[w] && s.inv[w].printed) return;
       const iv = (s.inv && s.inv[w]) || {};
       const amt = invNpAmt(s, w);
+      if(!pl && _locker && !(amt > 0)) return;            // 줄도 금액도 없으면 청구할 게 없다
       out.push({ base:s.base, wh:w, po:(s.meta&&s.meta.po)||'', cust:(s.meta&&s.meta.cust)||'',
-                 at:pl.savedAt, amt, invNo:iv.invNo||'',
+                 at:(pl && pl.savedAt) || s.savedAt, amt, invNo:iv.invNo||'',
+                 locker:_locker,
                  hold:(typeof holdBlocked==='function' && holdBlocked(s)) });
     });
   });
@@ -38354,18 +38466,36 @@ function invNpOpen(){
 async function printBatchInvoices(pairsIn){
   const pairs = ((Array.isArray(pairsIn) && pairsIn.length) ? pairsIn
                   : [...document.querySelectorAll('.bship-cb:checked')].map(c=>({base:c.dataset.base, wh:c.dataset.wh})))
-    .filter(p=>{ const r = savedCache.find(s=>s.base===p.base); return r && !recIsReplace(r) && r.pl && r.pl[p.wh] && r.pl[p.wh].savedAt; });
+    /* LOCKERPRINT-v1 (2026-09-23) — 🔒 locker stock 은 PL 이 없을 수 있다.
+       우리가 포장한 물건이 아니라 거래처가 자기 창고에서 꺼내 쓴 것이라 PL 이 원래 안 생긴다.
+       ⚠⚠ 예전에는 여기서 조용히 걸러져서, 목록에 체크해도 인쇄가 안 됐다 —
+          체크박스가 아무 일도 안 하는 건 목록에 안 뜨는 것보다 나쁘다. */
+    .filter(p=>{
+      const r = savedCache.find(s=>s.base===p.base);
+      if(!r || recIsReplace(r)) return false;
+      if(r.pl && r.pl[p.wh] && r.pl[p.wh].savedAt) return true;
+      return !!(r.meta && r.meta.lockerStock);
+    });
   if(!pairs.length){ showToast('🧾 No invoices to print — select shipped orders (with saved PL)'); return; }
   const docs = []; const touched = {};
   for(const p of pairs){
     const rec = savedCache.find(s=>s.base===p.base); const wh = p.wh;
     rec.inv = rec.inv || {};
     const iv = rec.inv[wh] || {};
-    const pld = rec.pl[wh] || {};
+    const pld = (rec.pl && rec.pl[wh]) || {};
     if(!iv.invNo) iv.invNo = nextInvNo();
-    const lines = (Array.isArray(iv.lines) && iv.lines.length) ? iv.lines : JSON.parse(JSON.stringify(pld.lines||[]));
+    let lines = (Array.isArray(iv.lines) && iv.lines.length) ? iv.lines
+              : ((Array.isArray(pld.lines) && pld.lines.length) ? JSON.parse(JSON.stringify(pld.lines)) : []);
+    /* 🔒 locker stock 에 PL 이 없으면 오더 줄에서 그 창고 몫만 가져온다 (LOCKERPRINT-v1) */
+    if(!lines.length && rec.meta && rec.meta.lockerStock)
+      lines = (rec.lines||[])
+        .filter(l => l && String(l.wh||'').trim().toUpperCase() === wh && (Number(l.qty)||0) > 0)
+        .map(l => ({ style:l.style||'', desc:l.desc||'', color:l.color||'', size:l.size||'',
+                     qty:l.qty||0, price:l.price||0, ppb:l.ppb||72, pbox:l.pbox||'', wh:l.wh||'' }));
     rec.inv[wh] = { ...iv, savedAt: iv.savedAt || new Date().toISOString(), auto: false, printed: true, lines: lines, freight: Number(iv.freight)||0 };
-    const d = { ...pld, lines: lines, freight: Number(iv.freight)||0, invNo: iv.invNo, termType: iv.termType||'', termDays: iv.termDays||0 };
+    /* ⚠ PL 이 없으면 날짜도 없다 — 인보이스에 빈 날짜가 찍히지 않게 오더 날짜로 메운다 */
+    const d = { ...pld, lines: lines, date: pld.date || (rec.meta && rec.meta.date) || todayStr(),
+                freight: Number(iv.freight)||0, invNo: iv.invNo, termType: iv.termType||'', termDays: iv.termDays||0 };
     docs.push(buildStageDoc(rec, wh, 'invoice', d));
     touched[rec.base] = rec;
   }
@@ -39303,6 +39433,15 @@ function renderKpi(){
   let _rushAmt = 0;   /* 🔥 RUSH 금액 (v1133) — TO PULL 과 같은 기준의 부분집합 */
   if(!window._bulkBasesLoaded && typeof loadBulkBases==='function') loadBulkBases();   // LTL 처리 판정용 bulk 목록 로드
   let scUps=0, scLtl=0, caUps=0, caLtl=0;   // 준비된(packed, 미진행) 물량 — 창고×배송방식 (v675/v677)
+  /* 🧾 미발행 인보이스 — 건수는 **오더당 1**, 금액은 창고별로 전부. 모달과 같은 함수를 본다.
+     ⭐ 타일과 목록이 같은 함수를 봐야 숫자와 목록이 어긋나지 않는다 (v845 에 적어둔 규칙인데
+        거르는 조건만 복사돼 있었다 — 2026-09-23 에 그걸 없앴다). */
+  (function(){
+    const rows = (typeof invNpList === 'function') ? invNpList() : [];
+    const bases = new Set();
+    rows.forEach(r=>{ bases.add(r.base); uninvAmt += Number(r.amt)||0; });
+    uninv = bases.size;
+  })();
   cache.forEach(s=>{
     const done = recIsDone(s);
     const shipped = _allShipped(s);
@@ -39311,16 +39450,10 @@ function renderKpi(){
     /* 🧾 미발행 인보이스 — 건수는 예전처럼 **오더당 1**, 금액은 **창고별로 전부** 더한다 (v1102)
        그래서 이 금액은 모달 바닥줄의 total 과 정확히 같다 (둘 다 `invNpAmt` 를 쓴다).
        ⚠ 여기서 금액을 직접 계산하지 말 것 — `invNpAmt` 하나만 고치면 되게 둔다. */
-    if(!recRepFree(s)){
-      let _unLegs = 0;
-      (s.whs||[]).forEach(w=>{
-        if(!(s.pl && s.pl[w] && s.pl[w].savedAt)) return;
-        if(s.inv && s.inv[w] && s.inv[w].printed) return;
-        _unLegs++;
-        uninvAmt += invNpAmt(s, w);
-      });
-      if(_unLegs) uninv++;
-    }
+    /* 🧾 미발행 인보이스는 이 루프에서 세지 않는다 — 루프가 끝난 뒤 `invNpList()` 하나로 센다.
+       ⚠⚠ 예전에는 여기서 `pl[w].savedAt` 조건을 **복사해서** 다시 썼다. 그래서 locker stock
+          오더(PL 이 없는 게 정상)가 모달·타일 양쪽에서 통째로 빠졌다 (2026-09-23).
+          금액은 `invNpAmt` 하나를 같이 썼는데 **거르는 조건이 두 군데**였던 것이 뿌리다. */
     if(recHasPendingReturn(s)) pret++;
     if(recReturns(s).some(r=>r && r.status==='received' && r.cc && !r.refunded)) refund++;
     if(!done && !shipped){
