@@ -118,6 +118,19 @@ tr.polk{background:#f8fafc;}
 .inv-addr-label{font-size:9px;letter-spacing:1px;text-transform:uppercase;color:#888;margin-bottom:3px;font-weight:700;}
 .inv-addr-val{font-size:12px;font-weight:600;line-height:1.4;white-space:pre-line;}
 .inv-tbl{width:100%;border-collapse:collapse;}
+/* TFOOTPAGE-v1 (2026-09-23) - 합계가 페이지마다 반복되던 것을 막는다.
+   [stated] 하윤: "두번째 장이 있는데 TOTAL 이랑 GRAND TOTAL 이 첫번째 장에 나와버리니까
+                  뭔가 1장에서 끝나는 느낌인데"
+   원인: tfoot 의 기본값 table-footer-group 은 인쇄 페이지마다 반복된다.
+         실측(헤드리스 크롬 PDF): 45줄 2페이지에서 GRAND TOTAL 이 두 번 찍혔다.
+   · thead = table-header-group : 머리줄을 페이지마다 반복 (2페이지에도 칸 이름이 있게)
+   · tfoot = table-row-group    : 합계는 반복 없이 맨 끝에 한 번
+   ⚠ table-row-group 은 DOM 순서대로 놓인다. 새 서류를 만들 때도 반드시
+     tbody 다음에 tfoot 을 쓸 것 - 순서가 뒤바뀌면 합계가 표 위로 올라간다.
+   ⚠ 이 두 줄을 지우지 말 것. 지우면 창고가 2페이지를 놓치는 증상이 그대로 돌아온다.
+   ⚠ 이 주석에 꺾쇠 기호로 태그 이름을 쓰지 말 것 - grep 으로 태그를 셀 때 섞인다. */
+.inv-tbl thead{display:table-header-group;}
+.inv-tbl tfoot{display:table-row-group;}
 .inv-tbl th{border:1px solid #ccc;padding:6px 10px;font-size:10px;background:var(--header);color:#fff;text-align:center;text-transform:uppercase;letter-spacing:.5px;}
 .inv-tbl th.tl{text-align:left;}
 .inv-tbl td{border:1px solid #ddd;padding:5px 10px;font-size:12px;text-align:center;}
@@ -204,7 +217,7 @@ body.po-dragging{user-select:none;}
   </span>
   <select id="lang-sel" onchange="setLang(this.value)" style="font-size:11px;padding:3px 6px;border-radius:5px;border:none;background:#1d3f66;color:#fff;"><option value="ko">한국어</option><option value="en">English</option><option value="es">Español</option></select>
   <button id="wide-btn" class="btn btn-sm" onclick="toggleWide()" title="화면 넓게 / 좁게 — 기본은 넓게 (이 브라우저에만 저장돼)" style="padding:2px 8px;font-size:10px;background:#1d3f66;color:#cfe0f2;border-color:#2b5384;">↔ Wide</button>
-  <span id="app-ver" style="font-size:10px;color:#9fb8d4;">v1155</span>
+  <span id="app-ver" style="font-size:10px;color:#9fb8d4;">v1157</span>
 </div>
 <script>
 // ↔ 넓게 보기 — 브라우저마다 따로 저장 (v793)
@@ -3229,8 +3242,15 @@ function revMergeBoxes(rec, wh, src){
     const isRev = l => (src||[]).some(x=>String(x.style||'')===String(l.style||'')
                         && String(x.color||'')===String(l.color||'')
                         && String(x.size||'')===String(l.size||''));
+    /* REVMERGE-ALL-v1 (2026-09-23) — 「합칠 상대가 있어야 한다」는 조건을 없앴다.
+       왜: REV 후 `rec.lines` 에는 이미 합쳐진 총량이 들어 있어서(별도 REV 줄이 없다)
+           `isRev()` 가 REV 가 건드린 줄을 전부 REV 로 오인한다. 그래서 흔한 경우
+           (이미 있던 사이즈를 더 추가)에 `others` 가 0개가 되어 「REV 몫만」으로 떨어졌다.
+       미출고 판정은 위의 `pl` 검사가 이미 한다 — 나간 창고는 거기서 걸러진다.
+       ⚠ 이 줄을 되살리지 말 것. 되살리면 하윤이 신고한 증상이 그대로 돌아온다.
+       [stated] 하윤: "원래 오더를 작업하고 있는데 추가하는거니까 새로 총 합쳐진거를
+                      다시 뽑아 주는게 맞거든 box label은" */
     const others = legAll.filter(l=>!isRev(l) && want.has(String(l.pbox||'').trim()));
-    if(!others.length) return null;                   // 2
     const ordered = blOrderLike(legAll, rec, wh);
     const all = calcPartialBoxesFromLines(ordered, wh);
     const boxes = all.filter(b=>want.has(String(b.boxNum||'').trim()));
@@ -3247,11 +3267,16 @@ function revMergeBoxes(rec, wh, src){
 /* 초록 안내 — 이건 박스 전체라고 못 박아 준다 (v1130) */
 function blRevMergeNote(wh, n, mg){
   const pcs = (mg.src||[]).reduce((a,l)=>a+(Number(l.qty)||0), 0);
+  /* REVMERGE-ALL-v1 (2026-09-23) — 두 경우에 모두 참인 문구로 바꿨다.
+     예전 문구는 "goes into existing box ... Do not make a new box" 라고 단정했는데,
+     `others` 조건을 없앤 뒤로는 **REV 가 새로 만든 박스**(원래 오더에 없던 사이즈)도
+     이 목록에 들어온다. 그 박스는 실제로 새로 만들어야 하므로 옛 문구는 거짓이 된다.
+     ⚠ "새 박스를 만들지 마라" 같은 단정을 다시 넣지 말 것 — 박스마다 사정이 다르다. */
   return '<div style="background:#ecfdf5;border-bottom:1px solid #a7f3d0;padding:8px 14px;font-size:11.5px;'
-    + 'color:#065f46;font-weight:700;line-height:1.55;">\u21B3 <b>REV ' + esc(n) + '</b> goes into '
-    + '<b>existing box ' + esc(mg.nums.join(', ')) + '</b> of ' + esc(wh) + ' \u2014 this label is the '
-    + '<b>whole box</b> (' + pcs + ' pcs, of which REV ' + esc(n) + ' adds <b>' + mg.revPcs + '</b>).'
-    + ' Do <b>not</b> make a new box.</div>';
+    + 'color:#065f46;font-weight:700;line-height:1.55;">\u21B3 <b>REV ' + esc(n) + '</b> \u2014 this is the '
+    + '<b>whole ' + esc(wh) + ' shipment as it stands now</b>: <b>' + pcs + ' pcs</b> in box '
+    + esc(mg.nums.join(', ')) + ' (REV ' + esc(n) + ' added <b>' + mg.revPcs + ' pcs</b>).'
+    + '<br>\u26A0 Throw away any label for these boxes printed before this revision.</div>';
 }
 function revLabelClick(base, wh, n, mode){
   const rec = (typeof getSaved==='function' ? getSaved() : (savedCache||[])).find(s=>s.base===base);
