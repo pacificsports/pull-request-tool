@@ -217,7 +217,7 @@ body.po-dragging{user-select:none;}
   </span>
   <select id="lang-sel" onchange="setLang(this.value)" style="font-size:11px;padding:3px 6px;border-radius:5px;border:none;background:#1d3f66;color:#fff;"><option value="ko">한국어</option><option value="en">English</option><option value="es">Español</option></select>
   <button id="wide-btn" class="btn btn-sm" onclick="toggleWide()" title="화면 넓게 / 좁게 — 기본은 넓게 (이 브라우저에만 저장돼)" style="padding:2px 8px;font-size:10px;background:#1d3f66;color:#cfe0f2;border-color:#2b5384;">↔ Wide</button>
-  <span id="app-ver" style="font-size:10px;color:#9fb8d4;">v1158</span>
+  <span id="app-ver" style="font-size:10px;color:#9fb8d4;">v1159</span>
 </div>
 <script>
 // ↔ 넓게 보기 — 브라우저마다 따로 저장 (v793)
@@ -11614,7 +11614,8 @@ function upsAdBlank(){
            ref:'', memo:'', cust:'',
            to:{ name:'', comp:'', a1:'', a2:'', city:'', state:'', zip:'', phone:'' },
            boxes:[{ l:12, w:10, h:6, wt:5, pkg:'02' }],
-           test:false, rate:null, res:null, saveErr:'' };
+           test:false, rate:null, rateErr:'', rateBusy:false,
+           res:null, saveErr:'' };
 }
 
 /* 배송지 자동 채우기 — 거래처 카드에 이밌 있는 ship-to 첫 줄을 가지오기만 한다.
@@ -11677,7 +11678,8 @@ function upsAdSync(){
   });
   const t = document.getElementById('uad-test'); if(t) _upsAd.test = !!t.checked;
 }
-function upsAdOrigin(w){ upsAdSync(); _upsAd.origin = (w==='CA')?'CA':'SC'; _upsAd.rate=null; upsAdRender(); }
+function upsAdOrigin(w){ upsAdSync(); _upsAd.origin = (w==='CA')?'CA':'SC';
+  _upsAd.rate=null; _upsAd.rateErr=''; _upsAdRateSig=''; upsAdRender(); }
 function upsAdBill(m){ upsAdSync(); _upsAd.billMode = (m==='receiver')?'receiver':'shipper'; upsAdRender(); }
 
 /* 보내기 전 검사 — 뭐가 모자라는지 전부 목록으로 말해주고, 한 개만 말하지 않는다. */
@@ -11706,22 +11708,114 @@ function upsAdProblems(){
   return p;
 }
 
-async function upsAdRate(){
-  upsAdSync();                                   /* UPSAD-FIX1 - 사람이 방금 친 값을 반영 */
-  const p = upsAdProblems().filter(x=>!/^Reference/.test(x));   /* 견적은 Reference 없어도 된다 */
-  if(p.length){ showToast('⚠ ' + p[0]); upsAdRender(); return; }
-  const btn = document.getElementById('uad-rate'); if(btn){ btn.disabled=true; btn.textContent='⏳ UPS...'; }
+/* UPSAD-v2 (2026-09-23) - /rates 워커가 실제로 받는 모양.
+   주의: /label 과 모양이 다르다. origin/service/packages 가 아니라
+     scLbs 또는 caLbs (총무게) + scBoxes 또는 caBoxes (치수) 다.
+     처음에 /label 모양으로 보냈다가 400 "무게가 없습니다" 를 받았다.
+   대답은 네 서비스 값을 한꺼번에 준다: { services:[{code,total,list}] } */
+function upsAdRateBody(){
+  const t = upsAdShipTo(), bx = upsAdPkgs();
+  const wt = Math.max(1, Math.round(bx.reduce((a,b)=>a+(Number(b.wt)||0),0)));
+  const body = { shipTo:{ name:t.name, addr1:t.addr1, city:t.city, state:t.state, zip:t.zip } };
+  body[_upsAd.origin==='CA' ? 'caLbs' : 'scLbs'] = wt;
+  /* UPS 는 실무게와 부피무게 중 큰 쪽으로 청구한다 - 치수를 같이 보내야 맞는다.
+     주의: 치수가 하나라도 비면 아예 안 보낸다 (반쪽 치수는 견적을 틀리게 만든다). */
+  const dims = bx.map(b=>({ l:b.l, w:b.w, h:b.h, wt:Math.max(1, Math.round(Number(b.wt)||0)) }));
+  if(dims.length && dims.every(d=>d.l>0 && d.w>0 && d.h>0))
+    body[_upsAd.origin==='CA' ? 'caBoxes' : 'scBoxes'] = dims;
+  return { body:body, wt:wt, boxes:bx.length,
+           sig:[_upsAd.origin, wt, t.zip, t.state, t.city,
+                dims.map(d=>d.l+'x'+d.w+'x'+d.h+'@'+d.wt).join(',')].join('|') };
+}
+
+let _upsAdRateSig = '', _upsAdRateReq = 0;
+
+/* 요금 받기. opts.auto 면 사람이 안 눌러도 스스로 부른 것 - 조용하게 행동한다. */
+async function upsAdRate(opts){
+  opts = opts || {};
+  if(!_upsAd || _upsAd.res) return;              /* 라벨이 이미 나왔으면 볼 일 없다 */
+  if(!opts.auto) upsAdSync();
+  const t = upsAdShipTo(), B = upsAdRateBody();
+  const ready = B.wt > 0 && t.city && /^[A-Z]{2}$/.test(t.state) && /^\d{5}/.test(t.zip);
+  if(!ready){
+    _upsAd.rate = null; _upsAd.rateBusy = false;
+    _upsAd.rateErr = opts.auto ? '' : 'Ship-to city, state, ZIP and box weight first';
+    _upsAdRateSig = '';
+    upsAdEstPaint(); return;
+  }
+  /* 같은 값으로 이미 물어봤으면 다시 안 부른다 (실패한 경우도 - UPS 를 두드리지 않는다) */
+  if(opts.auto && B.sig === _upsAdRateSig && (_upsAd.rate || _upsAd.rateBusy || _upsAd.rateErr)) return;
+  _upsAdRateSig = B.sig;
+  const my = ++_upsAdRateReq;
+  _upsAd.rateBusy = true; _upsAd.rateErr = '';
+  upsAdEstPaint();
   try{
-    const r = await fetch(UPS_LABEL_URL.replace('/label','/rates'), {
-      method:'POST', headers:wkHdr(),
-      body: JSON.stringify({ origin:_upsAd.origin, service:_upsAd.service,
-        shipTo: upsAdShipTo(), packages: upsAdPkgs() })
-    });
+    const r = await fetch(UPS_LABEL_URL.replace('/label','/rates'),
+      { method:'POST', headers:wkHdr(), body:JSON.stringify(B.body) });
     const j = await r.json();
-    _upsAd.rate = j && j.ok ? j : null;
-    if(!j || !j.ok) showToast('❌ ' + ((j&&j.error) || 'Rate failed'));
-  }catch(e){ _upsAd.rate=null; showToast('❌ Rate failed — ' + String(e.message||e).slice(0,60)); }
-  upsAdRender();
+    if(my !== _upsAdRateReq) return;             /* 더 최근 요청이 있으면 이 대답은 버린다 */
+    if(j && j.error){ _upsAd.rate = null; _upsAd.rateErr = String(j.error).slice(0,90); }
+    else {
+      const sv = ((j && j.services) || []).filter(s=>UPSAD_SVC.some(x=>x[0]===s.code));
+      _upsAd.rate = sv.length ? { services:sv, wt:B.wt, boxes:B.boxes, origin:_upsAd.origin } : null;
+      _upsAd.rateErr = sv.length ? '' : 'UPS gave no price for this address';
+    }
+  }catch(e){
+    if(my !== _upsAdRateReq) return;
+    _upsAd.rate = null; _upsAd.rateErr = String(e.message||e).slice(0,90);
+  }
+  _upsAd.rateBusy = false;
+  upsAdEstPaint();
+}
+function upsAdRateRefresh(){ _upsAdRateSig = ''; upsAdRate({ auto:false }); }
+function upsAdRateFor(code){
+  const R = _upsAd && _upsAd.rate; if(!R) return null;
+  return (R.services||[]).find(s=>s.code===String(code)) || null;
+}
+function upsAdSvcPick(code){ upsAdSync(); _upsAd.service = String(code); upsAdRender(); }
+
+/* 값이 바뀌면 조금 기다린 뒤 저절로 다시 받는다 (치는 중에 매 글자마다 부르지 않게) */
+function upsAdRateSoon(){
+  clearTimeout(window._upsAdRateT);
+  window._upsAdRateT = setTimeout(()=>{ upsAdSync(); upsAdRate({ auto:true }); }, 700);
+}
+
+/* 요금만 다시 칠한다 - upsAdRender() 를 부르면 안 된다.
+   화면을 다시 그리면 사람이 치고 있던 칸이 새로 만들어져 글쇠 초점이 날아간다. */
+function upsAdEstPaint(){
+  const A = _upsAd; if(!A) return;
+  const money = n => '$' + Number(n||0).toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2});
+  const sel = document.getElementById('uad-svc');
+  if(sel) Array.prototype.forEach.call(sel.options, o=>{
+    const base = (UPSAD_SVC.find(x=>x[0]===o.value) || ['', o.value])[1];
+    const s = upsAdRateFor(o.value);
+    o.textContent = base + (s ? ('   ' + money(s.total)) : '');
+  });
+  const el = document.getElementById('uad-est'); if(!el) return;
+  const wrap = (bg,bd,fg,inner) => '<div style="margin:10px 0;padding:8px 12px;background:' + bg
+    + ';border:1px solid ' + bd + ';border-radius:6px;font-size:12px;color:' + fg + ';">' + inner + '</div>';
+  if(A.rateBusy){ el.innerHTML = wrap('#f8fafc','#e5e7eb','#6b7280','⏳ Asking UPS for prices...'); return; }
+  if(A.rateErr){
+    el.innerHTML = wrap('#fef2f2','#fecaca','#991b1b',
+      '<b>❌ UPS price not available</b> — ' + esc(A.rateErr)
+      + ' <button class="btn btn-sm" onclick="upsAdRateRefresh()" style="margin-left:8px;font-size:11px;font-weight:700;">↻ Try again</button>');
+    return;
+  }
+  if(!A.rate){ el.innerHTML = ''; return; }
+  const rows = (A.rate.services||[]).map(s=>{
+    const on = (s.code === A.service);
+    return '<div onclick="upsAdSvcPick(\'' + s.code + '\')" style="display:flex;align-items:center;gap:8px;cursor:pointer;'
+      + 'padding:4px 7px;border-radius:5px;' + (on ? 'background:#dbeafe;font-weight:800;' : '') + '">'
+      + '<span style="width:14px;">' + (on ? '✓' : '') + '</span>'
+      + '<span style="flex:1;">' + esc((UPSAD_SVC.find(x=>x[0]===s.code)||['',s.code])[1]) + '</span>'
+      + '<span style="font-variant-numeric:tabular-nums;">' + money(s.total) + '</span>'
+      + '<span style="opacity:.7;font-size:11px;font-weight:600;width:100px;text-align:right;">list ' + money(s.list!=null?s.list:s.total) + '</span>'
+      + '</div>';
+  }).join('');
+  el.innerHTML = wrap('#eff6ff','#bfdbfe','#1d4ed8',
+    '<div style="font-weight:800;margin-bottom:3px;">💵 UPS price — ' + A.rate.boxes + ' box(es), '
+    + A.rate.wt + ' lb, from ' + esc(A.rate.origin)
+    + ' <span style="font-weight:600;opacity:.75;">(click a line to choose)</span></div>' + rows);
 }
 
 function upsAdShipTo(){
@@ -11753,6 +11847,9 @@ async function upsAdCreate(){
     + '      ' + t.addr1 + (t.addr2?(' '+t.addr2):'') + '\n'
     + '      ' + t.city + ', ' + t.state + ' ' + t.zip + '\n'
     + 'Service: ' + svc + '\n'
+    + (function(){ const s = upsAdRateFor(_upsAd.service);      /* UPSAD-v2 - 값을 알면 적어 준다 */
+        return s ? ('Our cost: $' + Number(s.total).toFixed(2)
+                    + '  (UPS list $' + Number(s.list!=null?s.list:s.total).toFixed(2) + ')\n') : ''; })()
     + 'Billing: ' + bill + '\n'
     + 'Reference: ' + String(_upsAd.ref||'').trim().slice(0,35)
     + (_upsAd.test ? '' : '\n\n⚠ This is a real shipment and a real charge.');
@@ -11868,6 +11965,7 @@ async function upsAdVoid(){
 function upsAdOpen(){
   const ex = document.getElementById('modal-upsad'); if(ex) ex.remove();
   _upsAd = upsAdBlank();
+  _upsAdRateSig = ''; clearTimeout(window._upsAdRateT);   /* UPSAD-v2 */
   const d = document.createElement('div');
   d.id = 'modal-upsad';
   d.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,.55);z-index:130;display:flex;align-items:center;justify-content:center;';
@@ -11919,12 +12017,10 @@ function upsAdRender(){
     + '<b>Still needed (' + probs.length + ')</b><ul style="margin:4px 0 0 16px;padding:0;">'
     + probs.map(x=>'<li>' + esc(x) + '</li>').join('') + '</ul></div>' : '';
 
-  const rate = A.rate ? (function(){
-    const c = A.rate.cost || A.rate; const nn = (c.negotiated!=null?c.negotiated:c.published);
-    return '<div style="margin:8px 0;padding:7px 12px;background:#eff6ff;border:1px solid #bfdbfe;border-radius:6px;font-size:12px;color:#1d4ed8;font-weight:700;">'
-      + '💵 Estimate — our cost ' + (nn==null?'?':('$'+Number(nn).toFixed(2)))
-      + (c.published!=null ? (' <span style="font-weight:600;opacity:.8;">(UPS list $' + Number(c.published).toFixed(2) + ')</span>') : '') + '</div>';
-  })() : '';
+  /* UPSAD-v2 - 요금은 이 빈 칸에 upsAdEstPaint() 가 따로 칠한다.
+     여기서 값을 그리지 않는 이유: 요금이 올 때마다 화면을 다시 그리면
+     사람이 치던 칸의 글쇠 초점이 날아간다. */
+  const rate = '<div id="uad-est"></div>';
 
   const resHtml = R ? (function(){
     const warnSave = A.saveErr ? '<div style="margin-top:8px;padding:8px 12px;background:#fef2f2;border:1px solid #fecaca;border-radius:6px;font-size:11.5px;color:#991b1b;font-weight:700;">'
@@ -11996,10 +12092,20 @@ function upsAdRender(){
     + probHtml + rate
 
     + (R ? '' : '<div style="margin-top:14px;display:flex;gap:8px;align-items:center;">'
-      + '<button class="btn btn-sm" id="uad-rate" onclick="upsAdRate()" style="font-weight:700;">💵 Rate it</button>'
       + '<button class="btn btn-sm" id="uad-create" onclick="upsAdCreate()" style="background:#7c2d12;border-color:#7c2d12;color:#fff;font-weight:800;">🏷 Create label</button>'
       + '<span style="font-size:11px;color:#9ca3af;">⚠ This does not touch inventory.</span></div>')
     + resHtml;
+
+  /* UPSAD-v2 - 단추 없이 저절로 요금이 뜨게 한다.
+     주의: 여기서 upsAdRender() 를 다시 부르는 길이 생기면 안 된다 (초점이 날아간다) -
+       upsAdRate 는 끝에 upsAdEstPaint() 만 부른다. 같은 값이면 다시 안 부른다. */
+  if(!R){
+    const ids = ['uad-name','uad-a1','uad-a2','uad-city','uad-state','uad-zip'];
+    _upsAd.boxes.forEach((b,i)=>['l','w','h','wt'].forEach(k=>ids.push('uad-'+k+i)));
+    ids.forEach(id=>{ const e = document.getElementById(id); if(e) e.addEventListener('input', upsAdRateSoon); });
+    upsAdEstPaint();
+    setTimeout(()=>upsAdRate({ auto:true }), 0);
+  }
 }
 
 function lblPkgChange(i, v){ lblSyncBoxes(); if(_lblBoxes[i]) _lblBoxes[i].pkg = String(v||'02'); lblRender(); lblAutoEst(); }
