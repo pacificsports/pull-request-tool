@@ -217,7 +217,7 @@ body.po-dragging{user-select:none;}
   </span>
   <select id="lang-sel" onchange="setLang(this.value)" style="font-size:11px;padding:3px 6px;border-radius:5px;border:none;background:#1d3f66;color:#fff;"><option value="ko">한국어</option><option value="en">English</option><option value="es">Español</option></select>
   <button id="wide-btn" class="btn btn-sm" onclick="toggleWide()" title="화면 넓게 / 좁게 — 기본은 넓게 (이 브라우저에만 저장돼)" style="padding:2px 8px;font-size:10px;background:#1d3f66;color:#cfe0f2;border-color:#2b5384;">↔ Wide</button>
-  <span id="app-ver" style="font-size:10px;color:#9fb8d4;">v1167</span>
+  <span id="app-ver" style="font-size:10px;color:#9fb8d4;">v1168</span>
 </div>
 <script>
 // ↔ 넓게 보기 — 브라우저마다 따로 저장 (v793)
@@ -3641,18 +3641,138 @@ function docWindowHtml(wh){
     <style>${DOC_CSS}\nbody{background:#fff;padding:24px;}\n.no-print{display:none;}</style></head>
     <body>${buildDocHtml(wh)}</body></html>`;
 }
-/* ═══ DOCPAGE-v1 (2026-09-24) — 여러 장 서류의 장 나누기 ═══
+/* ═══ DOCPAGE-v2 (2026-09-24) — 여러 장 서류의 장 나누기 ═══
    [stated] 하윤: "위에 정보들이 모든 page에 나와야하는게 맞는거 아닌가" · "b안으로 가자"
-   한 장으로 끝나는 서류는 손대지 않는다 (글자 하나까지 예전과 같다).
-   ⚠ 이 함수를 지우면 2장 서류가 다시 머리 없이 나온다. */
-/* 한 장에 들어가는 높이·폭 (CSS px). 인쇄와 PDF 가 서로 다르다 — 부르는 쪽이 준다.
-   · 인쇄(iframe, @page letter margin 10mm): 폭 816-75.6=740, 높이 1056-75.6=980
-   · PDF(html2pdf, holder 720px, margin 10/12mm): 폭 720, 높이 ≈ 946 */
+   [stated] 하윤(v1 버그): "pdf는 잘나오는거 같은데 프린트 눌렀을때가 잘못나오네"
+   ⚠⚠ 높이는 **그릴 문서에서 재야 한다.** v1 은 앱 화면에서 재고 iframe 에서 그려서
+     한 줄이 넘치고 빈 장이 생겼다. 이 함수는 장을 그릴 곳에 끼워 넣고 잰다.
+   ⚠ 한 장으로 끝나는 서류는 손대지 않는다. */
+function docPaginateRoot(root, pageH){
+  try{
+    if(!root || !(pageH > 100)) return 0;
+    const D = root.ownerDocument || document;
+    /* ⚠⚠ 두 번 부르면 안 된다. 인쇄 길은 fonts.ready 와 setTimeout 두 군데서 부르므로
+       이미 나눠 놓은 뒤라면 아무것도 하지 않는다 (안 막으면 첫 장만 또 나눠서 망가진다). */
+    if(root.querySelector('.docpage')) return 0;
+    const src = root.querySelector('.inv-doc');
+    if(!src) return 0;
+    const tbls = src.querySelectorAll('table.inv-tbl');
+    if(tbls.length !== 1) return 0;                       /* 표가 없거나 여러 개면 손대지 않는다 */
+    const tbl = tbls[0];
+    if(!tbl.tHead || !tbl.tBodies || !tbl.tBodies[0]) return 0;
+    const kids = Array.prototype.slice.call(src.children);
+    const ti = kids.indexOf(tbl);
+    if(ti < 0) return 0;
+    const rows = Array.prototype.slice.call(tbl.tBodies[0].rows);
+    if(!rows.length) return 0;
+    const H = el => el.getBoundingClientRect().height;
+    if(!(H(src) > pageH)) return 1;                       /* 한 장이면 아무것도 안 한다 */
+
+    const headEls = kids.slice(0, ti);
+    const tailEls = kids.slice(ti + 1);
+    const theadSrc = tbl.tHead, tfootSrc = tbl.tFoot;
+    const kind = /INVOICE/i.test(src.textContent || '') ? 'INVOICE' : 'DOCUMENT';
+
+    const mkCont = () => {
+      const c = D.createElement('div');
+      c.style.cssText = 'margin-top:10px;text-align:right;font-size:11px;font-weight:700;color:#b45309;font-style:italic;';
+      c.textContent = 'Continued on next page →';
+      return c;
+    };
+    const pages = [];
+    const newPage = () => {
+      const pg = src.cloneNode(false);
+      pg.removeAttribute('style');
+      headEls.forEach(e=>pg.appendChild(e.cloneNode(true)));
+      /* Page k of n — 자리를 먼저 잡아 둔다 (높이를 같이 재야 한다) */
+      const metas = pg.querySelectorAll('.inv-meta-row');
+      let lbl = null;
+      if(metas.length){
+        const m = D.createElement('div');
+        m.className = 'inv-meta-row';
+        m.innerHTML = '<span>Page</span><span class="_pgn">—</span>';
+        metas[metas.length - 1].parentNode.appendChild(m);
+        lbl = m.querySelector('._pgn');
+      }
+      const t = tbl.cloneNode(false);
+      t.appendChild(theadSrc.cloneNode(true));
+      const tb = D.createElement('tbody');
+      t.appendChild(tb);
+      pg.appendChild(t);
+      const cont = mkCont();
+      pg.appendChild(cont);
+      src.parentNode.insertBefore(pg, src);               /* 원본 자리에 끼워 넣어야 잰다 */
+      pages.push({ pg:pg, tb:tb, t:t, cont:cont, lbl:lbl });
+      return pages[pages.length - 1];
+    };
+
+    src.style.display = 'none';                           /* 재는 동안 원본은 숨긴다 */
+    let P = newPage();
+    rows.forEach(r=>{
+      P.tb.appendChild(r.cloneNode(true));
+      if(H(P.pg) > pageH && P.tb.rows.length > 1){
+        P.tb.removeChild(P.tb.rows[P.tb.rows.length - 1]);
+        P = newPage();
+        P.tb.appendChild(r.cloneNode(true));
+      }
+    });
+
+    /* 마지막 장에 합계(tfoot)와 꼬리(Note)를 올린다. 안 들어가면 줄을 새 장으로 넘긴다. */
+    let guard = 0;
+    for(;;){
+      if(guard++ > 400) break;
+      const L = pages[pages.length - 1];
+      L.cont.style.display = 'none';
+      const added = [];
+      if(tfootSrc){
+        const tf = tfootSrc.cloneNode(true);
+        const lastRow = tf.rows[tf.rows.length - 1];
+        if(lastRow && lastRow.cells.length){
+          const s = D.createElement('span');
+          s.style.cssText = 'float:right;margin-right:8px;font-size:10px;letter-spacing:1px;opacity:.85;font-weight:700;';
+          s.textContent = 'END OF ' + kind;
+          lastRow.cells[0].appendChild(s);
+        }
+        L.t.appendChild(tf); added.push(tf);
+      }
+      tailEls.forEach(e=>{ const c = e.cloneNode(true); L.pg.appendChild(c); added.push(c); });
+      if(!(H(L.pg) > pageH) || L.tb.rows.length <= 1){
+        /* 들어갔다 - 마지막 장의 Continued 는 **지운다** (display:none 으로 두면 글자가 남는다) */
+        if(L.cont && L.cont.parentNode) L.cont.parentNode.removeChild(L.cont);
+        break;
+      }
+      added.forEach(x=>{ if(x.parentNode) x.parentNode.removeChild(x); });
+      L.cont.style.display = '';
+      const r = L.tb.rows[L.tb.rows.length - 1];
+      const clone = r.cloneNode(true);
+      L.tb.removeChild(r);
+      P = newPage();
+      P.tb.appendChild(clone);
+    }
+
+    /* 장 번호 채우고, 마지막 장 빼고 페이지 나눔을 건다 */
+    pages.forEach(function(p, i){
+      if(p.lbl) p.lbl.textContent = (i + 1) + ' of ' + pages.length;
+      const isLast = i === pages.length - 1;
+      /* html2pdf(PDF 길)는 CSS 만 보고 못 자를 때가 있어 class 도 같이 준다.
+         ⚠ 마지막 장에 docpage-brk 를 붙이면 뒤에 빈 장이 생긴다. */
+      p.pg.className = (p.pg.className ? p.pg.className + ' ' : '') + 'docpage' + (isLast ? '' : ' docpage-brk');
+      if(!isLast) p.pg.style.pageBreakAfter = 'always';
+    });
+    if(src.parentNode) src.parentNode.removeChild(src);   /* 원본 치우기 */
+    return pages.length;
+  }catch(e){
+    try{ const s = root && root.querySelector('.inv-doc'); if(s) s.style.display = ''; }catch(e2){}
+    return 0;                                             /* 무슨 일이 있어도 원본을 살려 둔다 */
+  }
+}
+
+/* 글자로 받아 글자로 돌려주는 껍데기 (PDF 길에서 쓴다).
+   ⚠ 이 길은 **부르는 쪽 문서**에서 재므로, 그리는 곳과 같은 문서여야 맞는다. */
 function docPagesHtml(docHtml, opt){
   opt = opt || {};
-  const W  = Number(opt.width)  || 740;
-  const PH = Number(opt.pageH)  || 980;
-  const CONT = 26;                       /* 「Continued on next page」 줄이 차지하는 높이 */
+  const W  = Number(opt.width) || 740;
+  const PH = Number(opt.pageH) || 956;
   let box = null;
   try{
     box = document.createElement('div');
@@ -3660,108 +3780,16 @@ function docPagesHtml(docHtml, opt){
     box.style.cssText = 'position:absolute;left:-99999px;top:0;width:' + W + 'px;background:#fff;';
     box.innerHTML = docHtml;
     document.body.appendChild(box);
-
-    const doc = box.querySelector('.inv-doc');
-    if(!doc) return docHtml;
-    doc.style.maxWidth = 'none'; doc.style.margin = '0'; doc.style.width = W + 'px';
-    const tbls = doc.querySelectorAll('table.inv-tbl');
-    if(tbls.length !== 1) return docHtml;           /* 표가 없거나 여러 개면 손대지 않는다 */
-    const tbl = tbls[0];
-    if(!tbl.tHead || !tbl.tBodies || !tbl.tBodies[0]) return docHtml;
-    const kids = Array.prototype.slice.call(doc.children);
-    const ti = kids.indexOf(tbl);
-    if(ti < 0) return docHtml;                      /* 표가 .inv-doc 의 직계 자식이 아니면 포기 */
-    const rows = Array.prototype.slice.call(tbl.tBodies[0].rows);
-    if(!rows.length) return docHtml;
-
-    const R = el => el.getBoundingClientRect();
-    const docTop = R(doc).top;
-    const headH  = R(tbl).top - docTop;             /* 머리 전체 높이 (여백 포함) */
-    const theadH = R(tbl.tHead).height;
-    const tfootH = tbl.tFoot ? R(tbl.tFoot).height : 0;
-    const tailEls = kids.slice(ti + 1);
-    const tailH = tailEls.length ? (R(doc).bottom - R(tbl).bottom) : 0;
-    const rowH = r => R(r).height;
-
-    if(!(headH > 0) || !(theadH > 0)) return docHtml;
-
-    /* ── 장 나누기 ──────────────────────────────────────────────
-       ⚠ 모든 장에서 Continued 자리를 미리 뺀다 — 여유를 두면 딱 맞아떨어질 때
-         빈 장이 하나 더 생기는 사고를 막는다 (실측으로 확인). */
-    const cap = PH - headH - theadH - CONT;
-    if(!(cap > 40)) return docHtml;                 /* 머리가 한 장을 다 먹으면 포기 */
-    const pages = [];
-    let cur = [], used = 0;
-    rows.forEach(r=>{
-      const h = rowH(r);
-      if(cur.length && used + h > cap){ pages.push(cur); cur = []; used = 0; }
-      cur.push(r); used += h;
+    const d = box.querySelector('.inv-doc');
+    if(d){ d.style.maxWidth = 'none'; d.style.margin = '0'; d.style.width = W + 'px'; }
+    const n = docPaginateRoot(box, PH);
+    if(n < 2) return docHtml;                             /* 한 장이면 원본 글자 그대로 */
+    Array.prototype.forEach.call(box.querySelectorAll('.inv-doc'), function(e){
+      e.style.maxWidth = ''; e.style.width = ''; e.style.margin = '';
     });
-    pages.push(cur);
-    /* 마지막 장에 합계(tfoot)와 꼬리(note)가 안 들어가면 줄을 뒤에서 빼서 한 장 더 만든다 */
-    const lastCap = PH - headH - theadH;
-    let lastUsed = pages[pages.length - 1].reduce((a,r)=>a + rowH(r), 0);
-    if(lastUsed + tfootH + tailH > lastCap){
-      const extra = [];
-      const lp = pages[pages.length - 1];
-      while(lp.length > 1 && lastUsed + tfootH + tailH > lastCap){
-        const r = lp.pop(); extra.unshift(r); lastUsed -= rowH(r);
-      }
-      if(extra.length) pages.push(extra);
-    }
-    if(pages.length < 2) return docHtml;            /* 한 장이면 예전과 글자 하나까지 같다 */
-
-    /* ── 다시 조립 ─────────────────────────────────────────────── */
-    const kind = /INVOICE/i.test(doc.textContent || '') ? 'INVOICE' : 'DOCUMENT';
-    const out = pages.map(function(rs, i){
-      const isLast = i === pages.length - 1;
-      const pg = doc.cloneNode(false);
-      pg.removeAttribute('style');
-      /* DOCPAGE-v1 - html2pdf(PDF 길)는 CSS 만 보고 못 자를 때가 있어서 표시용 class 를 같이 준다.
-         `pagebreak.after:'.docpage-brk'` 가 이 class 를 보고 자른다. 마지막 장에는 안 붙인다
-         (붙이면 뒤에 빈 장이 하나 생긴다). */
-      pg.className = (pg.className ? pg.className + ' ' : '') + 'docpage' + (isLast ? '' : ' docpage-brk');
-      if(!isLast) pg.style.pageBreakAfter = 'always';
-      kids.slice(0, ti).forEach(e=>pg.appendChild(e.cloneNode(true)));
-      /* Page k of n — 오른쪽 정보칸 맨 아래에 한 줄 */
-      const metas = pg.querySelectorAll('.inv-meta-row');
-      if(metas.length){
-        const m = document.createElement('div');
-        m.className = 'inv-meta-row';
-        m.innerHTML = '<span>Page</span><span>' + (i + 1) + ' of ' + pages.length + '</span>';
-        metas[metas.length - 1].parentNode.appendChild(m);
-      }
-      const t = tbl.cloneNode(false);
-      t.appendChild(tbl.tHead.cloneNode(true));
-      const tb = document.createElement('tbody');
-      rs.forEach(r=>tb.appendChild(r.cloneNode(true)));
-      t.appendChild(tb);
-      if(isLast && tbl.tFoot){
-        const tf = tbl.tFoot.cloneNode(true);
-        /* 마지막 띠에 END OF … — 마지막 장임이 분명해진다 */
-        const lastRow = tf.rows[tf.rows.length - 1];
-        if(lastRow && lastRow.cells.length){
-          const c = lastRow.cells[0];
-          const s = document.createElement('span');
-          s.style.cssText = 'float:right;margin-right:8px;font-size:10px;letter-spacing:1px;opacity:.85;font-weight:700;';
-          s.textContent = 'END OF ' + kind;
-          c.appendChild(s);
-        }
-        t.appendChild(tf);
-      }
-      pg.appendChild(t);
-      if(isLast) tailEls.forEach(e=>pg.appendChild(e.cloneNode(true)));
-      else {
-        const c = document.createElement('div');
-        c.style.cssText = 'margin-top:10px;text-align:right;font-size:11px;font-weight:700;color:#b45309;font-style:italic;';
-        c.textContent = 'Continued on next page →';
-        pg.appendChild(c);
-      }
-      return pg.outerHTML;
-    }).join('');
-    return out;
+    return box.innerHTML;
   }catch(e){
-    return docHtml;                                 /* 무슨 일이 있어도 예전 그대로 내보낸다 */
+    return docHtml;
   }finally{
     if(box && box.parentNode) box.parentNode.removeChild(box);
   }
@@ -3771,16 +3799,24 @@ function printDocHtml(docHtml, title){
   if(old) old.remove();
   const f = document.createElement('iframe');
   f.id = 'print-frame';
-  f.style.cssText = 'position:fixed;right:0;bottom:0;width:0;height:0;border:none;';
+  /* DOCPAGE-v2 - 0x0 이면 폭이 0 이라 장 높이를 못 잰다. 화면 밖에 letter 크기로 띄운다. */
+  f.style.cssText = 'position:fixed;left:-99999px;top:0;width:816px;height:1120px;border:none;opacity:0;';
   document.body.appendChild(f);
   const d = f.contentDocument;
-  /* DOCPAGE-v1 - 여러 장이면 장마다 머리를 붙인 HTML 로 바꿔치기 한다 (한 장이면 그대로) */
-  try{ docHtml = docPagesHtml(docHtml, { width:740, pageH:980 }); }catch(e){}
   d.open();
   const printStamp = `<div style="font-size:9px;color:#94a3b8;text-align:right;padding:6px 10px 2px;">Printed by ${esc(String((SESS&&SESS.email)||'').split('@')[0])} · ${new Date().toLocaleString('en-US',{month:'numeric',day:'numeric',year:'numeric',hour:'numeric',minute:'2-digit'})}</div>`;
   d.write(`<!DOCTYPE html><html><head><meta charset="utf-8"><title>${title}</title><link rel="stylesheet" href="https://cdn.jsdelivr.net/gh/orioncactus/pretendard@v1.3.9/dist/web/variable/pretendardvariable-dynamic-subset.min.css"><style>${DOC_CSS}\nbody{background:#fff;padding:0;margin:0;}\n.no-print{display:none;}*{-webkit-print-color-adjust:exact !important;print-color-adjust:exact !important;}\n@page{size:letter;margin:10mm;}\n.inv-doc{max-width:100%!important;margin:0!important;box-sizing:border-box;}\n.inv-doc *{box-sizing:border-box;}\n.inv-tbl{table-layout:auto;width:100%!important;}\n/* \u26a0 word-break:break-word \ub97c \ub123\uc73c\uba74 \ub0b1\ub9d0 \ud55c\uac00\uc6b4\ub370\uac00 \uc798\ub9b0\ub2e4 (v1098) \u2014 Charcoa/l, SIZ/E */\n.inv-tbl td,.inv-tbl th{overflow-wrap:break-word;}</style></head><body>${prLogoFix(docHtml)}${printStamp}</body></html>`);
   d.close();
-  setTimeout(()=>{ try{ f.contentWindow.focus(); f.contentWindow.print(); }catch(e){} }, 700);
+  /* DOCPAGE-v2 - **iframe 안에서** 장을 나눈다 (그릴 곳에서 재야 맞는다).
+     956 = letter@10mm 의 980 에서 한 줄 정도 여유를 뺀 값 - 프린터 여백이 더 먹어도 안 넘친다.
+     ⚠ 글꼴이 늦게 오면 높이가 달라지므로 fonts.ready 를 기다렸다가 다시 잰다. */
+  const _pag = ()=>{ try{ docPaginateRoot(d.body, 956); }catch(e){} };
+  try{
+    if(f.contentDocument && f.contentDocument.fonts && f.contentDocument.fonts.ready){
+      f.contentDocument.fonts.ready.then(_pag).catch(_pag);
+    } else _pag();
+  }catch(e){ _pag(); }
+  setTimeout(()=>{ try{ _pag(); f.contentWindow.focus(); f.contentWindow.print(); }catch(e){} }, 900);
 }
 function printDoc(wh){
   printDocHtml(buildDocHtml(wh), docNumber(wh));
