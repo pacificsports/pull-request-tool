@@ -304,7 +304,7 @@ body.po-dragging{user-select:none;}
   </span>
   <select id="lang-sel" onchange="setLang(this.value)" style="font-size:11px;padding:3px 6px;border-radius:5px;border:none;background:#1d3f66;color:#fff;"><option value="ko">한국어</option><option value="en">English</option><option value="es">Español</option></select>
   <button id="wide-btn" class="btn btn-sm" onclick="toggleWide()" title="화면 넓게 / 좁게 — 기본은 넓게 (이 브라우저에만 저장돼)" style="padding:2px 8px;font-size:10px;background:#1d3f66;color:#cfe0f2;border-color:#2b5384;">↔ Wide</button>
-  <span id="app-ver" style="font-size:10px;color:#9fb8d4;">v1185</span>
+  <span id="app-ver" style="font-size:10px;color:#9fb8d4;">v1186</span>
 </div>
 <script>
 // ↔ 넓게 보기 — 브라우저마다 따로 저장 (v793)
@@ -5740,7 +5740,7 @@ async function sendReturnEmail(rec, ret){
       to: String(ret.custEmail).split(',').map(e=>e.trim()).filter(e=>e.includes('@')),
       subject: 'Return Authorization ' + ret.ra + ' — PO ' + (meta.po||'') + ' (Pacific Sports)',
       html: bodyHtml,
-      reply_to: MAIL_REPLY_TO,
+      cc: STAFF_EMAILS, reply_to: MAIL_REPLY_TO,
       attachments: raAtt
     })
   });
@@ -5926,7 +5926,7 @@ async function sendReturnReceivedEmail(rec, ret, email){
     <table style="border-collapse:collapse;font-size:13px;margin-top:6px;"><thead><tr style="background:#f3f4f6;"><th style="border:1px solid #ddd;padding:5px 8px;text-align:left;">Style</th><th style="border:1px solid #ddd;padding:5px 8px;text-align:left;">Color</th><th style="border:1px solid #ddd;padding:5px 8px;">Size</th><th style="border:1px solid #ddd;padding:5px 8px;">Qty</th></tr></thead><tbody>${lineRows}</tbody></table>
     <p style="margin-top:16px;">Thank you.</p></div>`;
   const toArr=String(email).split(',').map(e=>e.trim()).filter(e=>e.includes('@'));
-  const r=await fetch('https://po-confirm-email.hjbae.workers.dev/send-pl', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({ to:toArr, subject:'Return Received — RA '+ret.ra+' · '+((meta.cust)||'')+' PO '+((meta.po)||''), html, reply_to: MAIL_REPLY_TO })});
+  const r=await fetch('https://po-confirm-email.hjbae.workers.dev/send-pl', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({ to:toArr, subject:'Return Received — RA '+ret.ra+' · '+((meta.cust)||'')+' PO '+((meta.po)||''), html, cc: STAFF_EMAILS, reply_to: MAIL_REPLY_TO })});
   if(!r.ok){ const je=await r.json().catch(()=>({})); throw new Error(je.error||je.message||('HTTP '+r.status)); }
 }
 function printReturnInspection(base, ra){
@@ -6235,7 +6235,7 @@ async function creditMemoEmail(base, ra){
     const blob=await makePdfBlob(buildCreditMemoHtml(rec, ret), []);
     const b64=await blobToB64(blob);
     const bodyHtml=buildCreditMemoEmailBody(rec, ret, cm);
-    const r=await fetch('https://po-confirm-email.hjbae.workers.dev/send-pl', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({ to:toArr, subject:'Credit Memo '+cm+' — '+((rec.meta&&rec.meta.cust)||'')+' PO '+((rec.meta&&rec.meta.po)||''), html:bodyHtml, reply_to: MAIL_REPLY_TO, attachments:[{ filename: cm+'.pdf', content: b64 }] })});
+    const r=await fetch('https://po-confirm-email.hjbae.workers.dev/send-pl', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({ to:toArr, subject:'Credit Memo '+cm+' — '+((rec.meta&&rec.meta.cust)||'')+' PO '+((rec.meta&&rec.meta.po)||''), html:bodyHtml, cc: STAFF_EMAILS, reply_to: MAIL_REPLY_TO, attachments:[{ filename: cm+'.pdf', content: b64 }] })});
     if(!r.ok){ const je=await r.json().catch(()=>({})); throw new Error(je.error||je.message||('HTTP '+r.status)); }
     ret.custEmail=email;
     if(ret.received) ret.received.cmEmailedAt=new Date().toISOString();
@@ -8978,6 +8978,11 @@ async function completePL(){
    확인: 외부에서 sales@ 로 보내면 들어온다 (2026-09-24, 하윤이 개인 주소로 실측).
    ⚠⚠ 발신 주소 자체는 여기가 아니다 - 워커 po-confirm-email 의 변수 FROM_EMAIL 이 noreply 다. */
 const MAIL_REPLY_TO = 'sales@peacepacificsports.com';
+/* STAFFCC-v1 (2026-09-24) - 이 목록이 거래처 메일의 CC 로 들어간다.
+   [stated] 하윤: "거래처한테 이멜 나갈때 우리 직원들도 다 같이 받는거자.
+                reply 나 reply all 할때 다 같이 다시 받아서 누구나 답변 주서지게"
+   ⚠ BCC 로 늬면 안 된다 - 보이지 안아서 reply all 에 들어가지 않는다.
+   ⚠ 이것만 고치면 된다 - 사람이 오더마다 To 에 주소를 붙이지 않아도 된다. */
 const STAFF_EMAILS = [
   'erika@peacepacificsports.com',
   'ginabae@peacepacificsports.com',
@@ -9091,8 +9096,7 @@ async function sendBatchPLEmail(recs, wh, toEmail){
       to: String(toEmail).split(',').map(e=>e.trim()).filter(e=>e.includes('@')),
       subject: 'Order Shipped — ' + recs.length + ' POs (Pacific Sports)',
       html: html,
-      reply_to: MAIL_REPLY_TO,
-      bcc: STAFF_EMAILS,   // 우리 직원 전원 자동 사본(BCC) — 거래처엔 안 보임
+      cc: STAFF_EMAILS, reply_to: MAIL_REPLY_TO,
       attachments: atts
     })
   });
@@ -9707,8 +9711,7 @@ async function sendPLEmailFor(rec, wh, toEmail, extra){
       to: String(toEmail).split(',').map(e=>e.trim()).filter(e=>e.includes('@')),
       subject: 'Order Shipped — PO ' + (meta.po||'') + ' (Pacific Sports)',
       html: bodyHtml,
-      reply_to: MAIL_REPLY_TO,
-      bcc: STAFF_EMAILS,   // 우리 직원 전원 자동 사본(BCC) — 거래처엔 안 보임
+      cc: STAFF_EMAILS, reply_to: MAIL_REPLY_TO,
       attachments: [{ filename: num + '-PL.pdf', content: b64 }].concat(_xAtt).concat(mergeFailedAsEmailAtts())
     })
   });
@@ -13041,7 +13044,7 @@ function upsAdMailSubj(rec){
      그래서 직원 사본은 bcc 로는 절대 안 간다 - 아래처럼 **따로 한 통 더** 보낸다. */
 async function upsAdSendOne(to, subject, html, pdfB64, fileName){
   const body = { to: to, subject: subject, html: html,
-                 reply_to: MAIL_REPLY_TO };
+                 cc: STAFF_EMAILS, reply_to: MAIL_REPLY_TO };
   if(pdfB64) body.attachments = [{ filename: fileName, content: pdfB64 }];
   const r = await fetch('https://po-confirm-email.hjbae.workers.dev/send-pl', {
     method:'POST', headers:{ 'Content-Type':'application/json' }, body: JSON.stringify(body) });
@@ -14304,7 +14307,7 @@ async function lblApprSend(){
       </p>
       <p style="font-size:12px;color:#64748b;margin-top:14px;">Or open this link to respond: <a href="${link}">${link}</a></p>
       <p style="margin-top:16px;">Thank you,<br><b>Pacific Sports</b></p></div>`;
-    const send=await fetch('https://po-confirm-email.hjbae.workers.dev/send-pl', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({ to: email.split(',').map(e=>e.trim()).filter(e=>e.includes('@')), subject:'Shipping approval needed — PO '+(rec.meta.po||'')+' ('+_apprMoney(amt)+')', html, reply_to: MAIL_REPLY_TO })});
+    const send=await fetch('https://po-confirm-email.hjbae.workers.dev/send-pl', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({ to: email.split(',').map(e=>e.trim()).filter(e=>e.includes('@')), subject:'Shipping approval needed — PO '+(rec.meta.po||'')+' ('+_apprMoney(amt)+')', html, cc: STAFF_EMAILS, reply_to: MAIL_REPLY_TO })});
     if(!send.ok){ const e=await send.json().catch(()=>({})); throw new Error(e.error||e.message||('email HTTP '+send.status)); }
     // 3) 주문에 대기 상태 저장
     rec.meta=rec.meta||{}; rec.meta._shipApproval={ token, amount:amt, email, status:'pending', wh:window._lblOrigin||'', at:new Date().toISOString(), by:(SESS&&SESS.email)||'' };
@@ -14537,7 +14540,7 @@ async function sendInvoiceEmail(){
       + psmP('Questions about this invoice? Just reply to this email.'));
     const r = await fetch('https://po-confirm-email.hjbae.workers.dev/send-pl', {
       method:'POST', headers:{'Content-Type':'application/json'},
-      body: JSON.stringify({ to: toList, subject: 'Invoice ' + invNo + ' — PO ' + (meta.po||'') + ' (Pacific Sports)', html: bodyHtml, reply_to: MAIL_REPLY_TO,
+      body: JSON.stringify({ to: toList, subject: 'Invoice ' + invNo + ' — PO ' + (meta.po||'') + ' (Pacific Sports)', html: bodyHtml, cc: STAFF_EMAILS, reply_to: MAIL_REPLY_TO,
         attachments: [{ filename: invNo + '-INVOICE.pdf', content: b64 }] })
     });
     const j = await r.json().catch(()=>({}));
@@ -29655,7 +29658,7 @@ async function bxRptEmail(){
         to: list,
         subject: 'Stock Availability'+(cust?' — '+cust:'')+' (Pacific Sports)',
         html: bxRptDocHtml(),
-        reply_to: MAIL_REPLY_TO
+        cc: STAFF_EMAILS, reply_to: MAIL_REPLY_TO
       })
     });
     if(!r.ok){ const e = await r.json().catch(()=>({})); throw new Error(e.error || e.message || ('HTTP '+r.status)); }
@@ -34599,7 +34602,7 @@ async function trIwSend(){
     const r = await fetch('https://po-confirm-email.hjbae.workers.dev/send-pl', {method:'POST',
       headers:{'Content-Type':'application/json'},
       body: JSON.stringify({ to, subject:subj, html:trIwHtml(),
-        reply_to: MAIL_REPLY_TO,
+        cc: STAFF_EMAILS, reply_to: MAIL_REPLY_TO,
         bcc: cc.length ? cc : undefined })});
     const j = await r.json().catch(()=>({}));
     if(!r.ok || j.ok===false) throw new Error(j.error||('HTTP '+r.status));
@@ -40532,7 +40535,7 @@ async function icSend(){
   if(!confirm('✉️ Send this "Ready to Ship" email now?\n\nTo: '+to.join(', ')+'\nSubject: '+subj)) return;
   const btn=document.getElementById('ic-send-btn'); if(btn){ btn.disabled=true; btn.textContent='Sending…'; }
   try{
-    const r=await fetch('https://po-confirm-email.hjbae.workers.dev/send-pl', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({ to, subject:subj, html:icEmailHtml(), reply_to: MAIL_REPLY_TO, bcc:(typeof STAFF_EMAILS!=='undefined'?STAFF_EMAILS:undefined) })});
+    const r=await fetch('https://po-confirm-email.hjbae.workers.dev/send-pl', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({ to, subject:subj, html:icEmailHtml(), cc: STAFF_EMAILS, reply_to: MAIL_REPLY_TO, bcc:(typeof STAFF_EMAILS!=='undefined'?STAFF_EMAILS:undefined) })});
     const j=await r.json().catch(()=>({}));
     if(!r.ok || j.ok===false) throw new Error(j.error||('HTTP '+r.status));
   }catch(e){ showToast('❌ Send failed: '+(e.message||e)); if(btn){ btn.disabled=false; btn.textContent='✉️ Send email'; } return; }
