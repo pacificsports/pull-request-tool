@@ -217,7 +217,7 @@ body.po-dragging{user-select:none;}
   </span>
   <select id="lang-sel" onchange="setLang(this.value)" style="font-size:11px;padding:3px 6px;border-radius:5px;border:none;background:#1d3f66;color:#fff;"><option value="ko">한국어</option><option value="en">English</option><option value="es">Español</option></select>
   <button id="wide-btn" class="btn btn-sm" onclick="toggleWide()" title="화면 넓게 / 좁게 — 기본은 넓게 (이 브라우저에만 저장돼)" style="padding:2px 8px;font-size:10px;background:#1d3f66;color:#cfe0f2;border-color:#2b5384;">↔ Wide</button>
-  <span id="app-ver" style="font-size:10px;color:#9fb8d4;">v1168</span>
+  <span id="app-ver" style="font-size:10px;color:#9fb8d4;">v1169</span>
 </div>
 <script>
 // ↔ 넓게 보기 — 브라우저마다 따로 저장 (v793)
@@ -8584,7 +8584,7 @@ async function _saveInvStageInner(rec){
   plFieldsToDraft();
   rec.inv = rec.inv || {};
   const iv = invDrafts[plWh] || {};
-  if(!iv.invNo) iv.invNo = nextInvNo();
+  if(!iv.invNo) iv.invNo = await nextInvNo();   /* INVSEQ-v1 */
   /* 결제 기록을 지키면서 저장한다 (v836).
      서버 것을 먼저 읽는 이유: 이 화면을 열어둔 사이 다른 직원이 카드를 긁었으면
      내 화면의 rec 에는 그 기록이 없다. 그걸 그대로 덮으면 결제가 없던 일이 되고,
@@ -9538,7 +9538,7 @@ async function markInvPrinted(){
   rec.inv = rec.inv || {};
   const ivd = invDrafts[plWh] || {};
   const ex = rec.inv[plWh] || {};
-  const invNo = ex.invNo || ivd.invNo || nextInvNo();
+  const invNo = ex.invNo || ivd.invNo || await nextInvNo();    /* INVSEQ-v1 */
   if(invDrafts[plWh]) invDrafts[plWh].invNo = invNo;
   rec.inv[plWh] = {
     ...ex,
@@ -9656,7 +9656,7 @@ async function markPaidWebsite(){
   if(!confirm('🌐 Mark this order as already paid on the website?\n\n$' + amt.toFixed(2) + ' — no card will be charged; it is only recorded as PAID.')) return;
   const rec = savedCache.find(s=>s.base===plBase); if(!rec) return;
   rec.inv = rec.inv || {}; const cur = rec.inv[plWh] || {};
-  rec.inv[plWh] = { ...cur, termType:'cc', printed: true, invNo: cur.invNo || nextInvNo(), savedAt: cur.savedAt || new Date().toISOString(),
+  rec.inv[plWh] = { ...cur, termType:'cc', printed: true, invNo: cur.invNo || await nextInvNo(), savedAt: cur.savedAt || new Date().toISOString(),
     paid: { amt: amt, method:'website', acct:'Website', transId:'', authCode:'', at: new Date().toISOString(), by: (SESS&&SESS.email)||'' } };
   if(invDrafts[plWh]){ invDrafts[plWh].termType = 'cc'; invDrafts[plWh].invNo = rec.inv[plWh].invNo; }
   try{ await sbFetch('/rest/v1/pr_orders?base=eq.'+encodeURIComponent(plBase), {method:'PATCH', headers:{Prefer:'return=minimal'}, body:JSON.stringify({inv:rec.inv, updated_at:new Date().toISOString()})}); }catch(e){}
@@ -9773,7 +9773,7 @@ async function anetResponseHandler(response){
       }
     }else{
       // 카드 승인 = 인보이스 자동 발행 처리 (번호 부여 + 초록)
-      rec.inv[p.wh] = { ...cur, termType:'cc', printed: true, invNo: cur.invNo || nextInvNo(), savedAt: cur.savedAt || new Date().toISOString(), paid: payRec };
+      rec.inv[p.wh] = { ...cur, termType:'cc', printed: true, invNo: cur.invNo || await nextInvNo(), savedAt: cur.savedAt || new Date().toISOString(), paid: payRec };
     }
     if(invDrafts[p.wh]){ invDrafts[p.wh].termType = 'cc'; invDrafts[p.wh].invNo = rec.inv[p.wh].invNo; }
     /* 카드는 이미 승인됐다. 여기서 저장이 실패하면 돈은 나갔는데 우리 기록만 없는 상태가 된다 —
@@ -9785,7 +9785,7 @@ async function anetResponseHandler(response){
     for(const x of extras){
       const r2 = savedCache.find(s=>s.base===x.base); if(!r2) continue;
       r2.inv = r2.inv || {}; const c2 = r2.inv[x.wh] || {};
-      r2.inv[x.wh] = { ...c2, termType:'cc', printed: true, invNo: c2.invNo || nextInvNo(), savedAt: c2.savedAt || new Date().toISOString(), paid: { amt: x.amt, transId: j.transId||'', authCode: j.authCode||'', acct: j.acct||'', at: new Date().toISOString(), by: (SESS&&SESS.email)||'', note: 'Combined charge w/ ' + p.base } };
+      r2.inv[x.wh] = { ...c2, termType:'cc', printed: true, invNo: c2.invNo || await nextInvNo(), savedAt: c2.savedAt || new Date().toISOString(), paid: { amt: x.amt, transId: j.transId||'', authCode: j.authCode||'', acct: j.acct||'', at: new Date().toISOString(), by: (SESS&&SESS.email)||'', note: 'Combined charge w/ ' + p.base } };
       const okX = await ccSavePaid(x.base, 'inv', r2.inv);
       logHist(x.base, 'Credit card charged $' + x.amt.toFixed(2) + ' — ' + x.wh + ' (combined payment with ' + p.base + ' · Trans ' + (j.transId||'') + ')');
       if(!okX) ccSaveFailed(x.base, x.wh, x.amt, j);
@@ -13665,14 +13665,81 @@ async function shipApprRespond(token, decision, rowMaybe){
 }
 
 let plEditOpen = true, invEditOpen = true;
-function nextInvNo(){
-  const yy = String(new Date().getFullYear()).slice(-2);
-  let mx = 5000; // 매년 5001부터 새로 시작
+/* ═══ INVSEQ-v1 (2026-09-24) — 인보이스 번호: DB 카운터 + MAS 와 같은 7자 ═══
+   [stated] 하윤: "우선 그거는 막자" — 두 사람이 동시에 내면 같은 번호가 나오던 구멍
+   [stated] 하윤: "우리 psflowx쪽에도 -를 빼도 되는거 아니야?" — 대시를 뺀다
+   예전 방식(화면 스캔 최대+1)은 ① 동시 발행 중복 ② 목록이 덜 불러와지면 번호 재사용 위험.
+   MAS 200 에 이 번호를 손으로 넣기로 했으니(번호가 유일해야 한다) 먼저 막는다.
+   ⚠ nextInvNo 는 async 다. 부르는 곳에서 await 할 것.
+   ⚠ 카운터가 낮아도 화면 스캔 최대와 같이 비교해 **이미 쓴 번호는 절대 다시 안 낸다.** */
+const INVSEQ_FLOOR = 5000;                      /* 매년 5001 부터 */
+function invSeqYY(){ return String(new Date().getFullYear()).slice(-2); }
+function invSeqKey(){ return 'inv_seq_' + invSeqYY(); }
+/* 인보이스 번호에서 순번을 읽는다. 세 가지 모양을 다 읽는다:
+     `26-5556`(옛, 대시) · `0265556`(새, 9999 이하) · `2610001`(새, 만 넘음)
+   ⚠⚠ 올해 두 자리를 정규식에 박아서 본다 — 안 그러면 `0265556` 을 yy=02/순번 65556 으로도
+      읽어서 순번이 뒤죽박죽이 된다. */
+function invSeqOf(invNo, yy){
+  const s = String(invNo || '').trim();
+  if(!s) return 0;
+  let m = new RegExp('^' + yy + '-(\\d+)$').exec(s);          if(m) return parseInt(m[1], 10);
+  m = new RegExp('^0' + yy + '(\\d{4})$').exec(s);            if(m) return parseInt(m[1], 10);
+  m = new RegExp('^' + yy + '(\\d{5})$').exec(s);             if(m) return parseInt(m[1], 10);
+  return 0;
+}
+/* 순번 -> 7자 번호. MAS 인보이스 번호 칸이 7자라서 이 모양으로 맞춘다. */
+function invNoFmt(seq, yy){
+  const n = parseInt(seq, 10) || 0;
+  yy = yy || invSeqYY();
+  return n <= 9999 ? ('0' + yy + String(n).padStart(4,'0')) : (yy + String(n).padStart(5,'0'));
+}
+/* 옛 대시 번호를 MAS 칸 모양으로 (역사 데이터를 MAS 에 넣을 때 쓴다) */
+function masInvNo(invNo){
+  const s = String(invNo || '').trim();
+  const m = /^(\d{2})-(\d+)$/.exec(s);
+  if(!m) return s;                               /* 이미 7자면 그대로 */
+  return invNoFmt(parseInt(m[2], 10), m[1]);
+}
+function invScanMax(){
+  const yy = invSeqYY();
+  let mx = INVSEQ_FLOOR;
   (savedCache||[]).forEach(r=>Object.values(r.inv||{}).forEach(v=>{
-    const m = /^(\d{2})-(\d+)$/.exec(((v&&v.invNo)||'').trim());
-    if(m && m[1] === yy) mx = Math.max(mx, parseInt(m[2],10));
+    const n = invSeqOf((v&&v.invNo)||'', yy);
+    if(n > mx) mx = n;
   }));
-  return yy + '-' + (mx + 1);
+  return mx;
+}
+async function nextInvNo(){
+  const yy = invSeqYY(), key = invSeqKey(), scan = invScanMax();
+  for(let t = 0; t < 6; t++){
+    let cur = null;
+    try{
+      const r = await sbFetch('/rest/v1/pr_config?select=v&k=eq.' + encodeURIComponent(key));
+      if(!r.ok) break;
+      const j = await r.json();
+      if(Array.isArray(j) && j.length) cur = Number(j[0].v);
+    }catch(e){ break; }
+    const want = Math.max(Number(cur) || 0, scan, INVSEQ_FLOOR) + 1;
+    try{
+      if(cur === null){
+        /* 열쇠가 없다 — 만든다. 남이 먼저 만들었으면 409 가 오니 다시 돈다. */
+        const w = await sbFetch('/rest/v1/pr_config', { method:'POST',
+          headers:{ Prefer:'return=representation' },
+          body: JSON.stringify([{ k:key, v:want, updated_at:new Date().toISOString() }]) });
+        if(w.ok){ const b = await w.json(); if(Array.isArray(b) && b.length) return invNoFmt(want, yy); }
+      } else {
+        /* 조건부 갱신 — v 가 아직 cur 일 때만 바뀐다. 0줄이면 남이 먼저 가져갔다. */
+        const w = await sbFetch('/rest/v1/pr_config?k=eq.' + encodeURIComponent(key) + '&v=eq.' + cur,
+          { method:'PATCH', headers:{ Prefer:'return=representation' },
+            body: JSON.stringify({ v:want, updated_at:new Date().toISOString() }) });
+        if(w.ok){ const b = await w.json(); if(Array.isArray(b) && b.length) return invNoFmt(want, yy); }
+      }
+    }catch(e){}
+    await new Promise(r=>setTimeout(r, 60 + Math.floor(Math.random()*140)));
+  }
+  /* 최후 수단 — DB 를 못 쓰는 상황. 예전 방식대로 내보내되 반드시 알린다. */
+  try{ showToast('\u26a0 Invoice number came from this screen, not the shared counter \u2014 check it is not a duplicate'); }catch(e){}
+  return invNoFmt(scan + 1, yy);
 }
 function termInfo(d){
   const ty = (d && d.termType) || '';
@@ -13701,7 +13768,7 @@ async function sendInvoiceEmail(){
   try{
     // 발송 = 발행: 번호 부여 + 저장 + 초록
     rec.inv = rec.inv || {}; const cur = rec.inv[plWh] || {};
-    const invNo = cur.invNo || (invDrafts[plWh]&&invDrafts[plWh].invNo) || nextInvNo();
+    const invNo = cur.invNo || (invDrafts[plWh]&&invDrafts[plWh].invNo) || await nextInvNo();
     rec.inv[plWh] = { ...cur, savedAt: cur.savedAt || new Date().toISOString(), printed: true, invNo: invNo,
       termType: d.termType || cur.termType || '', termDays: d.termDays || cur.termDays || 0, freight: Number(d.freight)||0, lines: d.lines || cur.lines || [] };
     if(invDrafts[plWh]) invDrafts[plWh].invNo = invNo;
@@ -13844,7 +13911,7 @@ async function webIssueInvoice(rec, wh, pv){
   rec.inv = rec.inv || {};
   const cur = rec.inv[wh] || {};
   const had = Object.keys(cur).length > 0;
-  const invNo = cur.invNo || nextInvNo();
+  const invNo = cur.invNo || await nextInvNo();
   const l4 = String((pv.wo && pv.wo.card_last4) || '').replace(/[^0-9]/g,'').slice(-4);
   rec.inv[wh] = { ...cur, invNo: invNo, printed: true, termType: 'cc', termDays: 0,
     savedAt: cur.savedAt || new Date().toISOString(),
@@ -14188,7 +14255,13 @@ function renderPL(){
         <div style="display:flex;align-items:center;gap:10px;margin-top:8px;">
           <button class="btn btn-sm" onclick="invLineAdd()">＋</button>
           <label style="margin-left:auto;font-size:11px;font-weight:700;color:#065f46;">Invoice #</label>
-          <input class="fi" value="${esc((invDrafts[plWh]||{}).invNo||'')}" onchange="invNoUpd(this.value)" placeholder="auto-numbered" style="width:110px;text-align:center;font-family:Consolas,monospace;font-weight:700;">
+          <input class="fi" value="${esc((invDrafts[plWh]||{}).invNo||'')}" onchange="invNoUpd(this.value)" placeholder="auto-numbered" style="width:130px;text-align:center;font-family:Consolas,monospace;font-weight:700;">
+          ${(()=>{ /* INVSEQ-v1 - 새 번호는 이미 7자라 MAS 에 그대로 치면 된다.
+                      올해 이미 나간 옛 대시 번호일 때만 MAS 칸 모양을 같이 보여준다. */
+            const _iv = (invDrafts[plWh]||{}).invNo || '';
+            const _mn = masInvNo(_iv);
+            return (_mn && _mn !== _iv) ? `<span title="Type this into MAS 200 Invoice Data Entry" style="font-size:11px;font-weight:700;color:#6b7280;white-space:nowrap;">MAS <span style="font-family:Consolas,monospace;font-size:13px;color:#0f2a4a;">${esc(_mn)}</span></span>` : '';
+          })()}
           <label style="font-size:11px;font-weight:700;color:#065f46;">${t('shipping')} $</label>
           <input class="fi num" value="${(invDrafts[plWh]||{}).freight||''}" onchange="invFreightUpd(this.value)" placeholder="0.00" style="width:100px;text-align:center;font-family:Consolas,monospace;">
         </div>
@@ -39821,7 +39894,7 @@ async function printBatchInvoices(pairsIn){
     rec.inv = rec.inv || {};
     const iv = rec.inv[wh] || {};
     const pld = (rec.pl && rec.pl[wh]) || {};
-    if(!iv.invNo) iv.invNo = nextInvNo();
+    if(!iv.invNo) iv.invNo = await nextInvNo();   /* INVSEQ-v1 */
     let lines = (Array.isArray(iv.lines) && iv.lines.length) ? iv.lines
               : ((Array.isArray(pld.lines) && pld.lines.length) ? JSON.parse(JSON.stringify(pld.lines)) : []);
     /* 🔒 locker stock 에 PL 이 없으면 오더 줄에서 그 창고 몫만 가져온다 (LOCKERPRINT-v1) */
