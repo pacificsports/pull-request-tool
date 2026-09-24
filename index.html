@@ -269,6 +269,22 @@ body.po-dragging{user-select:none;}
 .inv-doc.invx .ix-small{font-size:9.5px;line-height:1.6;color:#4a5562;white-space:pre-line;}
 .inv-doc.invx .ix-small b{color:#0f2a4a;font-weight:800;letter-spacing:.02em;}
 .inv-doc.invx .ix-thanks{text-align:center;font-size:9px;font-weight:700;letter-spacing:.2em;color:#a4aeba;}
+/* ═══ CMDOC-v1 — Credit Memo 는 같은 뼈대에 색만 적갈색(#7c2d12) ═══
+   앱 화면에서 Credit Memo 를 그 색으로 쓰고 있고, 종이 무더기에서 인보이스와 한눈에 갈린다.
+   ⚠ 클래스 4개(.inv-doc.invx.cm .x)라서 위 남색 규칙(3개)을 이긴다 — 위를 건드리지 않는다. */
+.inv-doc.invx.cm .ix-top{background:#7c2d12;}
+.inv-doc.invx.cm .ix-co{border-bottom-color:#7c2d12;}
+.inv-doc.invx.cm .ix-co-n{color:#7c2d12;}
+.inv-doc.invx.cm .inv-tbl th{background:#7c2d12;}
+.inv-doc.invx.cm .inv-tbl tfoot tr.ix-sum td{border-top-color:#7c2d12;}
+.inv-doc.invx.cm .inv-tbl tfoot tr.ix-tot.cr td{background:#7c2d12;}
+.inv-doc.invx.cm .ix-note{border-left-color:#7c2d12;}
+.inv-doc.invx.cm .ix-box.hot{border-color:#7c2d12;}
+.inv-doc.invx.cm .ix-small b{color:#7c2d12;}
+.inv-doc.invx.cm .ix-remit .ix-val{color:#7c2d12;}
+.inv-doc.invx.cm .ix-remit .ix-val.sub{color:#7c2d12;}
+/* 오출고로 돌아와 $0 인 줄에 붙는 한 마디 — 우리 실수로 안 보이게 */
+.inv-doc.invx .ix-nc{font-size:8.5px;font-weight:700;color:#0369a1;letter-spacing:0;}
 @media print{ .top,.card:not(#doc-card),.no-print,.doc-tabs{display:none!important;} .doc-view{border:none;padding:0;} #doc-card{border:none;padding:0;} .card-title{display:none;} }
 </style>
 <style>
@@ -288,7 +304,7 @@ body.po-dragging{user-select:none;}
   </span>
   <select id="lang-sel" onchange="setLang(this.value)" style="font-size:11px;padding:3px 6px;border-radius:5px;border:none;background:#1d3f66;color:#fff;"><option value="ko">한국어</option><option value="en">English</option><option value="es">Español</option></select>
   <button id="wide-btn" class="btn btn-sm" onclick="toggleWide()" title="화면 넓게 / 좁게 — 기본은 넓게 (이 브라우저에만 저장돼)" style="padding:2px 8px;font-size:10px;background:#1d3f66;color:#cfe0f2;border-color:#2b5384;">↔ Wide</button>
-  <span id="app-ver" style="font-size:10px;color:#9fb8d4;">v1176</span>
+  <span id="app-ver" style="font-size:10px;color:#9fb8d4;">v1179</span>
 </div>
 <script>
 // ↔ 넓게 보기 — 브라우저마다 따로 저장 (v793)
@@ -6022,11 +6038,17 @@ async function returnReceiveConfirm(base, ra){
   });
   creditAmt=Math.round(creditAmt*100)/100;
   const restockA=totA, restockB=totB, restockTot=totA+totB;
-  const cm=ra.replace(/^RA-/, 'CM-');
   const ncPcs = recvLines.filter(l=>l.noCredit).reduce((a,l)=>a+(Number(l.receivedQty)||0),0);
-  if(!confirm('Confirm receipt of '+ra+'?\n\n• Credit memo '+cm+':  $'+creditAmt.toFixed(2)+' ('+(totA+totB+totF).toLocaleString()+' pcs)\n'
+  /* CMSEQ-v1 - 번호는 아래 confirm 을 통과한 뒤에 뽑는다. 여기서 미리 뽑으면
+     취소할 때마다 번호가 버려져서 AR 번호에 구멍이 생긴다. */
+  if(!confirm('Confirm receipt of '+ra+'?\n\n• Credit memo:  $'+creditAmt.toFixed(2)+' ('+(totA+totB+totF).toLocaleString()+' pcs)\n'
     + (ncPcs?('• Overship (never billed): '+ncPcs.toLocaleString()+' pcs → back to stock, NO credit\n'):'')
     + '• A Grade: '+totA.toLocaleString()+' → stock · B Grade: '+totB.toLocaleString()+' → B-grade · Failed: '+totF.toLocaleString()+' → scrap\n\nThis cannot be edited afterward.')) return;
+  /* CMSEQ-v1 - 인보이스와 **같은** 공용 카운터에서 7자 번호를 뽑는다 (MAS 칸 모양).
+     [stated] 하윤: "credit memo#도 인보이스 넘버처럼 해야하는거 아니야"
+     ⚠ 여기서 딱 한 번 뽑고 아래 ret.received.cm 에 저장한다. 종이를 다시 찍을 때는
+        저장된 값을 읽으므로 번호가 또 안 늘어난다. */
+  const cm = await nextInvNo();
   for(const l of recvLines){
     const toWh=(l.toWh||l.wh)==='CA'?'CA':'SC';
     const k=pcKey(l.style, l.color, toWh), sz=String(l.size).toUpperCase();
@@ -6047,49 +6069,8 @@ async function returnReceiveConfirm(base, ra){
   openCreditMemo(base, ra);
 }
 function buildCreditMemoHtml(rec, ret){
-  const meta=rec.meta||{}; const rc=ret.received||{}; const cm=rc.cm||ret.ra.replace(/^RA-/,'CM-');
-  const wh=(ret.lines&&ret.lines[0]&&(ret.lines[0].toWh||ret.lines[0].wh))||'SC';
-  const dt=rc.at?new Date(rc.at):new Date();
-  const src=(rc.lines&&rc.lines.length)?rc.lines:(ret.lines||[]);
-  const rows=src.map(l=>{ const q=Number(l.receivedQty!=null?l.receivedQty:l.qty)||0; const price=Number(l.price)||0; const amt=q*price;
-    /* 오출고로 돌아온 줄은 거래처에게 왜 $0 인지 종이에 적어준다 — 안 적으면 실수로 보인다 (v885) */
-    const _nc = !!l.noCredit;
-    return `<tr><td style="font-weight:700;">${esc(l.style)}</td><td class="tl">${esc(String(l.color).toUpperCase())}</td><td>${esc(l.size)}</td><td class="tl" style="font-size:10.5px;">${esc(l.reason||ret.reason||'')}${_nc?'<div style="font-size:9.5px;font-weight:800;color:#0369a1;">Shipped in error — not invoiced, no credit due</div>':''}</td><td style="text-align:right;font-weight:700;">${q.toLocaleString()}</td><td style="text-align:right;">${_nc?'—':('$'+price.toFixed(2))}</td><td style="text-align:right;font-weight:800;">${_nc?'$0.00':('$'+amt.toFixed(2))}</td></tr>`; }).join('');
-  const total=Number(rc.creditAmount!=null?rc.creditAmount:src.reduce((a,l)=>a+(Number(l.receivedQty!=null?l.receivedQty:l.qty)||0)*(Number(l.price)||0),0));
-  let _pd=(rec.inv&&rec.inv[wh]&&rec.inv[wh].paid)||null;
-  if((!_pd || _pd.method==='website') && rec.inv){ for(const w of Object.keys(rec.inv)){ const q=rec.inv[w]&&rec.inv[w].paid; if(q && q.method!=='website' && String(q.acct||'').replace(/[^0-9]/g,'')){ _pd=q; break; } } }
-  const _cardLast4=_pd?String(_pd.acct||'').replace(/[^0-9]/g,'').slice(-4):'';
-  const _refDone=_pd?((typeof refundTotals==='function')?(refundTotals(_pd).refTot>0.005):!!(_pd.refunds&&_pd.refunds.length)):false;
-  const _showCard = !!_cardLast4 || !!ret.cc;   // 카드결제 기록이 있거나 CC 반품이면 카드 환불 문구
-  return `<div class="inv-doc">
-    <div style="background:#0f2a4a;padding:12px 20px;display:flex;justify-content:space-between;align-items:center;">
-      <img src="${LOGO_B64}" style="height:42px;width:auto;">
-      <div style="color:#fff;font-size:24px;font-weight:800;letter-spacing:3px;">CREDIT MEMO</div>
-    </div>
-    <div style="display:flex;justify-content:space-between;gap:16px;background:#f5f7fa;border:1px solid var(--border);border-top:none;padding:10px 20px;margin-bottom:14px;">
-      <div><div style="font-weight:700;font-size:11px;color:var(--header);">PEACE TEXTILE AMERICA, INC. <span style="font-weight:400;color:#555;">d.b.a Pacific Sports</span></div>
-        <div class="inv-co-addr">${esc(WH_ADDR[wh]||'')}</div></div>
-      <div style="min-width:230px;">
-        <div class="inv-meta-row"><span>Credit Memo #</span><span style="font-weight:800;">${esc(cm)}</span></div>
-        <div class="inv-meta-row"><span>Date</span><span>${dt.toLocaleDateString('en-US')}</span></div>
-        <div class="inv-meta-row"><span>RA #</span><span>${esc(ret.ra)}</span></div>
-        <div class="inv-meta-row"><span>Ref Order</span><span>${esc(rec.base)}</span></div>
-        <div class="inv-meta-row"><span>PO #</span><span>${esc(meta.po||'')}</span></div>
-      </div>
-    </div>
-    <div class="inv-addr-row" style="grid-template-columns:1fr 1.6fr;">
-      <div><div class="inv-addr-label">Customer</div><div class="inv-addr-val">${esc(meta.cust||'')}</div></div>
-      <div><div class="inv-addr-label">Bill To</div><div class="inv-addr-val">${esc(metaAddr(meta,'bill'))}</div></div>
-    </div>
-    <table class="inv-tbl" style="table-layout:fixed;width:100%;">
-      <colgroup><col style="width:10%"><col style="width:16%"><col style="width:7%"><col style="width:19%"><col style="width:13%"><col style="width:15%"><col style="width:20%"></colgroup>
-      <thead><tr><th>Style#</th><th class="tl">Color</th><th>Size</th><th class="tl">Reason</th><th>Credit Qty</th><th>Unit Price</th><th>Amount</th></tr></thead>
-      <tbody>${rows}</tbody>
-      <tfoot><tr><td colspan="6" class="tl" style="text-align:right;font-weight:700;padding-right:12px;">TOTAL CREDIT</td><td style="text-align:right;font-weight:900;font-size:15px;background:#0f2a4a;color:#fff;">$${total.toFixed(2)}</td></tr></tfoot>
-    </table>
-    ${_showCard?`<div style="margin-top:12px;padding:9px 14px;background:#fef2f2;border:1px solid #fecaca;border-radius:5px;font-size:12.5px;color:#b91c1c;font-weight:800;">💳 ${_refDone?'Refunded to':'Refund to be issued to'} credit card${_cardLast4?' ending '+_cardLast4:''}: $${total.toFixed(2)}</div>`:`<div style="margin-top:12px;font-size:12.5px;color:#333;">This credit of <b>$${total.toFixed(2)}</b> has been applied to the customer's account.</div>`}
-    <p style="margin-top:14px;font-size:11px;color:#666;">Issued against Return Authorization ${esc(ret.ra)}. Reason(s): ${esc(ret.reason||'—')}.</p>
-  </div>`;
+  /* CMDOC-v1 - 그림은 buildCreditMemoDoc 이 그린다 (invx 옷). 부르는 곳들은 그대로 둔다. */
+  return buildCreditMemoDoc(rec, ret);
 }
 function printCreditMemo(base, ra){
   const rec=savedCache.find(s=>s.base===base); if(!rec) return;
@@ -10697,6 +10678,15 @@ function invTermsFor(d, meta){
   }
   return ti || { label:'Due on Receipt', days:0 };
 }
+/* CCREMIT-v1 (2026-09-24) — 이 인보이스의 결제 조건 코드. invTermsFor 와 **같은 순서**로 찾는다.
+   ⚠ termInfo 는 label/days 만 주고 코드를 안 돌려준다 — label 글자로 판단하면 문구를 바꿀 때 조용히 깨진다. */
+function invTermTypeOf(d, meta){
+  let t = (d && d.termType) || '';
+  if(!t){
+    try{ const g = custLastTermType(meta && meta.cust); if(g && g.termType) t = g.termType; }catch(e){}
+  }
+  return String(t || '');
+}
 function invDueStr(d, ti){
   if(!ti || !(ti.days > 0)) return 'Due on Receipt';
   const base = new Date(((d && d.date) ? d.date : todayStr()) + 'T00:00:00');
@@ -10757,20 +10747,22 @@ function buildInvoiceDoc(rec, wh, d, meta, lines, num, dateStr){
   }
   tfootHtml += '<tr class="ix-tot"><td class="tl" colspan="6">INVOICE TOTAL</td>'
     + '<td class="n">' + money(grand) + '</td></tr>';
+  /* 💳 이미 받은 돈 — 아래 팩터 판단에서도 같은 값을 써야 하므로 한 번만 구한다 */
+  let paidNote = null;
+  try{ paidNote = invPaidNote(rec, wh); }catch(e){}
+  const dueAmt = paidNote ? (Math.round((grand - paidNote.paid) * 100) / 100) : grand;
+  const nothingDue = dueAmt <= 0.005;
+
   /* 💳 이미 받은 돈이 있으면 종이에 적는다 (v1109 그대로) — 없으면 아무 줄도 안 붙는다 */
-  tfootHtml += (function(){
-    let pn = null;
-    try{ pn = invPaidNote(rec, wh); }catch(e){}
-    if(!pn) return '';
-    const dueAmt = Math.round((grand - pn.paid) * 100) / 100;
-    const ok = dueAmt <= 0.005;
+  if(paidNote){
+    const ok  = nothingDue;
     const lbl = dueAmt < -0.005 ? 'CREDIT BALANCE' : 'AMOUNT DUE';
     const amt = money(Math.abs(dueAmt) < 0.005 ? 0 : Math.abs(dueAmt));
-    return '<tr class="ix-pay"><td class="tl" colspan="6">' + esc(pn.label) + '</td>'
-         + '<td class="n" style="font-weight:800;">−' + money(pn.paid) + '</td></tr>'
-         + '<tr class="ix-due' + (ok ? ' ok' : '') + '"><td class="tl" colspan="6">' + lbl + '</td>'
-         + '<td class="n">' + amt + '</td></tr>';
-  })();
+    tfootHtml += '<tr class="ix-pay"><td class="tl" colspan="6">' + esc(paidNote.label) + '</td>'
+      + '<td class="n" style="font-weight:800;">−' + money(paidNote.paid) + '</td></tr>'
+      + '<tr class="ix-due' + (ok ? ' ok' : '') + '"><td class="tl" colspan="6">' + lbl + '</td>'
+      + '<td class="n">' + amt + '</td></tr>';
+  }
 
   const ti  = invTermsFor(d, meta);
   const due = invDueStr(d, ti);
@@ -10780,6 +10772,19 @@ function buildInvoiceDoc(rec, wh, d, meta, lines, num, dateStr){
     + (d.method ? ' · ' + esc(d.method) : '')
     + ((d.via === 'LTL' && d.freightCo) ? ' · ' + esc(d.freightCo) : '');
   const factored = invFactored(meta);
+  /* ═══ CCREMIT-v1 (2026-09-24) — 받을 돈이 없으면 팩터 칸을 안 붙인다 ═══
+     [stated] 하윤: "이렇케 credit card 로 나가는것도 저기 hana 정보가 나오면 안되지"
+     카드로 이미 다 받은 인보이스에 HANA 송금처가 박히면
+       ① 받을 돈이 없는데 "여기로 보내라" 가 된다 (AMOUNT DUE $0.00 과 정면으로 어긋난다)
+       ② 최악은 거래처가 HANA 로 한 번 더 보낸다 — 되돌리기 어려운 방향이다
+     그래서 두 경우에 송금처 칸과 아래 양도 문구를 **둘 다** 뺀다:
+       · 조건이 Credit Card 다 (카드로 걷는 매출이라 팩터에 넘기지 않는다)
+       · 이미 전액 결제됐다 (남은 게 없으니 보낼 곳도 없다)
+     ⚠⚠ 판단 방향을 다시 못 박는다 — 일부만 받고 잔액이 남은 팩터 인보이스는 문구가 **남는다**.
+        잔액은 여전히 HANA 것이다. invFactored 가 모를 때 넣는 것과 같은 방향(안전한 쪽)이다.
+     ⓘ COD 는 건드리지 않았다 — 아직 못 걷은 채권이라 팩터 대상일 수 있다. */
+  const ccTerms   = invTermTypeOf(d, meta) === 'cc';
+  const showRemit = factored && !ccTerms && !nothingDue;
   /* SHIPFROM-v2 — 출고 창고 이름. 칸은 **항상** 나온다.
      ⚠ wh 는 'SC'/'CA' 만 오지 않는다 — 수정 출고는 REV 키('SC-R1')로 온다 (plWhList -> revSepKeys).
         그래서 부모 창고로 먼저 되돌린다. 안 그러면 REV 인보이스에만 칸이 사라진다.
@@ -10821,11 +10826,11 @@ function buildInvoiceDoc(rec, wh, d, meta, lines, num, dateStr){
            ③ 18자짜리 번호가 좁은 칸에서 어색하다 */
       + '</div>'
     + '</div>'
-    + '<div class="ix-addr' + (factored ? ' c3' : '') + '">'
+    + '<div class="ix-addr' + (showRemit ? ' c3' : '') + '">'
       + '<div><div class="ix-lbl">BILL TO</div>' + invxAddrBlock(meta, 'bill') + '</div>'
       + '<div><div class="ix-lbl">SHIP TO</div>' + invxAddrBlock(meta, 'ship') + '</div>'
       /* 돈 보낼 곳 — 팩터 거래처만. 긴 법적 문장은 종이 아래에 그대로 있다. */
-      + (factored ? ('<div class="ix-remit"><div class="ix-lbl">REMIT PAYMENT TO</div>'
+      + (showRemit ? ('<div class="ix-remit"><div class="ix-lbl">REMIT PAYMENT TO</div>'
           + invxRemitAddr(cfg.remit).map(function(s,i){
               return '<div class="ix-val' + (i ? ' sub' : '') + '">' + esc(s) + '</div>'; }).join('')
           /* ⚠⚠ 여기에 경고 한 줄을 넣었다가 물렜다 (2026-09-24).
@@ -10856,13 +10861,159 @@ function buildInvoiceDoc(rec, wh, d, meta, lines, num, dateStr){
       + '</tbody><tfoot>' + tfootHtml + '</tfoot></table>'
     + '<div class="ix-tail">'
       + (d.note ? '<div class="ix-note wide"><b>Note</b> — ' + esc(d.note) + '</div>' : '')
-      + '<div class="ix-box' + (factored ? '' : ' wide') + '"><div class="ix-lbl">RETURN POLICY</div>'
+      + '<div class="ix-box' + (showRemit ? '' : ' wide') + '"><div class="ix-lbl">RETURN POLICY</div>'
         + '<div class="ix-small">' + invxLines(cfg.ret) + '</div></div>'
       /* 아래는 **양도 문구 전체** — 위 칸은 주소만 짧게, 여기는 법적 문장 그대로.
          ⚠ 이름표를 위 칸과 다르게 둔다 — 같은 말이 두 번 있는 것처럼 보이지 않게. */
-      + (factored ? ('<div class="ix-box hot"><div class="ix-lbl">ASSIGNMENT &amp; PAYMENT NOTICE</div>'
+      + (showRemit ? ('<div class="ix-box hot"><div class="ix-lbl">ASSIGNMENT &amp; PAYMENT NOTICE</div>'
         + '<div class="ix-small">' + invxLines(cfg.remit) + '</div></div>') : '')
       + '<div class="ix-thanks wide">THANK YOU FOR YOUR BUSINESS</div>'
+    + '</div>'
+  + '</div>';
+}
+
+/* ═══ CMDOC-v1 (2026-09-24) — Credit Memo 서류를 인보이스와 같은 옷으로 ═══
+   [stated] 하윤: "우리가 또 봐야하는 곳이 Credit Memo 쪽이네. Credit Memo도 저런식으로 보내줘야하니까 그치?"
+   예전 것은 inv-doc 에 인라인 style 을 박은 옛 모양이었고, 인보이스와 나란히 놓으면 딴 회사 서류처럼 보였다.
+   ⚠⚠ 고친 건 모양만이 아니다 — **팩터 문구가 아예 없었다**.
+      크레딧 메모는 HANA 가 소유한 채권을 깎는 종이다. 거래처가 이 종이를 보고
+      "그럼 페시픽에 정산하면 되겠네" 로 읽으면 돈이 엉뚱한 데로 간다.
+      양도 문구 자체가 "any merchandise returns ... 에 대해 즉시 통지해야 한다" 라고 말한다 — 반품이 바로 그거다.
+   ⚠ 머리 주소도 창고 주소(WH_ADDR)에서 Sumter 본사(INV_HQ)로 맞췄다 — 인보이스와 같아야 한다.
+      대신 물건이 **돌아온 창고** 주소는 RETURNED TO 칸에 따로 찍는다 (그게 이 종이에서 쓸모있는 주소다).
+   ⓘ 위 띠와 합계칸을 남색이 아니라 적갈색(#7c2d12)으로 뒀다 — 앱에서 Credit Memo 를 그 색으로 쓰고 있고,
+      종이 무더기에서 인보이스와 한눈에 갈린다. 색만 다르고 뼈대는 인보이스와 같다. */
+function buildCreditMemoDoc(rec, ret){
+  const money = n => '$' + Number(n).toLocaleString(undefined, { minimumFractionDigits:2, maximumFractionDigits:2 });
+  const meta = rec.meta || {};
+  const rc   = ret.received || {};
+  const cm   = rc.cm || String(ret.ra || '').replace(/^RA-/, 'CM-');
+  /* 돌아온 창고 — 줄에 toWh 가 있으면 그게 진짜 도착지다 */
+  const wh   = (ret.lines && ret.lines[0] && (ret.lines[0].toWh || ret.lines[0].wh)) || 'SC';
+  const dt   = rc.at ? new Date(rc.at) : new Date();
+  const src  = (rc.lines && rc.lines.length) ? rc.lines : (ret.lines || []);
+  const cfg  = invCfg();
+  const factored = invFactored(meta);
+
+  const qOf = l => Number(l.receivedQty != null ? l.receivedQty : l.qty) || 0;
+  const aOf = l => l.noCredit ? 0 : qOf(l) * (Number(l.price) || 0);
+
+  /* 사유 — 줄마다 다 같으면 표에 칸을 만들지 않고 표 위에 한 번만 적는다.
+     ⚠ 예전 종이는 같은 문장을 다섯 줄에 다섯 번 찍었다. RA 메일도 같은 병이 있다(아직). */
+  const reasons = [];
+  src.forEach(function(l){
+    const r = String(l.reason || ret.reason || '').trim();
+    if(r && reasons.indexOf(r) < 0) reasons.push(r);
+  });
+  const oneReason = reasons.length <= 1 ? (reasons[0] || '') : '';
+  const perLineReason = reasons.length > 1;
+
+  /* 깎아주는 원래 인보이스 번호 — 이 종이가 무엇을 깎는지가 제일 중요한 참조다.
+     ⚠ 돌아온 창고와 인보이스를 낸 창고가 다를 수 있으므로 그 창고를 먼저 보고, 없으면 아무 거나 찾는다. */
+  const origInv = (function(){
+    const IV = rec.inv || {};
+    const pick = k => (IV[k] && IV[k].invNo) ? String(IV[k].invNo) : '';
+    return pick(wh) || (Object.keys(IV).map(pick).filter(Boolean)[0] || '');
+  })();
+
+  const totQ   = src.reduce((a,l)=>a + qOf(l), 0);
+  const total  = Number(rc.creditAmount != null ? rc.creditAmount : src.reduce((a,l)=>a + aOf(l), 0));
+
+  /* 💳 카드 환불 — 예전 로직 그대로 옮겼다 (website 결제는 건너뛰고 실제 카드 기록을 찾는다) */
+  let _pd = (rec.inv && rec.inv[wh] && rec.inv[wh].paid) || null;
+  if((!_pd || _pd.method === 'website') && rec.inv){
+    for(const w of Object.keys(rec.inv)){
+      const q = rec.inv[w] && rec.inv[w].paid;
+      if(q && q.method !== 'website' && String(q.acct || '').replace(/[^0-9]/g, '')){ _pd = q; break; }
+    }
+  }
+  const _last4  = _pd ? String(_pd.acct || '').replace(/[^0-9]/g, '').slice(-4) : '';
+  const _refDone = _pd ? ((typeof refundTotals === 'function')
+      ? (refundTotals(_pd).refTot > 0.005) : !!(_pd.refunds && _pd.refunds.length)) : false;
+  const _showCard = !!_last4 || !!ret.cc;
+
+  /* CCREMIT-v1 — 인보이스와 같은 규칙. 카드로 환불하는 크레딧 메모에는 HANA 가 나오면 안 된다.
+     [stated] 하윤: "이렇케 credit card 로 나가는것도 저기 hana 정보가 나오면 안되지"
+     원래 인보이스 조건이 Credit Card 였으면 그 매출은 팩터에 넘긴 게 아니다. */
+  const ccTerms = (function(){
+    const iv = (rec.inv && rec.inv[wh]) || null;
+    if(iv && iv.termType) return String(iv.termType) === 'cc';
+    return invTermTypeOf(null, meta) === 'cc';
+  })();
+  const showRemit = factored && !ccTerms && !_showCard;
+
+  const theadHtml = '<tr><th class="tl">STYLE #</th><th class="tl">DESCRIPTION</th><th class="tl">COLOR</th>'
+    + '<th>SIZE</th>' + (perLineReason ? '<th class="tl">REASON</th>' : '')
+    + '<th class="n">CREDIT QTY</th><th class="n">UNIT PRICE</th><th class="n">AMOUNT</th></tr>';
+  const NCOL = perLineReason ? 8 : 7;
+
+  const rowsHtml = src.map(function(l){
+    const q = qOf(l), nc = !!l.noCredit;
+    return '<tr>'
+      + '<td class="tl sty">' + esc(l.style || '') + '</td>'
+      + '<td class="tl">' + esc(l.desc || (typeof styleItem === 'function' ? (styleItem(l.style) || '') : '')) + '</td>'
+      + '<td class="tl">' + esc(String(l.color || '').toUpperCase()) + '</td>'
+      + '<td>' + esc(l.size || '') + '</td>'
+      + (perLineReason ? ('<td class="tl" style="font-size:10.5px;">' + esc(l.reason || ret.reason || '—') + '</td>') : '')
+      + '<td class="n">' + q.toLocaleString() + '</td>'
+      /* 오출고로 돌아온 줄은 왜 $0 인지 종이에 적어준다 — 안 적으면 우리 실수로 보인다 (v885 부터) */
+      + '<td class="n">' + (nc ? '—' : money(l.price || 0)) + '</td>'
+      + '<td class="n" style="font-weight:800;">' + money(aOf(l))
+        + (nc ? '<div class="ix-nc">Shipped in error &middot; not invoiced</div>' : '')
+      + '</td></tr>';
+  }).join('');
+
+  let tfootHtml = '<tr class="ix-sum"><td class="tl" colspan="' + (NCOL - 3) + '">Returned &middot; '
+      + src.length + (src.length === 1 ? ' line' : ' lines') + '</td>'
+    + '<td class="n">' + totQ.toLocaleString() + '</td><td></td>'
+    + '<td class="n">' + money(total) + '</td></tr>'
+    + '<tr class="ix-tot cr"><td class="tl" colspan="' + (NCOL - 1) + '">TOTAL CREDIT</td>'
+    + '<td class="n">' + money(total) + '</td></tr>';
+
+  return '<div class="inv-doc invx cm">'
+    + '<div class="ix-top"><img src="' + LOGO_B64 + '" style="height:38px;width:auto;">'
+      + '<div class="ix-type">CREDIT MEMO</div></div>'
+    + '<div class="ix-co">'
+      + '<div><div class="ix-co-n">' + esc(INV_HQ.name) + '</div>'
+        + '<div class="ix-co-dba">' + esc(INV_HQ.dba) + '</div>'
+        + '<div class="ix-co-a">' + esc(INV_HQ.addr) + '<br>Tel ' + esc(INV_HQ.tel) + '</div></div>'
+      + '<div class="ix-meta">'
+        + '<div class="inv-meta-row"><span>Credit Memo No.</span><span>' + esc(cm) + '</span></div>'
+        + '<div class="inv-meta-row"><span>Date</span><span>' + dt.toLocaleDateString('en-US') + '</span></div>'
+        + '<div class="inv-meta-row"><span>Credits Invoice</span><span>' + esc(origInv || '—') + '</span></div>'
+      + '</div>'
+    + '</div>'
+    + '<div class="ix-addr' + (showRemit ? ' c3' : '') + '">'
+      + '<div><div class="ix-lbl">BILL TO</div>' + invxAddrBlock(meta, 'bill') + '</div>'
+      /* 물건이 돌아온 우리 창고 — 이 종이에서 실제로 쓸모있는 주소다 (추가 반품·문의) */
+      + '<div><div class="ix-lbl">RETURNED TO</div>'
+        + '<div class="ix-val">' + esc(WH_LABEL[revParentWh(wh)] || String(wh || '')) + '</div>'
+        + '<div class="ix-val sub">' + esc(WH_ADDR[revParentWh(wh)] || '') + '</div></div>'
+      + (showRemit ? ('<div class="ix-remit"><div class="ix-lbl">REMIT PAYMENT TO</div>'
+          + invxRemitAddr(cfg.remit).map(function(s,i){
+              return '<div class="ix-val' + (i ? ' sub' : '') + '">' + esc(s) + '</div>'; }).join('')
+          + '</div>') : '')
+    + '</div>'
+    + '<div class="ix-bar">'
+      + '<div><div class="ix-lbl">CUSTOMER PO</div><div class="ix-val">' + esc(meta.po || '—') + '</div></div>'
+      + '<div><div class="ix-lbl">RA NO.</div><div class="ix-val">' + esc(ret.ra || '—') + '</div></div>'
+      + '<div><div class="ix-lbl">REF ORDER</div><div class="ix-val">' + esc(rec.base || '—') + '</div></div>'
+      + '<div><div class="ix-lbl">CUSTOMER</div><div class="ix-val">' + esc(meta.cust || '—') + '</div></div>'
+    + '</div>'
+    /* 사유 띠 — 줄마다 같은 사유면 여기 한 번만. 다르면 이 띠 대신 표에 REASON 칸이 생긴다. */
+    + (oneReason ? ('<div class="ix-trk"><span class="ix-lbl">REASON</span>'
+        + '<span class="ix-trk-n" style="font-weight:600;letter-spacing:0;">' + esc(oneReason) + '</span></div>') : '')
+    + '<table class="inv-tbl"><thead>' + theadHtml + '</thead><tbody>' + rowsHtml
+      + '</tbody><tfoot>' + tfootHtml + '</tfoot></table>'
+    + '<div class="ix-tail">'
+      + '<div class="ix-note wide">' + (_showCard
+          ? ('<b>' + (_refDone ? 'Refunded' : 'Refund to be issued') + ' to credit card'
+             + (_last4 ? ' ending ' + esc(_last4) : '') + '</b> &mdash; ' + money(total))
+          : ('<b>Account credit</b> &mdash; ' + money(total)
+             + ' has been credited to your account and may be applied against the invoice shown above.'))
+        + '</div>'
+      + (showRemit ? ('<div class="ix-box hot wide"><div class="ix-lbl">ASSIGNMENT &amp; PAYMENT NOTICE</div>'
+        + '<div class="ix-small">' + invxLines(cfg.remit) + '</div></div>') : '')
     + '</div>'
   + '</div>';
 }
@@ -14192,6 +14343,13 @@ function invScanMax(){
   let mx = INVSEQ_FLOOR;
   (savedCache||[]).forEach(r=>Object.values(r.inv||{}).forEach(v=>{
     const n = invSeqOf((v&&v.invNo)||'', yy);
+    if(n > mx) mx = n;
+  }));
+  /* CMSEQ-v1 - 크레딧 메모도 같은 번호통을 쓴다. 여기서 안 훑으면
+     DB 를 못 쓸 때 쓰는 최후 수단 경로가 크레딧 메모 번호를 다시 낼 수 있다.
+     ⚠ 옛 'CM-...' 문자열은 invSeqOf 가 0 을 돌려주므로 자연히 무시된다. */
+  (savedCache||[]).forEach(r=>recReturns(r).forEach(t=>{
+    const n = invSeqOf((t && t.received && t.received.cm) || '', yy);
     if(n > mx) mx = n;
   }));
   return mx;
