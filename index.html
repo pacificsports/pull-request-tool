@@ -217,7 +217,7 @@ body.po-dragging{user-select:none;}
   </span>
   <select id="lang-sel" onchange="setLang(this.value)" style="font-size:11px;padding:3px 6px;border-radius:5px;border:none;background:#1d3f66;color:#fff;"><option value="ko">한국어</option><option value="en">English</option><option value="es">Español</option></select>
   <button id="wide-btn" class="btn btn-sm" onclick="toggleWide()" title="화면 넓게 / 좁게 — 기본은 넓게 (이 브라우저에만 저장돼)" style="padding:2px 8px;font-size:10px;background:#1d3f66;color:#cfe0f2;border-color:#2b5384;">↔ Wide</button>
-  <span id="app-ver" style="font-size:10px;color:#9fb8d4;">v1169</span>
+  <span id="app-ver" style="font-size:10px;color:#9fb8d4;">v1170</span>
 </div>
 <script>
 // ↔ 넓게 보기 — 브라우저마다 따로 저장 (v793)
@@ -9025,9 +9025,22 @@ async function loadCustomers(){
     if(r.ok){ custStore = {}; (await r.json()).forEach(row=>{ custStore[row.k] = row.data || {}; }); }
   }catch(e){}
 }
+/* CUSTTERM-v1 - 예전에는 return=minimal 이라 0 줄이 써져도 성공처럼 보였다.
+   하윤이 여기로 terms 와 신용한도를 고치니까 조용한 실패는 그대로 두면 안 된다.
+   ⚠⚠ 던지지는 않는다 - 부르는 곳이 28 군데이고 몇 곳은 await 도 안 한다.
+      참/거짓만 돌려주고, 확인이 필요한 곳(cmSet/cmSetQuiet)에서만 본다.
+   ⚠ custStore 에는 예전처럼 **보낸 그 객체**를 넣는다 - 서버가 돌려준 사본으로 바꾸면
+      같은 객체를 계속 만지는 흐름(merge 등)이 어긋난다. */
 async function saveCustomer(k, data){
   custStore[k] = data;
-  try{ await sbFetch('/rest/v1/pr_customers?on_conflict=k', {method:'POST', headers:{Prefer:'resolution=merge-duplicates,return=minimal'}, body:JSON.stringify([{k:k, data:data, updated_at:new Date().toISOString()}])}); }catch(e){}
+  try{
+    const r = await sbFetch('/rest/v1/pr_customers?on_conflict=k', {method:'POST',
+      headers:{Prefer:'resolution=merge-duplicates,return=representation'},
+      body:JSON.stringify([{k:k, data:data, updated_at:new Date().toISOString()}])});
+    if(!r.ok) return false;
+    const back = await r.json();
+    return Array.isArray(back) && back.length > 0;
+  }catch(e){ return false; }
 }
 function invTotalOf(iv, rec, wh){
   const ls = (Array.isArray(iv.lines) && iv.lines.length) ? iv.lines : ((rec.pl && rec.pl[wh] && rec.pl[wh].lines) || []);
@@ -9310,11 +9323,56 @@ function custLastTermType(cust){
   }
   return { termType:'', termDays:0 };
 }
+/* CUSTTERM-v1 (2026-09-24) - 결제 조건 목록은 여기 한 곳에서만 정한다.
+   [stated] 하윤: "term 에 Cash on Demand도 포함시켜 주고 Terms에 Credit Card도 추가해주고"
+   ⚠⚠ 열쇠값은 절대 바꾸지 않는다 - 이미 저장된 '30' '45' '60' 'cc' 'custom' 은 그대로다.
+      'cod' 만 새로 늘렸다. 열쇠를 바꾸면 예전 거래처 조건이 전부 빈칸이 된다. */
+const TERM_OPTS = [['cod','Cash on Demand'],['cc','Credit Card'],['30','Net 30'],['45','Net 45'],['60','Net 60']];
+function termLabel(tt){
+  const t = String(tt == null ? '' : tt).trim();
+  if(!t) return '';
+  for(let i=0;i<TERM_OPTS.length;i++){ if(TERM_OPTS[i][0] === t) return TERM_OPTS[i][1]; }
+  if(t === 'custom') return 'Custom';
+  return /^[0-9]+$/.test(t) ? ('Net ' + t) : t;
+}
+/* 고르는 칸 하나를 글자로 만든다 - Customers 카드와 목록이 같은 것을 쓴다.
+   ⚠ 저장돼 있는 값이 목록에 없는 것이면(옛 값) 그 값도 한 줄 넣어 준다 -
+     안 넣으면 화면이 조용히 다른 조건으로 보이고, 손대면 그 값이 날아간다. */
+function termSelectHtml(k, tt, style, title){
+  const cur = String(tt == null ? '' : tt).trim();
+  let h = '<select class="fi" onchange="cmSet(\'' + k + '\',\'termType\',this.value)"'
+        + ' style="' + (style || '') + '" title="' + (title || 'Payment terms - the default on this customer\'s new invoices') + '">';
+  h += '<option value="" ' + (cur ? '' : 'selected') + '>- terms -</option>';
+  TERM_OPTS.forEach(function(o){ h += '<option value="' + o[0] + '" ' + (cur === o[0] ? 'selected' : '') + '>' + o[1] + '</option>'; });
+  let known = !cur;
+  TERM_OPTS.forEach(function(o){ if(o[0] === cur) known = true; });
+  if(!known) h += '<option value="' + esc(cur) + '" selected>' + esc(termLabel(cur)) + '</option>';
+  return h + '</select>';
+}
+/* CUSTTERM-v1 - 거래처 메일 칸에 우리 식구 주소가 섞여 들어와 있었다 (오더 283 건).
+   [stated] 하윤: "customer쪽에 보면 막 우리 직원들 이멜도 다 나오는 거래처가 있는데 이것도 수정해줘"
+   ⚠⚠ **보내는 순간은 건드리지 않는다** - 직원이 지금 일부러 넣은 주소를 지우면 그 메일이 안 간다.
+      보여줄 때와 거래처 카드에 저장될 때만 걸러낸다. 그러면 기록이 깨끗해지고 다음 기본값도 깨끗하다.
+   ⓘ courtney.oneill@rlcarriers.com(운송사) 과 wglennie@ecocentricbrands.com 은
+      우리 것인지 확인이 안 돼서 그대로 둔다 - 확인되면 아래 줄에 더한다. */
+const OUR_EMAIL_RE = /@peacepacificsports\.com|^peacedye@hotmail\.com$/i;
+function isOurEmail(e){
+  const s = String(e == null ? '' : e).trim();
+  return !!s && OUR_EMAIL_RE.test(s);
+}
+function custEmailClean(s){
+  return String(s == null ? '' : s).split(/[,;]/).map(function(x){ return x.trim(); })
+    .filter(function(x){ return x && x.indexOf('@') > 0 && !isOurEmail(x); })
+    .join(', ');
+}
+/* ⚠ 제일 최근 오더가 우리 식구 주소만 들고 있을 수도 있다 - 그러면 그 다음 오더를 본다.
+      없으면 빈칸을 돌려준다. 지어내지 않는다. */
 function custEmailFor(cust){
   if(!cust) return '';
   const recs = (savedCache||[]).filter(r=>r.meta && r.meta.cust===cust && r.meta.custEmail)
     .sort((a,b)=>String(b.savedAt||'').localeCompare(String(a.savedAt||'')));
-  return recs.length ? recs[0].meta.custEmail : '';
+  for(const r of recs){ const c = custEmailClean(r.meta.custEmail); if(c) return c; }
+  return '';
 }
 function blobToB64(blob){
   return new Promise((res,rej)=>{ const r=new FileReader(); r.onload=()=>res(String(r.result).split(',')[1]); r.onerror=()=>rej(new Error('Encoding failed')); r.readAsDataURL(blob); });
@@ -13745,6 +13803,7 @@ function termInfo(d){
   const ty = (d && d.termType) || '';
   if(!ty) return null;
   if(ty === 'cc') return { label: 'Credit Card', days: 0 };
+  if(ty === 'cod') return { label: 'Cash on Demand', days: 0 };   /* CUSTTERM-v1 */
   const days = ty === 'custom' ? Math.max(0, parseInt(d.termDays,10)||0) : parseInt(ty,10);
   return { label: 'Net ' + days, days };
 }
@@ -14194,6 +14253,8 @@ function renderPL(){
           <span>Terms:</span>
           ${['30','45','60'].map(v=>`<label style="display:flex;align-items:center;gap:4px;cursor:pointer;font-weight:600;"><input type="radio" name="inv-term" ${(invDrafts[plWh]||{}).termType===v?'checked':''} onchange="invTermUpd('${v}')" style="accent-color:#065f46;"> Net ${v}</label>`).join('')}
           <label style="display:flex;align-items:center;gap:4px;cursor:pointer;font-weight:600;"><input type="radio" name="inv-term" ${(invDrafts[plWh]||{}).termType==='cc'?'checked':''} onchange="invTermUpd('cc')" style="accent-color:#065f46;"> Credit Card</label>
+          <!-- CUSTTERM-v1 - 거래처 카드의 Cash on Demand 와 같은 열쇠('cod') -->
+          <label style="display:flex;align-items:center;gap:4px;cursor:pointer;font-weight:600;"><input type="radio" name="inv-term" ${(invDrafts[plWh]||{}).termType==='cod'?'checked':''} onchange="invTermUpd('cod')" style="accent-color:#065f46;"> Cash on Demand</label>
           <label style="display:flex;align-items:center;gap:4px;cursor:pointer;font-weight:600;"><input type="radio" name="inv-term" ${(invDrafts[plWh]||{}).termType==='custom'?'checked':''} onchange="invTermUpd('custom', document.getElementById('inv-term-days').value)" style="accent-color:#065f46;"> Custom</label>
           <input id="inv-term-days" class="fi num" value="${(invDrafts[plWh]||{}).termType==='custom'?((invDrafts[plWh]||{}).termDays||''):''}" onchange="invTermUpd('custom', this.value)" placeholder="days" style="width:60px;text-align:center;">
         </div>
@@ -37424,14 +37485,15 @@ function cmAddrRow(name, em){
       + (any ? ((l1?'<div>'+esc(l1)+'</div>':'')
               + (l2?'<div>'+esc(l2)+'</div>':'')
               + (l3?'<div>'+esc(l3)+'</div>':'')
-              + (em?'<div style="color:#1d4ed8;">'+esc(em)+'</div>':''))
+              /* CUSTTERM-v1 - 긴 메일 줄이 카드를 밀어서 깨뜨렸다. 줄바꿈을 허용하고 너비를 묶는다. */
+              + (em?'<div title="'+esc(em)+'" style="color:#1d4ed8;overflow-wrap:anywhere;word-break:break-word;max-width:430px;">'+esc(em)+'</div>':''))
              : '<div style="color:#94a3b8;font-size:11.5px;">주소 없음 — 두 번 눌러서 입력</div>')
       + '</div>';
   }
   const fld = (f, ph, w, extra, fn) => '<input class="fi" value="'+esc((f==='email'?(em||''):(b[f]||'')))+'" placeholder="'+ph+'" '
     + 'onchange="'+(fn||("cmAddrSet('"+nm+"','"+f+"',this.value)"))+'" '
     + 'style="width:'+w+';font-size:12px;padding:3px 6px;'+(extra||'')+'">';
-  return '<div style="margin-top:6px;display:flex;flex-direction:column;gap:4px;max-width:430px;">'
+  return '<div style="margin-top:6px;display:flex;flex-direction:column;gap:4px;max-width:430px;min-width:0;">'
     + fld('name','Company / Name','100%')
     + fld('addr','Street address','100%')
     + '<div style="display:flex;gap:4px;">' + fld('city','City','58%') + fld('state','ST','16%','text-align:center;text-transform:uppercase;') + fld('zip','Zip','26%','text-align:center;') + '</div>'
@@ -37669,10 +37731,13 @@ function cmDetailPane(name){
   }));
   const dso = dsoN ? Math.round(dsoSum/dsoN) : 0;
   const isCC = (cs.termType || (typeof custLastTermType==='function' ? custLastTermType(name).termType : '') || '') === 'cc';
-  const lim = isCC ? 0 : (Number(cs.creditLimit)||0);
+  /* CUSTTERM-v1 - CC 라고 한도를 0 으로 지우지 않는다. 하윤이 넣은 숫자가 그대로 보여야 한다.
+     ⚠ 신용 보류 규칙(saveOrder)은 안 건드렸다 - CC 는 원래 안 잡는다(정책). 그래서 밑에 적어 준다. */
+  const lim = Number(cs.creditLimit)||0;
   const room = lim > 0 ? (lim - out - openOrd) : null;
   const mas = cmMasNo(name);
-  const em = cs.email || ((typeof custEmailFor==='function') ? custEmailFor(name) : '') || '';
+  /* CUSTTERM-v1 - 우리 식구 주소는 거래처 카드에 안 보인다 */
+  const em = custEmailClean(cs.email || ((typeof custEmailFor==='function') ? custEmailFor(name) : '') || '');
   const bought = cmBought(name);
   const bk = (label, v, hot)=>'<div style="flex:1;min-width:84px;text-align:center;padding:7px 4px;border-radius:8px;background:'
     + (v>0.005?(hot?'#fef2f2':'#fffbeb'):'#f8fafc')+';border:1px solid '+(v>0.005?(hot?'#fca5a5':'#fcd34d'):'#e2e8f0')+';">'
@@ -37688,10 +37753,16 @@ function cmDetailPane(name){
         + '</tbody></table>' : '<div class="muted" style="font-size:11px;padding:8px 2px;">nothing shipped yet</div>')
     + '</div>';
   const nm = esc(name).replace(/'/g,"\\'");
+  /* CUSTTERM-v1 - 오른쪽 칸에서 쓰는 열쇠와 지금 적용되는 조건.
+     ⚠ cs.termType 이 비어 있어도 옛 오더에 조건이 박혀 있으면 그게 지금 적용되는 값이다 -
+        화면이 '- terms -' 로 보이면 하윤이 실제와 다른 것을 보게 된다. */
+  const _ck = esc(custKey(name));
+  const _tt = cs.termType || ((typeof custLastTermType==='function' ? custLastTermType(name).termType : '') || '');
   return '<div style="padding:14px 16px;">'
     /* 머리 */
     + '<div style="display:flex;align-items:flex-start;gap:10px;border-bottom:2px solid #e2e8f0;padding-bottom:11px;margin-bottom:12px;flex-wrap:wrap;">'
-      + '<div style="min-width:0;">'
+      /* CUSTTERM-v1 - max-width 를 줘야 긴 메일 줄이 단추들을 밀어내지 않는다 */
+      + '<div style="min-width:0;max-width:100%;flex:1 1 300px;">'
         + '<div style="font-size:18px;font-weight:900;color:#0f2a4a;display:flex;align-items:center;gap:8px;flex-wrap:wrap;">'+esc(name)
           + '<button class="btn btn-sm" style="border:none;padding:0 5px;font-size:12px;color:#64748b;font-weight:400;" onclick="cmRename(\''+nm+'\')" title="Rename this customer (updates all their orders)">✎</button>'
           + '<span style="font-size:11px;font-weight:400;">'+cmTypeChips(name, cs, isCC)+'</span></div>'
@@ -37705,7 +37776,9 @@ function cmDetailPane(name){
             }catch(e){ return ''; } })()
           + '</div>'
         + cmAddrRow(name, em)
-        + cmFlagsRow(name, cs, isCC, lim)
+        /* CUSTTERM-v1 - 여기 있던 작은 terms/한도 줄(cmFlagsRow)을 없앴다.
+           CC 를 고르면 사라졌고, 긴 이메일과 같이 카드를 밀어서 깨뜨렸다.
+           이제 오른쪽 TERMS · CREDIT LIMIT 칸에서 언제든 고친다. */
       + '</div>'
       + '<div style="margin-left:auto;display:flex;gap:5px;flex-wrap:wrap;">'
         + '<button class="btn btn-sm" onclick="openCustPrices(\''+nm+'\')" title="This customer\'s price list">💲 Prices</button>'
@@ -37724,9 +37797,21 @@ function cmDetailPane(name){
     + '</div>'
     + '<div style="display:grid;grid-template-columns:repeat(4,1fr);gap:8px;margin-bottom:12px;">'
       + cmKpi('OPEN ORDERS', openOrd>0.005?cmMoney0(openOrd):'—', 'received, not invoiced', '#fffbeb', '#fde68a', '#b45309')
-      + cmKpi('CREDIT LIMIT', isCC ? 'CC' : (lim?cmMoney0(lim):'—'), isCC?'credit card terms':'', '#f8fafc', '#e2e8f0', '#334155')
-      + cmKpi('AVAILABLE', room===null ? '—' : ((room<0?'−':'')+cmMoney0(Math.abs(room))), room===null?'no limit set':(room<0?'🔒 over limit':'room to order'), room!==null&&room<0?'#fef2f2':'#f8fafc', room!==null&&room<0?'#fecaca':'#e2e8f0', room!==null&&room<0?'#b91c1c':'#334155')
-      + cmKpi('TERMS', esc(cs.termType==='cc'?'Credit Card':(cs.termType?('Net '+cs.termType):'—')), '', '#f8fafc', '#e2e8f0', '#334155')
+      /* CUSTTERM-v1 - 이 두 칸은 **언제나** 보이고 그 자리에서 고친다 (CC 여도 마찬가지) */
+      + cmKpi('CREDIT LIMIT',
+          '<span style="display:inline-flex;align-items:center;gap:2px;justify-content:center;">'
+          + '<span style="font-size:13px;font-weight:800;">$</span>'
+          + '<input class="fi num" value="'+(lim?lim.toLocaleString():'')+'" placeholder="No limit"'
+          + ' title="Credit limit - blank or 0 means no limit"'
+          + ' oninput="this.value=this.value.replace(/[^0-9]/g,\'\').replace(/\\B(?=(\\d{3})+(?!\\d))/g,\',\')"'
+          + ' onchange="cmSet(\''+_ck+'\',\'creditLimit\',this.value)"'
+          + ' style="width:104px;text-align:right;font-family:Consolas,monospace;font-weight:800;font-size:14px;padding:2px 5px;"></span>',
+          lim ? (isCC ? 'CC - not held' : 'edit any time') : 'no limit - edit any time', '#f8fafc', '#e2e8f0', '#334155')
+      + cmKpi('AVAILABLE', room===null ? '—' : ((room<0?'−':'')+cmMoney0(Math.abs(room))),
+          room===null ? 'no limit set' : (isCC ? 'CC - not held' : (room<0?'🔒 over limit':'room to order')),
+          room!==null&&room<0&&!isCC?'#fef2f2':'#f8fafc', room!==null&&room<0&&!isCC?'#fecaca':'#e2e8f0', room!==null&&room<0&&!isCC?'#b91c1c':'#334155')
+      + cmKpi('TERMS', termSelectHtml(_ck, _tt, 'width:122px;font-size:12px;font-weight:800;padding:2px 4px;text-align:center;'),
+          'edit any time', '#f8fafc', '#e2e8f0', '#334155')
     + '</div>'
     /* A/R 나이 */
     + '<div style="font-size:11px;font-weight:800;color:#0f2a4a;margin-bottom:5px;">📅 A/R Aging</div>'
@@ -37812,9 +37897,9 @@ function renderCustomers(){
       const out = custOutstanding(m.name);
       const openOrd = custOpenOrdersAmt(m.name);
       const isCC = (cs.termType || custLastTermType(m.name).termType || '') === 'cc';
-      const lim = isCC ? 0 : (Number(cs.creditLimit) || 0);
+      const lim = Number(cs.creditLimit) || 0;   /* CUSTTERM-v1 - CC 여도 지우지 않는다 */
       const over = lim > 0 && (out + openOrd) > lim;
-      const em = cs.email || custEmailFor(m.name) || '';
+      const em = custEmailClean(cs.email || custEmailFor(m.name) || '');   /* CUSTTERM-v1 */
       const tt = cs.termType || custLastTermType(m.name).termType || '';
       const prof = custProfileFor(m.name) || {};
       const bo = cs.bill || {};
@@ -37834,12 +37919,10 @@ function renderCustomers(){
         <td style="font-weight:700;color:var(--ok);">${money2(m.sales)}</td>
         <td style="font-weight:800;color:${out>0?'#b91c1c':'#166534'};">${money2(out)}</td>
         <td style="font-weight:700;color:${openOrd>0?'#b45309':'#9ca3af'};" title="Orders received but not yet invoiced (excl. N/A lines)">${openOrd>0.005?money2(openOrd):'—'}</td>
-        <td>${isCC ? '<span class="muted" style="font-size:11px;" title="Credit Card terms — no credit limit needed">— CC —</span>' : `<div style="display:flex;align-items:center;gap:3px;justify-content:center;"><span style="font-weight:800;color:var(--text2);">$</span><input class="fi num" value="${lim?lim.toLocaleString():''}" placeholder="No limit" oninput="this.value=this.value.replace(/[^0-9]/g,'').replace(/\B(?=(\d{3})+(?!\d))/g,',')" onchange="cmSet('${esc(k)}','creditLimit',this.value)" style="width:95px;text-align:right;font-family:Consolas,monospace;font-weight:700;"></div>`}</td>
+        <td><div style="display:flex;align-items:center;gap:3px;justify-content:center;"><span style="font-weight:800;color:var(--text2);">$</span><input class="fi num" value="${lim?lim.toLocaleString():''}" placeholder="No limit" title="Credit limit - blank or 0 means no limit" oninput="this.value=this.value.replace(/[^0-9]/g,'').replace(/\B(?=(\d{3})+(?!\d))/g,',')" onchange="cmSet('${esc(k)}','creditLimit',this.value)" style="width:95px;text-align:right;font-family:Consolas,monospace;font-weight:700;"></div></td>
         <td style="font-weight:800;font-family:Consolas,monospace;color:${room===null?'#9ca3af':(room<0?'#b91c1c':'#166534')};">${room===null?'—':(room<0?'−':'')+'$'+Math.abs(room).toLocaleString(undefined,{maximumFractionDigits:0})}</td>
-        <td><select class="fi" onchange="cmSet('${esc(k)}','termType',this.value)" style="width:90px;font-size:11.5px;">
-          ${[['',''],['30','Net 30'],['45','Net 45'],['60','Net 60'],['cc','Credit Card']].map(o=>`<option value="${o[0]}" ${tt===o[0]?'selected':''}>${o[1]||'—'}</option>`).join('')}
-        </select></td>
-        <td><input class="fi" value="${esc(em)}" placeholder="email" onchange="cmSet('${esc(k)}','email',this.value)" style="width:180px;font-size:11px;"></td>
+        <td>${termSelectHtml(esc(k), tt, 'width:118px;font-size:11.5px;')}</td>
+        <td><input class="fi" value="${esc(em)}" placeholder="email" title="${esc(em)}" onchange="cmSet('${esc(k)}','email',this.value)" style="width:180px;font-size:11px;"></td>
         <td style="white-space:nowrap;"><button class="btn btn-sm" onclick="openCustPrices('${esc(m.name)}')" title="Last selling prices by item for this customer">💲 Prices</button>
           <button class="btn btn-sm" style="margin-left:4px;${(cs.ups&&(cs.ups.account||cs.ups.mode))?'background:#7c2d12;color:#fff;border-color:#7c2d12;':''}" onclick="openCustUps('${esc(m.name)}')" title="UPS shipping account &amp; billing for this customer">🏷 UPS</button>
           <label style="display:inline-flex;align-items:center;gap:4px;margin-left:6px;font-size:11px;font-weight:700;color:#0e7490;cursor:pointer;vertical-align:middle;" title="Website customer — new orders auto-check 🌐 Website Customer"><input type="checkbox" ${cs.webCust?'checked':''} onchange="cmSet('${esc(k)}','webCust',this.checked)" style="width:13px;height:13px;accent-color:#0e7490;cursor:pointer;">🌐 Website</label>
@@ -38250,16 +38333,22 @@ async function cmDelete(name){
 /* 글자 칸(이메일 등)은 저장만 하고 화면을 다시 그리지 않는다 — 다시 그리면 자리가 튄다 (v1002) */
 async function cmSetQuiet(k, field, val){
   const cur = custStore[k] || {};
-  cur[field] = String(val||'').trim();
-  try{ await saveCustomer(k, cur); showToast('💾 Saved'); }catch(e){ showToast('⚠ Not saved'); }
+  /* CUSTTERM-v1 - 거래처 메일 칸에는 우리 식구 주소를 넣지 않는다 */
+  cur[field] = (field === 'email') ? custEmailClean(val) : String(val||'').trim();
+  let ok = false;
+  try{ ok = await saveCustomer(k, cur); }catch(e){ ok = false; }
+  showToast(ok ? '💾 Saved' : '\u26a0 NOT saved - the server refused it. Try again.');
 }
 async function cmSet(k, field, val){
   const cur = custStore[k] || {};
   if(field === 'creditLimit') cur.creditLimit = parseFloat(String(val).replace(/,/g,'')) || 0;
   else if(field === 'webCust') cur.webCust = !!val;
+  else if(field === 'email') cur.email = custEmailClean(val);   /* CUSTTERM-v1 */
   else cur[field] = String(val||'').trim();
-  await saveCustomer(k, cur);
-  showToast('💾 Saved');
+  /* CUSTTERM-v1 - 진짜로 써졌는지 보고 말한다 (예전에는 무조건 Saved 라고 했다) */
+  let ok = false;
+  try{ ok = await saveCustomer(k, cur); }catch(e){ ok = false; }
+  showToast(ok ? '💾 Saved' : '\u26a0 NOT saved - the server refused it. Try again.');
   renderCustomers();
 }
 function openCustAddr(cust){
