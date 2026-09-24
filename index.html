@@ -217,7 +217,7 @@ body.po-dragging{user-select:none;}
   </span>
   <select id="lang-sel" onchange="setLang(this.value)" style="font-size:11px;padding:3px 6px;border-radius:5px;border:none;background:#1d3f66;color:#fff;"><option value="ko">한국어</option><option value="en">English</option><option value="es">Español</option></select>
   <button id="wide-btn" class="btn btn-sm" onclick="toggleWide()" title="화면 넓게 / 좁게 — 기본은 넓게 (이 브라우저에만 저장돼)" style="padding:2px 8px;font-size:10px;background:#1d3f66;color:#cfe0f2;border-color:#2b5384;">↔ Wide</button>
-  <span id="app-ver" style="font-size:10px;color:#9fb8d4;">v1165</span>
+  <span id="app-ver" style="font-size:10px;color:#9fb8d4;">v1166</span>
 </div>
 <script>
 // ↔ 넓게 보기 — 브라우저마다 따로 저장 (v793)
@@ -333,7 +333,13 @@ try{ applyWide(localStorage.getItem('psx_wide') !== '0'); }catch(e){ applyWide(t
         <input type="hidden" id="m-via">
       </div>
     </div>
-    <div style="margin-top:12px;font-size:11px;font-weight:800;color:var(--text2);letter-spacing:.5px;">BILL TO</div>
+    <!-- CUSTSAVE-v1 - 이 주소를 거래처 카드에 저장하는 체크 (오더 Save 할 때 같이 들어간다) -->
+    <div style="margin-top:12px;font-size:11px;font-weight:800;color:var(--text2);letter-spacing:.5px;display:flex;align-items:center;gap:10px;flex-wrap:wrap;">BILL TO
+      <label id="m-bill-save-wrap" style="display:none;align-items:center;gap:5px;font-weight:700;color:var(--primary);cursor:pointer;text-transform:none;letter-spacing:0;" title="Save this billing address to the customer card when the order is saved">
+        <input type="checkbox" id="m-bill-save" style="width:14px;height:14px;accent-color:var(--primary);cursor:pointer;">💾 Save to customer
+      </label>
+      <span id="m-bill-save-hint" style="display:none;font-size:10.5px;font-weight:600;text-transform:none;letter-spacing:0;color:var(--text2);"></span>
+    </div>
     <div class="grid g6" style="margin-top:5px;">
       <div class="ff" style="grid-column:span 2;"><label>Name (Company)</label><input class="fi" id="m-bill-name" placeholder="e.g. T-Shirt Tycoon, Inc"></div>
       <div class="ff" style="grid-column:span 4;"><label>Address</label><input class="fi" id="m-bill-addr" placeholder="Address" data-i18n-ph="ph_addr"></div>
@@ -348,6 +354,11 @@ try{ applyWide(localStorage.getItem('psx_wide') !== '0'); }catch(e){ applyWide(t
       <select class="fi" id="m-ship-pick" onfocus="fillShipPick()" onchange="applyShipPick(this.value)" style="width:auto;max-width:190px;font-size:11px;padding:3px 6px;" title="Pick a saved ship-to">
         <option value="">📍 saved ship-to...</option>
       </select>
+      <!-- CUSTSAVE-v1 - 이 배송지를 거래처 카드의 저장한 배송지 목록에 더한다 -->
+      <label id="m-ship-save-wrap" style="display:none;align-items:center;gap:5px;font-weight:700;color:var(--primary);cursor:pointer;text-transform:none;letter-spacing:0;" title="Add this ship-to address to the customer card when the order is saved">
+        <input type="checkbox" id="m-ship-save" style="width:14px;height:14px;accent-color:var(--primary);cursor:pointer;">💾 Save to customer
+      </label>
+      <span id="m-ship-save-hint" style="display:none;font-size:10.5px;font-weight:600;text-transform:none;letter-spacing:0;color:var(--text2);"></span>
     </div>
     <div class="grid g6" style="margin-top:5px;">
       <div class="ff" style="grid-column:span 2;"><label>Name (Company / Recipient)</label><input class="fi" id="m-ship-name" placeholder="e.g. ABC Warehouse"></div>
@@ -1384,6 +1395,7 @@ function copyBillToShip(){
 function toggleSameAsBill(on){
   _sameAsBill = on;
   if(on) copyBillToShip();
+  try{ custSavePaint(); }catch(e){}      /* CUSTSAVE-v1 */
 }
 document.addEventListener('input', e=>{
   if(_sameAsBill && e.target && /^m-bill-/.test(e.target.id||'')) copyBillToShip();
@@ -3911,6 +3923,7 @@ function setMeta(m){
   if(m.shipto && !m.shipAddr){ fillAddr('ship', m.shipto); } else {
     $('m-ship-name').value=m.shipName||''; $('m-ship-addr').value=m.shipAddr||''; $('m-ship-city').value=m.shipCity||''; $('m-ship-state').value=m.shipState||''; $('m-ship-zip').value=m.shipZip||'';
   }
+  try{ custSavePaint(); }catch(e){}      /* CUSTSAVE-v1 - 폼을 비우면 체크도 풀린다 */
 }
 // 구버전 라인 호환: 설명이 style 칸에 들어있던 데이터 교정 + 간단 표기 변환
 function normalizeLines(lines){
@@ -4502,6 +4515,10 @@ async function _saveCurrentInner(){
   if(_ci >= 0) savedCache[_ci] = rec; else savedCache.unshift(rec);
   renderSaved();
   showToast(t('a_saved',{x:activeWhs().map(w=>docNumber(w)).join(' · ')}));
+  /* CUSTSAVE-v1 - 「💾 Save to customer」 를 체크했으면 거래처 카드에도 넣는다.
+     ⚠ clearOrderForm() **앞**이어야 한다 - 뒤면 체크가 이미 풀려 있다.
+     ⚠ 실패해도 오더 저장은 이미 끝난 것이다 - 여기서 막지 않는다 (토스트로만 알린다). */
+  try{ await custSaveFromOrder(rec); }catch(e){}
   // 자동 내부 알림은 보류 (거래처 이멜에 전직원 CC로 대체) — 켜려면 아래 주석 해제
   // if(!existing) notifyNewPR(rec);
   if(existing && orderChanges.length) notifyModified(rec, orderChanges);
@@ -9106,6 +9123,7 @@ function applyCustProfile(){
     if(empty('m-' + pre + '-name')) set('m-' + pre + '-name', cust);
   });
   fillShipPick();
+  try{ custSavePaint(); }catch(e){}      /* CUSTSAVE-v1 */
   const msg = [];
   if(filled) msg.push('address filled in' + (src ? (' (' + src + ')') : ''));
   if(marks.length) msg.push(marks.join(' · '));
@@ -38091,6 +38109,132 @@ async function setShipDefault(k, cust, i){
   renderCustomers();
   showToast('★ Set as default');
 }
+/* ══ CUSTSAVE-v1 (2026-09-24) ═══════════════════════════════════════════
+   오더 화면의 주소를 거래처 카드에 저장하는 체크.
+   [stated] 하윤: "새로운 shipping 주소나 billing address가 생기면 ... 체크하면 save가"
+   ⚠ 저장은 **오더를 Save 할 때** 일어난다 (`_saveCurrentInner` 끝에서 부른다).
+   ⚠ 반쪽 주소는 저장 안 한다 - 번지·도시·주(2글자)·zip(5자리)이 다 있어야 체크가 뜬다. */
+function custSaveAddrOf(pre){
+  const g = id => String((document.getElementById(id) || {}).value || '').trim();
+  return { name: g('m-' + pre + '-name'), addr: g('m-' + pre + '-addr'), city: g('m-' + pre + '-city'),
+           state: g('m-' + pre + '-state').toUpperCase(), zip: g('m-' + pre + '-zip') };
+}
+function custSaveOk(o){
+  if(!o) return false;
+  return !!(String(o.addr||'').trim() && String(o.city||'').trim()
+            && /^[A-Za-z]{2}$/.test(String(o.state||'').trim())
+            && /^\d{5}(-\d{4})?$/.test(String(o.zip||'').trim()));
+}
+/* 같은 주소인지 볼 때는 점·쉼표·대소문자·띄어쓰기를 무시한다
+   (`614 N. 1st St.` 와 `614 N 1ST ST` 는 같은 곳이다). 이름은 안 본다 - 받는 사람은 바뀔 수 있다. */
+function custSaveNorm(o){
+  if(!o) return '';
+  return [o.addr, o.city, o.state, o.zip].map(x=>String(x||'').toLowerCase().replace(/[^a-z0-9]/g,'')).join('|');
+}
+function custSaveCard(){
+  const cust = String((document.getElementById('m-cust') || {}).value || '').trim();
+  if(!cust) return null;
+  const k = custKey(cust);
+  return { cust: cust, k: k, d: custStore[k] || {} };
+}
+function custSavePaint(){
+  try{
+    /* CUSTSAVE-v1 - 거래처를 바꾸면 체크를 푼다.
+       ⚠ 안 풀면 A 거래처에서 켠 체크가 B 거래처 카드에 저장된다 (엉뚱한 카드에 주소가 박힌다). */
+    const c0 = custSaveCard();
+    const nowK = c0 ? c0.k : '';
+    if(window._custSaveLastK !== nowK){
+      window._custSaveLastK = nowK;
+      ['bill','ship'].forEach(pre=>{ const cb0 = document.getElementById('m-' + pre + '-save'); if(cb0) cb0.checked = false; });
+    }
+    ['bill','ship'].forEach(pre=>{
+      const cb   = document.getElementById('m-' + pre + '-save');
+      const wrap = document.getElementById('m-' + pre + '-save-wrap');
+      const hint = document.getElementById('m-' + pre + '-save-hint');
+      if(!cb || !wrap || !hint) return;
+      const c = custSaveCard(), o = custSaveAddrOf(pre);
+      let show = false, txt = '', warn = false;
+      if(c && custSaveOk(o)){
+        if(pre === 'bill'){
+          const b = c.d.bill;
+          if(b && custSaveNorm(b) === custSaveNorm(o)){
+            txt = '✓ on the customer card';
+          } else if(b && (String(b.addr||'').trim() || String(b.city||'').trim())){
+            show = true; warn = true;
+            txt = 'replaces ' + [b.addr, b.city, b.state, b.zip].filter(Boolean).join(' ');
+          } else {
+            show = true; txt = 'not on the customer card yet';
+          }
+        } else {
+          const sts = Array.isArray(c.d.shipTos) ? c.d.shipTos : [];
+          const hit = sts.map(custSaveNorm).indexOf(custSaveNorm(o));
+          if(hit >= 0) txt = '✓ saved ship-to #' + (hit + 1);
+          else { show = true; txt = 'adds to the saved ship-to list (' + sts.length + ' now)'; }
+        }
+      }
+      wrap.style.display = show ? 'flex' : 'none';
+      if(!show) cb.checked = false;          /* 체크를 숨길 땐 반드시 풀어준다 - 안 보이는 체크로 저장되면 안 된다 */
+      hint.textContent = txt;
+      hint.style.display = txt ? 'inline' : 'none';
+      hint.style.color = warn ? '#b91c1c' : (show ? 'var(--text2)' : '#15803d');
+      hint.style.fontWeight = warn ? '800' : '600';
+    });
+  }catch(e){}
+}
+/* 주소칸·거래처칸을 고치면 바로 다시 그린다 (한 군데서 위임해서 듣는다) */
+(function(){
+  try{
+    document.addEventListener('input', e=>{
+      const id = (e.target && e.target.id) || '';
+      if(id === 'm-cust' || /^m-(bill|ship)-(name|addr|city|state|zip)$/.test(id)) custSavePaint();
+    });
+  }catch(e){}
+})();
+/* ⚠⚠ 앱의 saveCustomer() 는 return=minimal 이고 통째로 try/catch 라 **실패해도 조용하다.**
+   거래처 주소는 조용히 안 써지면 안 되는 값이라 여기서는 돌아온 줄을 확인한다.
+   (PostgREST 는 0 줄이 바뀌어도 204/200 을 준다 - representation 만이 증거다) */
+async function custSaveWrite(k, data){
+  const r = await sbFetch('/rest/v1/pr_customers?on_conflict=k', { method:'POST',
+    headers:{ Prefer:'resolution=merge-duplicates,return=representation' },
+    body: JSON.stringify([{ k:k, data:data, updated_at:new Date().toISOString() }]) });
+  if(!r.ok) throw new Error('HTTP ' + r.status);
+  const back = await r.json();
+  if(!Array.isArray(back) || !back.length) throw new Error('nothing was written');
+  custStore[k] = back[0].data || data;
+  return true;
+}
+/* 오더를 Save 한 직후에 부른다. 값은 **rec.meta**(저장된 스냅샷)를 쓴다 - 화면은 곧 비워진다. */
+async function custSaveFromOrder(rec){
+  const m = (rec && rec.meta) || {};
+  const cust = String(m.cust || '').trim();
+  if(!cust) return;
+  const wantB = !!(document.getElementById('m-bill-save') && document.getElementById('m-bill-save').checked);
+  const wantS = !!(document.getElementById('m-ship-save') && document.getElementById('m-ship-save').checked);
+  if(!wantB && !wantS) return;
+  const pick = (n,a,c,s,z) => ({ name:String(m[n]||'').trim(), addr:String(m[a]||'').trim(),
+    city:String(m[c]||'').trim(), state:String(m[s]||'').trim().toUpperCase(), zip:String(m[z]||'').trim() });
+  const B = pick('billName','billAddr','billCity','billState','billZip');
+  const S = pick('shipName','shipAddr','shipCity','shipState','shipZip');
+  const k = custKey(cust);
+  const cur = JSON.parse(JSON.stringify(custStore[k] || {}));
+  const done = [];
+  if(wantB && custSaveOk(B)){ cur.bill = B; done.push('Bill To'); }
+  if(wantS && custSaveOk(S)){
+    if(!Array.isArray(cur.shipTos)) cur.shipTos = [];
+    /* 맨 아래에 더한다 - ★ 첫 줄(기본 배송지)이 바뀌면 다음 오더의 자동 채움이 달라진다 */
+    if(cur.shipTos.map(custSaveNorm).indexOf(custSaveNorm(S)) < 0){ cur.shipTos.push(S); done.push('Ship To'); }
+  }
+  if(!done.length) return;
+  if(!cur.name) cur.name = cust;        /* 카드에 이름이 없던 곳은 같이 채워준다 */
+  try{
+    await custSaveWrite(k, cur);
+    showToast('👤 ' + cust + ' — ' + done.join(' · ') + ' saved to the customer card');
+    try{ logHist(rec.base, 'Customer card updated — ' + done.join(' · ')); }catch(e){}
+    try{ fillShipPick(); }catch(e){}
+  }catch(e){
+    showToast('⚠ Could not save to the customer card: ' + (e.message || e));
+  }
+}
 function fillShipPick(){
   const sel = $('m-ship-pick'); if(!sel) return;
   const cust = $('m-cust').value.trim();
@@ -38106,6 +38250,7 @@ function applyShipPick(v){
   if($('m-ship-name')) $('m-ship-name').value = s2.name || '';
   $('m-ship-addr').value = s2.addr || ''; $('m-ship-city').value = s2.city || ''; $('m-ship-state').value = String(s2.state||'').toUpperCase(); $('m-ship-zip').value = s2.zip || '';
   showToast('📍 ' + (s2.name || s2.addr) + ' applied');
+  try{ custSavePaint(); }catch(e){}      /* CUSTSAVE-v1 */
 }
 async function stUpd(k, i, field, val){
   const cur = custStore[k] || {};
