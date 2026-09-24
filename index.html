@@ -304,7 +304,7 @@ body.po-dragging{user-select:none;}
   </span>
   <select id="lang-sel" onchange="setLang(this.value)" style="font-size:11px;padding:3px 6px;border-radius:5px;border:none;background:#1d3f66;color:#fff;"><option value="ko">한국어</option><option value="en">English</option><option value="es">Español</option></select>
   <button id="wide-btn" class="btn btn-sm" onclick="toggleWide()" title="화면 넓게 / 좁게 — 기본은 넓게 (이 브라우저에만 저장돼)" style="padding:2px 8px;font-size:10px;background:#1d3f66;color:#cfe0f2;border-color:#2b5384;">↔ Wide</button>
-  <span id="app-ver" style="font-size:10px;color:#9fb8d4;">v1187</span>
+  <span id="app-ver" style="font-size:10px;color:#9fb8d4;">v1188</span>
 </div>
 <script>
 // ↔ 넓게 보기 — 브라우저마다 따로 저장 (v793)
@@ -5524,6 +5524,32 @@ async function replaceOrderDo(){
 }
 // ══════════ ↩ Customer Return / RMA ══════════
 function recReturns(s){ return (s && s.meta && Array.isArray(s.meta._returns)) ? s.meta._returns : []; }
+/* RACM-v1 - 반품 한 건에는 서로 다른 두 가지 일이 걸려 있다.
+     (1) 거래처에게 크레딧을 보내는 일  - 사무실 일. 물건을 안 봐도 금액이 정해진다.
+     (2) 돌아온 물건을 재고로 넣는 일    - 창고 매니저 일. 물건을 봐야 안다.
+   옛 데이터는 status 한 칸으로 둘을 같이 처리했다 (pending -> received).
+   그래서 (1)이 (2)를 기다리다가 42일이 지나갔다. 이제 두 축으로 읽는다.
+   ⚠ 옛 레코드는 고치지 않는다 - 아래 세 함수가 번역해 준다.
+      그래서 status 를 보던 옛 코드도 그대로 돌아간다. */
+function retCmNo(ret){
+  if(!ret) return '';
+  return String(ret.cm || (ret.received && ret.received.cm) || '');
+}
+/* prepared = 번호는 있고 아직 안 나갔다 | sent = 나갔다 | void = RA 가 취소됐다 */
+function retCmStatus(ret){
+  if(!ret) return '';
+  if(ret.cmStatus) return String(ret.cmStatus);
+  if(ret.status === 'void') return 'void';
+  if(ret.status === 'received') return 'sent';   /* 옛 흐름은 받는 순간 발송까지 했다 */
+  return 'prepared';
+}
+/* pending = 돌아온 물건을 아직 재고에 안 넣었다 | done = 넣었다(또는 폐기로 정리했다) */
+function retInvStatus(ret){
+  if(!ret) return '';
+  if(ret.invStatus) return String(ret.invStatus);
+  if(ret.status === 'received') return 'done';   /* 옛 흐름은 받는 순간 재고까지 했다 */
+  return 'pending';
+}
 function recHasPendingReturn(s){ return recReturns(s).some(r=>r && r.status==='pending'); }
 function raGen(base, rec){ const n = recReturns(rec).length + 1; return 'RA-' + base + (n>1?('-'+n):''); }
 function openReturnModal(base){
@@ -5636,14 +5662,22 @@ async function returnDo(base, doEmail){
   const email = String((document.getElementById('rt-email')||{}).value||'').trim();
   const by = (SESS&&SESS.email)||'';
   const ra = raGen(base, rec);
+  /* RACM-v1 - 크레딧 메모를 여기서 미리 만든다. 번호까지 뽑고 발송만 나중에 한다.
+     어려운 것(줄/수량/단가/사유)은 지금 사람이 자료를 앞에 놓고 앉아서 이미 다 했다.
+     창고는 물건 받을 때 버튼 하나만 누르면 된다 - 판단할 게 없으니 미룰 이유도 없다.
+     ⚠ 번호를 못 뽑아도 RA 는 만든다. 번호 하나 때문에 반품 접수를 막으면 창고가 멈춘다.
+        그때는 받을 때 뽑는다 (아래 returnReceiveConfirm 이 비어 있으면 뽑는다). */
+  let cmNo = '';
+  try{ cmNo = await nextInvNo(); }catch(e){ console.warn('[RACM] credit memo number deferred', e); }
   const ret = { ra, status:'pending', reasons, reason, custEmail:email, cc: !!(rec.meta&&rec.meta.cc), lines,
+    cm: cmNo, cmStatus:'prepared', invStatus:'pending',
     createdAt:new Date().toISOString(), createdBy:by, emailedAt:null };
   rec.meta = rec.meta||{};
   rec.meta._returns = recReturns(rec).concat([ret]);
   try{
     await sbFetch('/rest/v1/pr_orders?base=eq.'+encodeURIComponent(base), {method:'PATCH', headers:{Prefer:'return=minimal'}, body:JSON.stringify({meta:rec.meta, updated_at:new Date().toISOString()})});
   }catch(e){ alert('⚠ Failed to save return: '+(e.message||e)); return; }
-  logHist(base, '↩ Return created — '+ra+' ('+lines.length+' lines'+(reason?', '+reason:'')+')');
+  logHist(base, '↩ Return created — '+ra+(cmNo?(' · credit memo '+cmNo+' prepared'):'')+' ('+lines.length+' lines'+(reason?', '+reason:'')+')');
   const m = document.getElementById('modal-return'); if(m) m.remove();
   renderSaved();
   if(doEmail){
@@ -5690,7 +5724,14 @@ function buildRASheetHtml(rec, ret, wh, lines){
       <thead><tr><th class="tl">Style</th><th class="tl">Color</th><th>Size</th><th>Qty</th><th class="tl">Reason</th></tr></thead>
       <tbody>${rows}</tbody>
     </table>
-    <p style="margin-top:18px;font-size:12.5px;color:#333;">Please print this sheet and include it inside the box sent to our <b>${esc(WH_LABEL[wh]||wh)}</b> warehouse. Once we receive and inspect the items, a credit memo will be issued. Thank you.</p>
+    ${(function(){ /* RACM-v1 - 번호를 미리 알려준다. 거래처가 물건을 보내기 전에 번호를 손에 쥔다. */
+        const _c = (typeof retCmNo==='function') ? retCmNo(ret) : '';
+        if(!_c) return '';
+        return '<div style="margin-top:16px;padding:10px 14px;background:#fff7ed;border:1.5px solid #fdba74;border-radius:8px;">'
+          + '<span style="font-size:11px;font-weight:800;color:#9a3412;letter-spacing:.5px;">CREDIT MEMO PREPARED</span>'
+          + '<div style="font-size:18px;font-weight:900;color:#7c2d12;font-family:Consolas,monospace;margin-top:2px;">' + esc(_c) + '</div>'
+          + '<div style="font-size:11.5px;color:#7c2d12;margin-top:2px;">This credit memo is already prepared for this return and will be issued as soon as we receive the items.</div></div>'; })()}
+    <p style="margin-top:18px;font-size:12.5px;color:#333;">Please print this sheet and include it inside the box sent to our <b>${esc(WH_LABEL[wh]||wh)}</b> warehouse. Thank you.</p>
   </div>`;
 }
 async function sendReturnEmail(rec, ret){
@@ -5718,7 +5759,9 @@ async function sendReturnEmail(rec, ret){
     + psmTable(
         psmRow('PO #', esc(meta.po||''))
       + psmRow('Reason', esc(ret.reason||'—'))
-      + psmRow('Total', totQty.toLocaleString()+' pcs'))
+      + psmRow('Total', totQty.toLocaleString()+' pcs')
+      /* RACM-v1 - 번호가 없으면 줄을 안 만든다 (빈 칸을 보내지 않는다) */
+      + (retCmNo(ret) ? psmRow('Credit memo #', '<b>'+esc(retCmNo(ret))+'</b>') : ''))
     + psmP(multi ? '<b>Ship to TWO warehouses</b> &mdash; see below.' : 'Return shipping address:')
     + addrSection
     + psmList(
@@ -5727,7 +5770,10 @@ async function sendReturnEmail(rec, ret){
     + psmP(multi
         ? ('📎 &nbsp;<b>' + whs.length + ' printable Return Authorization sheets (PDF)</b> are attached &mdash; one per warehouse. Please print each and place it inside the matching box.')
         : '📎 &nbsp;A printable <b>Return Authorization sheet (PDF)</b> is attached &mdash; please <b>print it and place it inside the box</b> together with the returned items.')
-    + psmP('Once we receive and inspect the items, a credit memo will be issued. Thank you.'));
+    + psmP(retCmNo(ret)
+        ? ('Credit memo <b>' + esc(retCmNo(ret)) + '</b> has already been prepared for this return '
+           + 'and will be issued as soon as we receive the items. Thank you.')
+        : 'Once we receive and inspect the items, a credit memo will be issued. Thank you.'));
   // 창고별 RA PDF 첨부 (SC/CA 각각)
   let raAtt = [];
   for(const w of whs){
@@ -5866,17 +5912,34 @@ async function returnResendReceivedEmail(base, ra){
   }catch(e){ alert('📧 Email failed: '+(e.message||e)); }
 }
 async function returnCancel(base, ra){
-  if(!confirm('🗑 Cancel return '+ra+'?\nThis removes the RA. (No stock or credit changes were made yet.)')) return;
+  /* RACM-v1 - 번호가 이미 나간 반품은 지우지 않는다.
+     크레딧 메모 번호는 인보이스와 같은 번호통에서 나온다. 레코드를 지우면 그 번호가
+     조용히 사라지고, 장부에는 설명 안 되는 구멍만 남는다. 그래서 VOID 로 남긴다.
+     번호가 없는 반품(뽑기 실패)은 남길 이유가 없으니 예전처럼 지운다. */
   const rec = savedCache.find(s=>s.base===base); if(!rec) return;
-  rec.meta = rec.meta||{};
-  rec.meta._returns = recReturns(rec).filter(r=>r.ra!==ra);
+  const _ret = recReturns(rec).find(r=>r.ra===ra);
+  const _cm = retCmNo(_ret);
+  if(_cm){
+    if(!confirm('🚫 Void return '+ra+'?\n\nCredit memo '+_cm+' was already prepared for it.\n'
+      + 'The number stays on the books as VOID so it can be accounted for — it is never reused.\n\n'
+      + 'No stock or credit changes were made.')) return;
+    _ret.status='void'; _ret.cmStatus='void'; _ret.invStatus='done';
+    _ret.voidedAt=new Date().toISOString(); _ret.voidedBy=(SESS&&SESS.email)||'';
+    rec.meta = rec.meta||{};
+    rec.meta._returns = recReturns(rec).map(r=>r.ra===ra?_ret:r);
+  } else {
+    if(!confirm('🗑 Cancel return '+ra+'?\nThis removes the RA. (No stock or credit changes were made yet.)')) return;
+    rec.meta = rec.meta||{};
+    rec.meta._returns = recReturns(rec).filter(r=>r.ra!==ra);
+  }
   try{
     await sbFetch('/rest/v1/pr_orders?base=eq.'+encodeURIComponent(base), {method:'PATCH', headers:{Prefer:'return=minimal'}, body:JSON.stringify({meta:rec.meta, updated_at:new Date().toISOString()})});
   }catch(e){ alert('⚠ Failed to cancel: '+(e.message||e)); return; }
-  logHist(base, '↩ Return cancelled — '+ra);
+  logHist(base, _cm ? ('🚫 Return voided — '+ra+' · credit memo '+_cm+' VOID (number retired, never reused)')
+                   : ('↩ Return cancelled — '+ra));
   const m=document.getElementById('modal-radetail'); if(m) m.remove();
   renderSaved();
-  showToast('🗑 '+ra+' cancelled');
+  showToast(_cm ? ('🚫 '+ra+' voided · credit memo '+_cm+' VOID') : ('🗑 '+ra+' cancelled'));
 }
 // ═══ 📦 Receive & Confirm → 재고 복구 + 📝 Credit Memo 발행 (v500) ═══
 // PC Room B-grade(bqty) 에 수량 추가 — 반품 B-grade 복구용 (v501)
@@ -6069,7 +6132,10 @@ async function returnReceiveConfirm(base, ra){
      [stated] 하윤: "credit memo#도 인보이스 넘버처럼 해야하는거 아니야"
      ⚠ 여기서 딱 한 번 뽑고 아래 ret.received.cm 에 저장한다. 종이를 다시 찍을 때는
         저장된 값을 읽으므로 번호가 또 안 늘어난다. */
-  const cm = await nextInvNo();
+  /* RACM-v1 - 번호는 RA 를 만들 때 이미 뽑아 뒀다. 있으면 그걸 그대로 쓴다.
+     ⚠ 여기서 또 뽑으면 같은 크레딧에 번호가 두 개 생긴다. */
+  let cm = retCmNo(ret);
+  if(!cm) cm = await nextInvNo();
   for(const l of recvLines){
     const toWh=(l.toWh||l.wh)==='CA'?'CA':'SC';
     const k=pcKey(l.style, l.color, toWh), sz=String(l.size).toUpperCase();
@@ -6077,6 +6143,9 @@ async function returnReceiveConfirm(base, ra){
     if(l.gradeB>0){ try{ await pcAddB(k, sz, l.gradeB, '↩ Return '+ra+' received (B grade)'); }catch(e){} }
   }
   ret.status='received';
+  /* RACM-v1 - 두 축을 같이 찍는다. 이 판에서는 발송과 재고가 아직 한 버튼에 있다.
+     버튼을 쪼개는 것은 다음 판이다 - 그때 이 두 줄이 갈라진다. */
+  ret.cm=cm; ret.cmStatus='sent'; ret.invStatus='done';
   ret.received={ at:new Date().toISOString(), by:(SESS&&SESS.email)||'', lines:recvLines, creditAmount:creditAmt, restockTotal:restockTot, restockA:restockA, restockB:restockB, failedTotal:totF, cm:cm };
   rec.meta=rec.meta||{};
   rec.meta._returns=recReturns(rec).map(r=>r.ra===ra?ret:r);
@@ -14451,7 +14520,11 @@ function invScanMax(){
      DB 를 못 쓸 때 쓰는 최후 수단 경로가 크레딧 메모 번호를 다시 낼 수 있다.
      ⚠ 옛 'CM-...' 문자열은 invSeqOf 가 0 을 돌려주므로 자연히 무시된다. */
   (savedCache||[]).forEach(r=>recReturns(r).forEach(t=>{
-    const n = invSeqOf((t && t.received && t.received.cm) || '', yy);
+    /* RACM-v1 - 발송 전(prepared)·무효(void) 번호도 이미 쓰인 번호다.
+       ⚠ 여기서 t.cm 을 빼먹으면, DB 를 못 쓸 때 쓰는 최후 수단 경로가
+          아직 안 나간 크레딧 메모 번호를 인보이스에 다시 내준다. */
+    const n = Math.max(invSeqOf((t && t.cm) || '', yy),
+                       invSeqOf((t && t.received && t.received.cm) || '', yy));
     if(n > mx) mx = n;
   }));
   return mx;
@@ -41602,9 +41675,13 @@ function kpiPendingReturns(){
   const rows0 = [];
   (savedCache||[]).forEach(s=>{
     (typeof recReturns==='function' ? recReturns(s) : []).forEach(r=>{
-      if(!r || r.status!=='pending') return;
+      /* RACM-v1 - 「크레딧이 아직 안 나간 것」이 기준이다. 옛 status 대신 두 축으로 읽는다.
+         ⚠ 날짜 칸이 r.at / r.created 만 보고 있었다 - 실제 필드는 createdAt 이라서
+            목록에 날짜가 하나도 안 찍히고 있었다. 42일 묵은 건이 날짜 없이 보였다. */
+      if(!r || retCmStatus(r) !== 'prepared') return;
       rows0.push({ base:s.base, ra:r.ra, po:(s.meta&&s.meta.po)||'', cust:(s.meta&&s.meta.cust)||'',
-                   at:r.at||r.created||'', reason:r.reason||r.note||'', qty:(r.lines||[]).reduce((a,l)=>a+(Number(l.qty)||0),0) });
+                   at:r.createdAt||r.at||r.created||'', cm:retCmNo(r),
+                   reason:r.reason||r.note||'', qty:(r.lines||[]).reduce((a,l)=>a+(Number(l.qty)||0),0) });
     });
   });
   rows0.sort((a,b)=> String(a.at) < String(b.at) ? -1 : 1);
@@ -41615,13 +41692,22 @@ function kpiPendingReturns(){
     +   '<div style="font-size:13px;font-weight:800;color:#0f2a4a;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">'+esc(r.cust||'(no name)')
     +     ' <span style="color:#64748b;font-weight:600;">· PO '+esc(r.po||'—')+'</span></div>'
     +   '<div style="font-size:11px;color:#94a3b8;margin-top:3px;">RA <b style="font-family:Consolas,monospace;color:#ea580c;">'+esc(r.ra||'')+'</b>'
+    +     (r.cm?' · CM <b style="font-family:Consolas,monospace;color:#7c2d12;">'+esc(r.cm)+'</b>':'')
     +     (r.at?' · '+esc(String(r.at).slice(0,10)):'') + (r.reason?' · '+esc(String(r.reason).slice(0,44)):'') + '</div></div>'
+    /* RACM-v1 - 며칠 묵었는지 보여준다. 8일 넘으면 빨강.
+       숫자만 있으면 42일 묵은 것과 어제 것이 똑같이 보인다. */
+    + (function(){ if(!r.at) return '';
+        const d = Math.round((Date.now() - new Date(r.at).getTime())/86400000);
+        if(!(d >= 0)) return '';
+        const hot = d >= 8;
+        return '<span style="font-size:10px;font-weight:800;color:'+(hot?'#b91c1c':'#64748b')+';background:'
+          + (hot?'#fee2e2':'#f1f5f9')+';border-radius:20px;padding:3px 9px;white-space:nowrap;">'+d+'d</span>'; })()
     + (r.qty?'<span style="font-family:Consolas,monospace;font-size:12px;font-weight:700;">'+r.qty.toLocaleString()+' pcs</span>':'')
-    + '<span style="font-size:10px;font-weight:800;color:#9a3412;background:#ffedd5;border-radius:20px;padding:3px 9px;white-space:nowrap;">RECEIVE 대기</span>'
+    + '<span style="font-size:10px;font-weight:800;color:#9a3412;background:#ffedd5;border-radius:20px;padding:3px 9px;white-space:nowrap;">NOT SENT</span>'
     + '<span style="font-size:12px;font-weight:800;color:#ea580c;">›</span></div>'
-  ).join('') || '<div style="padding:24px;text-align:center;color:#94a3b8;font-size:13px;">대기 중인 반품이 없어 🎉</div>';
-  kpiShell('modal-kpiret', '↩ Pending Return ('+rows0.length+')', '#ea580c', rows,
-           '줄을 누르면 그 반품 상세가 열려 — 거기서 Receive 처리하면 돼.');
+  ).join('') || '<div style="padding:24px;text-align:center;color:#94a3b8;font-size:13px;">Every credit memo has been sent 🎉</div>';
+  kpiShell('modal-kpiret', '📝 Credit Memo Not Sent ('+rows0.length+')', '#ea580c', rows,
+           'A credit memo is already prepared for each of these. Open a row and press Return Received to send it.');
 }
 function laneListOpen(eff, isLtl){
   const legs = laneReadyLegs().filter(l=> l.eff===eff && l.isLtl===!!isLtl);
@@ -41709,7 +41795,9 @@ function renderKpi(){
        ⚠⚠ 예전에는 여기서 `pl[w].savedAt` 조건을 **복사해서** 다시 썼다. 그래서 locker stock
           오더(PL 이 없는 게 정상)가 모달·타일 양쪽에서 통째로 빠졌다 (2026-09-23).
           금액은 `invNpAmt` 하나를 같이 썼는데 **거르는 조건이 두 군데**였던 것이 뿌리다. */
-    if(recHasPendingReturn(s)) pret++;
+    /* RACM-v1 - 타일 숫자는 kpiPendingReturns 목록과 같은 기준(반품 한 건 = 하나)이어야 한다.
+       옛 코드는 오더 단위로 세서, 한 오더에 반품이 둘이면 타일과 목록이 어긋났다. */
+    recReturns(s).forEach(r=>{ if(retCmStatus(r)==='prepared') pret++; });
     if(recReturns(s).some(r=>r && r.status==='received' && r.cc && !r.refunded)) refund++;
     if(!done && !shipped){
       recOpenLegs(s).forEach(w=>{ _oW[w]++; });
@@ -41816,7 +41904,7 @@ function renderKpi(){
     ${openTile(open, _oW, _pW, _oAmt, _oWAmt)}
     ${numTile('🔥 Rush', rush.toLocaleString(), '#dc2626', '#fef2f2', "kpiOpenOrders(true)", '', '', _rushAmt, 'Value still to be pulled on rush orders')}
     ${numTile('🧾 Invoice Not Printed', uninv.toLocaleString(), '#c2410c', '#fff7ed', "invNpOpen()", '', '', uninvAmt, 'Total of every invoice waiting to be printed')}
-    ${numTile('↩ Pending Return', pret.toLocaleString(), '#ea580c', '#fff7ed', "kpiPendingReturns()")}
+    ${numTile('📝 CM Not Sent', pret.toLocaleString(), '#ea580c', '#fff7ed', "kpiPendingReturns()", '', '', 0, 'Returns whose credit memo is prepared but not sent to the customer yet')}
     ${numTile('💳 Refund Pending', refund.toLocaleString(), '#7c2d12', '#faf5ff')}
     ${`<div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;align-items:stretch;">`
       + numTile('🌐 Web Orders', '<span id="kpi-web-n">'+woCount()+'</span>', '#0d9488', '#f0fdfa', "webOrdersOpen()", 'id="web-kpi"', woCount()>0?'breq-blink':'')
