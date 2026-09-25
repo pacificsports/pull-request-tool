@@ -26234,6 +26234,234 @@ function blPickColor(st, c){
    [어디에 쓰나] ① SC·CA 직원은 psflowx 안에서 바로 열어 쓴다(`haitiOpen`)
                 ② 아이티로 보낼 땐 같은 내용을 파일로 내려받는다(`blExportFile`)
    둘이 **같은 함수**를 쓰므로 화면과 보내는 파일이 절대 어긋나지 않는다. */
+/* HAITIFAV-v1 - 아이티 라벨 도구의 ★ 즐겨찾기 순서. 사무실이 정하고 DB 에 둔다.
+   [stated] 하윤: "favorite도 우리가 할수있게 하고 save file for Haiti는 우리가 한거
+            그대로 다운되서 나가게 하자. haiti는 우선 못바꾸게"
+   ⭐ DB 에 두는 이유: 내보내는 길이 두 개(⬇ Download file · 템플릿의 💾 Save file for Haiti)
+      인데 둘 다 결국 haitiHtml() 을 지난다. 여기서 박으면 화면·파일이 안 어긋난다.
+   ⭐ 어느 사무실 컴퓨터에서 고쳐도 같은 줄을 보므로 "내 컴퓨터에서만 다르다" 가 없다. */
+const HAITI_FAV_KEY = 'haiti_fav_order';
+/* 지금 저장된 순서를 읽는다.
+   돌려주는 값: { ok, list }
+     ok=false  -> 서버를 못 읽었다. 부르는 쪽이 **멈춰야 한다** (조용히 옛 순서로 내보내면 안 된다)
+     list=null -> 줄이 아직 없다. 한 번도 안 정한 것이니 템플릿 기본 목록이 정답이다.
+   ⚠ sbFetch 로 읽는다 - anon 키는 pr_config RLS 에 막혀 빈 배열이 온다 (v1144 에서 데였다). */
+async function haitiFavGet(){
+  try{
+    const r = await sbFetch('/rest/v1/pr_config?select=v&k=eq.' + encodeURIComponent(HAITI_FAV_KEY));
+    if(!r.ok) return { ok:false, list:null };
+    const j = await r.json();
+    if(!Array.isArray(j)) return { ok:false, list:null };
+    if(!j.length) return { ok:true, list:null };
+    let v = j[0].v;
+    /* jsonb 라 배열이 그대로 오지만, 예전에 글자로 들어간 줄이 있을 수도 있어 한 번 풀어본다 */
+    if(typeof v === 'string'){ try{ v = JSON.parse(v); }catch(e){} }
+    if(!Array.isArray(v)) return { ok:false, list:null };
+    const list = v.map(x=>String(x == null ? '' : x).trim()).filter(Boolean);
+    return { ok:true, list: list.length ? list : null };
+  }catch(e){ return { ok:false, list:null }; }
+}
+/* 순서를 저장한다. 성공했는지 **돌아온 줄을 보고** 판단한다.
+   ⚠⚠ PostgREST 는 0줄이 바뀌어도 200 을 준다 - return=minimal 로 하면 실패를 성공으로 읽는다. */
+async function haitiFavSave(list){
+  const clean = (list||[]).map(x=>String(x == null ? '' : x).trim()).filter(Boolean);
+  try{
+    const r = await sbFetch('/rest/v1/pr_config?on_conflict=k', { method:'POST',
+      headers:{ Prefer:'resolution=merge-duplicates,return=representation' },
+      body: JSON.stringify([{ k:HAITI_FAV_KEY, v:clean, updated_at:new Date().toISOString() }]) });
+    if(!r.ok) return false;
+    const b = await r.json();
+    if(!Array.isArray(b) || !b.length) return false;
+    let back = b[0].v;
+    if(typeof back === 'string'){ try{ back = JSON.parse(back); }catch(e){} }
+    return Array.isArray(back) && back.length === clean.length
+           && back.every((x,i)=>String(x) === clean[i]);
+  }catch(e){ return false; }
+}
+/* 템플릿 파일 안에 적힌 기본 목록. 아직 DB 에 정한 적이 없을 때 편집창의 출발점이 된다.
+   ⚠ 목록을 psflowx 에 또 적어두지 않는다 - 두 군데 적으면 반드시 어긋난다. 파일에서 읽는다.
+   ⚠ 작은따옴표 배열이라 JSON.parse 로는 못 읽는다. 따옴표 안의 것만 그대로 집는다. */
+async function haitiFavSeed(){
+  try{
+    const t = await haitiTpl();
+    const m = /var FAV_SEED = (\[[\s\S]*?\]);/.exec(t);
+    if(!m) return [];
+    const out = []; let g; const re = /'([^']*)'/g;
+    while((g = re.exec(m[1]))){ const s = g[1].trim(); if(s) out.push(s); }
+    return out;
+  }catch(e){ return []; }
+}
+/* ── 편집창 ──────────────────────────────────────────────────────────
+   왼쪽: 지금 순서 (줄을 잡아서 옮긴다 · ✕ 로 뺀다)   오른쪽: 넣을 수 있는 나머지 스타일
+   ⚠ 줄 안에 입력칸이 없으므로 오더 라인처럼 draggable 을 그때그때 켜줄 필요가 없다. */
+let _hfList = [], _hfDrag = null, _hfQ = '', _hfSaved = null;
+function hfLabel(st){
+  const m = (typeof STYLE_MASTER !== 'undefined') ? STYLE_MASTER[st] : null;
+  return m ? String(m[4] || m[5] || '') : '';
+}
+function hfPaintL(){
+  const box = document.getElementById('hf-left'); if(!box) return;
+  if(!_hfList.length){
+    box.innerHTML = '<div style="padding:18px;color:#94a3b8;font-size:12.5px;font-weight:700;text-align:center;">'
+      + 'Nothing here yet — add styles from the right.</div>';
+  } else {
+    box.innerHTML = _hfList.map((st,i)=>{
+      const known = (typeof STYLE_MASTER !== 'undefined') && !!STYLE_MASTER[st];
+      return '<div id="hf-row-' + i + '" draggable="true"'
+        + ' ondragstart="hfDragStart(event,' + i + ')" ondragend="hfDragEnd()"'
+        + ' ondragover="hfDragOver(event,' + i + ')" ondragleave="hfDragLeave(' + i + ')"'
+        + ' ondrop="hfDrop(event,' + i + ')"'
+        + ' style="display:flex;align-items:center;gap:9px;padding:7px 10px;border-bottom:1px solid #eef2f7;'
+        + 'cursor:grab;background:#fff;">'
+        + '<span style="width:22px;text-align:right;font-size:11px;font-weight:800;color:#94a3b8;'
+          + 'font-variant-numeric:tabular-nums;">' + (i+1) + '</span>'
+        + '<span style="color:#cbd5e1;font-size:13px;">⠿</span>'
+        + '<span style="font-weight:900;font-size:14px;color:#0f2a4a;min-width:52px;">' + esc(st) + '</span>'
+        + '<span style="font-size:11px;font-weight:700;color:' + (known ? '#64748b' : '#b91c1c') + ';'
+          + 'overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">'
+          + esc(known ? hfLabel(st) : 'not in the style list — Haiti will not see it') + '</span>'
+        + '<button onclick="hfRemove(' + i + ')" title="Take it off the list"'
+          + ' style="margin-left:auto;background:#fff;border:1px solid #e2e8f0;border-radius:7px;'
+          + 'color:#94a3b8;font-weight:800;cursor:pointer;padding:2px 8px;line-height:1.5;">✕</button>'
+        + '</div>';
+    }).join('');
+  }
+  const n = document.getElementById('hf-count');
+  if(n) n.textContent = _hfList.length + ' on the list';
+}
+function hfPaintR(){
+  const box = document.getElementById('hf-right'); if(!box) return;
+  const M = (typeof STYLE_MASTER !== 'undefined') ? STYLE_MASTER : {};
+  const q = _hfQ.trim().toUpperCase();
+  const rest = Object.keys(M).filter(st=>_hfList.indexOf(st) < 0)
+    .filter(st=>!q || st.toUpperCase().indexOf(q) >= 0 || hfLabel(st).toUpperCase().indexOf(q) >= 0)
+    .sort((a,b)=>a.localeCompare(b, undefined, {numeric:true}));
+  box.innerHTML = rest.length ? rest.map(st=>
+      '<button onclick="hfAdd(' + JSON.stringify(st) + ')"'
+      + ' style="display:flex;align-items:center;gap:8px;width:100%;text-align:left;background:#fff;'
+      + 'border:0;border-bottom:1px solid #eef2f7;padding:7px 10px;cursor:pointer;">'
+      + '<span style="color:#0f766e;font-weight:900;font-size:13px;">+</span>'
+      + '<span style="font-weight:900;font-size:13.5px;color:#0f2a4a;min-width:52px;">' + esc(st) + '</span>'
+      + '<span style="font-size:11px;font-weight:700;color:#64748b;overflow:hidden;'
+        + 'text-overflow:ellipsis;white-space:nowrap;">' + esc(hfLabel(st)) + '</span>'
+      + '</button>').join('')
+    : '<div style="padding:18px;color:#94a3b8;font-size:12.5px;font-weight:700;text-align:center;">No match.</div>';
+}
+function hfSearch(v){ _hfQ = String(v||''); hfPaintR(); }
+function hfAdd(st){ st = String(st); if(_hfList.indexOf(st) >= 0) return; _hfList.push(st); hfPaintL(); hfPaintR(); hfDirty(); }
+function hfRemove(i){ if(i < 0 || i >= _hfList.length) return; _hfList.splice(i,1); hfPaintL(); hfPaintR(); hfDirty(); }
+function hfDirty(){
+  const b = document.getElementById('hf-save'); if(!b) return;
+  const same = _hfSaved && _hfSaved.length === _hfList.length && _hfSaved.every((x,i)=>x === _hfList[i]);
+  b.disabled = !!same;
+  b.style.opacity = same ? '.45' : '1';
+}
+/* 줄 옮기기 - 오더 라인(poDrag*)과 같은 방식이다. 줄 가운데를 기준으로 위/아래를 정한다. */
+function hfDragStart(ev, i){
+  _hfDrag = i;
+  try{ ev.dataTransfer.effectAllowed='move'; ev.dataTransfer.setData('text/plain','hf-'+i); }catch(e){}
+  const r = document.getElementById('hf-row-'+i); if(r) r.style.opacity='.45';
+}
+function hfDragEnd(){
+  _hfDrag = null;
+  document.querySelectorAll('#hf-left > div').forEach(d=>{ d.style.opacity=''; d.style.boxShadow=''; });
+}
+function hfDragOver(ev, i){
+  if(_hfDrag === null || _hfDrag === i) return;
+  ev.preventDefault();
+  try{ ev.dataTransfer.dropEffect='move'; }catch(e){}
+  const r = document.getElementById('hf-row-'+i); if(!r) return;
+  const b = r.getBoundingClientRect();
+  r.style.boxShadow = ((ev.clientY - b.top) < b.height/2) ? 'inset 0 3px 0 #7c3aed' : 'inset 0 -3px 0 #7c3aed';
+}
+function hfDragLeave(i){ const r = document.getElementById('hf-row-'+i); if(r) r.style.boxShadow=''; }
+function hfDrop(ev, i){
+  ev.preventDefault();
+  const from = _hfDrag;
+  const r = document.getElementById('hf-row-'+i);
+  let to = i;
+  if(r){ const b = r.getBoundingClientRect(); if((ev.clientY - b.top) >= b.height/2) to = i + 1; }
+  hfDragEnd();
+  if(from === null || from === undefined) return;
+  if(to === from || to === from + 1) return;            /* 제자리 */
+  const [row] = _hfList.splice(from, 1);
+  if(from < to) to--;
+  _hfList.splice(to, 0, row);
+  hfPaintL(); hfDirty();
+}
+async function haitiFavOpen(){
+  const ex = document.getElementById('modal-hfav'); if(ex) ex.remove();
+  _hfQ = ''; _hfDrag = null;
+  const div = document.createElement('div'); div.id = 'modal-hfav';
+  div.style.cssText = 'position:fixed;inset:0;background:rgba(15,23,42,.6);z-index:260;display:flex;'
+    + 'align-items:flex-start;justify-content:center;padding:26px 12px;overflow-y:auto;';
+  div.onclick = e => { if(e.target === div) div.remove(); };
+  div.innerHTML = '<div style="background:#fff;border-radius:14px;max-width:860px;width:100%;overflow:hidden;'
+      + 'box-shadow:0 12px 40px rgba(15,23,42,.35);">'
+    + '<div style="background:#0f2a4a;color:#fff;padding:11px 16px;display:flex;align-items:center;gap:10px;">'
+      + '<span style="font-weight:800;font-size:15px;">★ Favorite styles — Haiti box labels</span>'
+      + '<span id="hf-count" style="font-size:11.5px;color:#cbd5e1;font-weight:700;"></span>'
+      + '<button onclick="document.getElementById(\'modal-hfav\').remove()" style="margin-left:auto;'
+        + 'background:rgba(255,255,255,.2);color:#fff;border:none;border-radius:8px;padding:5px 11px;'
+        + 'font-weight:800;cursor:pointer;">✕</button>'
+    + '</div>'
+    + '<div style="background:#eff6ff;padding:8px 16px;border-bottom:1px solid #dbeafe;font-size:11.5px;'
+      + 'font-weight:700;color:#1e3a5f;line-height:1.5;">'
+      + 'These sit at the top of the style list in Haiti, in this exact order. '
+      + 'Haiti cannot change it — it is baked into the file you send.</div>'
+    + '<div style="display:flex;gap:0;align-items:stretch;flex-wrap:wrap;">'
+      + '<div style="flex:1 1 400px;min-width:320px;border-right:1px solid #eef2f7;">'
+        + '<div style="padding:8px 12px;font-size:11px;font-weight:800;color:#64748b;background:#f8fafc;'
+          + 'border-bottom:1px solid #eef2f7;">ON THE LIST — drag a row to move it</div>'
+        + '<div id="hf-left" style="max-height:52vh;overflow-y:auto;">'
+          + '<div style="padding:18px;color:#94a3b8;font-size:12.5px;font-weight:700;text-align:center;">Loading…</div>'
+        + '</div></div>'
+      + '<div style="flex:1 1 320px;min-width:280px;">'
+        + '<div style="padding:8px 12px;background:#f8fafc;border-bottom:1px solid #eef2f7;">'
+          + '<input id="hf-q" class="fi" placeholder="Search a style to add…" oninput="hfSearch(this.value)" '
+            + 'style="width:100%;box-sizing:border-box;font-size:12.5px;font-weight:700;padding:6px 9px;"></div>'
+        + '<div id="hf-right" style="max-height:52vh;overflow-y:auto;"></div></div>'
+    + '</div>'
+    + '<div style="padding:10px 16px;border-top:1px solid #eee;display:flex;gap:8px;align-items:center;">'
+      + '<span id="hf-msg" style="font-size:11.5px;color:#475569;font-weight:800;"></span>'
+      + '<button class="btn" style="margin-left:auto;" onclick="document.getElementById(\'modal-hfav\').remove()">Cancel</button>'
+      + '<button id="hf-save" class="btn" style="background:#0f766e;color:#fff;border-color:#0f766e;font-weight:800;" '
+        + 'onclick="haitiFavSaveGo()" disabled>Save</button>'
+    + '</div></div>';
+  document.body.appendChild(div);
+  /* 지금 값을 읽어 온다. 줄이 없으면 템플릿에 적힌 기본 목록이 출발점이다. */
+  const F = await haitiFavGet();
+  if(!F.ok){
+    const m = document.getElementById('hf-msg');
+    if(m){ m.style.color = '#b91c1c'; m.textContent = '⚠ Could not read the saved order — close and try again.'; }
+    const l = document.getElementById('hf-left');
+    if(l) l.innerHTML = '<div style="padding:18px;color:#b91c1c;font-size:12.5px;font-weight:800;text-align:center;">Could not read the server.</div>';
+    return;
+  }
+  _hfList = F.list ? F.list.slice() : (await haitiFavSeed());
+  _hfSaved = _hfList.slice();
+  hfPaintL(); hfPaintR(); hfDirty();
+  if(!F.list){
+    const m = document.getElementById('hf-msg');
+    if(m) m.textContent = 'Starting from the list that is in the file today.';
+  }
+}
+async function haitiFavSaveGo(){
+  const b = document.getElementById('hf-save'), m = document.getElementById('hf-msg');
+  if(b){ b.disabled = true; b.textContent = 'Saving…'; }
+  const ok = await haitiFavSave(_hfList);
+  if(!ok){
+    if(b){ b.disabled = false; b.textContent = 'Save'; }
+    if(m){ m.style.color = '#b91c1c'; m.textContent = '⚠ Not saved — nothing was changed. Try again.'; }
+    return;
+  }
+  _hfSaved = _hfList.slice();
+  try{ showToast('★ Favorite order saved — ' + _hfList.length + ' styles'); }catch(e){}
+  const ex = document.getElementById('modal-hfav'); if(ex) ex.remove();
+  /* 라벨 창이 열려 있으면 새 순서로 다시 만든다 - 순서는 파일을 만들 때 박히기 때문에
+     이미 열려 있는 창은 옛 순서 그대로다. (템플릿 캐시(_haitiTpl)와는 상관없다.) */
+  try{ if(document.getElementById('haiti-frame')) await haitiOpen(); }catch(e){}
+}
 const HAITI_TPL_URL = 'haiti-label-template.html';
 let _haitiTpl = null;
 async function haitiTpl(){
@@ -26320,6 +26548,32 @@ async function haitiHtml(){
     out = out.replace('/*__PSFLOWX_DATA_' + k + '__*/',
                       'var ' + k + ' = ' + JSON.stringify(D[k]) + ';');
   });
+  /* HAITIFAV-v1 - 사무실이 정한 ★ 순서를 파일에 박는다.
+     ⭐ 여기 한 곳이면 세 길이 다 맞는다: 화면(haitiOpen) · ⬇ Download file(blExportFile) ·
+        아이티가 그 파일에서 다시 저장하는 것(템플릿의 exportForHaiti 는 favAll() 을 박는데,
+        favAll() 은 FAV_SEED 를 그대로 돌려주므로 우리가 박은 값이 그대로 따라간다).
+     ⚠⚠ 못 읽었으면 **멈춘다.** 조용히 템플릿 기본 순서로 내보내는 게 제일 나쁘다 -
+        고쳐 놓고 나갔다고 믿는데 실제로는 옛 순서가 아이티에 가 있게 된다.
+     ⚠ 줄이 아예 없는 것(list=null)은 정상이다 - 한 번도 안 정했다는 뜻이고,
+        그때는 템플릿에 적힌 목록이 정답이다. */
+  const _F = await haitiFavGet();
+  if(!_F.ok){
+    throw new Error('즐겨찾기 순서를 못 읽었습니다 — 잠시 뒤 다시 해주세요 (옛 순서로는 내보내지 않습니다)');
+  }
+  if(_F.list && _F.list.length){
+    const _reFav = /var FAV_SEED = \[[\s\S]*?\];/;
+    if(!_reFav.test(out)){
+      throw new Error('템플릿에서 즐겨찾기 자리를 못 찾았습니다 — 사무실에 알려주세요');
+    }
+    /* ⚠ 바꿔 넣는 글자에 $& 같은 게 없어야 해서 함수로 돌려준다 */
+    const _favTxt = 'var FAV_SEED = ' + JSON.stringify(_F.list) + ';';
+    out = out.replace(_reFav, ()=>_favTxt);
+    /* 판 번호를 올려야 이미 쓰던 컴퓨터도 새 목록을 따라온다 */
+    out = out.replace(/FAV_SEED_V\s*=\s*'[^']*'/, ()=>"FAV_SEED_V='ps" + Date.now().toString(36) + "'");
+    if(out.indexOf(_favTxt) < 0){
+      throw new Error('즐겨찾기를 파일에 못 넣었습니다 — 사무실에 알려주세요');
+    }
+  }
   return { html: out, data: D };
 }
 /* ① 화면에서 바로 쓰기 — psflowx 안에서 전체화면으로 연다 */
@@ -26334,6 +26588,7 @@ async function haitiOpen(){
     + '<button class="btn btn-sm" style="margin-left:auto;background:#b45309;color:#fff;border-color:#b45309;font-weight:800;" onclick="blSampleOpen()" title="PACIFIC SPORTS / SAMPLE \u2014 type the ATTN name, then print \u00B7 4x6 sideways">🔖 SAMPLE label</button>'
     + '<button class="btn btn-sm" style="background:#0f2a4a;color:#fff;border-color:#0f2a4a;font-weight:800;" onclick="blLogoPrint()" title="Our logo only, on a 2x2 sticker — goes to the 2x2 printer">🏷 Logo 2×2</button>'
     + '<button class="btn btn-sm" style="background:#4c1d95;color:#fff;border-color:#4c1d95;font-weight:800;" onclick="blPickOpen()" title="2x2 QR stickers for the Zebra printer">🏷 Zebra stickers</button>'
+    + '<button class="btn btn-sm" style="background:#7c3aed;color:#fff;border-color:#7c3aed;font-weight:800;" onclick="haitiFavOpen()" title="Pick which styles sit on top in Haiti, and in what order — the order goes into the file">★ Favorites</button>'
     + '<button class="btn btn-sm" style="background:#0f766e;color:#fff;border-color:#0f766e;font-weight:800;" onclick="blExportFile()" title="Save the same tool as one file — to send to Haiti">⬇ Download file</button>'
     + '<button class="btn btn-sm" style="background:rgba(255,255,255,.18);color:#fff;border-color:rgba(255,255,255,.35);font-weight:800;" onclick="document.getElementById(\'modal-haiti\').remove()">✕ Close</button>'
     + '</div><div style="flex:1;background:#fff;"><iframe id="haiti-frame" style="width:100%;height:100%;border:0;display:block;"></iframe></div>';
