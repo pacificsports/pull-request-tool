@@ -32971,6 +32971,71 @@ function trStopKindOfLine(rec, l){
 }
 /* 「정차 2 · 3rd Party CA (SPECIAL*)」 — 화면·종이에서 같은 말을 쓴다 */
 function trStopTag(i, k){ return 'Stop ' + (i+1) + ' · ' + trKindShort(k); }
+/* ═══ MSDOC-v1 — 팔레트 표시 이름과 정차지별 서류 ═══
+   [stated] 하윤: "CA pallet 1 pallet 2 / MELMARC pallet 1 pallet 2 이런식으로" ·
+            "melmarc에서 받았을때 왜 8번부터지 이렇케 생각도 안할꺼고"
+   ⚠⚠ 저장된 `p.label`(`Pallet 1`) 은 **신원 열쇠다.** orderShip[].pallet · designatedByPallet ·
+      trHbinMap() · meta.palletStop · trLinesFlat() 이 전부 그 값으로 서로를 찾는다.
+      그래서 **보여줄 때만** 바꾼다. v1148 사고가 이름표를 신원으로 쓴 결과였다. */
+const TR_STOP_PFX = { SC:'SC', CA:'CA', LK:'MC', '3P':'HD' };   /* MC = Melmarc */
+function trStopPfx(k){ return TR_STOP_PFX[k] || String(k||'').toUpperCase(); }
+/* 짐 전체를 한 번에 훑어 이름을 매긴다 — 정차지 쪽지마다 1번부터 다시 세면
+   같은 팔레트가 종이마다 다른 이름을 갖는다. */
+function trPalNames(D){
+  const out = {};
+  const pals = (D && D.pallets) || [];
+  const stops = trStopsOf({ meta:(D && D.meta) || {} });
+  if(stops.length < 2){ pals.forEach(p=>{ out[p.label] = p.label; }); return out; }
+  const n = {};
+  pals.forEach(p=>{
+    const i = trStopIdxOfPallet({ meta:(D.meta||{}), lines:p.lines }, p);
+    const k = stops[(i >= 0 && i < stops.length) ? i : (stops.length - 1)];
+    const pf = trStopPfx(k);
+    n[pf] = (n[pf] || 0) + 1;
+    out[p.label] = pf + ' ' + n[pf];
+  });
+  return out;
+}
+function trPalMap(D){
+  if(D && D.__pn) return D.__pn;
+  const m = trPalNames(D);
+  try{ if(D) Object.defineProperty(D, '__pn', { value:m, enumerable:false, configurable:true }); }catch(e){}
+  return m;
+}
+function trPalDisp(D, label){ const m = trPalMap(D); return m[label] || label; }
+/* 정차지별로 서류 한 벌씩. 정차지가 2개 미만이면 null — 예전과 똑같이 굴러간다 */
+function trStopSplit(D){
+  const stops = trStopsOf({ meta:(D && D.meta) || {} });
+  if(stops.length < 2) return null;
+  const names = trPalMap(D);
+  const groups = stops.map((k, i)=>({ idx:i, kind:k, pallets:[] }));
+  ((D.pallets)||[]).forEach(p=>{
+    const i = trStopIdxOfPallet({ meta:(D.meta||{}), lines:p.lines }, p);
+    groups[(i >= 0 && i < stops.length) ? i : (stops.length - 1)].pallets.push(p);
+  });
+  const os = ((D.meta||{}).orderShip) || [];
+  groups.forEach(g=>{
+    const labs = {}; g.pallets.forEach(p=>{ labs[p.label] = 1; });
+    const mine = os.filter(o=>o.pallet && labs[o.pallet]);
+    g.D = Object.assign({}, D, {
+      pallets: g.pallets,
+      meta: Object.assign({}, D.meta || {}, { orderShip: mine })
+    });
+    try{ Object.defineProperty(g.D, '__pn', { value:names, enumerable:false, configurable:true }); }catch(e){}
+  });
+  return groups;
+}
+/* 종이 맨 위 띠 — 기사와 받는 쪽이 **이 종이가 어느 정차지 것인지**를 한눈에 본다 */
+function trStopBanner(g, n){
+  const labs = g.pallets.filter(p=>p.lines && p.lines.length).map(p=>trPalDisp(g.D, p.label));
+  return `<div style="background:#0f2a4a;color:#fff;padding:10px 16px;border-radius:6px;`
+       + `margin:0 auto 12px;max-width:8.5in;font-family:Arial,sans-serif;">`
+       + `<div style="font-size:17px;font-weight:800;letter-spacing:.4px;">STOP ${g.idx+1} OF ${n}`
+       + ` &mdash; ${esc(String(trKindShort(g.kind)).toUpperCase())}</div>`
+       + `<div style="font-size:11.5px;margin-top:3px;">`
+       + (labs.length ? ('Pallets: ' + esc(labs.join(', ')) + ' &middot; ') : '')
+       + `this sheet covers ONLY this stop</div></div>`;
+}
 /* 길 딱지 하나 — 목록·상세 어디서나 같은 모양으로 (v992) */
 function trRouteChip(route, size){
   const rt = TR_ROUTES[route] || TR_ROUTES.SC2CA;
@@ -34605,7 +34670,8 @@ function trRenderPallets(){
       }).join('');
     return `<div ${_spSrc?'':`ondragover="trLnOver(event,this)" ondragleave="trLnOut(this)" ondrop="trLnDrop(event,'${p.id}',this)"`} style="border:2px solid ${_spSrc?'#fbbf24':'#d8b4fe'};border-radius:8px;background:#fff;">
       <div style="background:${_spSrc?'#fffbeb':'#f3e8ff'};padding:8px 14px;display:flex;align-items:center;gap:10px;border-radius:6px 6px 0 0;flex-wrap:wrap;">
-        <span style="font-weight:700;color:${_spSrc?'#b45309':'#7b1fa2'};">${_spSrc?'🏭 Bin':'📦'} ${esc(p.label)}</span>
+        <!-- MSDOC-v1 - 화면에도 종이와 같은 이름을 보여준다 (CA 1 · MC 1) -->
+        <span style="font-weight:700;color:${_spSrc?'#b45309':'#7b1fa2'};">${_spSrc?'🏭 Bin':'📦'} ${esc(trPalDisp({meta:_shipMeta, pallets:_shipPallets}, p.label))}</span>
         ${_spSrc ? hodgePalTag(p.label, 'SC') : ''}
         ${trPalletStopHtml(p)}
         ${trDstKind(_shipRoute)!=='3P' ? '' : (p.hbin
@@ -35264,7 +35330,7 @@ function trPLHtml(D){
     const pPcs = p.lines.reduce((s,l)=>s+trLinePcs(l),0);
     const pBox = p.lines.reduce((s,l)=>s+calcBoxes(l),0);
     return `<div style="margin-bottom:18px;page-break-inside:avoid;">
-      <div style="background:#f3e8ff;padding:8px 12px;border:1px solid #d8b4fe;border-radius:4px;margin-bottom:6px;font-weight:700;color:#7b1fa2;font-size:14px;">📦 ${esc(p.label)}${(()=>{
+      <div style="background:#f3e8ff;padding:8px 12px;border:1px solid #d8b4fe;border-radius:4px;margin-bottom:6px;font-weight:700;color:#7b1fa2;font-size:14px;">📦 ${esc(trPalDisp(D, p.label))}${(()=>{
         /* SC → 3rd party 로 나갈 때는 팔레트마다 새 H bin 번호를 받아 둔다(p.hbin).
            종이에 그게 안 찍히면 Hodge 쪽에서 어느 팔레트를 어느 칸에 넣어야 할지 알 수 없다.
            예전에는 hodgePalTxt() 만 봤는데 그건 반대 방향(3P → SC, 이미 있는 H 칸)용이라
@@ -35338,6 +35404,14 @@ function trPLHtml(D){
     </div>
   </div>`;
 }
+/* MSDOC-v1 - 정차지가 둘 이상이면 정차지마다 한 벌씩, 각각 새 장에서 시작한다.
+   ⚠ 이걸 안 하면 Melmarc 가 받는 종이에 CA 에서 내릴 짐까지 전부 찍힌다. */
+function trPLDocHtml(D){
+  const gs = trStopSplit(D);
+  if(!gs) return trPLHtml(D);
+  return gs.map((g, i)=>`<div style="${i ? 'page-break-before:always;' : ''}">`
+    + trStopBanner(g, gs.length) + trPLHtml(g.D) + `</div>`).join('');
+}
 function trPL(D){
   const _P0 = D ? (D.pallets||[]) : _shipPallets;
   const _os0 = ((D ? (D.meta||{}) : (_shipMeta||{})).orderShip)||[];   // 오더분만 실린 트럭도 미리보기 허용 (v715)
@@ -35350,7 +35424,7 @@ function trPL(D){
   div.innerHTML = `<div style="background:#fff;border-radius:12px;max-width:880px;width:96vw;max-height:96vh;display:flex;flex-direction:column;overflow:hidden;">
     <div style="background:#0f4c8a;color:#fff;padding:10px 16px;font-weight:800;">📋 Packing List Preview
       <button class="btn btn-sm" style="float:right;background:transparent;color:#bfdbfe;border-color:#60a5fa;" onclick="document.getElementById('modal-trpl').remove()">✕</button></div>
-    <div id="trpl-content" style="padding:16px;overflow-y:auto;flex:1;background:#f5f5f5;">${trPLHtml(D)}</div>
+    <div id="trpl-content" style="padding:16px;overflow-y:auto;flex:1;background:#f5f5f5;">${trPLDocHtml(D)}</div>
     <div style="padding:10px 16px;border-top:1px solid var(--border);display:flex;gap:8px;justify-content:flex-end;">
       <button class="btn" onclick="document.getElementById('modal-trpl').remove()">Close</button>
       <button class="btn btn-primary" style="background:#0f4c8a;border-color:#0f4c8a;" onclick="trPrintEl('trpl-content')">🖨 Print</button>
@@ -35518,7 +35592,7 @@ async function trPR(D){
   const blocks = pals.map((p,i)=>`
     <div style="margin-bottom:16px;">
       <div style="display:flex;justify-content:space-between;align-items:center;background:#ede9fe;border:1px solid #c4b5fd;border-radius:6px 6px 0 0;padding:6px 12px;font-weight:700;color:#6d28d9;">
-        <span>📦 ${esc(p.label)} — ${p.lines.length} line(s)</span>
+        <span>📦 ${esc(trPalDisp(D, p.label))} — ${p.lines.length} line(s)</span>
         <button class="btn btn-sm" style="background:#166534;color:#fff;border-color:#166534;" onclick="trPRPrintOne(${i})">🖨 Print this pallet</button>
       </div>
       <div style="border:1px solid #e5e7eb;border-top:none;">${trPRPalletHtml(D,p)}</div>
@@ -35533,12 +35607,35 @@ async function trPR(D){
     </div></div>`;
   document.body.appendChild(div);
 }
+/* MSDOC-v1 - BOL 도 정차지마다 한 장. 받는 곳이 다르면 BOL 도 다른 종이다
+   (v983 에서 세운 규칙과 같다 - 받는 곳마다 따로). */
 function trBOL(D){
   if(!D){ trCaptureInfo(); D = {no:_shipNo, meta:_shipMeta, pallets:_shipPallets, route:_shipRoute}; }
+  const _gs = trStopSplit(D);
+  if(_gs){
+    const parts = _gs.map((g, i)=>`<div style="${i ? 'page-break-before:always;' : ''}">`
+      + trStopBanner(g, _gs.length) + trBOLHtml(g.D, g.kind) + `</div>`).join('');
+    trBOLShow(parts, D);
+    return;
+  }
+  trBOLShow(trBOLHtml(D, null), D);
+}
+function trBOLHtml(D, stopKind){
+  if(!D){ trCaptureInfo(); D = {no:_shipNo, meta:_shipMeta, pallets:_shipPallets, route:_shipRoute}; }
   const M = D.meta||{}, PT = trPartyInfo(D.route);
+  /* MSDOC-v1 - 정차지별이면 SHIP TO 를 **그 정차지**로 바꾼다. 안 그러면 Melmarc 종이에
+     우리 CA 창고 주소가 찍혀 나간다 - BOL 에서 제일 비싼 실수다. */
+  if(stopKind){
+    const _A = { SC:'Pacific Sports — SC Warehouse<br>Sumter, SC',
+                 CA:'Pacific Sports — CA Warehouse<br>Eastvale, CA',
+                 '3P':trPartyAddrHtml('3P', true), LK:trPartyAddrHtml('LK', true) };
+    if(_A[stopKind]) PT.to = _A[stopKind];
+  }
   const lines = (D.pallets||[]).reduce((a,p)=>a.concat(p.lines),[]);
   const _os = (M.orderShip||[]);
-  if(!lines.length && !_os.length){ alert('No lines.'); return; }
+  /* MSDOC-v1 - 멈추는 건 바깥(trBOL)에서 한 번만. 여기서 return 하면 정차지 한 곳이 비었을 때
+     그 장만 빠지는 게 아니라 undefined 가 종이에 찍힌다. */
+  if(!lines.length && !_os.length) return '<div style="padding:24px;font-family:Arial,sans-serif;">No lines for this stop.</div>';
   const BOX_LBS = 33;   // 박스당 33 lbs (Pacific Sports 기준) — BOL weight 계산 (v717)
   const totB = lines.reduce((s,l)=>s+trLineBoxes(l),0);
   const totP = lines.reduce((s,l)=>s+trLinePcs(l),0);
@@ -35577,8 +35674,12 @@ function trBOL(D){
       <div><div style="border-bottom:1px solid #000;height:44px;"></div><div style="margin-top:4px;"><b>RECEIVER SIGNATURE</b> / DATE</div></div>
     </div>
   </div>`;
+  return html;
+}
+/* MSDOC-v1 - 창 띄우기를 따로 뺐다. 정차지별이면 여러 장을 한 번에 넘긴다. */
+function trBOLShow(html, D){
   const w = window.open('', '_blank');
-  w.document.write('<html><head><title>BOL — '+esc(D.no||'')+'</title><style>*{-webkit-print-color-adjust:exact !important;print-color-adjust:exact !important;}</style></head><body style="margin:0;">'+html+'<scr'+'ipt>window.print();</scr'+'ipt></body></html>');
+  w.document.write('<html><head><title>BOL — '+esc((D&&D.no)||'')+'</title><style>*{-webkit-print-color-adjust:exact !important;print-color-adjust:exact !important;}</style></head><body style="margin:0;">'+html+'<scr'+'ipt>window.print();</scr'+'ipt></body></html>');
   w.document.close();
 }
 // ── Post (트럭 출발) ──
