@@ -32988,7 +32988,12 @@ function trPalNames(D){
   if(stops.length < 2){ pals.forEach(p=>{ out[p.label] = p.label; }); return out; }
   const n = {};
   pals.forEach(p=>{
-    const i = trStopIdxOfPallet({ meta:(D.meta||{}), lines:p.lines }, p);
+    /* MSADD-v1 - 빌더에서 막 만든 팔레트는 줄도 없고 `meta.palletStop` 에도 아직 없다.
+       그 순간의 진실은 `p.stop` 뿐이라 그것부터 본다 (화면 이름만 정하는 자리다 -
+       ⚠ 받기·재고가 쓰는 `trStopIdxOfPallet` 자체는 한 글자도 안 건드린다). */
+    const _ps = Number(p && p.stop);
+    const i = (_ps >= 0 && _ps < stops.length) ? _ps
+            : trStopIdxOfPallet({ meta:(D.meta||{}), lines:p.lines }, p);
     const k = stops[(i >= 0 && i < stops.length) ? i : (stops.length - 1)];
     const pf = trStopPfx(k);
     n[pf] = (n[pf] || 0) + 1;
@@ -33417,7 +33422,7 @@ async function trBuilderOpen(existingId, route){
       <div style="display:flex;gap:10px;margin-bottom:12px;flex-wrap:wrap;align-items:center;">
         <button class="btn" style="background:#1565c0;color:#fff;border-color:#1565c0;" onclick="trScOpen()">${trSrcIsSpec(_shipRoute)?('🏭 Pick from '+trKindShort(trSrcKind(_shipRoute))):('📦 Pick from '+trSrcKind(_shipRoute)+' Inventory')}</button>
         <button class="btn" onclick="trManualLine()">+ Add manual line</button>
-        ${trSrcAutoPallet(_shipRoute)?'':'<button class="btn" onclick="trAddPallet()">📍 + Add Pallet</button>'}
+        ${trSrcAutoPallet(_shipRoute)?'':trAddPalletBtns()}
         ${trOrderShipOK(_shipRoute)?`<button class="btn" style="background:#7b1fa2;color:#fff;border-color:#7b1fa2;" onclick="trOrderShipOpen()" title="${trOrderShipToCust(_shipRoute)?'Load a customer order onto this truck. It rides as designated — never added to stock — and you still press ✅ Complete on the order itself when the truck takes it.':'Load Ship-from-CA order boxes onto this truck — they ride as designated and stay routed to their own order at '+esc(trKindShort(trDstKind(_shipRoute)))+'; they are never added to its stock'}">🚚 ${trOrderShipToCust(_shipRoute)?'Orders on this truck':'Ship-from-CA Orders'}</button>`:''}
         <span style="margin-left:auto;font-size:11px;color:var(--text2);">📦 <b id="ship-pallet-count">0</b> pallet(s) · <b id="ship-line-count">0</b> line(s) · <b id="ship-box-count">0</b> box(es) · <b id="ship-pcs-count">0</b> pcs</span>
       </div>
@@ -33972,13 +33977,37 @@ function trPalletStopSet(pid, v){
   trRenderPallets();
   try{ trSaveDraftLines(); }catch(e){}     /* 줄에 박아 바로 남긴다 */
 }
-async function trAddPallet(){
+/* MSADD-v1 - multi-stop 이면 **어느 정차지 팔레트인지 골라서** 만든다.
+   [stated] 하윤: "pallet 추가 누르면 CA쪽 pallet추가할껀지 MC 쪽 pallet 추가할껀지 결정을 할수있어야하는거 아닌가?"
+   🔴 그전까지: 새 팔레트는 정차지가 없고, 정차지가 없으면 `trStopIdxOfPallet` 이 **마지막 정차지**로
+      본다(그게 안전한 기본값이라 일부러 그렇게 뒀다). 그래서 CA 팔레트를 만들려고 눌러도
+      **말없이 MC 로 붙고** 이름도 `MC 4` 가 된다. 고르는 자리가 아예 없었던 것이 문제다.
+   ⭐ 대화창을 띄우지 않고 **버튼을 정차지 수만큼** 만든다 - 한 번 누르면 끝이고
+      버튼 글자가 곧 결과라 헷갈릴 자리가 없다.
+   ⓘ 인자 없이 부르는 두 자리(재고 고르기·줄 옮기기에서 새 팔레트)는 예전처럼 마지막 정차지.
+      그 팔레트도 화면에 바로 `MC 4` 로 보이고 카드의 DROP 칸으로 고칠 수 있다. */
+/* MSADD-v1 - 정차지가 둘 이상이면 정차지마다 단추 하나. 하나뿐이면 예전 그대로 한 개. */
+function trAddPalletBtns(){
+  const st = trIsMultiRoute(_shipRoute) ? trStopsOf({meta:_shipMeta}) : [];
+  if(st.length < 2) return '<button class="btn" onclick="trAddPallet()">📍 + Add Pallet</button>';
+  return st.map((k,i)=>`<button class="btn" onclick="trAddPallet(${i})" `
+    + `title="New pallet that comes off at stop ${i+1} — ${esc(trKindShort(k))}">`
+    + `📍 + Add ${esc(trStopPfx(k))} pallet</button>`).join(' ');
+}
+async function trAddPallet(stopIdx){
   const p = { id:'p_'+Math.random().toString(36).slice(2,9), label:'Pallet '+(_shipPallets.length+1), lines:[] };
+  const _st = trIsMultiRoute(_shipRoute) ? trStopsOf({meta:_shipMeta}) : [];
+  if(_st.length){
+    const i = Number(stopIdx);
+    p.stop = (i >= 0 && i < _st.length) ? i : (_st.length - 1);
+  }
   _shipPallets.push(p);
   trRenderPallets();                                 /* ⚠ 번호는 여기서 자동으로 안 나간다.
      v829 의 trEnsureBins 는 v832 에 없어졌다 (초알을 다시 여느라 번호를 태웠다).
      hbTake() 를 부르는 것은 🏭 Assign bin number 버튼(trAssignBin) 한 군데다. */
   if(trDstKind(_shipRoute) === '3P') showToast('📦 ' + p.label + ' added — press 🏭 Assign bin number when you want its bin');
+  else if(_st.length) showToast('📦 ' + trPalDisp({meta:_shipMeta, pallets:_shipPallets}, p.label)
+      + ' added — drops at stop ' + (p.stop+1) + ' · ' + trKindShort(_st[p.stop]));
 }
 async function trDelPallet(pid){
   const p = _shipPallets.find(x=>x.id===pid); if(!p) return;
