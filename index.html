@@ -33423,7 +33423,7 @@ async function trBuilderOpen(existingId, route){
         <button class="btn" style="background:#1565c0;color:#fff;border-color:#1565c0;" onclick="trScOpen()">${trSrcIsSpec(_shipRoute)?('🏭 Pick from '+trKindShort(trSrcKind(_shipRoute))):('📦 Pick from '+trSrcKind(_shipRoute)+' Inventory')}</button>
         <button class="btn" onclick="trManualLine()">+ Add manual line</button>
         ${trSrcAutoPallet(_shipRoute)?'':trAddPalletBtns()}
-        ${trOrderShipOK(_shipRoute)?`<button class="btn" style="background:#7b1fa2;color:#fff;border-color:#7b1fa2;" onclick="trOrderShipOpen()" title="${trOrderShipToCust(_shipRoute)?'Load a customer order onto this truck. It rides as designated — never added to stock — and you still press ✅ Complete on the order itself when the truck takes it.':'Load Ship-from-CA order boxes onto this truck — they ride as designated and stay routed to their own order at '+esc(trKindShort(trDstKind(_shipRoute)))+'; they are never added to its stock'}">🚚 ${trOrderShipToCust(_shipRoute)?'Orders on this truck':'Ship-from-CA Orders'}</button>`:''}
+        ${trOrderShipOK(_shipRoute)?`<button class="btn" style="background:#7b1fa2;color:#fff;border-color:#7b1fa2;" onclick="trOrderShipOpen()" title="${trOrderShipToCust(_shipRoute)?'Load a customer order onto this truck. It rides as designated — never added to stock — and you still press ✅ Complete on the order itself when the truck takes it.':'Load Ship-from-CA order boxes onto this truck — they ride as designated and stay routed to their own order at '+esc(trKindShort(trDstKind(_shipRoute)))+'; they are never added to its stock'}">🚚 ${trOrderShipLabel(_shipRoute)}</button>`:''}
         <span style="margin-left:auto;font-size:11px;color:var(--text2);">📦 <b id="ship-pallet-count">0</b> pallet(s) · <b id="ship-line-count">0</b> line(s) · <b id="ship-box-count">0</b> box(es) · <b id="ship-pcs-count">0</b> pcs</span>
       </div>
       <div id="ship-pallets" style="display:flex;flex-direction:column;gap:10px;"></div>
@@ -36020,9 +36020,27 @@ async function trShipped3P(id){
    ⚠ 태운 박스는 **재고로 안 들어간다.** 트럭 서류에 「already designated — do NOT add to
      the transfer」 로만 찍히고, 오더 쪽 `_scToCA` 가 transit→arrived 로 움직인다.
      그래서 도착지가 우리 창고든 3자 창고든 받는 코드는 손댈 것이 없었다.
-   ⓘ multi-stop 에는 아직 안 붙였다 — 오더 박스가 어느 정차지에서 내리는지를 팔레트에
-     맡길 수는 있지만, 그 화면을 먼저 실물로 한 번 돌려보고 붙이는 게 맞다. */
-function trOrderShipOK(route){ return route==='SC2CA' || route==='SC2LK'; }
+   ⭐ `MULTI_SC` 도 MSORDER-v1 (2026-09-26) 에서 붙여다 — 정차지가 여러 개면
+     어느 갈래의 오더를 받는지를 `trOrderShipWants()` 가 정하고, 무엇이 어느 정차지에
+     내리는지는 **팔레트**가 정한다 (모달의 팔레트 칸이 `CA 1`/`MC 1` 로 보여진다). */
+/* MSORDER-v1 - multi-stop(SC 출발) 도 오더 박스를 태운다.
+   [stated] 하윤: "ship from CA체크 해놓은것도 안나오고" (2026-09-26)
+   ⓘ MULTI_CA 는 안 넣는다 - 오더 박스는 SC 에서 싸는데 그 길은 CA 에서 출발한다
+     (`trOrderShipEligible` 이 `whs.includes('SC')` 를 요구한다). */
+function trOrderShipOK(route){ return route==='SC2CA' || route==='SC2LK' || route==='MULTI_SC'; }
+/* 이 트럭이 어느 갈래의 오더를 받을 수 있나.
+     ca : 「🚚 Ship from CA」 켠 오더 (우리 CA 창고가 합쳐서 내보낸다)
+     lk : 거래처(Melmarc) 오더 (이미 판 물건 - 재고로 안 들어간다)
+   ⚠ multi 가 아니면 옛 `custTruck` 한 개 boolean 과 **결과가 똑같다**. */
+function trOrderShipWants(route){
+  const rt = route || _shipRoute;
+  if(trIsMultiRoute(rt)){
+    const st = trStopsOf({meta:_shipMeta});
+    return { ca: st.indexOf('CA') >= 0, lk: st.indexOf('LK') >= 0 };
+  }
+  const k = trDstKind(rt);
+  return { ca: k !== 'LK', lk: k === 'LK' };
+}
 // ═══════ 🚚 Ship-from-CA 오더 박스를 SC→CA 트럭에 태워 보내기 (v635) ═══════
 /* ═══ 🚚 이 트럭에 실을 수 있는 오더 (v1080 에서 갈래를 나눴다) ═══
    ⭐⭐ 3자(CA) = **Melmarc 는 우리 거래처다** (`TR_PARTY_ADDR.LK` = Melmarc Products).
@@ -36043,30 +36061,48 @@ function trOrderShipOK(route){ return route==='SC2CA' || route==='SC2LK'; }
      찍고, 재고는 한 톨도 건드리지 않는다. */
 function trOrderShipEligible(){
   const cur = new Set(((_shipMeta&&_shipMeta.orderShip)||[]).map(o=>o.base));
-  const custTruck = trDstKind(_shipRoute) === 'LK';   /* 거래처(Melmarc) 문 앞으로 가는 트럭 */
+  /* MSORDER-v1 - multi 는 CA 갈래와 LK 갈래가 **섞일 수 있다** */
+  const _want = trOrderShipWants();
+  const _kind = {};
   let _oshipHid = 0;
   const out = (savedCache||[]).filter(r=>{
     if(cur.has(r.base)) return false;
     if(!((r.whs||[]).includes('SC'))) return false;
-    if(custTruck){
+    const _isLk = String(r.meta&&r.meta.cust||'').toUpperCase().indexOf(trLkCustMatch()) >= 0;
+    if(_want.lk && _isLk){
       /* 이미 SC 몫을 Complete 한(=나간) 오더는 또 실을 이유가 없다 */
       if(((r.pl||{}).SC||{})._completed) return false;
+      _kind[r.base] = 'LK';
+      return true;
+    }
+    if(!_want.ca){
       /* [stated] "3rd party (CA)로 가는 오더는 MELMARC 오더 밖에 없으니까" (v1081).
          이 트럭은 그 거래처 문 앞으로만 간다 — 다른 거래처 오더를 실으면 엉뚱한 곳에
          내려놓는 것이다. 걸러낸 개수는 선택창 아래에 적어서 「왜 안 보이지」 가 없게 한다. */
-      if(String(r.meta&&r.meta.cust||'').toUpperCase().indexOf(trLkCustMatch()) < 0){ _oshipHid++; return false; }
-      return true;
+      _oshipHid++;
+      return false;
     }
     if(!recShipFromCA(r)) return false;
     const st=(r.meta&&r.meta._scToCA&&r.meta._scToCA.status)||'';
     if(st==='transit'||st==='arrived') return false;   // 이미 이동중/도착이면 제외
+    _kind[r.base] = 'CA';
     return true;
   });
-  try{ window._oshipHidden = _oshipHid; }catch(e){}
+  try{ window._oshipHidden = _oshipHid; window._oshipKind = _kind; }catch(e){}
   return out;
 }
-/* 이 트럭이 거래처 문 앞으로 가나 (= 실린 오더가 도착하면 거래처 물건이 되나) */
-function trOrderShipToCust(route){ return trDstKind(route||_shipRoute) === 'LK'; }
+/* 이 트럭이 거래처 문 앞으로 가나 (= 실린 오더가 도착하면 거래처 물건이 되나)
+   MSORDER-v1: multi 는 **LK 만 서고 CA 는 안 서는** 때에만 참이다.
+   ⚠ CA 정차지가 있으면 거짓 - `trOrderShipAdd` 의 「Ships from CA 를 끄라」 경고가
+     그 트럭에서는 틀린 말이 된다 (CA 를 진짜로 거치니까). */
+function trOrderShipToCust(route){
+  const _w = trOrderShipWants(route);
+  return !!(_w.lk && !_w.ca);
+}
+/* 버튼·모달 제목 - 갈래가 섞이면 한쪽 이름을 붙일 수 없다 */
+function trOrderShipLabel(route){
+  return trOrderShipWants(route).lk ? 'Orders on this truck' : 'Ship-from-CA Orders';
+}
 /* ═══ 🔒 3자(CA) 는 칸이 하나다 — 받을 때 미리 채운다 (v1081) ═══
    [stated] 하윤: "depart누르고 receive 누르면 그냥 바로 다 special bin으로 들어가게"
    실제 재고를 세어보니 `SPECIAL` **한 칸에 3,399박스**가 다 들어 있다 — Hodge 처럼
@@ -36101,6 +36137,11 @@ async function trOrderShipOpen(){
   const d=document.createElement('div'); d.id='modal-oship';
   d.style.cssText='position:fixed;inset:0;background:rgba(0,0,0,.5);z-index:360;display:flex;align-items:center;justify-content:center;';
   d.onclick=e=>{ if(e.target===d) d.remove(); };
+  /* MSORDER-v1 - multi 면 팔레트를 **표시 이름**(`CA 1`/`MC 1`) 으로 보여준다.
+     ⚠ value 는 저장된 이름표(`Pallet 1`) 그대로 - 그게 신원 열쇠다 (v1148 의 덫). */
+  const _msD = { meta:_shipMeta, pallets:_shipPallets };
+  const _msSt = trIsMultiRoute(_shipRoute) ? trStopsOf({meta:_shipMeta}) : [];
+  const _msOn = _msSt.length >= 2;
   const rows = elig.length ? elig.map(r=>{
     const scLines=(r.lines||[]).filter(l=>l.wh==='SC');
     const scPcs=scLines.reduce((s,l)=>s+(l.qty||0),0);
@@ -36113,22 +36154,29 @@ async function trOrderShipOpen(){
     const bx=packed?packedBx:estBx;   // 매니저가 모달에서 수정 가능
     return `<label style="display:flex;align-items:center;gap:10px;padding:9px 11px;border:1px solid #e5e7eb;border-radius:9px;margin-bottom:7px;cursor:pointer;">
       <input type="checkbox" class="oship-cb" data-base="${esc(r.base)}" data-cust="${esc(String(r.meta.cust||'').replace(/"/g,''))}" data-po="${esc(String(r.meta.po||'').replace(/"/g,''))}" data-boxes="${bx}" data-pcs="${scPcs}" checked style="width:16px;height:16px;">
-      <div style="flex:1;min-width:0;"><div style="font-weight:800;color:#0f2a4a;">${esc(r.meta.cust||'—')}</div><div style="font-size:11px;color:#64748b;">PO ${esc(r.meta.po||'—')} · SC ${scPcs.toLocaleString()} pcs</div></div>
+      <div style="flex:1;min-width:0;"><div style="font-weight:800;color:#0f2a4a;">${esc(r.meta.cust||'—')}${(_msOn && (window._oshipKind||{})[r.base]) ? ` <span style="font-size:10px;font-weight:800;color:#6d28d9;background:#f3e8ff;border-radius:20px;padding:2px 7px;vertical-align:1px;" title="Belongs at the ${esc(trStopPfx((window._oshipKind||{})[r.base]))} stop">${esc(trStopPfx((window._oshipKind||{})[r.base]))}</span>` : ''}</div><div style="font-size:11px;color:#64748b;">PO ${esc(r.meta.po||'—')} · SC ${scPcs.toLocaleString()} pcs</div></div>
       ${packed?`<span style="font-size:11px;font-weight:800;color:#16a34a;background:#dcfce7;border-radius:20px;padding:3px 10px;">📦 ${bx} box</span>`:`<span style="font-size:11px;font-weight:800;color:#b45309;background:#fff7ed;border-radius:20px;padding:3px 10px;" title="Estimated from pcs — SC hasn't packed boxes yet. Edit on the pallet if needed.">≈ ${bx} box (est)</span>`}
     </label>`;
   }).join('') : (trOrderShipToCust(_shipRoute)
       ? `<div style="color:#94a3b8;font-size:12.5px;padding:14px;text-align:center;">No ${esc(trLkCustMatch())} order is waiting with SC boxes. (Orders already marked Complete are not listed.)</div>`
-      : '<div style="color:#94a3b8;font-size:12.5px;padding:14px;text-align:center;">No Ship-from-CA orders waiting. Turn on 🚚 Ship from CA on an order (with SC boxes packed) first.</div>');
-  const palOpts = _shipPallets.map(p=>`<option value="${esc(p.label)}">${esc(p.label)}</option>`).join('')+'<option value="__new__">+ New pallet</option>';
+      : '<div style="color:#94a3b8;font-size:12.5px;padding:14px;text-align:center;">No order is waiting with SC boxes. Turn on 🚚 Ship from CA on an order (with SC boxes packed) first'
+        + (trOrderShipWants().lk ? ', or pack the SC part of a ' + esc(trLkCustMatch()) + ' order' : '') + '.</div>');
+  /* MSORDER-v1 - 「새 팔레트」도 정차지마다 따로 준다 - 안 그러면 마지막 정차지로 생긴다 */
+  const palOpts = _shipPallets.map(p=>`<option value="${esc(p.label)}">${esc(_msOn?trPalDisp(_msD,p.label):p.label)}</option>`).join('')
+    + (_msOn ? _msSt.map((k,i)=>`<option value="__new__${i}">+ New ${esc(trStopPfx(k))} pallet</option>`).join('')
+             : '<option value="__new__">+ New pallet</option>');
   d.innerHTML=`<div style="background:#fff;border-radius:12px;width:520px;max-width:95vw;max-height:88vh;overflow-y:auto;box-shadow:0 20px 60px rgba(0,0,0,.35);">
     <div style="background:#7b1fa2;color:#fff;padding:12px 16px;font-weight:800;display:flex;justify-content:space-between;align-items:center;">
-      <span>🚚 Ship-from-CA Orders → load on this truck</span>
+      <span>🚚 ${trOrderShipLabel(_shipRoute)} → load on this truck</span>
       <button onclick="document.getElementById('modal-oship').remove()" style="background:none;border:none;color:#fff;font-size:18px;cursor:pointer;">✕</button></div>
     <div style="padding:14px 16px;">
       <div style="font-size:11.5px;color:#64748b;margin-bottom:10px;">${trOrderShipToCust(_shipRoute)
         ? 'Orders packed in SC that go out on <b>this</b> truck. They ride as <b>designated</b> — <b>never added to stock</b> at the far end, because on arrival they belong to the customer.'
           + '<br><span style="color:#b45309;font-weight:700;">✅ This does NOT mark them shipped.</span> Press <b>✅ Complete</b> on the order\'s SC Packing List when the truck actually takes it — that is what emails the customer, opens the box QR and starts the invoice.'
         : 'These orders are packed in SC and flagged to ship from CA. Check the ones on <b>this</b> truck — they ride as <b>designated</b>: routed to their own order at <b>' + esc(trKindShort(trDstKind(_shipRoute))) + '</b>, never added to its stock.'}</div>
+      ${(_msOn && trOrderShipWants().ca && trOrderShipWants().lk)
+        ? `<div style="font-size:11.5px;color:#6d28d9;background:#faf5ff;border:1px solid #ddd6fe;border-radius:8px;padding:8px 10px;margin-bottom:10px;">📍 This truck makes several stops. <b>The pallet decides where an order comes off</b> — put ${esc(trLkCustMatch())} orders on an <b>MC</b> pallet and Ship-from-CA orders on a <b>CA</b> pallet.</div>`
+        : ''}
       <div style="display:flex;align-items:center;gap:8px;margin-bottom:12px;padding:8px 10px;background:#faf5ff;border:1px solid #e9d5ff;border-radius:8px;">
         <span style="font-size:12px;font-weight:800;color:#7b1fa2;">📍 Put on pallet:</span>
         <select id="oship-pallet" class="fi" style="font-size:12px;padding:5px 8px;flex:1;">${palOpts}</select>
@@ -36166,8 +36214,26 @@ async function trOrderShipAdd(){
       + '\n\n→ Turn 🚚 Ships from CA OFF on those orders first.\n\nLoad them anyway?')) return;
   }
   let pal=String((document.getElementById('oship-pallet')||{}).value||'');
-  if(pal==='__new__'){ trAddPallet(); pal=_shipPallets[_shipPallets.length-1].label; }
+  if(pal.indexOf('__new__')===0){
+    /* MSORDER-v1 - `__new__2` 면 정차지 2 짜리 팔레트를 만든다 */
+    const _ni = pal.slice(7);
+    await trAddPallet(_ni==='' ? undefined : Number(_ni));
+    pal=_shipPallets[_shipPallets.length-1].label;
+  }
   if(!pal){ pal=(_shipPallets[0]||{}).label||'Pallet 1'; }
+  /* ⚠ MSORDER-v1 - 오더만 실린 팔레트는 **줄이 없다.** `trStopIdxOfPallet` 는 `p.stop` 을
+     안 읽으므로(표시용 `trPalNames` 만 읽는다) `meta.palletStop` 에 안 넣으면 서류에서
+     마지막 정차지로 떨어진다. 이 함수는 `trCaptureInfo` 를 안 거치고 바로 저장한다. */
+  try{
+    const _asSt = trIsMultiRoute(_shipRoute) ? trStopsOf({meta:_shipMeta}) : [];
+    if(_asSt.length){
+      _shipMeta=_shipMeta||{};
+      if(!Array.isArray(_shipMeta.stops) || !_shipMeta.stops.length) _shipMeta.stops=_asSt;
+      _shipMeta.palletStop=_shipMeta.palletStop||{};
+      (_shipPallets||[]).forEach(p=>{ const v=Number(p&&p.stop);
+        if(v >= 0 && v < _asSt.length) _shipMeta.palletStop[p.label]=v; });
+    }
+  }catch(e){}
   _shipMeta=_shipMeta||{}; _shipMeta.orderShip=_shipMeta.orderShip||[];
   cbs.forEach(c=>{ const base=c.getAttribute('data-base');
     const ex=_shipMeta.orderShip.find(o=>o.base===base);
