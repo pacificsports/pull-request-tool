@@ -34666,6 +34666,88 @@ async function trManAddSku(pid, li){
 /* ═══ 📦 팔레트 사이로 라인 옮기기 — Haiti 배치 화면과 같은 드래그 (v900) ═══
    박스는 이미 TRANSFER bin 에 있고 팔레트는 이름표일 뿐이라, 재고는 하나도 안 건드린다. */
 let _trLnDrag = null;
+/* ═══ MSDRAG-v1 - 팔레트를 통째로 끌어서 차례 바꾸기 ═══
+   ⚠⚠⚠ `p.label` 은 자리 번호로 다시 매겨지는데 동시에 **신원 열쇠**다.
+   옮기면서 그 이름표로 서로를 찾는 넷을 **한 번에** 맞춰야 한다 (v1148 사고의 그 지점). */
+function trPalDragOK(){
+  return !trSrcAutoPallet(_shipRoute)      /* 3자 창고 출발 = 팔레트가 곧 bin */
+      && trDstKind(_shipRoute) !== '3P';   /* Hodge 는 H 번호 관리가 걸려 있다 */
+}
+function trPalSameStop(aId, bId){
+  const st = trIsMultiRoute(_shipRoute) ? trStopsOf({meta:_shipMeta}) : [];
+  if(st.length < 2) return true;
+  const D = { meta:_shipMeta, pallets:_shipPallets };
+  const a = _shipPallets.find(p=>p.id===aId), b = _shipPallets.find(p=>p.id===bId);
+  if(!a || !b) return false;
+  return trPalStopIdxDisp(D, a) === trPalStopIdxDisp(D, b);
+}
+/* ⭐ `trSplitPallet` 이 쓰는 것과 **같은 방식**이다 (검증된 길).
+   `old[i]` = 지금 i 번 자리에 있는 팔레트가 들고 있던 옛 이름표.
+   이름표는 옮기기 전에 서로 다르므로 `rn` 은 일대일이다. */
+function trPalRenumber(){
+  if(trSrcAutoPallet(_shipRoute)) return {};
+  const old = _shipPallets.map(p=>p.label);
+  _shipPallets.forEach((p,i)=>{ p.label = 'Pallet '+(i+1); });
+  const rn = {}; old.forEach((o,i)=>{ rn[o] = _shipPallets[i].label; });
+  _shipMeta = _shipMeta || {};
+  ((_shipMeta.orderShip)||[]).forEach(o=>{ if(rn[o.pallet]) o.pallet = rn[o.pallet]; });
+  if(_shipMeta.designatedByPallet){
+    const d2 = {}; Object.keys(_shipMeta.designatedByPallet).forEach(k=>{ d2[rn[k]||k] = _shipMeta.designatedByPallet[k]; });
+    _shipMeta.designatedByPallet = d2;
+  }
+  /* `_hbins` 는 v1150 이후 아무도 안 읽는다 - 그래도 어긋난 채 남기지 않는다 */
+  if(_shipMeta._hbins){
+    const h2 = {}; Object.keys(_shipMeta._hbins).forEach(k=>{ h2[rn[k]||k] = _shipMeta._hbins[k]; });
+    _shipMeta._hbins = h2;
+  }
+  return rn;
+}
+async function trPalMove(si, ti){
+  if(si === ti) return false;
+  if(si < 0 || si >= _shipPallets.length || ti < 0 || ti >= _shipPallets.length) return false;
+  const [p] = _shipPallets.splice(si, 1);
+  _shipPallets.splice(ti, 0, p);
+  trPalRenumber();
+  trRenderPallets();
+  /* ⚠ `meta`(정차지 지도·실린 오더) 와 `lines`(줄의 pallet) 는 **같이** 저장해야 한다.
+     하나만 저장되면 다음에 열 때 이름표가 어긋난다. */
+  if(_shipId){
+    try{ trCaptureInfo(); await trPatchRec(_shipId, { meta:_shipMeta, lines:trLinesFlat() }); }
+    catch(e){ console.warn(e); showToast('\u26a0 Moved on screen but not saved \u2014 press \ud83d\udcbe Save'); return true; }
+  }
+  const nm = trPalDisp({meta:_shipMeta, pallets:_shipPallets}, p.label);
+  showToast('\ud83d\udce6 ' + nm + ' moved \u2014 pallets renumbered, reprint any paper you already pulled');
+  return true;
+}
+let _trPalDrag = null;
+function trPalDragStart(ev, pid){
+  _trPalDrag = pid;
+  try{ ev.dataTransfer.effectAllowed='move'; ev.dataTransfer.setData('text/plain','pal:'+pid); }catch(e){}
+}
+function trPalDragEnd(){
+  _trPalDrag = null;
+  document.querySelectorAll('[data-trpz="1"]').forEach(el=>{ el.style.boxShadow=''; el.removeAttribute('data-trpz'); });
+}
+function trPalOver(ev, el, pid){
+  if(!_trPalDrag || _trPalDrag === pid) return;
+  if(!trPalSameStop(_trPalDrag, pid)) return;   /* 다른 정차지엔 못 놓는다 */
+  ev.preventDefault(); ev.stopPropagation();
+  try{ ev.dataTransfer.dropEffect='move'; }catch(e){}
+  if(el && el.getAttribute('data-trpz') !== '1'){
+    el.setAttribute('data-trpz','1'); el.style.boxShadow='inset 0 0 0 3px #0f172a';
+  }
+}
+function trPalOut(el){ if(el){ el.style.boxShadow=''; el.removeAttribute('data-trpz'); } }
+async function trPalDrop(ev, tgtPid, el){
+  ev.preventDefault(); ev.stopPropagation(); trPalOut(el);
+  const sid = _trPalDrag; _trPalDrag = null;
+  if(!sid || sid === tgtPid) return;
+  if(!trPalSameStop(sid, tgtPid)){
+    showToast('\u26a0 That pallet comes off at a different stop \u2014 use the DROP box to change where it comes off');
+    return;
+  }
+  await trPalMove(_shipPallets.findIndex(x=>x.id===sid), _shipPallets.findIndex(x=>x.id===tgtPid));
+}
 function trLnDragStart(ev, pid, li){
   _trLnDrag = {pid, li};
   try{ ev.dataTransfer.effectAllowed='move'; ev.dataTransfer.setData('text/plain', pid+':'+li); }catch(e){}
@@ -34711,8 +34793,10 @@ function trRenderPallets(){
   const _rStops = trIsMultiRoute(_shipRoute) ? trStopsOf({meta:_shipMeta}) : [];
   const _rMulti = _rStops.length >= 2;
   const _rD = { meta:_shipMeta, pallets:_shipPallets };
+  const _rDragOK = trPalDragOK();                      /* MSDRAG-v1 */
   el.innerHTML = trPbBarHtml() + trPalRenderOrder().map(p=>{
     const _mth = _rMulti ? trStopTheme(_rStops[trPalStopIdxDisp(_rD, p)]) : null;
+    const _pdOK = _rDragOK && _shipPallets.length > 1;   /* MSDRAG-v1 */
     const _pOrders = ((_shipMeta&&_shipMeta.orderShip)||[]).filter(o=>o.pallet===p.label);
     const pOB = _pOrders.reduce((s,o)=>s+(o.boxes||0),0);
     const pOP = _pOrders.reduce((s,o)=>s+(o.pcs||0),0);
@@ -34768,7 +34852,12 @@ function trRenderPallets(){
         </tr>`;
       }).join('');
     return `<div ${_spSrc?'':`ondragover="trLnOver(event,this)" ondragleave="trLnOut(this)" ondrop="trLnDrop(event,'${p.id}',this)"`} style="border:2px solid ${_spSrc?'#fbbf24':(_mth?_mth.bd:'#d8b4fe')};border-radius:8px;background:#fff;">
-      <div style="background:${_spSrc?'#fffbeb':(_mth?_mth.bg:'#f3e8ff')};padding:8px 14px;display:flex;align-items:center;gap:10px;border-radius:6px 6px 0 0;flex-wrap:wrap;">
+      <div ${_pdOK?`ondragover="trPalOver(event,this,'${p.id}')" ondragleave="trPalOut(this)" ondrop="trPalDrop(event,'${p.id}',this)"`:''} style="background:${_spSrc?'#fffbeb':(_mth?_mth.bg:'#f3e8ff')};padding:8px 14px;display:flex;align-items:center;gap:10px;border-radius:6px 6px 0 0;flex-wrap:wrap;">
+        <!-- MSDRAG-v1 - 이 손잡이를 잡고 다른 팔레트의 머리 위에 놓으면 차례가 바뀐다.
+             ⚠ 줄 손잡이(표 안의 ⠿)와 다른 것이다 - 이건 팔레트 통째로 움직인다. -->
+        ${_pdOK ? `<span draggable="true" ondragstart="trPalDragStart(event,'${p.id}')" ondragend="trPalDragEnd()"
+          title="Drag this whole pallet onto another pallet's header to change the order — the pallets are renumbered"
+          style="cursor:grab;color:${_mth?_mth.pill:'#7b1fa2'};font-size:15px;font-weight:900;user-select:none;line-height:1;">\u2b0d</span>` : ''}
         <!-- MSDOC-v1 - 화면에도 종이와 같은 이름을 보여준다 (CA 1 · MC 1)
              MSCOLOR-v1 - multi 면 정차지 색을 채운 알약으로 -->
         ${_mth
