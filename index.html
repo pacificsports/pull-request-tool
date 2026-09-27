@@ -32981,6 +32981,27 @@ const TR_STOP_PFX = { SC:'SC', CA:'CA', LK:'MC', '3P':'HD' };   /* MC = Melmarc 
 function trStopPfx(k){ return TR_STOP_PFX[k] || String(k||'').toUpperCase(); }
 /* 짐 전체를 한 번에 훑어 이름을 매긴다 — 정차지 쪽지마다 1번부터 다시 세면
    같은 팔레트가 종이마다 다른 이름을 갖는다. */
+/* MSCOLOR-v1 - 정차지 종류마다 색 한 벌. **기본값이 LK(보라)** 라서 multi 가 아닌
+   화면은 예전과 글자까지 같다. 3P 는 Hodge 가 원래 쓰던 호박색 그대로. */
+const TR_STOP_THEME = {
+  CA:   { bd:'#7dd3fc', bg:'#e0f2fe', fg:'#0369a1', th:'#bae6fd', pill:'#0284c7' },
+  LK:   { bd:'#d8b4fe', bg:'#f3e8ff', fg:'#7b1fa2', th:'#fce7f3', pill:'#7b1fa2' },
+  SC:   { bd:'#86efac', bg:'#f0fdf4', fg:'#15803d', th:'#dcfce7', pill:'#16a34a' },
+  '3P': { bd:'#fbbf24', bg:'#fffbeb', fg:'#b45309', th:'#fef3c7', pill:'#b45309' }
+};
+function trStopTheme(k){ return TR_STOP_THEME[k] || TR_STOP_THEME.LK; }
+/* MSCOLOR-v1 - **화면용** 정차지 번호. 이름·색·그리는 차례가 전부 이 한 곳을 본다.
+   ⚠ 받기·재고가 쓰는 `trStopIdxOfPallet` 자체는 여전히 한 글자도 안 건드린다. */
+function trPalStopIdxDisp(D, p){
+  const stops = trStopsOf({ meta:(D && D.meta) || {} });
+  if(stops.length < 2) return -1;
+  /* MSADD-v1 - 빌더에서 막 만든 팔레트는 줄도 없고 `meta.palletStop` 에도 아직 없다.
+     그 순간의 진실은 `p.stop` 뿐이라 그것부터 본다. */
+  const _ps = Number(p && p.stop);
+  const i = (_ps >= 0 && _ps < stops.length) ? _ps
+          : trStopIdxOfPallet({ meta:((D && D.meta) || {}), lines:(p && p.lines) }, p);
+  return (i >= 0 && i < stops.length) ? i : (stops.length - 1);
+}
 function trPalNames(D){
   const out = {};
   const pals = (D && D.pallets) || [];
@@ -32988,18 +33009,21 @@ function trPalNames(D){
   if(stops.length < 2){ pals.forEach(p=>{ out[p.label] = p.label; }); return out; }
   const n = {};
   pals.forEach(p=>{
-    /* MSADD-v1 - 빌더에서 막 만든 팔레트는 줄도 없고 `meta.palletStop` 에도 아직 없다.
-       그 순간의 진실은 `p.stop` 뿐이라 그것부터 본다 (화면 이름만 정하는 자리다 -
-       ⚠ 받기·재고가 쓰는 `trStopIdxOfPallet` 자체는 한 글자도 안 건드린다). */
-    const _ps = Number(p && p.stop);
-    const i = (_ps >= 0 && _ps < stops.length) ? _ps
-            : trStopIdxOfPallet({ meta:(D.meta||{}), lines:p.lines }, p);
-    const k = stops[(i >= 0 && i < stops.length) ? i : (stops.length - 1)];
-    const pf = trStopPfx(k);
+    const pf = trStopPfx(stops[trPalStopIdxDisp(D, p)]);
     n[pf] = (n[pf] || 0) + 1;
     out[p.label] = pf + ' ' + n[pf];
   });
   return out;
+}
+/* MSCOLOR-v1 - **그리는 차례만** 정차지 순으로. 같은 정차지 안에서는 배열 차례 그대로.
+   ⚠⚠ `_shipPallets` 자체는 절대 안 옮긴다 - `trBuilderOpen` 이 열 때마다
+   `p.label='Pallet '+(i+1)` 로 다시 매기므로 배열을 옮기면 **저장된 이름표가 밀린다**
+   (v1148 사고). 번호는 이미 맞다: 배열 맨 뒤 CA 팔레트는 `trPalNames` 에서 `CA 9` 가 된다. */
+function trPalRenderOrder(){
+  const D = { meta:_shipMeta, pallets:_shipPallets };
+  const stops = trIsMultiRoute(_shipRoute) ? trStopsOf({meta:_shipMeta}) : [];
+  if(stops.length < 2) return _shipPallets;
+  return _shipPallets.slice().sort((a,b)=>trPalStopIdxDisp(D,a) - trPalStopIdxDisp(D,b));
 }
 function trPalMap(D){
   if(D && D.__pn) return D.__pn;
@@ -33965,8 +33989,10 @@ function trPalletStopHtml(p){
   if(!st.length) return '';
   const cur = (p.stop >= 0 && p.stop < st.length) ? p.stop : -1;
   const opts = st.map((k,i)=>`<option value="${i}"${i===cur?' selected':''}>↓ off at ${i+1} · ${esc(trKindShort(k))}</option>`).join('');
-  return `<span style="display:inline-flex;align-items:center;gap:4px;background:${cur<0?'#fef2f2':'#ede9fe'};border:1.5px solid ${cur<0?'#fca5a5':'#a78bfa'};border-radius:8px;padding:2px 4px 2px 8px;">`
-    + `<span style="font-size:10px;font-weight:800;color:${cur<0?'#b91c1c':'#5b21b6'};">🛛 DROP</span>`
+  /* MSCOLOR-v1 - 고른 정차지 색을 그대로 입는다 (안 정했으면 예전처럼 빨강) */
+  const _t = cur < 0 ? null : trStopTheme(st[cur]);
+  return `<span style="display:inline-flex;align-items:center;gap:4px;background:${_t?_t.bg:'#fef2f2'};border:1.5px solid ${_t?_t.bd:'#fca5a5'};border-radius:8px;padding:2px 4px 2px 8px;">`
+    + `<span style="font-size:10px;font-weight:800;color:${_t?_t.fg:'#b91c1c'};">🛛 DROP</span>`
     + `<select class="fi" style="font-size:11px;padding:2px 4px;width:auto;font-weight:800;" onchange="trPalletStopSet('${p.id}',this.value)">`
     + `<option value=""${cur<0?' selected':''}>— not set —</option>${opts}</select></span>`;
 }
@@ -33990,9 +34016,12 @@ function trPalletStopSet(pid, v){
 function trAddPalletBtns(){
   const st = trIsMultiRoute(_shipRoute) ? trStopsOf({meta:_shipMeta}) : [];
   if(st.length < 2) return '<button class="btn" onclick="trAddPallet()">📍 + Add Pallet</button>';
-  return st.map((k,i)=>`<button class="btn" onclick="trAddPallet(${i})" `
-    + `title="New pallet that comes off at stop ${i+1} — ${esc(trKindShort(k))}">`
-    + `📍 + Add ${esc(trStopPfx(k))} pallet</button>`).join(' ');
+  /* MSCOLOR-v1 - 단추 색 = 그 정차지 팔레트 카드 색. 누르기 전에 무슨 색이 생길지 보인다 */
+  return st.map((k,i)=>{ const t = trStopTheme(k);
+    return `<button class="btn" onclick="trAddPallet(${i})" `
+      + `style="background:${t.pill};color:#fff;border-color:${t.pill};font-weight:800;" `
+      + `title="New pallet that comes off at stop ${i+1} — ${esc(trKindShort(k))}">`
+      + `📍 + Add ${esc(trStopPfx(k))} pallet</button>`; }).join(' ');
 }
 async function trAddPallet(stopIdx){
   const p = { id:'p_'+Math.random().toString(36).slice(2,9), label:'Pallet '+(_shipPallets.length+1), lines:[] };
@@ -34642,7 +34671,12 @@ function trRenderPallets(){
   // 사이즈 정렬 (in-place): 재고 라인은 스타일→칼라→사이즈, 수동(manual) 라인은 맨 뒤 원래 순서 유지
   _shipPallets.forEach(p=>{ if(Array.isArray(p.lines)) p.lines.sort((a,b)=>{ const am=a.is_manual?1:0, bm=b.is_manual?1:0; if(am!==bm) return am-bm; if(am) return 0; return String(a.style||'').localeCompare(String(b.style||'')) || bxBaseColor(String(a.color||'').toUpperCase()).localeCompare(bxBaseColor(String(b.color||'').toUpperCase())) || bxSizeCmp(a.size,b.size); }); });
   cboClose();                                        // 다시 그리면 떠 있던 목록은 닫는다 (v835)
-  el.innerHTML = trPbBarHtml() + _shipPallets.map(p=>{
+  /* MSCOLOR-v1 - 정차지 순으로 그린다 (배열은 그대로) + 정차지별 색 */
+  const _rStops = trIsMultiRoute(_shipRoute) ? trStopsOf({meta:_shipMeta}) : [];
+  const _rMulti = _rStops.length >= 2;
+  const _rD = { meta:_shipMeta, pallets:_shipPallets };
+  el.innerHTML = trPbBarHtml() + trPalRenderOrder().map(p=>{
+    const _mth = _rMulti ? trStopTheme(_rStops[trPalStopIdxDisp(_rD, p)]) : null;
     const _pOrders = ((_shipMeta&&_shipMeta.orderShip)||[]).filter(o=>o.pallet===p.label);
     const pOB = _pOrders.reduce((s,o)=>s+(o.boxes||0),0);
     const pOP = _pOrders.reduce((s,o)=>s+(o.pcs||0),0);
@@ -34697,10 +34731,13 @@ function trRenderPallets(){
         <td style="text-align:center;"><button onclick="trDelLine('${p.id}',${li})" style="border:none;background:none;color:#e53935;cursor:pointer;font-weight:800;" title="Delete whole line + return all boxes to bin">✕</button></td>
         </tr>`;
       }).join('');
-    return `<div ${_spSrc?'':`ondragover="trLnOver(event,this)" ondragleave="trLnOut(this)" ondrop="trLnDrop(event,'${p.id}',this)"`} style="border:2px solid ${_spSrc?'#fbbf24':'#d8b4fe'};border-radius:8px;background:#fff;">
-      <div style="background:${_spSrc?'#fffbeb':'#f3e8ff'};padding:8px 14px;display:flex;align-items:center;gap:10px;border-radius:6px 6px 0 0;flex-wrap:wrap;">
-        <!-- MSDOC-v1 - 화면에도 종이와 같은 이름을 보여준다 (CA 1 · MC 1) -->
-        <span style="font-weight:700;color:${_spSrc?'#b45309':'#7b1fa2'};">${_spSrc?'🏭 Bin':'📦'} ${esc(trPalDisp({meta:_shipMeta, pallets:_shipPallets}, p.label))}</span>
+    return `<div ${_spSrc?'':`ondragover="trLnOver(event,this)" ondragleave="trLnOut(this)" ondrop="trLnDrop(event,'${p.id}',this)"`} style="border:2px solid ${_spSrc?'#fbbf24':(_mth?_mth.bd:'#d8b4fe')};border-radius:8px;background:#fff;">
+      <div style="background:${_spSrc?'#fffbeb':(_mth?_mth.bg:'#f3e8ff')};padding:8px 14px;display:flex;align-items:center;gap:10px;border-radius:6px 6px 0 0;flex-wrap:wrap;">
+        <!-- MSDOC-v1 - 화면에도 종이와 같은 이름을 보여준다 (CA 1 · MC 1)
+             MSCOLOR-v1 - multi 면 정차지 색을 채운 알약으로 -->
+        ${_mth
+          ? `<span style="font-weight:800;color:#fff;background:${_mth.pill};border-radius:7px;padding:3px 11px;letter-spacing:.3px;">📦 ${esc(trPalDisp(_rD, p.label))}</span>`
+          : `<span style="font-weight:700;color:${_spSrc?'#b45309':'#7b1fa2'};">${_spSrc?'🏭 Bin':'📦'} ${esc(trPalDisp({meta:_shipMeta, pallets:_shipPallets}, p.label))}</span>`}
         ${_spSrc ? hodgePalTag(p.label, 'SC') : ''}
         ${trPalletStopHtml(p)}
         ${trDstKind(_shipRoute)!=='3P' ? '' : (p.hbin
@@ -34718,7 +34755,7 @@ function trRenderPallets(){
       </div>
       <div style="overflow-x:auto;">
       <table class="etbl" style="font-size:12px;">
-        <thead><tr style="background:${_spSrc?'#fef3c7':'#fce7f3'};"><th class="tl">Style</th><th class="tl">Color</th><th>Size</th><th>From Bin</th><th>Boxes</th><th>Pcs</th><th>pcs/box</th><th title="Check lines → Pull Request or Put Back; or ↩ return one line">☑ / ↩</th><th style="width:30px;"></th></tr></thead>
+        <thead><tr style="background:${_spSrc?'#fef3c7':(_mth?_mth.th:'#fce7f3')};"><th class="tl">Style</th><th class="tl">Color</th><th>Size</th><th>From Bin</th><th>Boxes</th><th>Pcs</th><th>pcs/box</th><th title="Check lines → Pull Request or Put Back; or ↩ return one line">☑ / ↩</th><th style="width:30px;"></th></tr></thead>
         <tbody>${rows}</tbody>
       </table></div>${trOrderShipRowsForPallet(p.label)}</div>`;
   }).join('') + ((trSrcAutoPallet(_shipRoute) || !_shipPallets.length) ? '' :
