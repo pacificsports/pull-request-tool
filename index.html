@@ -33952,7 +33952,43 @@ function trStopBarHtml(){
       <select class="fi" style="font-size:11px;padding:3px 5px;width:auto;" onchange="if(this.value){trStopAdd(this.value);this.value='';}">
         <option value="">+ add stop</option>${opts}</select>
       ${st.length<2?'<span style="font-size:10.5px;color:#b45309;font-weight:700;">⚠ Add at least 2 stops, or use a normal single-route transfer.</span>':''}
-    </div></div>`;
+    </div>${trStopOnlyHtml()}</div>`;
+}
+/* MSONE-v1 - 「그냥 다 CA 로 보내자」 - 트럭 전체를 정차지 하나로 접는다.
+   [stated] 하윤: "우리가 CA랑 MC로 트럭을 짜고 있다가 그냥 다 CA로 보내자 할수있잖아" */
+function trStopOnlyHtml(){
+  const st = trStopsOf({meta:_shipMeta});
+  if(st.length < 2) return '';
+  return `<div style="margin-top:8px;padding-top:8px;border-top:1px dashed #d8b4fe;display:flex;gap:7px;align-items:center;flex-wrap:wrap;">`
+    + `<span style="font-size:10.5px;color:#6d28d9;font-weight:800;">Changed your mind? Send the whole truck to one place:</span>`
+    + st.map((k,i)=>{ const t = trStopTheme(k);
+        return `<button class="btn btn-sm" style="background:${t.bg};color:${t.fg};border-color:${t.bd};font-weight:800;" `
+          + `onclick="trStopOnly(${i})" `
+          + `title="Every pallet comes off at ${esc(trKindShort(k))} and the other stop(s) are removed — one packing list, one BOL">`
+          + `📦 All to ${esc(trStopPfx(k))}</button>`; }).join(' ')
+    + `</div>`;
+}
+async function trStopOnly(i){
+  const st = trStopsOf({meta:_shipMeta});
+  if(!(i >= 0 && i < st.length)) return;
+  const k = st[i];
+  const mv = _shipPallets.filter(p=>Number(p.stop) !== i).length;
+  if(!confirm('Send the WHOLE truck to ' + trKindShort(k) + '?\n\n'
+    + '   \u00b7 every pallet comes off there' + (mv ? ('  (' + mv + ' pallet(s) move)') : '') + '\n'
+    + '   \u00b7 the other stop(s) are removed\n'
+    + '   \u00b7 one packing list and one BOL, both to ' + trKindShort(k) + '\n\n'
+    + 'Pallets go back to being named Pallet 1, 2, 3 \u2026\n'
+    + 'You can split the truck again by adding a stop back.')) return;
+  _shipMeta.stops = [k];
+  _shipPallets.forEach(p=>{ p.stop = 0; });
+  trStopsRerender();
+  /* ⚠ `stops` 는 meta 에, 팔레트의 정차지는 줄에 박힌다 - 둘을 **한 번에** 저장한다.
+     `trCaptureInfo` 가 `_shipMeta` 를 통째로 다시 만들면서 `stops`·`palletStop` 을 싣는다. */
+  if(_shipId){
+    try{ trCaptureInfo(); await trPatchRec(_shipId, { meta:_shipMeta, lines:trLinesFlat() }); }
+    catch(e){ console.warn(e); showToast('\u26a0 Saved on screen but not to the server \u2014 press \ud83d\udcbe Save'); return; }
+  }
+  showToast('\ud83d\udce6 One stop \u2014 the whole truck goes to ' + trKindShort(k));
 }
 function trStopsRerender(){
   const e = document.getElementById('ship-stops'); if(e) e.innerHTML = trStopBarHtml();
@@ -35350,9 +35386,23 @@ function trPickupReq(D){
   w.document.close();
 }
 // ── Packing List (IMS 양식) ──
-function trPLHtml(D){
+/* MSONE-v1 - 이 **종이 한 장**의 목적지 종류.
+     ① 정차지별로 갈라진 장이면 그 정차지
+     ② 트럭 전체가 정차지 하나면 그 정차지  ← 「📦 All to …」 로 접은 트럭
+     ③ 그 밖에는 예전처럼 길의 `dest` (기존 길은 한 글자도 안 바뀐다)
+   ⚠ 이게 없으면 MC 로 접은 트럭의 BOL 에 우리 Eastvale 주소가 찍힌다. */
+function trDocDst(D, stopKind){
+  if(stopKind) return stopKind;
+  const st = trStopsOf({ meta:(D && D.meta) || {} });
+  if(st.length === 1) return st[0];
+  return trDstKind(D && D.route);
+}
+function trPLHtml(D, stopKind){
   if(!D){ trCaptureInfo(); D = {no:_shipNo, meta:_shipMeta, pallets:_shipPallets, route:_shipRoute}; }
   const _P = D.pallets||[], _M = D.meta||{}, _R = TR_ROUTES[D.route]||TR_ROUTES.SC2CA;
+  /* MSONE-v1 - 🔴 MSDOC-v1 이 놓쳤다: `_R.dest` 를 그대로 쓰면 정차지별로 갈라도
+     **MC 종이에 「CA Receiver Signature」** 가 찍힌다 (`g.D` 가 route 를 물려받으므로). */
+  const _dst = trDocDst(D, stopKind);
   const calcBoxes = l=>trLineBoxes(l);
   const BOX_LBS = 33;   // 한 박스 = 33 lbs (Pacific Sports 기준) — packing list weight 계산용 (v715)
   const totalLines = _P.reduce((s,p)=>s+p.lines.length,0);
@@ -35369,7 +35419,7 @@ function trPLHtml(D){
   const _palSet = new Set(); _P.forEach(p=>{ if(p.lines.length) _palSet.add(p.label); }); _os.forEach(o=>{ if(o.pallet) _palSet.add(o.pallet); });
   const totalPallets = _palSet.size || _P.length;
   const orderHtml = _os.length ? `<div style="margin-bottom:18px;page-break-inside:avoid;">
-      <div style="background:#ede9fe;padding:8px 12px;border:1px solid #c4b5fd;border-radius:4px;margin-bottom:6px;font-weight:700;color:#5b21b6;font-size:14px;">🚚 Order Shipments — packed in SC, routed to their order at ${esc(trKindShort(_R.dest))} · ${_os.length} order(s) · ${osPcs.toLocaleString()} pcs · ${osBoxes.toLocaleString()} boxes</div>
+      <div style="background:#ede9fe;padding:8px 12px;border:1px solid #c4b5fd;border-radius:4px;margin-bottom:6px;font-weight:700;color:#5b21b6;font-size:14px;">🚚 Order Shipments — packed in SC, routed to their order at ${esc(trKindShort(_dst))} · ${_os.length} order(s) · ${osPcs.toLocaleString()} pcs · ${osBoxes.toLocaleString()} boxes</div>
       <table style="width:100%;border-collapse:collapse;font-size:11px;">
         <thead><tr style="background:#f3f4f6;">
           <th style="padding:6px 8px;text-align:left;border:1px solid #ccc;">Pallet</th>
@@ -35465,7 +35515,7 @@ function trPLHtml(D){
       <div><div style="border-bottom:1px solid #000;height:50px;"></div><div style="margin-top:4px;">Driver Signature & Date</div></div>
     </div>
     <div style="margin-top:30px;display:grid;grid-template-columns:1fr 1fr;gap:30px;font-size:12px;page-break-inside:avoid;">
-      <div><div style="border-bottom:1px solid #000;height:50px;"></div><div style="margin-top:4px;">${trKindShort(_R.dest)} Receiver Signature & Date</div></div>
+      <div><div style="border-bottom:1px solid #000;height:50px;"></div><div style="margin-top:4px;">${trKindShort(_dst)} Receiver Signature & Date</div></div>
       <div></div>
     </div>
   </div>`;
@@ -35476,7 +35526,7 @@ function trPLDocHtml(D){
   const gs = trStopSplit(D);
   if(!gs) return trPLHtml(D);
   return gs.map((g, i)=>`<div style="${i ? 'page-break-before:always;' : ''}">`
-    + trStopBanner(g, gs.length) + trPLHtml(g.D) + `</div>`).join('');
+    + trStopBanner(g, gs.length) + trPLHtml(g.D, g.kind) + `</div>`).join('');
 }
 function trPL(D){
   const _P0 = D ? (D.pallets||[]) : _shipPallets;
@@ -35684,7 +35734,11 @@ function trBOL(D){
     trBOLShow(parts, D);
     return;
   }
-  trBOLShow(trBOLHtml(D, null), D);
+  /* MSONE-v1 - 정차지가 **하나뿐인** multi 트럭(📦 All to … 로 접은 것)도
+     그 정차지 주소로 찍는다. `null` 을 넘기면 길의 `dest`(MULTI_SC=CA)가 나와
+     MC 로 접은 트럭에 우리 Eastvale 주소가 찍힌다. */
+  const _st1 = trStopsOf({ meta:(D && D.meta) || {} });
+  trBOLShow(trBOLHtml(D, _st1.length === 1 ? _st1[0] : null), D);
 }
 function trBOLHtml(D, stopKind){
   if(!D){ trCaptureInfo(); D = {no:_shipNo, meta:_shipMeta, pallets:_shipPallets, route:_shipRoute}; }
@@ -35850,7 +35904,8 @@ async function trSendShipEmail(D, toList){
       + psmList(
           psmTh('Pallet') + psmTh('Style') + psmTh('Color') + psmTh('Size','center')
         + psmTh('Bin','center') + psmTh('Boxes','right') + psmTh('Pcs','right'), lineRows));
-    const plBlob = await makePdfBlob(trPLHtml(D), []);
+    /* MSONE-v1 - 직원 메일 첨부도 정차지별로 (그전엔 `trPLHtml` 을 직접 불러 한 장이었다) */
+    const plBlob = await makePdfBlob(trPLDocHtml(D), []);
     const plB64 = await blobToB64(plBlob);
     const atts = [{ filename:(D.no||'shipment')+'-PackingList.pdf', content: plB64 }];
     (M.bolFiles||[]).forEach(f=>{ const c=String(f.data||''); atts.push({ filename:f.name||'BOL.pdf', content: c.includes(',')?c.split(',')[1]:c }); });
