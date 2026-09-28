@@ -10564,12 +10564,39 @@ function payOf(rec, wh, dupIdx){
   }
   return (dupIdx==null || dupIdx==='') ? iv.paid : (iv.dupPays||[])[dupIdx];
 }
+/* REFMAIL-1 - 환불/취소 알림 메일. psmWrap 으로 다른 메일과 같은 옷을 입는다. */
+async function refundMailOut(rec, wh, to, amt, pd, isVoid){
+  const po = (rec.meta && rec.meta.po) || '';
+  const iv = (rec.inv && rec.inv[wh]) || {};
+  const last4 = String((pd && pd.acct) || '').replace(/[^0-9]/g, '').slice(-4);
+  /* [stated] 하윤: 거래처에게는 cancelled 이 아니라 refunded 로 말한다.
+     정산 전이면 명세서에서 그냥 사라질 수 있다는 것만 따로 알려 준다. */
+  const title = 'Refund issued';
+  const html = psmWrap('Refund',
+      psmHead(po ? ('PO ' + esc(po)) : esc(rec.base || ''), title + ' ' + payReqMoney(amt))
+    + psmP(isVoid
+        ? 'We have refunded ' + payReqMoney(amt) + ' to the card below. Because the charge had not settled yet, it may simply drop off your statement instead of appearing as a separate refund line.'
+        : 'We have refunded ' + payReqMoney(amt) + ' to the card below. It usually takes 3 to 5 business days to appear on your statement, depending on your bank.')
+    + psmTable(
+        (iv.invNo ? psmRow('Invoice', esc(iv.invNo)) : '')
+      + (po ? psmRow('PO #', esc(po)) : '')
+      + (last4 ? psmRow('Card', 'ending ' + esc(last4)) : '')
+      + psmRow('Amount refunded',
+          '<span style="font-size:16px;">' + payReqMoney(amt) + '</span>'))
+    + psmP('Questions? Just reply to this email.'));
+  const subject = title + ' - ' + payReqMoney(amt) + (po ? (' - PO ' + po) : '') + ' (Pacific Sports)';
+  return payReqMailOut(to, subject, html);
+}
 function refundCharge(base, wh, dupIdx, preAmt){
   const rec = savedCache.find(s=>s.base===base); if(!rec) return;
   const pd = payOf(rec, wh, dupIdx); if(!pd) return;
   const { refTot, remain } = refundTotals(pd);
   if(remain <= 0.005) return;
   const pre = (Number(preAmt) > 0) ? Math.min(Number(preAmt), remain) : remain;   // 차액만 미리 채운다 (v836)
+  /* REFMAIL-1 - 환불했으면 거래처도 알아야 한다. 인보이스 받는 주소로 보낸다. */
+  const _rfCust = (rec.meta && rec.meta.cust) || '';
+  const _rfMail = custEmailClean((typeof custEmailFor === 'function' ? custEmailFor(_rfCust) : '')
+                  || (rec.meta && rec.meta.custEmail) || '');
   const ex = document.getElementById('modal-refund'); if(ex) ex.remove();
   const div = document.createElement('div');
   div.id = 'modal-refund';
@@ -10587,6 +10614,7 @@ function refundCharge(base, wh, dupIdx, preAmt){
         <span id="rf-status" style="font-size:11.5px;font-weight:700;color:#92400e;"></span>
       </div>
       <div style="font-size:10.5px;color:#9ca3af;margin-top:8px;line-height:1.6;">A full refund before settlement voids the charge, with no fee.<br>Partial refunds are possible only after card settlement (usually the next business day).</div>
+      ${_rfMail ? `<label style="display:flex;align-items:center;gap:7px;margin-top:12px;padding-top:11px;border-top:1px dashed var(--border);font-size:12px;font-weight:700;cursor:pointer;"><input type="checkbox" id="rf-mail" checked style="width:15px;height:15px;accent-color:#166534;cursor:pointer;"><span>Email the customer &mdash; <span style="font-weight:400;color:var(--text2);">${esc(_rfMail)}</span></span></label>` : `<div style="margin-top:12px;padding-top:11px;border-top:1px dashed var(--border);font-size:11.5px;color:#b45309;font-weight:700;">⚠ No email on file for this customer &mdash; nothing will be sent.</div>`}
     </div>
     <div style="padding:0 16px 14px;display:flex;gap:8px;justify-content:flex-end;">
       <button class="btn btn-sm" onclick="document.getElementById('modal-refund').remove()">Cancel</button>
@@ -10629,6 +10657,20 @@ async function submitRefund(base, wh, dupIdx){
     pd.refunds.push({ amt: amt, type: j.type||'', transId: j.transId||'', at: new Date().toISOString(), by: (SESS&&SESS.email)||'' });
     try{ await sbFetch('/rest/v1/pr_orders?base=eq.'+encodeURIComponent(base), {method:'PATCH', headers:{Prefer:'return=minimal'}, body:JSON.stringify({inv:rec.inv, updated_at:new Date().toISOString()})}); }catch(e){}
     logHist(base, 'Card ' + (j.type==='void'?'voided':'refunded') + ' $' + amt.toFixed(2) + ' — ' + wh + ' (Trans ' + (pd.transId||'') + ')');
+    /* REFMAIL-1 - 거래처에게 알린다. 메일이 실패해도 환불은 이미 끝난 일이다. */
+    try{
+      const _cb = document.getElementById('rf-mail');
+      if(_cb && _cb.checked){
+        const _cust = (rec.meta && rec.meta.cust) || '';
+        const _to = custEmailClean((typeof custEmailFor === 'function' ? custEmailFor(_cust) : '')
+                    || (rec.meta && rec.meta.custEmail) || '');
+        if(_to){
+          const _r = await refundMailOut(rec, wh, _to, amt, pd, (j.type === 'void'));
+          if(_r && _r.ok) logHist(base, 'Refund notice emailed to ' + _to);
+          else showToast('⚠ Refund done, but the email did not go out');
+        }
+      }
+    }catch(e2){ showToast('⚠ Refund done, but the email did not go out'); }
     showToast('✅ Refund $' + amt.toFixed(2) + ' complete' + (j.type==='void' ? ' (pre-settlement, so the charge was voided)' : ''));
     const m = document.getElementById('modal-refund'); if(m) m.remove();
     renderSaved();
