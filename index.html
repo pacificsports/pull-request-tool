@@ -8512,7 +8512,7 @@ function lockerAutoPl(rec){
     if(!lines.length) return;
     rec.pl[w] = {
       custEmail: (rec.meta.custEmail||'')
-                 || ((typeof custEmailFor === 'function' && custEmailFor(rec.meta.cust)) || ''),
+                 || ((typeof custPlEmailFor === 'function' && custPlEmailFor(rec.meta.cust)) || ''),   /* CUSTPLEM-1 */
       serial: (typeof nextSerial === 'function') ? nextSerial(w) : '',
       via: (typeof normVia === 'function') ? (normVia(rec.meta.via||'') || '') : (rec.meta.via||''),
       method: '', freightCo: '', trackings: [''],
@@ -8592,7 +8592,7 @@ function openPLInner(base){
       _via = 'UPS';
       _method = ({'03':'Ground','12':'3rd Day','02':'2nd Day','01':'Next Day'})[_uwLabel.service] || _method;
     }
-    plDrafts[w] = { custEmail:i.custEmail||((rec.meta&&rec.meta.custEmail)||'')||custEmailFor(rec.meta&&rec.meta.cust), serial:i.serial||(_isRev ? (nextSerial(_pw) + '-R' + revNumOf(w)) : nextSerial(w)), via:_via, method:_method, freightCo:i.freightCo||'', trackings:(_tr.length?_tr:['']), date:i.date||((rec.meta&&rec.meta.futureShip)||'')||todayStr(), note:i.note||'', lines: baseLines, files: Array.isArray(i.files)?JSON.parse(JSON.stringify(i.files)):[], sendPl: (function(){ try{ if(webPoOf(rec)) return true; }catch(e){} return !!i.sendPl; })() };
+    plDrafts[w] = { custEmail:i.custEmail||((rec.meta&&rec.meta.custEmail)||'')||custPlEmailFor(rec.meta&&rec.meta.cust), serial:i.serial||(_isRev ? (nextSerial(_pw) + '-R' + revNumOf(w)) : nextSerial(w)), via:_via, method:_method, freightCo:i.freightCo||'', trackings:(_tr.length?_tr:['']), date:i.date||((rec.meta&&rec.meta.futureShip)||'')||todayStr(), note:i.note||'', lines: baseLines, files: Array.isArray(i.files)?JSON.parse(JSON.stringify(i.files)):[], sendPl: (function(){ try{ if(webPoOf(rec)) return true; }catch(e){} return !!i.sendPl; })() };
     const iv = (rec.inv && rec.inv[w]) || {};
     // 배송비 자동 프리필: 고객이 승인한 금액이 있으면 그걸 최우선(=청구=승인 일치), 없으면 라벨 정가
     let _fr = Number(iv.freight)||0;
@@ -9597,17 +9597,29 @@ function custEmailClean(s){
 }
 /* ⚠ 제일 최근 오더가 우리 식구 주소만 들고 있을 수도 있다 - 그러면 그 다음 오더를 본다.
       없으면 빈칸을 돌려준다. 지어내지 않는다. */
+/* CUSTPLEM-1 - 거래처 카드에 적힌 주소를 꺼낸다. field 는 'email'(인보이스) 또는
+   'plEmail'(패킹리스트). 카드가 없거나 비었으면 빈칸 - 지어내지 않는다. */
+function custCardEmail(cust, field){
+  try{
+    if(typeof custKey === 'function' && custStore){
+      const c = custStore[custKey(cust)];
+      if(c) return custEmailClean(c[field]);
+    }
+  }catch(e){}
+  return '';
+}
+/* CUSTPLEM-1 - 패킹리스트는 받는 사람이 다를 수 있다 (창고/물류 담당 vs 경리).
+   ⚠ 따로 안 적어 두면 인보이스 주소를 그대로 쓴다 - 예전과 똑같이 돈다. */
+function custPlEmailFor(cust){
+  if(!cust) return '';
+  return custCardEmail(cust, 'plEmail') || custEmailFor(cust);
+}
 function custEmailFor(cust){
   if(!cust) return '';
   /* CUSTEML-1 - 거래처 카드에 적어 둔 주소가 먼저다. 지난 오더에서 주워 오는 것은
      그 다음 - 오래된 주소가 새로 적은 것을 이기면 안 된다. */
-  try{
-    if(typeof custKey === 'function' && custStore){
-      const _cs = custStore[custKey(cust)];
-      const _on = _cs && custEmailClean(_cs.email);
-      if(_on) return _on;
-    }
-  }catch(e){}
+  const _on = custCardEmail(cust, 'email');
+  if(_on) return _on;
   const recs = (savedCache||[]).filter(r=>r.meta && r.meta.cust===cust && r.meta.custEmail)
     .sort((a,b)=>String(b.savedAt||'').localeCompare(String(a.savedAt||'')));
   for(const r of recs){ const c = custEmailClean(r.meta.custEmail); if(c) return c; }
@@ -15006,7 +15018,7 @@ function renderPL(){
       <div class="no-print" style="display:flex;gap:6px;justify-content:flex-end;margin-bottom:12px;flex-wrap:wrap;">
         ${plShowInv
           ? `<button class="btn btn-sm" style="background:#fff;color:#7c3aed;border-color:#c4b5fd;margin-right:auto;" onclick="viewSavedPO(plBase)" title="Open the customer's original PO alongside to compare with the invoice">📄 Customer PO</button>
-             <input class="fi" id="inv-email" value="${esc((plDrafts[plWh]&&plDrafts[plWh].custEmail)||((rec.meta&&rec.meta.custEmail)||'')||custEmailFor(rec.meta&&rec.meta.cust)||'')}" placeholder="customer email (commas for multiple)" style="width:230px;font-size:11.5px;padding:5px 8px;">
+             <input class="fi" id="inv-email" value="${esc(custCardEmail(rec.meta&&rec.meta.cust,'email')||(plDrafts[plWh]&&plDrafts[plWh].custEmail)||((rec.meta&&rec.meta.custEmail)||'')||custEmailFor(rec.meta&&rec.meta.cust)||'')}" placeholder="customer email (commas for multiple)" style="width:230px;font-size:11.5px;padding:5px 8px;">
              <button class="btn btn-sm" style="background:#0e7490;color:#fff;border-color:#0e7490;font-weight:800;" onclick="sendInvoiceEmail()" title="Send the Invoice PDF to this email">📧 Send Invoice</button>
              <button class="btn btn-sm btn-primary" onclick="saveInvStage()">${t('save_inv')}</button><button class="btn btn-sm" id="invpdf-btn" onclick="downloadPLPdf('invoice')">${t('inv_pdf')}</button><button class="btn btn-sm" style="color:#166534;border-color:#86efac;" onclick="downloadInvExcel()" title="Download the invoice as an Excel file">⬇ Excel</button><button class="btn btn-sm" onclick="printStageDoc('invoice')">🖨 Invoice</button>`
           : `${(()=>{ /* 🌐 웹 주문은 끌 수 있는 선택지가 아니다 (v1123): 끄면 메일뿐 아니라 인보이스 번호 발급과 웹 반영(webOrderPushBack)까지 건너뛴다. 켜고 잠근다. */ const _wPL = (()=>{ try{ return !!webPoOf(rec); }catch(e){ return false; } })(); const _on = _wPL || !!(plDrafts[plWh]&&plDrafts[plWh].sendPl); return `<label style="display:flex;align-items:center;gap:5px;font-size:11.5px;font-weight:700;color:#0e7490;margin-right:auto;cursor:${_wPL?'default':'pointer'};"><input type="checkbox" id="plf-sendpl" ${_on?'checked':''}${_wPL?' disabled':''} onchange="if(plDrafts[plWh])plDrafts[plWh].sendPl=this.checked" style="width:14px;height:14px;accent-color:#0e7490;cursor:${_wPL?'default':'pointer'};${_wPL?'opacity:.75;':''}"> ${t('sendpl_cb')}${_wPL?` <span style="font-weight:700;color:#15803d;">— 🌐 web order: the invoice and tracking also go back to the customer's account</span>`:''}</label>`; })()}${plInfo(rec,plWh).savedAt ? `<button class="btn btn-sm" style="background:#0e7490;color:#fff;border-color:#0e7490;" onclick="resendPL()" title="Resend the Packing List to the Customer Email address">📧 Resend PL</button><button class="btn btn-sm" style="background:#fff;color:#b91c1c;border-color:#fca5a5;" onclick="unshipPL()" title="Delete this warehouse's Packing List/Invoice records and revert to pre-ship status">↩ Undo Ship</button>` : ''}<button class="btn btn-sm" style="background:#7c3aed;color:#fff;border-color:#7c3aed;" onclick="document.getElementById('pl-scan-file').click()" title="Photograph the signed BOL/Packing List with your phone — auto-converted to PDF and attached to this order">📷 Scan</button><input type="file" id="pl-scan-file" accept="image/*,application/pdf" capture="environment" multiple style="display:none;" onchange="plScanUpload(this)"><button class="btn btn-sm" style="background:#374151;color:#fff;border-color:#374151;" onclick="openBOL()" title="Bill of Lading — edit, save and print in a window">🚛 BOL</button><button class="btn btn-sm btn-primary" onclick="savePL()">${t('save_pl')}</button>${(()=>{ const dd = plInfo(rec,plWh); return dd.savedAt && !dd._completed ? `<button class="btn btn-sm" style="background:#16a34a;color:#fff;border-color:#16a34a;font-weight:800;" onclick="completePL()" title="Press when edits are done — marks green + emails the customer">✅ Complete</button>` : (dd._completed ? `<span style="align-self:center;padding:3px 10px;border-radius:20px;font-size:10.5px;font-weight:800;background:#dcfce7;color:#166534;white-space:nowrap;">✅ Completed ${new Date(dd._completed).toLocaleDateString()}</span>` : ''); })()}<button class="btn btn-sm" id="plpdf-btn" onclick="downloadPLPdf('packing')">${t('pl_pdf')}</button><button class="btn btn-sm" onclick="printStageDoc('packing')">🖨</button>`}
@@ -39269,6 +39281,12 @@ async function cmAddrSet(name, f, v){
   try{ await saveCustomer(k, cur); showToast('💾 Address saved'); }
   catch(e){ showToast('⚠ Address not saved'); }
 }
+/* CUSTPLEM-1 - 카드에 적어 둔 패킹리스트 주소. 비면 빈칸을 돌려준다 (인보이스 주소를
+   여기 비쳐 주면 따로 적어 둔 것처럼 보여서 헷갈린다). */
+function cmPlEmailOf(name){
+  try{ const c = custStore[custKey(name)]; return custEmailClean((c && c.plEmail) || ''); }
+  catch(e){ return ''; }
+}
 function cmAddrRow(name, em){
   const b = cmBillOf(name);
   const nm = esc(name).replace(/'/g,"\\'");
@@ -39277,6 +39295,15 @@ function cmAddrRow(name, em){
     const l2 = b.addr || '';
     const l3 = [b.city, [String(b.state||'').toUpperCase(), b.zip].filter(Boolean).join(' ')].filter(Boolean).join(' ');
     const any = l1 || l2 || l3;
+    /* CUSTPLEM-1 - 두 줄이 같은 폭으로 줄이 맞게. 비워 두면 인보이스 주소를 쓴다. */
+    const _ck = esc(custKey(name));
+    const emRow = (lab, fld, val, ph, ttl) =>
+      '<div style="margin-top:6px;display:flex;align-items:center;gap:7px;max-width:430px;">'
+      + '<span title="'+ttl+'" style="flex:0 0 108px;font-size:9.5px;font-weight:800;color:#64748b;letter-spacing:.04em;">'+lab+'</span>'
+      + '<input class="fi" value="'+esc(val||'')+'" placeholder="'+ph+'" title="'+ttl+'"'
+      + ' onchange="cmSetQuiet(\''+_ck+'\',\''+fld+'\',this.value)"'
+      + ' style="flex:1;min-width:0;font-size:12px;padding:3px 6px;color:#1d4ed8;font-weight:700;">'
+      + '</div>';
     /* CUSTEML-1 - 메일 칸을 주소 덩어리 밖으로 꺼냈다. 예전에는 두 번 눌러야 나와서
        하윤이 "적을 수 있는 게 안 보인다" 고 했다. 이제 늘 보이고 그 자리에서 고친다. */
     return '<div ondblclick="cmAddrEdit(1)" title="Double-click to edit" style="margin-top:6px;font-size:12.5px;line-height:1.45;color:#334155;cursor:text;">'
@@ -39285,14 +39312,12 @@ function cmAddrRow(name, em){
               + (l3?'<div>'+esc(l3)+'</div>':''))
              : '<div style="color:#94a3b8;font-size:11.5px;">No address yet - double-click to enter</div>')
       + '</div>'
-      + '<div style="margin-top:7px;display:flex;align-items:center;gap:7px;max-width:430px;">'
-        + '<span title="This is the address the invoice email goes to. Use commas for more than one."'
-        + ' style="font-size:9.5px;font-weight:800;color:#64748b;letter-spacing:.05em;white-space:nowrap;">📧 INVOICE EMAIL</span>'
-        + '<input class="fi" value="'+esc(em||'')+'" placeholder="who gets the invoice - commas for several"'
-        + ' title="This is the address the invoice email goes to. Use commas for more than one."'
-        + ' onchange="cmSetQuiet(\''+esc(custKey(name))+'\',\'email\',this.value)"'
-        + ' style="flex:1;min-width:0;font-size:12px;padding:3px 6px;color:#1d4ed8;font-weight:700;">'
-      + '</div>';
+      + emRow('📧 INVOICE', 'email', em,
+              'who gets the invoice - commas for several',
+              'Where the invoice email goes. Use commas for more than one.')
+      + emRow('📦 PACKING LIST', 'plEmail', cmPlEmailOf(name),
+              'same as the invoice address',
+              'Where the packing list email goes. Leave it blank and the invoice address is used.');
   }
   const fld = (f, ph, w, extra, fn) => '<input class="fi" value="'+esc((f==='email'?(em||''):(b[f]||'')))+'" placeholder="'+ph+'" '
     + 'onchange="'+(fn||("cmAddrSet('"+nm+"','"+f+"',this.value)"))+'" '
@@ -39702,7 +39727,7 @@ function renderCustomers(){
   }
   el.innerHTML = `<div id="cust-topscroll" style="overflow-x:auto;overflow-y:hidden;height:14px;margin-bottom:2px;"><div style="height:1px;"></div></div>
   <div id="cust-xwrap" style="overflow-x:auto;"><table class="etbl">
-    <thead><tr><th class="tl" style="position:sticky;left:0;z-index:6;background:var(--header);">Customer</th><th class="tl">Address</th><th class="tl">Ship To</th><th>Orders</th><th>Total Sales</th><th>Outstanding</th><th>Open Orders</th><th>Credit Limit</th><th>Available</th><th>Terms</th><th>📧 Email</th><th></th></tr></thead>
+    <thead><tr><th class="tl" style="position:sticky;left:0;z-index:6;background:var(--header);">Customer</th><th class="tl">Address</th><th class="tl">Ship To</th><th>Orders</th><th>Total Sales</th><th>Outstanding</th><th>Open Orders</th><th>Credit Limit</th><th>Available</th><th>Terms</th><th>📧 Invoice Email</th><th>📦 PL Email</th><th></th></tr></thead>
     <tbody>${list.map((m,i)=>{
       const k = custKey(m.name);
       const cs = custStore[k] || {};
@@ -39735,6 +39760,7 @@ function renderCustomers(){
         <td style="font-weight:800;font-family:Consolas,monospace;color:${room===null?'#9ca3af':(room<0?'#b91c1c':'#166534')};">${room===null?'—':(room<0?'−':'')+'$'+Math.abs(room).toLocaleString(undefined,{maximumFractionDigits:0})}</td>
         <td>${termSelectHtml(esc(k), tt, 'width:118px;font-size:11.5px;')}</td>
         <td><input class="fi" value="${esc(em)}" placeholder="email" title="${esc(em)}" onchange="cmSet('${esc(k)}','email',this.value)" style="width:180px;font-size:11px;"></td>
+        <td><input class="fi" value="${esc(custEmailClean(cs.plEmail||''))}" placeholder="same as invoice" title="Where the packing list email goes. Leave it blank and the invoice address is used." onchange="cmSet('${esc(k)}','plEmail',this.value)" style="width:180px;font-size:11px;"></td>
         <td style="white-space:nowrap;"><button class="btn btn-sm" onclick="openCustPrices('${esc(m.name)}')" title="Last selling prices by item for this customer">💲 Prices</button>
           <button class="btn btn-sm" style="margin-left:4px;${(cs.ups&&(cs.ups.account||cs.ups.mode))?'background:#7c2d12;color:#fff;border-color:#7c2d12;':''}" onclick="openCustUps('${esc(m.name)}')" title="UPS shipping account &amp; billing for this customer">🏷 UPS</button>
           <label style="display:inline-flex;align-items:center;gap:4px;margin-left:6px;font-size:11px;font-weight:700;color:#0e7490;cursor:pointer;vertical-align:middle;" title="Website customer — new orders auto-check 🌐 Website Customer"><input type="checkbox" ${cs.webCust?'checked':''} onchange="cmSet('${esc(k)}','webCust',this.checked)" style="width:13px;height:13px;accent-color:#0e7490;cursor:pointer;">🌐 Website</label>
@@ -39743,7 +39769,7 @@ function renderCustomers(){
           <button class="btn btn-sm" style="border:none;padding:0 5px;margin-left:2px;" onclick="openCustLink('${esc(m.name)}')" title="Link/unlink as another brand of the same company">🔗</button>
           <button class="btn btn-sm" style="border:none;padding:0 5px;margin-left:2px;" onclick="cmDelete('${esc(m.name)}')" title="Delete this customer">🗑</button></td>
       </tr>`;
-    }).join('') || '<tr><td colspan="12" class="muted" style="padding:14px;">No customers yet</td></tr>'}</tbody>
+    }).join('') || '<tr><td colspan="13" class="muted" style="padding:14px;">No customers yet</td></tr>'}</tbody>
   </table></div>
   <div id="cust-ar-panel" style="margin-top:12px;">${cmOpenAR ? `<div style="border:1.5px solid #cbd5e1;border-radius:10px;background:#f8fafc;box-shadow:0 2px 8px rgba(15,42,74,.08);">
     <div style="display:flex;align-items:center;padding:8px 14px;background:#0f2a4a;border-radius:9px 9px 0 0;">
@@ -40148,7 +40174,7 @@ async function cmDelete(name){
 async function cmSetQuiet(k, field, val){
   const cur = custStore[k] || {};
   /* CUSTTERM-v1 - 거래처 메일 칸에는 우리 식구 주소를 넣지 않는다 */
-  cur[field] = (field === 'email') ? custEmailClean(val) : String(val||'').trim();
+  cur[field] = (field === 'email' || field === 'plEmail') ? custEmailClean(val) : String(val||'').trim();   /* CUSTPLEM-1 */
   let ok = false;
   try{ ok = await saveCustomer(k, cur); }catch(e){ ok = false; }
   showToast(ok ? '💾 Saved' : '\u26a0 NOT saved - the server refused it. Try again.');
@@ -40160,6 +40186,7 @@ async function cmSet(k, field, val){
   else if(field === 'payCard') cur.payCard = !!val;    /* PAYCARD-v1 - 참/거짓으로 못 박는다 */
   else if(field === 'factored') cur.factored = !!val;   /* INVDOC-v1 */
   else if(field === 'email') cur.email = custEmailClean(val);   /* CUSTTERM-v1 */
+  else if(field === 'plEmail') cur.plEmail = custEmailClean(val);   /* CUSTPLEM-1 */
   else cur[field] = String(val||'').trim();
   /* CUSTTERM-v1 - 진짜로 써졌는지 보고 말한다 (예전에는 무조건 Saved 라고 했다) */
   let ok = false;
@@ -41314,7 +41341,7 @@ function plMailTargets(){
     const d = (rec.pl||{})[wh];
     if(!(d && d._completed)) return;            // 아직 안 나간 오더는 제외
     let em = String((d.custEmail||'')).trim();
-    if(!em && typeof custEmailFor==='function') em = String(custEmailFor((rec.meta&&rec.meta.cust))||'').trim();
+    if(!em && typeof custPlEmailFor==='function') em = String(custPlEmailFor((rec.meta&&rec.meta.cust))||'').trim();
     if(!em && rec.meta && rec.meta.custEmail) em = String(rec.meta.custEmail).trim();
     out.push({ base, wh, rec, em });
   });
@@ -41370,7 +41397,7 @@ function openInformCustomer(){
   });
   const custs=[...new Set(orders.map(r=>String((r.meta&&r.meta.cust)||'').trim()).filter(Boolean))];
   const pos=orders.map(r=>{ const po=String((r.meta&&r.meta.po)||r.base); const rep=(typeof recIsReplace==='function'&&recIsReplace(r)); return po+(rep?' (replacement)':''); });
-  const emails=[...new Set(orders.flatMap(r=>{ const e1=(r.meta&&r.meta.custEmail)||''; const e2=(typeof custEmailFor==='function')?(custEmailFor((r.meta&&r.meta.cust)||'')||''):''; return [e1,e2]; }).map(x=>String(x||'').trim()).filter(x=>x.includes('@')))];   // 거래처 이메일 자동 채움 (v725)
+  const emails=[...new Set(orders.flatMap(r=>{ const e1=(r.meta&&r.meta.custEmail)||''; const e2=(typeof custPlEmailFor==='function')?(custPlEmailFor((r.meta&&r.meta.cust)||'')||''):''; return [e1,e2]; }).map(x=>String(x||'').trim()).filter(x=>x.includes('@')))];   // 거래처 이메일 자동 채움 (v725)
   const whs=[...new Set(cbs.map(c=>String(c.dataset.wh||'').toUpperCase()).filter(Boolean))];
   window._ic={ cust: custs.length===1?custs[0]:'', time:'3pm', pos:pos.join('\n'), boxes, lbsPer:33, pallets:[{l:48,w:43,h:84,bx:0}], emails, wh: whs.join(' + ') };
   // 🚛 직원이 /pic에서 LTL로 넣은 정보(pr_bulkship) 자동 채움 — 총박스·팔레트(수·치수·박스수)
@@ -41990,7 +42017,7 @@ function openBatchShip(wh){
   const rows = bases.map((b,i)=>{
     const r = savedCache.find(s=>s.base===b); const m = (r&&r.meta)||{};
     const q = ((r&&r.lines)||[]).filter(l=>l.wh===wh).reduce((a,l)=>a+(l.qty||0),0);
-    const em = (m.custEmail || custEmailFor(m.cust) || '');
+    const em = (m.custEmail || custPlEmailFor(m.cust) || '');
     return `<div style="display:flex;align-items:center;gap:8px;padding:7px 10px;border-bottom:1px solid #f3f4f6;flex-wrap:wrap;">
       <span style="font-size:12px;font-weight:700;min-width:200px;">${esc(m.cust||'')} <span class="muted">PO ${esc(m.po||'')}</span></span>
       <span class="muted" style="font-size:11px;min-width:60px;">${q.toLocaleString()} pcs</span>
@@ -42272,7 +42299,7 @@ function bshipSendplChange(el){
     const inp=document.getElementById('bship-em-'+i); if(!inp) return;
     if(String(inp.value||'').trim()) return;   // 이미 값 있으면 그대로 둠
     const rec=(savedCache||[]).find(s=>s.base===base); if(!rec) return;
-    const saved=String((rec.meta&&rec.meta.custEmail)||'').trim() || String((typeof custEmailFor==='function'?custEmailFor(rec.meta&&rec.meta.cust):'')||'').trim();
+    const saved=String((rec.meta&&rec.meta.custEmail)||'').trim() || String((typeof custPlEmailFor==='function'?custPlEmailFor(rec.meta&&rec.meta.cust):'')||'').trim();
     if(saved){ inp.value=saved; filled++; }
   });
   if(filled) showToast('📧 Filled '+filled+' customer email(s) — review, then Save to send');
@@ -42306,7 +42333,7 @@ async function submitBatchShip(){
     if(rec._lite){ await refreshRec(base); rec = savedCache.find(s=>s.base===base); if(!rec){ fails.push(base); continue; } }
     const trk = (document.getElementById('bship-trk-'+i)||{}).value || '';
     let em = ((document.getElementById('bship-em-'+i)||{}).value || '').trim();
-    if(!em && wantSend && typeof custEmailFor==='function'){ em = String(custEmailFor((rec.meta&&rec.meta.cust))||'').trim(); }   // 이메일칸 비어도 거래처 저장 이메일로 폴백
+    if(!em && wantSend && typeof custPlEmailFor==='function'){ em = String(custPlEmailFor((rec.meta&&rec.meta.cust))||'').trim(); }   // 이메일칸 비어도 거래처 저장 이메일로 폴백
     if(em && em.includes('@')) rec.meta = {...(rec.meta||{}), custEmail: em};
     const lines = (rec.lines||[]).filter(l=>l.wh===bs.wh && (l.qty||0)>0).map(l=>({style:l.style||'', desc:l.desc||'', color:l.color||'', size:l.size||'', qty:l.qty||0, price:l.price||0, ppb:l.ppb||72, pbox:l.pbox||''}));
     rec.pl = rec.pl || {};
