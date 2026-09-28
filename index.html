@@ -40594,14 +40594,65 @@ async function openCustPrices(cust){
   else {
     const list = await loadImsCustomers();
     const body = document.getElementById('ps-body');
-    if(body) body.innerHTML = `<div style="padding:14px;">
-      <div style="font-weight:800;color:#b45309;margin-bottom:8px;">No IMS customer with this name — which IMS customer should it link to?</div>
-      <select class="fi" id="ps-link-sel" style="width:340px;">${list.map(c=>`<option value="${c.id}">${esc(c.name)}</option>`).join('')}</select>
-      <button class="btn btn-sm btn-primary" onclick="psLinkIms()">🔗 Link</button></div>`;
+    /* PSNEWC-1 - 새로 만드는 쪽이 앞이다. 연결은 "같은 회사인데 이름만 다를 때" 쓰는 것이라
+       아래로 내리고 한 번 물어본다. */
+    if(body) body.innerHTML = `<div style="padding:18px;max-width:640px;">
+      <div style="font-weight:800;color:#b45309;margin-bottom:4px;">${esc(_psCust)} has no price sheet yet.</div>
+      <div style="color:#64748b;font-size:12.5px;margin-bottom:14px;">New customer? Make one now and start typing prices.</div>
+      <button class="btn" id="ps-new-btn" style="background:#065f46;color:#fff;border-color:#065f46;font-weight:800;padding:9px 16px;font-size:13px;" onclick="psCreateIms()">➕ Create "${esc(_psCust)}" and start a price sheet</button>
+      <div style="margin-top:22px;padding-top:14px;border-top:1px solid #e2e8f0;">
+        <div style="font-size:12px;font-weight:800;color:#64748b;margin-bottom:3px;">Same company under another name?</div>
+        <div style="font-size:11.5px;color:#94a3b8;margin-bottom:8px;">Linking makes the two share ONE price list — a price changed here changes it for both.</div>
+        <select class="fi" id="ps-link-sel" style="width:340px;">${list.map(c=>`<option value="${c.id}">${esc(c.name)}</option>`).join('')}</select>
+        <button class="btn btn-sm" onclick="psLinkIms()">🔗 Link instead</button>
+      </div></div>`;
+  }
+}
+/* PSNEWC-1 - 이 이름 그대로 거래처 줄을 만들고 빈 가격표를 연다.
+   ⚠ 같은 이름이 이미 있으면 만들지 않고 그것에 붙는다 - 쌍둥이 줄이 생기면 가격이 갈린다. */
+async function psCreateIms(){
+  const name = String(_psCust || '').trim();
+  if(!name){ showToast('\u26A0 No customer name'); return; }
+  const btn = document.getElementById('ps-new-btn');
+  const back = btn ? btn.textContent : '';
+  if(btn){ btn.disabled = true; btn.textContent = '\u23F3 Creating...'; }
+  try{
+    _imsCustList = null;
+    const list = await loadImsCustomers();
+    const n = _imsNorm(name);
+    const hit = (list || []).find(c => _imsNorm(c.name) === n);
+    let cid = hit ? hit.id : null;
+    if(!cid){
+      const cs0 = custStore[_psGk] || {};
+      const em = (typeof custEmailClean === 'function') ? custEmailClean(cs0.email || '') : '';
+      const ins = await sbFetch('/rest/v1/customers', { method:'POST', headers:{ Prefer:'return=representation' },
+        body: JSON.stringify([{ name: name, email: em || null }]) });
+      if(!ins.ok) throw new Error('customers ' + ins.status + ' ' + String(await ins.text()).slice(0,140));
+      const j = await ins.json();
+      cid = j && j[0] && j[0].id;
+      if(!cid) throw new Error('no customer id came back');
+      _imsCustList = null; await loadImsCustomers();
+    }
+    const cs = custStore[_psGk] || {};
+    cs.name = cs.name || name; cs.imsId = cid;
+    await saveCustomer(_psGk, cs);
+    delete _imsPS[_psGk];
+    showToast((hit ? '\u{1F517} Linked to the existing ' : '\u2705 Created ') + name + ' - the price sheet is empty, fill it in');
+    openCustPrices(name);
+  }catch(e){
+    showToast('\u26A0 Could not create: ' + (e.message || e));
+    if(btn){ btn.disabled = false; btn.textContent = back; }
   }
 }
 async function psLinkIms(){
-  const id = document.getElementById('ps-link-sel').value;
+  const sel = document.getElementById('ps-link-sel'); if(!sel) return;
+  const id = sel.value; if(!id) return;
+  /* PSNEWC-1 - 예전에는 목록 맨 위가 골라진 채로 한 번만 누르면 붙어 버렸다.
+     붙으면 가격표를 같이 쓰게 되므로 두 이름을 보여주고 물어본다. */
+  const other = (sel.options[sel.selectedIndex] || {}).text || '';
+  if(!confirm('Link "' + _psCust + '" to the existing customer "' + other + '"?\n\n'
+      + 'They will then SHARE ONE price list - a price you type here changes it for "' + other + '" too.\n\n'
+      + 'If this is a new customer, press Cancel and use the green Create button instead.')) return;
   const cs = custStore[_psGk] || {}; cs.name = cs.name || _psCust; cs.imsId = id;
   await saveCustomer(_psGk, cs);
   delete _imsPS[_psGk];
