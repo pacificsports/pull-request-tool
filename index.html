@@ -8717,14 +8717,24 @@ async function plAttachView(i){
 function invHasPay(iv){
   return !!(iv && (iv.paid || (Array.isArray(iv.dupPays) && iv.dupPays.length)));
 }
+/* INVPAY-1 - 카드만 돈이 아니다. 손으로 적은 입금과 크레딧 메모도 돈이다.
+   저장할 때 무엇을 지킬지, 다른 컴퓨터 것을 덮어도 되는지를 이걸로 고른다. */
+function invHasMoney(iv){
+  return !!(iv && (iv.paid
+    || (Array.isArray(iv.dupPays) && iv.dupPays.length)
+    || (Array.isArray(iv.payments) && iv.payments.length)
+    || (Array.isArray(iv.memos) && iv.memos.length)));
+}
 /* 저장할 때 절대 잃으면 안 되는 것들 — 돈과 발행 흔적.
    next 에 이미 값이 있으면 그걸 쓰고, 없으면 예전 것(cur)에서 그대로 가져온다. */
 function invKeepPay(cur, next){
   cur = cur || {}; next = next || {};
-  ['paid','dupPays','refunds','refunded','printed','ccNote'].forEach(k=>{
+  /* INVPAY-1 - payments(손으로 적은 입금)와 memos(크레딧 메모)가 빠져 있었다.
+     그래서 인보이스를 다시 저장하면 그 돈이 없던 일이 됐다. */
+  ['paid','dupPays','refunds','refunded','printed','ccNote','payments','memos'].forEach(k=>{
     if(next[k] === undefined && cur[k] !== undefined) next[k] = cur[k];
   });
-  if(invHasPay(next)) next.auto = false;      // 돈이 오갔으면 「자동 초안」이 아니다
+  if(invHasMoney(next)) next.auto = false;    // 돈이 오갔으면 「자동 초안」이 아니다
   return next;
 }
 /* 서버의 최신 inv[wh] 를 가져온다 — 편집기를 열어둔 사이 다른 사람이 결제했을 수 있다 */
@@ -8753,7 +8763,7 @@ async function _saveInvStageInner(rec){
      내 화면의 rec 에는 그 기록이 없다. 그걸 그대로 덮으면 결제가 없던 일이 되고,
      다음 사람이 같은 인보이스를 또 긁는다. */
   const fresh = await invFreshWh(plBase, plWh);
-  const cur = invHasPay(fresh) ? fresh : (rec.inv[plWh] || {});
+  const cur = invHasMoney(fresh) ? fresh : (rec.inv[plWh] || {});   /* INVPAY-1 */
   if(invHasPay(fresh) && !invHasPay(rec.inv[plWh])){
     showToast('💳 This invoice was paid on another computer — the payment is kept');
     logHist(plBase, '💳 Payment found on the server while saving the invoice — kept (' + plWh + ')');
