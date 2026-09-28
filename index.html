@@ -9379,12 +9379,73 @@ function payReqOrderRows(rec){
   });
 }
 function payReqOrderCalc(){
+  payReqResetSent();   /* RESEND-1 - 금액이 바뀌면 새 링크여야 한다 */
   let t = 0;
   document.querySelectorAll('.prq-amt').forEach(i => {
     t += Math.round((parseFloat(String(i.value||'').replace(/[^0-9.]/g,'')) || 0) * 100) / 100;
   });
   const el = document.getElementById('prq-total');
   if(el) el.textContent = payReqMoney(Math.round(t * 100) / 100);
+}
+/* RESEND-1 - 보낸 뒤의 상태. 같은 링크를 다시 보낼 때 쓴다. */
+let _payReqSent = null;
+function payReqMailOut(to, subject, html){
+  return fetch('https://po-confirm-email.hjbae.workers.dev/send-pl', {
+    method:'POST', headers:{'Content-Type':'application/json'},
+    body: JSON.stringify({ to: String(to).split(',').map(x => x.trim()).filter(x => x.indexOf('@') > 0),
+      subject: subject, html: html, cc: STAFF_EMAILS, reply_to: MAIL_REPLY_TO }) });
+}
+/* 보내고 나서 창을 이렇게 바꾼다 - 닫지 않는다 */
+function payReqShowSent(info){
+  _payReqSent = info;
+  const box = document.getElementById('pr-sent');
+  if(box){
+    box.style.display = 'block';
+    box.innerHTML = '<div style="padding:9px 11px;border-radius:8px;background:#f0fdf4;border:1px solid #86efac;'
+      + 'color:#166534;font-size:12px;font-weight:700;line-height:1.6;">\u2705 Sent to ' + esc(info.to)
+      + ' at ' + new Date().toLocaleTimeString('en-US',{hour:'numeric',minute:'2-digit'})
+      + '<div style="font-weight:400;font-size:11px;color:#4d7c5a;margin-top:3px;overflow-wrap:anywhere;">'
+      + esc(info.link) + '</div></div>';
+  }
+  const b = document.getElementById('pr-go');
+  if(b){ b.disabled = false; b.textContent = '\u{1F504} Resend link';
+         b.setAttribute('onclick', 'payReqResend()');
+         b.style.background = '#0e7490'; b.style.borderColor = '#0e7490'; }
+  const c = document.getElementById('pr-copy');
+  if(c) c.style.display = '';
+  const x = document.getElementById('pr-cancel');
+  if(x) x.textContent = 'Close';
+}
+/* 금액을 고치면 링크가 달라져야 한다 - 단추를 되돌린다 */
+function payReqResetSent(){
+  if(!_payReqSent) return;
+  _payReqSent = null;
+  const box = document.getElementById('pr-sent'); if(box){ box.style.display = 'none'; box.innerHTML = ''; }
+  const c = document.getElementById('pr-copy'); if(c) c.style.display = 'none';
+  const b = document.getElementById('pr-go');
+  if(b){ b.textContent = '\u{1F4E7} Send payment link';
+         b.setAttribute('onclick', b.getAttribute('data-send') || '');
+         b.style.background = '#1d4ed8'; b.style.borderColor = '#1d4ed8'; }
+}
+async function payReqResend(){
+  const i = _payReqSent; if(!i) return;
+  const b = document.getElementById('pr-go');
+  if(b){ b.disabled = true; b.textContent = '\u23F3 Sending...'; }
+  try{
+    const r = await payReqMailOut(i.to, i.subject, i.html);
+    if(!r.ok){ const e = await r.json().catch(()=>({})); throw new Error(e.error || ('email HTTP ' + r.status)); }
+    if(i.base) logHist(i.base, 'Payment link resent to ' + i.to);
+    payReqShowSent(i);
+    showToast('\u{1F504} Payment link sent again to ' + i.to);
+  }catch(e){
+    showToast('\u26A0 Not sent: ' + ((e && e.message) || e));
+    if(b){ b.disabled = false; b.textContent = '\u{1F504} Resend link'; }
+  }
+}
+function payReqCopyLink(){
+  const i = _payReqSent; if(!i) return;
+  try{ navigator.clipboard.writeText(i.link); showToast('\u{1F4CB} Link copied'); }
+  catch(e){ showToast('\u26A0 Could not copy - the link is shown above'); }
 }
 function payReqOrder(base){
   const rec = (savedCache||[]).find(s2 => s2.base === base);
@@ -9396,6 +9457,7 @@ function payReqOrder(base){
   const cust = (rec.meta && rec.meta.cust) || '';
   const em = custEmailClean((typeof custEmailFor==='function' ? custEmailFor(cust) : '')
              || (rec.meta && rec.meta.custEmail) || '');
+  _payReqSent = null;   /* RESEND-1 */
   const ex = document.getElementById('modal-payreq'); if(ex) ex.remove();
   const div = document.createElement('div');
   div.id = 'modal-payreq';
@@ -9430,9 +9492,11 @@ function payReqOrder(base){
         When they pay, each warehouse gets its share on its invoice.
       </div>
     </div>
+    <div id="pr-sent" style="display:none;padding:0 18px 12px;"></div>
     <div style="padding:11px 18px;border-top:1px solid #e2e8f0;display:flex;gap:8px;">
-      <button class="btn btn-sm" style="margin-left:auto;" onclick="document.getElementById('modal-payreq').remove()">Cancel</button>
-      <button class="btn btn-sm" id="pr-go" style="background:#1d4ed8;color:#fff;border-color:#1d4ed8;font-weight:800;" onclick="payReqOrderSend('${esc(base)}')">\u{1F4E7} Send payment link</button>
+      <button class="btn btn-sm" id="pr-copy" style="display:none;" onclick="payReqCopyLink()">\u{1F4CB} Copy link</button>
+      <button class="btn btn-sm" id="pr-cancel" style="margin-left:auto;" onclick="document.getElementById('modal-payreq').remove()">Cancel</button>
+      <button class="btn btn-sm" id="pr-go" data-send="payReqOrderSend('${esc(base)}')" style="background:#1d4ed8;color:#fff;border-color:#1d4ed8;font-weight:800;" onclick="payReqOrderSend('${esc(base)}')">\u{1F4E7} Send payment link</button>
     </div></div>`;
   document.body.appendChild(div);
 }
@@ -9478,15 +9542,13 @@ async function payReqOrderSend(base){
       + (note ? psmP(esc(note)) : '')
       + psmP('Your card details are entered on a secure form hosted by Authorize.Net, our payment processor. Pacific Sports never sees or stores your card number.')
       + psmP('Questions? Just reply to this email.'));
-    const send = await fetch('https://po-confirm-email.hjbae.workers.dev/send-pl', {
-      method:'POST', headers:{'Content-Type':'application/json'},
-      body: JSON.stringify({ to: em.split(',').map(x => x.trim()).filter(x => x.indexOf('@') > 0),
-        subject: 'Payment link - PO ' + ((rec.meta&&rec.meta.po)||'') + ' - ' + payReqMoney(total) + ' (Pacific Sports)',
-        html: html, cc: STAFF_EMAILS, reply_to: MAIL_REPLY_TO }) });
+    const subject = 'Payment link - PO ' + ((rec.meta&&rec.meta.po)||'') + ' - ' + payReqMoney(total) + ' (Pacific Sports)';
+    const send = await payReqMailOut(em, subject, html);
     if(!send.ok){ const e2 = await send.json().catch(()=>({})); throw new Error(e2.error || ('email HTTP ' + send.status)); }
     logHist(base, 'Payment link sent ' + payReqMoney(total) + ' ('
       + items.map(x => x.wh + ' ' + payReqMoney(x.amount)).join(', ') + ') to ' + em);
-    const m = document.getElementById('modal-payreq'); if(m) m.remove();
+    /* RESEND-1 - 창을 닫지 않는다. 단추가 Resend 로 바뀐다. */
+    payReqShowSent({ to: em, link: link, subject: subject, html: html, base: base });
     showToast('\u{1F4E7} Payment link sent to ' + em);
   }catch(e){
     showToast('\u26A0 Not sent: ' + ((e && e.message) || e));
@@ -9503,6 +9565,7 @@ function payReqOpen(base, wh){
   const cust = (rec.meta && rec.meta.cust) || '';
   const em = custEmailClean((typeof custEmailFor==='function' ? custEmailFor(cust) : '')
              || (rec.meta && rec.meta.custEmail) || '');
+  _payReqSent = null;   /* RESEND-1 */
   const ex = document.getElementById('modal-payreq'); if(ex) ex.remove();
   const div = document.createElement('div');
   div.id = 'modal-payreq';
@@ -9536,9 +9599,11 @@ function payReqOpen(base, wh){
         we never see the card number. When they pay, this invoice is marked paid automatically.
       </div>
     </div>
+    <div id="pr-sent" style="display:none;padding:0 18px 12px;"></div>
     <div style="padding:11px 18px;border-top:1px solid #e2e8f0;display:flex;gap:8px;">
-      <button class="btn btn-sm" style="margin-left:auto;" onclick="document.getElementById('modal-payreq').remove()">Cancel</button>
-      <button class="btn btn-sm" id="pr-go" style="background:#1d4ed8;color:#fff;border-color:#1d4ed8;font-weight:800;" onclick="payReqSend('${esc(base)}','${esc(wh)}')">\u{1F4E7} Send payment link</button>
+      <button class="btn btn-sm" id="pr-copy" style="display:none;" onclick="payReqCopyLink()">\u{1F4CB} Copy link</button>
+      <button class="btn btn-sm" id="pr-cancel" style="margin-left:auto;" onclick="document.getElementById('modal-payreq').remove()">Cancel</button>
+      <button class="btn btn-sm" id="pr-go" data-send="payReqSend('${esc(base)}','${esc(wh)}')" style="background:#1d4ed8;color:#fff;border-color:#1d4ed8;font-weight:800;" onclick="payReqSend('${esc(base)}','${esc(wh)}')">\u{1F4E7} Send payment link</button>
     </div></div>`;
   document.body.appendChild(div);
   setTimeout(()=>{ const i = document.getElementById('pr-em'); if(i && !i.value) i.focus(); }, 60);
@@ -9579,14 +9644,12 @@ async function payReqSend(base, wh){
       + (note ? psmP(esc(note)) : '')
       + psmP('Your card details are entered on a secure form hosted by Authorize.Net, our payment processor. Pacific Sports never sees or stores your card number.')
       + psmP('Questions about this invoice? Just reply to this email.'));
-    const send = await fetch('https://po-confirm-email.hjbae.workers.dev/send-pl', {
-      method:'POST', headers:{'Content-Type':'application/json'},
-      body: JSON.stringify({ to: em.split(',').map(x=>x.trim()).filter(x=>x.indexOf('@')>0),
-        subject: 'Payment link - Invoice ' + (iv.invNo||'') + ' - PO ' + ((rec.meta&&rec.meta.po)||'') + ' (Pacific Sports)',
-        html: html, cc: STAFF_EMAILS, reply_to: MAIL_REPLY_TO }) });
+    const subject = 'Payment link - Invoice ' + (iv.invNo||'') + ' - PO ' + ((rec.meta&&rec.meta.po)||'') + ' (Pacific Sports)';
+    const send = await payReqMailOut(em, subject, html);
     if(!send.ok){ const e2 = await send.json().catch(()=>({})); throw new Error(e2.error || ('email HTTP ' + send.status)); }
     logHist(base, 'Payment link sent ' + payReqMoney(amt) + ' (' + wh + ') to ' + em);
-    const m = document.getElementById('modal-payreq'); if(m) m.remove();
+    /* RESEND-1 - 창을 닫지 않는다. 단추가 Resend 로 바뀐다. */
+    payReqShowSent({ to: em, link: link, subject: subject, html: html, base: base });
     showToast('\u{1F4E7} Payment link sent to ' + em);
   }catch(e){
     showToast('\u26A0 Not sent: ' + ((e && e.message) || e));
