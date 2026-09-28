@@ -9271,7 +9271,10 @@ function invTotalOf(iv, rec, wh){
   return ls.reduce((a,l)=>a+(Number(l.qty)||0)*(Number(l.price)||0),0) + (Number(iv.freight)||0);
 }
 function invPaidSum(iv){
-  let p = (iv.payments||[]).reduce((a,x)=>a+(Number(x.amt)||0),0);
+  /* PAYCHIP-2 - payments[] 줄도 환불될 수 있다. 환불분을 빼지 않으면 잔액이 틀린다. */
+  let p = (iv.payments||[]).reduce((a,x)=>a + (Number(x.amt)||0)
+    - (x.refunds||[]).reduce((s,r)=>s+(Number(r.amt)||0),0)
+    - (x.refunded ? (Number(x.amt)||0) : 0), 0);
   p += (iv.dupPays||[]).reduce((a,d)=>a + (Number(d.amt)||0) - (d.refunds||[]).reduce((s,r)=>s+(Number(r.amt)||0),0) - (d.refunded ? (Number(d.amt)||0) : 0), 0);
   if(iv.paid){
     p += Number(iv.paid.amt)||0;
@@ -10547,6 +10550,18 @@ function ccTopUpClose(){
 }
 function payOf(rec, wh, dupIdx){
   const iv = rec.inv && rec.inv[wh]; if(!iv) return null;
+  /* PAYCHIP-2 - 'p3' 처럼 오면 payments[3] 을 가리킨다.
+     한 인보이스에 결제가 두 번 들어오면 두 번째부터는 payments[] 로 들어가는데,
+     거기에도 환불 버튼이 있어야 한다. 옛날 줄은 transId 가 note 안에만 있어서 꺼내 준다. */
+  if(typeof dupIdx === 'string' && /^p[0-9]+$/.test(dupIdx)){
+    const pp = (iv.payments||[])[Number(dupIdx.slice(1))] || null;
+    if(pp){
+      if(!pp.transId){ const m1 = String(pp.note||'').match(/trans\s+([0-9]+)/i); if(m1) pp.transId = m1[1]; }
+      if(!pp.acct){ const m2 = String(pp.note||'').match(/\bx([0-9]{4})\b/i); if(m2) pp.acct = m2[1]; }
+      if(!pp.authCode){ const m3 = String(pp.note||'').match(/auth\s+([A-Za-z0-9]+)/i); if(m3) pp.authCode = m3[1]; }
+    }
+    return pp;
+  }
   return (dupIdx==null || dupIdx==='') ? iv.paid : (iv.dupPays||[])[dupIdx];
 }
 function refundCharge(base, wh, dupIdx, preAmt){
@@ -43837,17 +43852,26 @@ function renderSaved(){
           }
           const authChip = (pd.method!=='website' && pd.authCode) ? `<span onclick="copyAuth('${esc(pd.authCode)}')" title="Click to copy the Auth code, then paste it into the CardPointe search box to find this charge (CardPointe has no customer name)" style="cursor:pointer;padding:3px 9px;border-radius:20px;font-size:10px;font-weight:800;background:#eef2ff;color:#3730a3;border:1px solid #c7d2fe;white-space:nowrap;">🔎 Auth ${esc(pd.authCode)} 📋</span>` : '';
           return `<span style="padding:3px 9px;border-radius:20px;font-size:10px;font-weight:800;background:#f0fdf4;color:#166534;border:1px solid #86efac;white-space:nowrap;">${pd.method==='website'?'🌐':'💳'} Paid $${Number(pd.amt).toFixed(2)}${rt.refTot>0?` <span style=\"color:#b91c1c;\">−$${rt.refTot.toFixed(2)}</span>`:''}</span>${authChip}${dupChip}${pd.method==='website' ? '' : `<button class="btn btn-sm" style="background:#fff;color:#b91c1c;border-color:#fca5a5;" onclick="refundCharge('${esc(s.base)}','${w}')" title="Void/refund card charge">↩ Refund</button>`}`; })()}
-        ${(()=>{ /* PAYCHIP-1 - 한 인보이스에 결제가 두 번 들어오면 두 번째부터는 payments[] 로 들어가서
-             화면에 아무 표시가 없었다. 카드 링크 결제 / 그 외(수표 등) 를 따로 보여준다. */
+        ${(()=>{ /* PAYCHIP-2 - 한 인보이스에 결제가 두 번 들어오면 두 번째부터는 payments[] 로 들어가서
+             화면에 아무 표시가 없었다. 카드 링크 결제는 한 줄에 하나씩 - 환불 버튼까지 - 보여준다.
+             수표처럼 손으로 넣은 입금은 카드 환불이 안 되니 금액만 묶어서 보여준다. */
           const iv3 = s.inv && s.inv[w]; if(!iv3 || !(iv3.payments||[]).length) return '';
-          const card = [], other = [];
-          (iv3.payments||[]).forEach(p=>{ (String(p.by||'') === 'Customer payment link' ? card : other).push(p); });
-          const sum = a => a.reduce((x,p)=>x+(Number(p.amt)||0),0);
-          const tip = a => a.map(p=>fmtD(p.at)+' $'+(Number(p.amt)||0).toFixed(2)+(p.note?(' - '+p.note):'')).join(' | ');
-          const pill = (t,a)=>`<span title="${esc(tip(a))}" style="padding:3px 9px;border-radius:20px;font-size:10px;font-weight:800;background:#f0fdf4;color:#166534;border:1px solid #86efac;white-space:nowrap;">${t}</span>`;
-          let out = '';
-          if(sum(card) > 0.005) out += pill('💳 Card $'+sum(card).toFixed(2), card);
-          if(sum(other) > 0.005) out += pill('💵 Received $'+sum(other).toFixed(2), other);
+          const pill = (bg,bd,fg,tip,t)=>`<span title="${esc(tip)}" style="padding:3px 9px;border-radius:20px;font-size:10px;font-weight:800;background:${bg};color:${fg};border:1px solid ${bd};white-space:nowrap;">${t}</span>`;
+          const tipOf = p => fmtD(p.at) + ' $' + (Number(p.amt)||0).toFixed(2) + (p.note ? (' - ' + p.note) : '');
+          let out = '', man = 0, manTip = [];
+          (iv3.payments||[]).forEach((p, idx)=>{
+            if(String(p.by||'') !== 'Customer payment link'){ man += (Number(p.amt)||0); manTip.push(tipOf(p)); return; }
+            const rt = refundTotals(p);
+            if(rt.remain <= 0.005){
+              out += pill('#f5f5f4','#d6d3d1','#57534e', tipOf(p), '↩ Refunded $'+rt.refTot.toFixed(2));
+              return;
+            }
+            out += pill('#f0fdf4','#86efac','#166534', tipOf(p),
+              '💳 Card $'+(Number(p.amt)||0).toFixed(2) + (rt.refTot>0 ? ` <span style="color:#b91c1c;">−$${rt.refTot.toFixed(2)}</span>` : ''));
+            const tid = p.transId || (String(p.note||'').match(/trans\s+([0-9]+)/i)||[])[1] || '';
+            if(tid) out += `<button class="btn btn-sm" style="background:#fff;color:#b91c1c;border-color:#fca5a5;" onclick="refundCharge('${esc(s.base)}','${w}','p${idx}')" title="Void/refund this card charge">↩ Refund</button>`;
+          });
+          if(man > 0.005) out += pill('#f0fdf4','#86efac','#166534', manTip.join(' | '), '💵 Received $'+man.toFixed(2));
           return out; })()}
         ${(()=>{ const iv2 = s.inv && s.inv[w]; if(!iv2 || !iv2.savedAt) return ''; const hasPm = (iv2.payments&&iv2.payments.length)||(iv2.memos&&iv2.memos.length)||(iv2.paid&&!iv2.paid.refunded); if(!hasPm) return ''; const bal2 = invBalance(s, w);
           return bal2 <= 0.005 ? `<span style="padding:3px 9px;border-radius:20px;font-size:10px;font-weight:800;background:#f0fdf4;color:#166534;border:1px solid #86efac;white-space:nowrap;">💰 PAID</span>` : `<span style="padding:3px 9px;border-radius:20px;font-size:10px;font-weight:800;background:#fffbeb;color:#92400e;border:1px solid #fcd34d;white-space:nowrap;">💰 Bal $${bal2.toFixed(2)}</span>`; })()}` : ''}
