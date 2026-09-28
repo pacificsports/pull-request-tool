@@ -21094,8 +21094,16 @@ async function careqToTransfer(mode, existingId){
       const r=await sbFetch('/rest/v1/pr_transfers?select=id,ref,status,lines,meta&status=eq.LOADING&order=created_at.desc&limit=30');
       if(r.ok) list=await r.json();
     }catch(e){}
-    list=(Array.isArray(list)?list:[]).filter(t=>trRoute(t)==='SC2CA');
-    if(!list.length){ showToast('⚠ No SC→CA transfer in progress — create a new one'); return; }
+    /* MSCAREQ-1 - multi-stop 트럭도 CA 에 서면 담을 수 있다.
+       예전엔 SC2CA 하나만 보서 multi 트럭이 목록에서 통째로 빠졌다.
+       MULTI_CA 는 출발이 CA 라 해당 없다. */
+    list=(Array.isArray(list)?list:[]).filter(t=>{
+      const _rt = trRoute(t);
+      if(_rt === 'SC2CA') return true;
+      if(_rt === 'MULTI_SC') return trStopsOf(t).indexOf('CA') >= 0;
+      return false;
+    });
+    if(!list.length){ showToast('⚠ No transfer to CA in progress — create a new one'); return; }
     if(list.length>1){
       const el=document.getElementById('cr-body'); if(!el) return;
       el.innerHTML=`<div style="background:#fff;border:1px solid #d8b4fe;border-radius:12px;overflow:hidden;">
@@ -21105,6 +21113,7 @@ async function careqToTransfer(mode, existingId){
           const b=(Array.isArray(t.lines)?t.lines:[]).reduce((a,l)=>a+((l.ids||[]).length||Number(l.boxes)||0),0);
           return `<div style="display:flex;align-items:center;gap:10px;padding:9px 13px;border-top:1px solid #eef2f7;">
             <b style="font-family:Consolas,monospace;color:#7b1fa2;">${esc(t.ref||('#'+t.id))}</b>
+            <span style="font-size:11px;font-weight:800;color:#6d28d9;">${esc((TR_ROUTES[trRoute(t)]||{}).short||'')}</span>
             <span style="font-size:12px;color:#64748b;">${n} line(s) · ${b} box(es)</span>
             <button onclick="careqToTransfer('cur','${esc(String(t.id))}')" style="margin-left:auto;background:#7b1fa2;color:#fff;border:none;border-radius:8px;padding:6px 14px;font-size:12.5px;font-weight:800;cursor:pointer;">Use this</button>
           </div>`; }).join('')}
@@ -21118,6 +21127,9 @@ async function careqToTransfer(mode, existingId){
   /* 4) 빌더를 열고 라인을 담는다 */
   const m=document.getElementById('modal-careq'); if(m) m.remove();
   const ok=await careqLoadPallet(boxes, mode==='cur'?existingId:null);
+  /* MSCAREQ-1 - 담을 데가 없으면 여기서 멈춘다.
+     아래로 내려가면 실리지도 않은 요청이 DONE 으로 닫힌다. */
+  if(ok === null) return;
 
   /* 5) 요청 줄을 이 Transfer 번호로 닫는다 */
   const ref=(typeof _shipNo!=='undefined' && _shipNo)?_shipNo:'';
@@ -21148,8 +21160,28 @@ async function careqLoadPallet(boxes, existingId){
     a.loc.localeCompare(b.loc,undefined,{numeric:true}) || a.style.localeCompare(b.style) ||
     a.color.localeCompare(b.color) || bxSizeCmp(a.size,b.size));
   await trBuilderOpen(existingId||null, 'SC2CA');
+  /* MSCAREQ-1 - multi-stop 트럭이면 **CA 정차지 팔레트**에 담아야 한다.
+     그냥 마지막 팔레트에 담으면 MC 팔레트에 CA 물건이 실린다 -
+     화면에선 티가 안 나고 내릴 때 알게 된다.
+     `p.stop` 을 세워두면 trLinesFlat 이 줄마다 박아서 저장한다. */
+  let _tp = null;
+  if(trIsMultiRoute(_shipRoute)){
+    const _st = trStopsOf({meta:_shipMeta});
+    const _ci = _st.indexOf('CA');
+    if(_ci < 0){ showToast('⚠ That truck has no CA stop'); return null; }
+    for(let i=_shipPallets.length-1; i>=0; i--){
+      if(trStopIdxOfPallet({meta:_shipMeta}, _shipPallets[i]) === _ci){ _tp = _shipPallets[i]; break; }
+    }
+    if(!_tp){
+      _tp = { id:'p_'+Math.random().toString(36).slice(2,9),
+              label:'Pallet '+(_shipPallets.length+1), lines:[], stop:_ci };
+      _shipPallets.push(_tp);
+    }else if(!(_tp.stop >= 0)){
+      _tp.stop = _ci;   /* 묵심히 있던 팔레트를 이 참에 CA 로 확정해 둔다 */
+    }
+  }
   if(!_shipPallets.length) _shipPallets.push({ id:'p_'+Math.random().toString(36).slice(2,9), label:'Pallet 1', lines:[] });
-  const target=_shipPallets[_shipPallets.length-1].id;
+  const target=(_tp || _shipPallets[_shipPallets.length-1]).id;
   const items=groups.map(g=>({ pid:target, line:{ is_manual:false, style:g.style, color:g.color, size:g.size, bin:g.loc, ppb:g.ppb, ids:g.ids } }));
   const ok=await _trAddLinesBulk(items);
   await trSaveDraftLines();
