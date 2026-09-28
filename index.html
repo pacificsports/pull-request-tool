@@ -33442,6 +33442,7 @@ async function trBuilderOpen(existingId, route){
   _prn.push(['Packing List','trPL()','Preview / print the packing list for this shipment']);
   if(!_spec) _prn.push(['Pull Request','trPR()','One sheet per pallet for the floor to pull against']);
   if(!_spec) _prn.push(['Box QR','trQrAll()','A 2 x 2 inch QR sticker for every box on this truck. New carton numbers — only for boxes that have no QR yet.']);
+  _prn.push(['Pallet tags','trPalTagPrint()','A 4 x 6 tag for every pallet — big pallet name and the box count. Goes to the 4 x 6 printer.']);
   _prn.push(['BOL','trBOL()','Bill of lading']);
   const _prnBar = `<div style="display:inline-flex;align-items:stretch;border:1.5px solid #cbd5e1;border-radius:9px;overflow:hidden;background:#fff;">`
     + `<span style="display:flex;align-items:center;padding:0 10px;background:#f8fafc;border-right:1px solid #e2e8f0;font-size:11px;" title="Print">🖨</span>`
@@ -34867,6 +34868,62 @@ async function trLnDrop(ev, pid, el){
   trRenderPallets();
   showToast('\u{1F4E6} '+(line.style||'line')+' '+(line.color||'')+' '+(line.size||'')+' → '+tgt.label);
 }
+/* PALTAG-1 (2026-09-28) - 팔레트에 붙이는 4x6 이름표.
+   가로로 읽게 돌리고, 이름 크게 + 바로 아래 박스 수만.
+   [stated] 하윤: "크게 CA 1 CA 2 이런식으로 landscape식으로" +
+                  "CA 1 크게 나오고 그바로 아래 몇박스인지만"
+   ⚠⚠ 4x6 프린터는 `.62` 다. 2x2 프린터에 쏘면 롤을 버린다. */
+function trPalTagPrn(){
+  try{ return localStorage.getItem('bl_printer_pallet_match') || '.62'; }catch(e){ return '.62'; }
+}
+function trPalTagZpl(name, boxLine){
+  const D = blDpi(), R = v => Math.round(v * 203);      /* 203dpi 로 짜고 끝에서 배율 */
+  const W = 812, H = 1218;                              /* 4in x 6in */
+  const asc = t => pbSafe(String(t == null ? '' : t)
+      .replace(/[\u00B7\u2013\u2014\u2192]/g, '-'));
+  const padY = R(0.30), RUN = H - padY * 2;             /* 돌려 읽을 때의 가로 = 6in */
+  /* 0.60 은 이 서체의 글자폭 비율 - 다른 라벨과 같은 값 */
+  const fit = (t, avail, max, min) => {
+    const L = Math.max(1, String(t).length);
+    return Math.max(min, Math.min(max, Math.floor(avail / (L * 0.60))));
+  };
+  const big = asc(name).toUpperCase();
+  const fBig = fit(big, RUN, R(2.00), R(0.55));
+  const box = asc(boxLine || '').toUpperCase();
+  const fBox = box ? R(0.50) : 0;
+  const gap = R(0.18);
+  /* 이름+박스줄을 한 덩어리로 보고 4in 폭 가운데 맞춤 */
+  const total = fBig + (box ? gap + fBox : 0);
+  const xBox = Math.max(R(0.12), Math.round((W - total) / 2));
+  const xBig = xBox + (box ? fBox + gap : 0);
+  const line = (x, h, t) => '^FO' + x + ',' + padY + '^FB' + RUN + ',1,0,C,0^A0R,'
+      + h + ',' + h + '^FD' + t + '^FS\n';
+  const z = '^XA\n^POI\n^MMT\n^PW' + W + '\n^LL' + H + '\n^LS0\n'
+      + line(xBig, fBig, big)
+      + (box ? line(xBox, fBox, box) : '')
+      + '^XZ';
+  return zplScale(z, D / 203);
+}
+/* pid 가 비면 트럭의 모든 팔레트. 화면에 보이는 차례 그대로. */
+async function trPalTagPrint(pid){
+  const D = { meta:_shipMeta, pallets:_shipPallets };
+  const multi = trIsMultiRoute(_shipRoute) && trStopsOf({meta:_shipMeta}).length >= 2;
+  const list = (typeof trPalRenderOrder === 'function' ? trPalRenderOrder() : _shipPallets)
+    .filter(p => !pid || p.id === pid);
+  if(!list.length){ showToast('\u26A0 No pallet to tag'); return; }
+  await blDpiSync();
+  const parts = list.map(p => {
+    const nm = multi ? trPalDisp(D, p.label) : p.label;
+    const bx = (p.lines || []).reduce((a, l) => a + trLineBoxes(l), 0);
+    /* 트럭에 태운 오더 박스도 이 팔레트에 실린다 - 같이 센다 */
+    const ob = ((_shipMeta && _shipMeta.orderShip) || [])
+      .filter(o => o.pallet === p.label).reduce((a, o) => a + (Number(o.boxes) || 0), 0);
+    const n = bx + ob;
+    return trPalTagZpl(nm, n + (n === 1 ? ' BOX' : ' BOXES'));
+  });
+  const ok = await sendToZebraBrowserPrint(parts.join('\n'), parts.length, trPalTagPrn());
+  if(ok) showToast('\u{1F3F7} ' + parts.length + ' pallet tag(s) sent');
+}
 function trRenderPallets(){
   const el = document.getElementById('ship-pallets'); if(!el) return;
   const _hint = document.getElementById('ship-hint'); if(_hint) _hint.style.display = _shipPallets.length ? 'none' : '';
@@ -34957,6 +35014,7 @@ function trRenderPallets(){
         <span style="color:var(--text2);font-size:11px;">${p.lines.length} line(s) · <b>${pB}</b> box(es) · <b>${pP.toLocaleString()}</b> pcs</span>
         ${_spSrc?'':`<button class="btn btn-sm" style="margin-left:auto;background:#1565c0;color:#fff;border-color:#1565c0;" onclick="trScOpen('${p.id}')">+ ${esc(_srcLbl)} Inventory</button>`}
         ${_noPR?'':`<button class="btn btn-sm" style="background:#166534;color:#fff;border-color:#166534;" onclick="trPRPallet('${p.id}')" title="Print the Pull Request for this pallet only">🖨 Pull Request</button>`}
+        <button class="btn btn-sm" style="background:#0f766e;color:#fff;border-color:#0f766e;font-weight:800;" onclick="trPalTagPrint('${p.id}')" title="Print a 4 x 6 tag for this pallet - big name and the box count, nothing else">🏷 Tag</button>
         ${_noPR?'':`<button class="btn btn-sm" style="background:#6d28d9;color:#fff;border-color:#6d28d9;" onclick="trQrPallet('${p.id}')" title="Print a 2&quot; x 2&quot; box QR sticker for every box on this pallet. New carton numbers — only for boxes that have no QR yet.">⬛ Box QR</button>`}
         <button class="btn btn-sm" onclick="trManualLine('${p.id}')">+ Manual</button>
         ${_shipPallets.length>1 ? `<button class="btn btn-sm" style="background:#fff7ed;color:#c2410c;border-color:#fdba74;font-weight:800;" onclick="trSplitPallet('${p.id}')" title="Move this pallet into its own shipment — stock does not move, the boxes on it just travel to the new shipment">\u2702 Split off</button>` : ''}
