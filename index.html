@@ -9312,6 +9312,120 @@ function invReturnCredit(rec, wh){
   });
   return Math.round(s*100)/100;
 }
+/* PAYREQ-1 (2026-09-28) - 거래처에게 보내는 결제 링크.
+   [stated] 하윤: "링크 보내주면 자기가 자기 정보 넣고 결제 할수있으면 좋을꺼같아서"
+   ⚠ 카드 번호는 여기로 안 온다. 링크 페이지가 Authorize.Net 창을 띄운다.
+   ⚠ 금액은 결제 서버가 DB 에서 다시 읽는다 - 브라우저가 보낸 값을 믿지 않는다. */
+const PAYREQ_API = 'https://payreq.hjbae.workers.dev';
+function payReqBase(){
+  /* 인증서가 붙으면 payreq_base 를 https://pay.epacificsports.com 으로 바꾼다 */
+  try{ return localStorage.getItem('payreq_base') || 'https://pacific-sports-shop.pages.dev'; }
+  catch(e){ return 'https://pacific-sports-shop.pages.dev'; }
+}
+function payReqLink(token){ return payReqBase() + '/pay?t=' + encodeURIComponent(token); }
+function payReqMoney(n){ return '$' + Number(n||0).toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2}); }
+
+function payReqOpen(base, wh){
+  const rec = (savedCache||[]).find(s2=>s2.base===base);
+  if(!rec){ showToast('\u26A0 Order not found'); return; }
+  const iv = (rec.inv||{})[wh];
+  if(!iv || !iv.savedAt){ showToast('\u26A0 Save the invoice first'); return; }
+  const bal = invBalance(rec, wh);
+  if(!(bal > 0.005)){ showToast('\u2705 This invoice is already paid in full'); return; }
+  const cust = (rec.meta && rec.meta.cust) || '';
+  const em = custEmailClean((typeof custEmailFor==='function' ? custEmailFor(cust) : '')
+             || (rec.meta && rec.meta.custEmail) || '');
+  const ex = document.getElementById('modal-payreq'); if(ex) ex.remove();
+  const div = document.createElement('div');
+  div.id = 'modal-payreq';
+  div.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,.55);z-index:150;display:flex;align-items:center;justify-content:center;';
+  div.innerHTML = `<div style="background:#fff;border-radius:12px;width:470px;max-width:94vw;overflow:hidden;box-shadow:0 20px 60px rgba(0,0,0,.35);">
+    <div style="background:#0f2a4a;color:#fff;padding:12px 18px;font-weight:800;display:flex;align-items:center;gap:8px;">
+      \u{1F4E7} Request payment
+      <span style="margin-left:auto;font-size:11.5px;font-weight:400;color:#93c5fd;">${esc(cust)} \u00B7 ${esc(wh)}</span>
+    </div>
+    <div style="padding:16px 18px;">
+      <div style="font-size:12px;color:#64748b;margin-bottom:12px;">
+        Invoice <b style="color:#0f2a4a;">${esc(iv.invNo||'')}</b> \u00B7 PO ${esc((rec.meta&&rec.meta.po)||'')}
+        \u00B7 Balance <b style="color:#b91c1c;">${payReqMoney(bal)}</b>
+      </div>
+      <div style="display:flex;gap:10px;flex-wrap:wrap;">
+        <div style="flex:0 0 140px;">
+          <label style="font-size:10.5px;font-weight:800;color:#64748b;letter-spacing:.05em;">AMOUNT</label>
+          <input class="fi num" id="pr-amt" value="${bal.toFixed(2)}" style="width:100%;text-align:right;font-family:Consolas,monospace;font-weight:800;font-size:15px;padding:6px 8px;">
+        </div>
+        <div style="flex:1;min-width:190px;">
+          <label style="font-size:10.5px;font-weight:800;color:#64748b;letter-spacing:.05em;">SEND TO</label>
+          <input class="fi" id="pr-em" value="${esc(em)}" placeholder="customer@company.com" style="width:100%;font-size:12.5px;padding:6px 8px;">
+        </div>
+      </div>
+      <div style="margin-top:10px;">
+        <label style="font-size:10.5px;font-weight:800;color:#64748b;letter-spacing:.05em;">NOTE TO THE CUSTOMER (optional)</label>
+        <input class="fi" id="pr-note" placeholder="e.g. Thank you for your order" style="width:100%;font-size:12.5px;padding:6px 8px;">
+      </div>
+      <div style="margin-top:12px;font-size:11.5px;color:#64748b;line-height:1.6;background:#f8fafc;border:1px solid #e2e8f0;border-radius:8px;padding:9px 11px;">
+        The customer gets a link to a secure page. The card is entered on Authorize.Net -
+        we never see the card number. When they pay, this invoice is marked paid automatically.
+      </div>
+    </div>
+    <div style="padding:11px 18px;border-top:1px solid #e2e8f0;display:flex;gap:8px;">
+      <button class="btn btn-sm" style="margin-left:auto;" onclick="document.getElementById('modal-payreq').remove()">Cancel</button>
+      <button class="btn btn-sm" id="pr-go" style="background:#1d4ed8;color:#fff;border-color:#1d4ed8;font-weight:800;" onclick="payReqSend('${esc(base)}','${esc(wh)}')">\u{1F4E7} Send payment link</button>
+    </div></div>`;
+  document.body.appendChild(div);
+  setTimeout(()=>{ const i = document.getElementById('pr-em'); if(i && !i.value) i.focus(); }, 60);
+}
+
+async function payReqSend(base, wh){
+  const btn = document.getElementById('pr-go');
+  if(btn && btn.disabled) return;
+  const rec = (savedCache||[]).find(s2=>s2.base===base); if(!rec) return;
+  const iv = (rec.inv||{})[wh] || {};
+  const bal = invBalance(rec, wh);
+  const amt = Math.round((parseFloat(String(((document.getElementById('pr-amt')||{}).value)||'').replace(/[^0-9.]/g,'')) || 0) * 100) / 100;
+  const em = custEmailClean(String(((document.getElementById('pr-em')||{}).value)||'').trim());
+  const note = String(((document.getElementById('pr-note')||{}).value)||'').trim();
+  if(!(amt > 0)){ showToast('\u26A0 Enter an amount'); return; }
+  if(amt > bal + 0.005){ showToast('\u26A0 That is more than the balance (' + payReqMoney(bal) + ')'); return; }
+  if(!em || em.indexOf('@') < 0){ showToast('\u26A0 Enter the customer email'); return; }
+  if(!confirm('\u{1F4E7} Send a payment link?\n\n\u2192 ' + em + '\n\nInvoice ' + (iv.invNo||'')
+      + '\nAmount: ' + payReqMoney(amt))) return;
+  if(btn){ btn.disabled = true; btn.textContent = '\u23F3 Sending...'; }
+  try{
+    const row = { created_by: (SESS&&SESS.email)||'', cust: (rec.meta&&rec.meta.cust)||'', email: em,
+      amount: amt, note: note,
+      items: [{ base: base, wh: wh, invNo: iv.invNo||'', po: (rec.meta&&rec.meta.po)||'', amount: amt }] };
+    const r = await sbFetch('/rest/v1/pr_payreq', { method:'POST', headers:{Prefer:'return=representation'},
+      body: JSON.stringify([row]) });
+    if(!r.ok) throw new Error('DB ' + r.status + ' ' + String(await r.text()).slice(0,120));
+    const j = await r.json();
+    const token = j && j[0] && j[0].token;
+    if(!token) throw new Error('no link came back');
+    const link = payReqLink(token);
+    const html = psmWrap('Payment',
+        psmHead('Invoice ' + esc(iv.invNo||''), 'PO ' + esc((rec.meta&&rec.meta.po)||''))
+      + psmP('You can pay this invoice online by credit card. The button below opens a secure page.')
+      + psmTable(psmRow('Invoice #', esc(iv.invNo||''))
+        + psmRow('PO #', esc((rec.meta&&rec.meta.po)||''))
+        + psmRow('Amount due', '<span style="font-size:16px;">' + payReqMoney(amt) + '</span>'))
+      + psmBtn(link, 'Pay by credit card')
+      + (note ? psmP(esc(note)) : '')
+      + psmP('Your card details are entered on a secure form hosted by Authorize.Net, our payment processor. Pacific Sports never sees or stores your card number.')
+      + psmP('Questions about this invoice? Just reply to this email.'));
+    const send = await fetch('https://po-confirm-email.hjbae.workers.dev/send-pl', {
+      method:'POST', headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({ to: em.split(',').map(x=>x.trim()).filter(x=>x.indexOf('@')>0),
+        subject: 'Payment link - Invoice ' + (iv.invNo||'') + ' - PO ' + ((rec.meta&&rec.meta.po)||'') + ' (Pacific Sports)',
+        html: html, cc: STAFF_EMAILS, reply_to: MAIL_REPLY_TO }) });
+    if(!send.ok){ const e2 = await send.json().catch(()=>({})); throw new Error(e2.error || ('email HTTP ' + send.status)); }
+    logHist(base, 'Payment link sent ' + payReqMoney(amt) + ' (' + wh + ') to ' + em);
+    const m = document.getElementById('modal-payreq'); if(m) m.remove();
+    showToast('\u{1F4E7} Payment link sent to ' + em);
+  }catch(e){
+    showToast('\u26A0 Not sent: ' + ((e && e.message) || e));
+    if(btn){ btn.disabled = false; btn.textContent = '\u{1F4E7} Send payment link'; }
+  }
+}
 function invBalance(rec, wh){
   const iv = rec.inv && rec.inv[wh];
   if(!iv || !iv.savedAt) return 0;
@@ -15093,6 +15207,7 @@ function renderPL(){
           return `<div style="margin-top:8px;padding:8px 12px;background:#f8fafc;border:1px solid var(--border);border-radius:8px;display:flex;align-items:center;gap:8px;flex-wrap:wrap;font-size:12px;">
             <span style="font-weight:700;color:var(--text2);">Invoice ${money2(tot)}${paid>0?` · Paid <b style=\"color:#166534;\">${money2(paid)}</b>`:''}${memo>0?` · Memo <b style=\"color:#7c2d12;\">−${money2(memo)}</b>`:''} · Balance <b style="color:${bal>0?'#b91c1c':'#166534'};">${money2(bal)}</b>${bal<=0.005?' ✅':''}</span>
             <button class="btn btn-sm" style="background:#065f46;color:#fff;border-color:#065f46;" onclick="openPayModal()">💰 Payment</button>
+            <button class="btn btn-sm" style="background:#1d4ed8;color:#fff;border-color:#1d4ed8;" onclick="payReqOpen('${esc(plBase)}','${plWh}')" title="Email the customer a secure link so they can pay this invoice by card themselves">📧 Request payment</button>
             <button class="btn btn-sm" style="background:#7c2d12;color:#fff;border-color:#7c2d12;" onclick="openMemoModal()">📝 Credit Memo</button>
             ${(ivR.memos||[]).map((mm,i)=>`<span style="padding:2px 8px;border-radius:20px;font-size:10.5px;font-weight:700;background:#fef2f2;color:#7c2d12;border:1px solid #fecaca;white-space:nowrap;${mm.file?'cursor:pointer;':''}" ${mm.file?`onclick="dlMemoFile('${esc(plBase)}','${plWh}',${i})" title="Click to download the attachment"`:''}>📝 −${money2(mm.amt)}${mm.file?' 📎':''}${mm.lines?' ('+mm.lines.length+' items)':''}</span>`).join('')}
           </div>`;
@@ -43481,7 +43596,7 @@ function renderSaved(){
         ${w!=='BO' && w!=='NA' && w!=='PD' ? `<button class="btn btn-sm" style="background:${(mp.label||locker)?'#16a34a':'#7c3aed'};color:#fff;border-color:${(mp.label||locker)?'#16a34a':'#7c3aed'};" onclick="docBtnClick('${esc(s.base)}','${w}','label')" oncontextmenu="return docBtnMenu(event,'${esc(s.base)}','${w}','label')" title="Right-click: ${mp.label?'clear':'mark'} done (green)">🏷 Box Label${pby(mp.label)}</button><button class="btn btn-sm" style="background:#0f766e;color:#fff;border-color:#0f766e;" onclick="openBoxLabelForRecWh('${esc(s.base)}','${w}','full')" title="Small 2x1 label for individual full boxes (load 2x1 label stock)">🏷 Full Box</button>
         ${consolSC ? `<span style="padding:3px 10px;border-radius:20px;font-size:10.5px;font-weight:800;background:#fff7ed;color:#b45309;border:1px solid #fed7aa;white-space:nowrap;" title="This SC portion transfers to CA and ships out combined with the CA portion — the packing slip &amp; invoice are on the CA (SC+CA) document.">🚚 → ships from CA (combined doc)</span>` : `<button class="btn btn-sm" style="${((s.pl && s.pl[w] && s.pl[w]._completed) || locker)?'background:#16a34a;border-color:#16a34a;':(plSaved?'background:#0e7490;border-color:#0e7490;':'background:#f59e0b;border-color:#f59e0b;')}color:#fff;" onclick="openPLWh('${esc(s.base)}','${w}')" oncontextmenu="return plBtnMenu(event,'${esc(s.base)}','${w}')" title="${plSaved && !(s.pl[w]&&s.pl[w]._completed)?'Saved — not Complete yet (no email sent) · ':''}Right-click: toggle Complete (without email)">📦 Packing List</button>`}
         ${plSaved && recRepFree(s) ? `<span style="padding:3px 10px;border-radius:20px;font-size:10.5px;font-weight:800;background:#fff1f2;color:#be123c;border:1px solid #fda4af;white-space:nowrap;" title="Defect replacement order — no invoice issued">🔁 Free replacement — no Invoice</span>` : ''}${plSaved && recIsReplace(s) && !recRepFree(s) ? `<span style="padding:3px 10px;border-radius:20px;font-size:10.5px;font-weight:800;background:#fffbeb;color:#92400e;border:1px solid #fcd34d;white-space:nowrap;" title="A different item was sent instead, so this one is invoiced — the like-for-like lines are $0.00">🔁⇄ Swapped item — invoiced</span>` : ''}
-        ${(plSaved || locker) && !recRepFree(s) ? `<button class="btn btn-sm" style="${invPr?'background:#16a34a;border-color:#16a34a;':'background:#dc2626;border-color:#dc2626;'}color:#fff;" onclick="docBtnClick('${esc(s.base)}','${w}','inv')" oncontextmenu="return docBtnMenu(event,'${esc(s.base)}','${w}','inv')" title="Right-click: ${invPr?'clear':'mark'} done (green)">🧾 Invoice</button>${invPr ? `<button class="btn btn-sm" style="background:#065f46;color:#fff;border-color:#065f46;" onclick="payFromRow('${esc(s.base)}','${w}')" title="Record payment (full/partial)">💰 Payment</button><button class="btn btn-sm" style="background:#7c2d12;color:#fff;border-color:#7c2d12;" onclick="memoFromRow('${esc(s.base)}','${w}')" title="Credit Memo (returns) — MAS200 file can be attached">📝 Credit Memo</button>` : ''}` : ''}
+        ${(plSaved || locker) && !recRepFree(s) ? `<button class="btn btn-sm" style="${invPr?'background:#16a34a;border-color:#16a34a;':'background:#dc2626;border-color:#dc2626;'}color:#fff;" onclick="docBtnClick('${esc(s.base)}','${w}','inv')" oncontextmenu="return docBtnMenu(event,'${esc(s.base)}','${w}','inv')" title="Right-click: ${invPr?'clear':'mark'} done (green)">🧾 Invoice</button>${invPr ? `<button class="btn btn-sm" style="background:#065f46;color:#fff;border-color:#065f46;" onclick="payFromRow('${esc(s.base)}','${w}')" title="Record payment (full/partial)">💰 Payment</button><button class="btn btn-sm" style="background:#1d4ed8;color:#fff;border-color:#1d4ed8;" onclick="payReqOpen('${esc(s.base)}','${w}')" title="Email the customer a secure link so they can pay this invoice by card themselves">📧 Request payment</button><button class="btn btn-sm" style="background:#7c2d12;color:#fff;border-color:#7c2d12;" onclick="memoFromRow('${esc(s.base)}','${w}')" title="Credit Memo (returns) — MAS200 file can be attached">📝 Credit Memo</button>` : ''}` : ''}
         ${(()=>{ const iv0 = s.inv && s.inv[w]; const pd = iv0 && iv0.paid; if(!pd) return '';
           const rt = refundTotals(pd);
           const dupOpen = (iv0.dupPays||[]).some(d=>refundTotals(d).remain > 0.005);
