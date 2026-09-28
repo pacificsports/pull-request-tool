@@ -9337,6 +9337,164 @@ function payReqBase(){
 function payReqLink(token){ return payReqBase() + '/pay?t=' + encodeURIComponent(token); }
 function payReqMoney(n){ return '$' + Number(n||0).toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2}); }
 
+/* PREPAY-1 (2026-09-28) - 오더 하나를 창고 전부 합쳐서 한 링크로 청구한다.
+   [stated] 하윤: "SC & CA 다 합쳐서 돈 요청해야돼"
+   ⚠ 인보이스가 이미 있는 창고는 그 잔액, 없는 창고는 물건값+운임으로 잡는다. */
+function payReqWhs(rec){
+  const out = [];
+  (rec.whs || []).forEach(w => { if((w === 'SC' || w === 'CA') && out.indexOf(w) < 0) out.push(w); });
+  Object.keys((rec.inv) || {}).forEach(w => { if(out.indexOf(w) < 0 && (rec.inv[w]||{}).savedAt) out.push(w); });
+  return out;
+}
+function payReqGoods(rec, w){
+  return Math.round((rec.lines || [])
+    .filter(l => l && String(l.wh||'') === w && (Number(l.qty)||0) > 0)
+    .reduce((a, l) => a + (Number(l.qty)||0) * (Number(l.price)||0), 0) * 100) / 100;
+}
+/* 인보이스 초안이 쓰는 것과 같은 차례로 운임을 찾는다 */
+function payReqFreight(rec, w){
+  let fr = 0;
+  try{
+    const iv = (rec.inv||{})[w] || {};
+    fr = Number(iv.freight) || 0;
+    const wp = (typeof webPaidFreight === 'function') ? webPaidFreight(rec, w) : null;
+    const uw = (typeof upsForWh === 'function') ? upsForWh(rec, w) : null;
+    const ap = rec.meta && rec.meta._shipApproval;
+    if(wp != null) fr = Number(wp) || 0;
+    else if(uw && (uw.billing === 'free' || uw.billing === 'receiver')) fr = 0;
+    else if(ap && Number(ap.amount) > 0 && ap.status !== 'declined' && (!ap.wh || ap.wh === w)) fr = Number(ap.amount);
+    else if(uw && uw.billing === 'shipper' && Number(uw.billShip) > 0) fr = Number(uw.billShip);
+  }catch(e){}
+  return Math.round((Number(fr)||0) * 100) / 100;
+}
+function payReqOrderRows(rec){
+  return payReqWhs(rec).map(w => {
+    const iv = (rec.inv||{})[w] || {};
+    if(iv.savedAt){
+      return { wh: w, invNo: iv.invNo || '', how: 'Invoice balance', amount: invBalance(rec, w) };
+    }
+    const g = payReqGoods(rec, w), f = payReqFreight(rec, w);
+    return { wh: w, invNo: '', how: 'Goods ' + payReqMoney(g) + ' + shipping ' + payReqMoney(f),
+             amount: Math.round((g + f) * 100) / 100 };
+  });
+}
+function payReqOrderCalc(){
+  let t = 0;
+  document.querySelectorAll('.prq-amt').forEach(i => {
+    t += Math.round((parseFloat(String(i.value||'').replace(/[^0-9.]/g,'')) || 0) * 100) / 100;
+  });
+  const el = document.getElementById('prq-total');
+  if(el) el.textContent = payReqMoney(Math.round(t * 100) / 100);
+}
+function payReqOrder(base){
+  const rec = (savedCache||[]).find(s2 => s2.base === base);
+  if(!rec){ showToast('\u26A0 Order not found'); return; }
+  const rows = payReqOrderRows(rec);
+  if(!rows.length){ showToast('\u26A0 Nothing to charge on this order'); return; }
+  const total = rows.reduce((a, r) => a + r.amount, 0);
+  if(!(total > 0.005)){ showToast('\u2705 Nothing is outstanding on this order'); return; }
+  const cust = (rec.meta && rec.meta.cust) || '';
+  const em = custEmailClean((typeof custEmailFor==='function' ? custEmailFor(cust) : '')
+             || (rec.meta && rec.meta.custEmail) || '');
+  const ex = document.getElementById('modal-payreq'); if(ex) ex.remove();
+  const div = document.createElement('div');
+  div.id = 'modal-payreq';
+  div.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,.55);z-index:150;display:flex;align-items:center;justify-content:center;';
+  div.innerHTML = `<div style="background:#fff;border-radius:12px;width:560px;max-width:95vw;overflow:hidden;box-shadow:0 20px 60px rgba(0,0,0,.35);">
+    <div style="background:#0f2a4a;color:#fff;padding:12px 18px;font-weight:800;display:flex;align-items:center;gap:8px;">
+      \u{1F4B3} Request payment
+      <span style="margin-left:auto;font-size:11.5px;font-weight:400;color:#93c5fd;">${esc(cust)} \u00B7 PO ${esc((rec.meta&&rec.meta.po)||'')}</span>
+    </div>
+    <div style="padding:16px 18px;">
+      <table class="etbl" style="width:100%;font-size:12.5px;">
+        <thead><tr><th class="tl" style="width:56px;">FROM</th><th class="tl">WHAT</th><th style="width:118px;text-align:right;">AMOUNT</th></tr></thead>
+        <tbody>${rows.map(r => `<tr>
+          <td class="tl"><span class="chip chip-${esc(r.wh)}" style="min-width:32px;text-align:center;">${esc(r.wh)}</span></td>
+          <td class="tl" style="font-size:11.5px;color:#64748b;">${r.invNo ? ('<b style="color:#0f2a4a;">' + esc(r.invNo) + '</b> \u00B7 ') : '<b style="color:#b45309;">not invoiced yet</b> \u00B7 '}${esc(r.how)}</td>
+          <td><input class="fi num prq-amt" data-wh="${esc(r.wh)}" data-inv="${esc(r.invNo)}" value="${r.amount.toFixed(2)}" oninput="payReqOrderCalc()" style="width:100%;text-align:right;font-family:Consolas,monospace;font-weight:800;"></td>
+        </tr>`).join('')}</tbody>
+        <tfoot><tr><td></td><td class="tl" style="text-align:right;font-weight:800;">TOTAL</td>
+          <td id="prq-total" style="text-align:right;font-family:Consolas,monospace;font-weight:900;font-size:14px;">${payReqMoney(total)}</td></tr></tfoot>
+      </table>
+      <div style="font-size:11px;color:#94a3b8;margin-top:5px;">Set a line to 0 to leave that warehouse out of this request.</div>
+      <div style="margin-top:12px;">
+        <label style="font-size:10.5px;font-weight:800;color:#64748b;letter-spacing:.05em;">SEND TO</label>
+        <input class="fi" id="pr-em" value="${esc(em)}" placeholder="customer@company.com" style="width:100%;font-size:12.5px;padding:6px 8px;">
+      </div>
+      <div style="margin-top:10px;">
+        <label style="font-size:10.5px;font-weight:800;color:#64748b;letter-spacing:.05em;">NOTE TO THE CUSTOMER (optional)</label>
+        <input class="fi" id="pr-note" placeholder="e.g. We will ship as soon as this is paid" style="width:100%;font-size:12.5px;padding:6px 8px;">
+      </div>
+      <div style="margin-top:12px;font-size:11.5px;color:#64748b;line-height:1.6;background:#f8fafc;border:1px solid #e2e8f0;border-radius:8px;padding:9px 11px;">
+        One link, one card charge. The card is entered on Authorize.Net - we never see the number.
+        When they pay, each warehouse gets its share on its invoice.
+      </div>
+    </div>
+    <div style="padding:11px 18px;border-top:1px solid #e2e8f0;display:flex;gap:8px;">
+      <button class="btn btn-sm" style="margin-left:auto;" onclick="document.getElementById('modal-payreq').remove()">Cancel</button>
+      <button class="btn btn-sm" id="pr-go" style="background:#1d4ed8;color:#fff;border-color:#1d4ed8;font-weight:800;" onclick="payReqOrderSend('${esc(base)}')">\u{1F4E7} Send payment link</button>
+    </div></div>`;
+  document.body.appendChild(div);
+}
+
+async function payReqOrderSend(base){
+  const btn = document.getElementById('pr-go');
+  if(btn && btn.disabled) return;
+  const rec = (savedCache||[]).find(s2 => s2.base === base); if(!rec) return;
+  const items = [];
+  let total = 0;
+  document.querySelectorAll('.prq-amt').forEach(i => {
+    const a = Math.round((parseFloat(String(i.value||'').replace(/[^0-9.]/g,'')) || 0) * 100) / 100;
+    if(a > 0){
+      items.push({ base: base, wh: i.getAttribute('data-wh'), invNo: i.getAttribute('data-inv') || '',
+                   po: (rec.meta&&rec.meta.po)||'', amount: a });
+      total += a;
+    }
+  });
+  total = Math.round(total * 100) / 100;
+  const em = custEmailClean(String(((document.getElementById('pr-em')||{}).value)||'').trim());
+  const note = String(((document.getElementById('pr-note')||{}).value)||'').trim();
+  if(!items.length || !(total > 0)){ showToast('\u26A0 Enter an amount'); return; }
+  if(!em || em.indexOf('@') < 0){ showToast('\u26A0 Enter the customer email'); return; }
+  if(!confirm('\u{1F4E7} Send one payment link?\n\n\u2192 ' + em + '\n\n'
+      + items.map(x => '  ' + x.wh + (x.invNo ? ' ' + x.invNo : ' (not invoiced yet)') + '  ' + payReqMoney(x.amount)).join('\n')
+      + '\n\nTotal: ' + payReqMoney(total))) return;
+  if(btn){ btn.disabled = true; btn.textContent = '\u23F3 Sending...'; }
+  try{
+    const row = { created_by: (SESS&&SESS.email)||'', cust: (rec.meta&&rec.meta.cust)||'', email: em,
+      amount: total, note: note, items: items };
+    const r = await sbFetch('/rest/v1/pr_payreq', { method:'POST', headers:{Prefer:'return=representation'},
+      body: JSON.stringify([row]) });
+    if(!r.ok) throw new Error('DB ' + r.status + ' ' + String(await r.text()).slice(0,120));
+    const j = await r.json();
+    const token = j && j[0] && j[0].token;
+    if(!token) throw new Error('no link came back');
+    const link = payReqLink(token);
+    const html = psmWrap('Payment',
+        psmHead('PO ' + esc((rec.meta&&rec.meta.po)||''), 'Amount due ' + payReqMoney(total))
+      + psmP('You can pay this order online by credit card. The button below opens a secure page.')
+      + psmTable(items.map(x => psmRow(x.invNo ? ('Invoice ' + esc(x.invNo)) : ('From ' + esc(x.wh)),
+          payReqMoney(x.amount))).join('')
+        + psmRow('Total', '<span style="font-size:16px;">' + payReqMoney(total) + '</span>'))
+      + psmBtn(link, 'Pay by credit card')
+      + (note ? psmP(esc(note)) : '')
+      + psmP('Your card details are entered on a secure form hosted by Authorize.Net, our payment processor. Pacific Sports never sees or stores your card number.')
+      + psmP('Questions? Just reply to this email.'));
+    const send = await fetch('https://po-confirm-email.hjbae.workers.dev/send-pl', {
+      method:'POST', headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({ to: em.split(',').map(x => x.trim()).filter(x => x.indexOf('@') > 0),
+        subject: 'Payment link - PO ' + ((rec.meta&&rec.meta.po)||'') + ' - ' + payReqMoney(total) + ' (Pacific Sports)',
+        html: html, cc: STAFF_EMAILS, reply_to: MAIL_REPLY_TO }) });
+    if(!send.ok){ const e2 = await send.json().catch(()=>({})); throw new Error(e2.error || ('email HTTP ' + send.status)); }
+    logHist(base, 'Payment link sent ' + payReqMoney(total) + ' ('
+      + items.map(x => x.wh + ' ' + payReqMoney(x.amount)).join(', ') + ') to ' + em);
+    const m = document.getElementById('modal-payreq'); if(m) m.remove();
+    showToast('\u{1F4E7} Payment link sent to ' + em);
+  }catch(e){
+    showToast('\u26A0 Not sent: ' + ((e && e.message) || e));
+    if(btn){ btn.disabled = false; btn.textContent = '\u{1F4E7} Send payment link'; }
+  }
+}
 function payReqOpen(base, wh){
   const rec = (savedCache||[]).find(s2=>s2.base===base);
   if(!rec){ showToast('\u26A0 Order not found'); return; }
@@ -43556,6 +43714,7 @@ function renderSaved(){
       <button class="btn btn-sm" onclick="openOrderSummary('${esc(s.base)}')">📋 Order Confirmation</button>
       <button class="btn btn-sm" onclick="copyOrderSummary('${esc(s.base)}')">📧 Copy Email</button>
       <button class="btn btn-sm" onclick="viewSavedPO('${esc(s.base)}')">📄 PO</button>
+      <button class="btn btn-sm" style="background:#1d4ed8;color:#fff;border-color:#1d4ed8;font-weight:700;" onclick="payReqOrder('${esc(s.base)}')" title="Email one payment link for this whole order - both warehouses together, before or after shipping">💳 Request payment</button>
       ${(()=>{ const sw=(s.whs||[]).filter(w=>w==='SC'||w==='CA'); if(!sw.length) return '';
         if(recShipFromCA(s)){   // 🚚 CA 통합 발송 — 버튼 하나 (SC+CA 합쳐서 CA에서 출발)
           const uw=upsForWh(s,'CA'); const has=uw&&(uw.tracking||[]).length; const ready=sw.some(w=>packReady(s.base,w));
