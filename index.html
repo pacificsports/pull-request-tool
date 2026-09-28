@@ -34698,6 +34698,56 @@ async function trManAddSku(pid, li){
 /* ═══ 📦 팔레트 사이로 라인 옮기기 — Haiti 배치 화면과 같은 드래그 (v900) ═══
    박스는 이미 TRANSFER bin 에 있고 팔레트는 이름표일 뿐이라, 재고는 하나도 안 건드린다. */
 let _trLnDrag = null;
+/* MSOSDRAG-1 - 끌고 있는 오더 박스 줄(그 오더의 base). 줄 끌기(`_trLnDrag`) 와 따로 둔다. */
+let _trOsDrag = null;
+function trOsDragStart(ev, base){
+  _trOsDrag = String(base||'');
+  try{ ev.dataTransfer.effectAllowed='move'; ev.dataTransfer.setData('text/plain','os:'+_trOsDrag); }catch(e){}
+  try{ ev.stopPropagation(); }catch(e){}
+}
+function trOsDragEnd(){ _trOsDrag=null; document.querySelectorAll('[data-trdz="1"]').forEach(el=>{ el.style.outline=''; el.removeAttribute('data-trdz'); }); }
+/* MSOSDRAG-1 - 오더만 실린 팔레트는 줄이 없어서 내릴 곳을 줄에서 못 읽는다.
+   `meta.palletStop` 에 넣어야 서류가 제 정차지로 간다.
+   ⚠ `trOrderShipAdd` 가 쓰던 규칙을 그대로 옮긴 것이다 - 새 규칙이 아니다. */
+function trOsSyncStops(){
+  try{
+    const _st = trIsMultiRoute(_shipRoute) ? trStopsOf({meta:_shipMeta}) : [];
+    if(!_st.length) return;
+    _shipMeta = _shipMeta || {};
+    if(!Array.isArray(_shipMeta.stops) || !_shipMeta.stops.length) _shipMeta.stops = _st;
+    _shipMeta.palletStop = _shipMeta.palletStop || {};
+    (_shipPallets||[]).forEach(p=>{ const v = Number(p && p.stop);
+      if(v >= 0 && v < _st.length) _shipMeta.palletStop[p.label] = v; });
+  }catch(e){}
+}
+/* MSOSDRAG-1 - 오더 하나를 팔레트로 옮긴다. pid 가 비면 새 팔레트를 만든다
+   (맨 아래 「새 팔레트」 칸에 놓았을 때 - 줄 끌기와 같은 규칙). */
+async function trOsMoveTo(base, pid){
+  const o = ((_shipMeta&&_shipMeta.orderShip)||[]).find(x=>x.base===base);
+  if(!o) return;
+  let tgt;
+  if(!pid){
+    let n=_shipPallets.length+1; while(_shipPallets.some(x=>x.label==='Pallet '+n)) n++;
+    tgt = { id:'p_'+Math.random().toString(36).slice(2,9), label:'Pallet '+n, lines:[] };
+    /* 정차지가 여럿이면 새 팔레트도 정차지를 가져야 한다. 안 정하면 앱 기본값이
+       마지막 정차지이므로 그 값을 **명시적으로** 박아 둔다 (카드에서 바꿀 수 있다). */
+    const _st = trIsMultiRoute(_shipRoute) ? trStopsOf({meta:_shipMeta}) : [];
+    if(_st.length) tgt.stop = _st.length - 1;
+    _shipPallets.push(tgt);
+  }else{
+    tgt = _shipPallets.find(x=>x.id===pid);
+    if(!tgt) return;
+  }
+  if(o.pallet === tgt.label) return;
+  o.pallet = tgt.label;
+  trOsSyncStops();
+  if(_shipId){ try{ await trPatchRec(_shipId, {meta:_shipMeta}); }catch(e){} }
+  trRenderPallets();
+  const _d = { meta:_shipMeta, pallets:_shipPallets };
+  const _multi = trIsMultiRoute(_shipRoute) && trStopsOf({meta:_shipMeta}).length >= 2;
+  const _nm = _multi ? trPalDisp(_d, tgt.label) : tgt.label;
+  showToast('\u{1F69A} ' + (o.cust||'order') + ' \u2192 ' + _nm);
+}
 /* ═══ MSDRAG-v1 - 팔레트를 통째로 끌어서 차례 바꾸기 ═══
    ⚠⚠⚠ `p.label` 은 자리 번호로 다시 매겨지는데 동시에 **신원 열쇠**다.
    옮기면서 그 이름표로 서로를 찾는 넷을 **한 번에** 맞춰야 한다 (v1148 사고의 그 지점). */
@@ -34786,13 +34836,15 @@ function trLnDragStart(ev, pid, li){
 }
 function trLnDragEnd(){ _trLnDrag=null; document.querySelectorAll('[data-trdz="1"]').forEach(el=>{ el.style.outline=''; el.removeAttribute('data-trdz'); }); }
 function trLnOver(ev, el){
-  if(!_trLnDrag) return;
+  if(!_trLnDrag && !_trOsDrag) return;   /* MSOSDRAG-1 - 오더 줄도 받는다 */
   ev.preventDefault(); try{ ev.dataTransfer.dropEffect='move'; }catch(e){}
   if(el && el.getAttribute('data-trdz')!=='1'){ el.setAttribute('data-trdz','1'); el.style.outline='3px solid #7b1fa2'; el.style.outlineOffset='2px'; }
 }
 function trLnOut(el){ if(el){ el.style.outline=''; el.removeAttribute('data-trdz'); } }
 async function trLnDrop(ev, pid, el){
   ev.preventDefault(); trLnOut(el);
+  /* MSOSDRAG-1 - 오더 박스 줄을 끌고 온 것이면 여기서 처리하고 끝낸다 */
+  if(_trOsDrag){ const _ob=_trOsDrag; _trOsDrag=null; await trOsMoveTo(_ob, pid); return; }
   const d=_trLnDrag; _trLnDrag=null;
   if(!d) return;
   if(pid && d.pid===pid) return;                    // 같은 팔레트면 할 일 없음
@@ -36477,6 +36529,7 @@ function trOrderShipRowsForPallet(label){
   return `<div style="border-top:2px dashed #f0abfc;background:#fdf4ff;">
     <div style="padding:5px 12px;font-size:10.5px;font-weight:800;color:#a21caf;">🚚 SHIP-FROM-CA ORDER BOXES ON THIS PALLET — routed to order at CA (not CA stock)</div>
     ${arr.map(o=>`<div style="display:flex;align-items:center;gap:9px;padding:5px 12px;border-top:1px dashed #f5d0fe;">
+      <span draggable="true" ondragstart="trOsDragStart(event,'${esc(o.base)}')" ondragend="trOsDragEnd()" title="Drag to another pallet" style="cursor:grab;color:#c084fc;font-size:13px;font-weight:900;user-select:none;flex:none;">⠿</span>
       <div style="flex:1;min-width:0;"><b style="color:#0f2a4a;font-size:12px;">${esc(o.cust||'—')}</b> <span style="font-size:11px;color:#64748b;">PO ${esc(o.po||'—')} · ${(o.pcs||0).toLocaleString()} pcs</span></div>
       <label style="font-size:10px;color:#7b1fa2;font-weight:800;display:flex;align-items:center;gap:4px;">boxes <input type="number" min="0" value="${o.boxes||0}" onchange="trOrderShipEditBoxes('${esc(o.base)}',this.value)" style="width:56px;font-size:12px;padding:3px 5px;text-align:center;font-weight:800;border:1px solid #e9d5ff;border-radius:6px;"></label>
       <button onclick="trOrderShipDel('${esc(o.base)}')" style="border:none;background:none;color:#e53935;cursor:pointer;font-weight:800;" title="Remove from truck">✕</button>
@@ -36505,6 +36558,7 @@ function trRenderOrderShip(){
 function trOrderShipSetPallet(base, label){
   const o=((_shipMeta&&_shipMeta.orderShip)||[]).find(x=>x.base===base); if(!o||!label) return;
   o.pallet=label;
+  trOsSyncStops();   /* MSOSDRAG-1 - 이 경로에도 빠져 있었다 */
   if(_shipId){ try{ trPatchRec(_shipId, {meta:_shipMeta}); }catch(e){} }
   trRenderPallets();
 }
