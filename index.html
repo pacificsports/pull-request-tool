@@ -3360,6 +3360,83 @@ async function revSepToggle(base, key, on){
 
 
 /* 이 리비전이 이 창고에서 몇 장 늘고 몇 장 줄었나 (줄 제목에 쓴다) */
+/* MODCASE-1 (2026-09-29) - 이 수정이 무슨 경우인지 차액만 보고 한 줄로 이름 붙인다.
+   [stated] 하윤이 정리한 경우: ① 거래처가 수량을 변경 ② 기존 창고에 물건이 없어 다른 창고에서
+   ③ 아이템이나 칼라가 변경. 그 밖에 P.Box# 만 / 단가만 / 주소·날짜만.
+   [stated] 하윤: "매번 modified하는게 헷갈리네" - 제일 불편한 것으로 「종이가 헷갈림」을 골랐다
+   ⚠⚠ 진행 단계(창고가 어디까지 뽑았나)는 절대 보지 않는다 - 2026-09-17 에 그 방식은 반려됐다.
+       "우리가 어디까지 했냐는 모르는 거고". before -> after 차액만 본다. 짐작이 없으면 틀린 종이가 안 나간다.
+   ⚠ 이 이름은 오더 전체 기준이다(창고별이 아니다). 창고가 바뀐 경우 두 창고 종이에 같은 문장이
+     찍히는 것이 맞다 - v969 에서 정한 규칙과 같다. */
+function revCaseOf(rec, rv){
+  try{
+    if(!rv) return null;
+    const items = [];
+    ((rv.keys)||[]).forEach(k=>{
+      const sn = ((rv.lines)||{})[k]; if(!sn) return;
+      let from = 0, to = 0; const wf = {}, wt = {};
+      if(sn.byWh){
+        Object.keys(sn.byWh).forEach(w=>{
+          const f = Number(sn.byWh[w].from)||0, t = Number(sn.byWh[w].to)||0;
+          from += f; to += t; if(f) wf[w] = f; if(t) wt[w] = t;
+        });
+      } else if(sn.qtyFrom != null){
+        from = Number(sn.qtyFrom)||0; to = Number(sn.qtyTo)||0;
+        if(sn.whFrom) wf[sn.whFrom] = from;
+        if(sn.whTo)   wt[sn.whTo]   = to;
+      }
+      if(!from && !to) return;
+      items.push({ style:String(sn.style||''), color:String(sn.color||''), size:String(sn.size||''), from:from, to:to, wf:wf, wt:wt });
+    });
+    if(!items.length) return null;
+    const net = items.reduce((a,x)=>a + (x.to - x.from), 0);
+    const add = items.filter(x=>x.from===0 && x.to>0);
+    const del = items.filter(x=>x.from>0 && x.to===0);
+    /* 창고만 바뀐 줄 - 총량은 같고 창고별 배분이 달라진 것. 일부만 넘어간 경우도 잡는다
+       (SC 720->360 · CA 360->720 처럼 두 창고가 이미 다 쓰이고 있어도 이동이다). */
+    const moved = items.filter(x=>{
+      if(x.from !== x.to || !x.from) return false;
+      const ws = [...new Set(Object.keys(x.wf).concat(Object.keys(x.wt)))];
+      return ws.some(w => (Number(x.wf[w])||0) !== (Number(x.wt[w])||0));
+    });
+    /* 3. 스타일·칼라 교체 - 빠진 장수 = 들어온 장수, 한 스타일 -> 한 스타일 */
+    if(add.length && del.length){
+      const outPcs = del.reduce((a,x)=>a+x.from,0), inPcs = add.reduce((a,x)=>a+x.to,0);
+      const outSt = [...new Set(del.map(x=>x.style))], inSt = [...new Set(add.map(x=>x.style))];
+      const outCo = [...new Set(del.map(x=>x.color))], inCo = [...new Set(add.map(x=>x.color))];
+      if(outPcs === inPcs && outSt.length===1 && inSt.length===1){
+        if(outSt[0] !== inSt[0])
+          return { tag:'SWAP', text:'STYLE CHANGED — ' + outSt[0] + ' → ' + inSt[0] + ' · ' + inPcs.toLocaleString() + ' pcs, same quantity' };
+        if(outCo.length===1 && inCo.length===1 && outCo[0] !== inCo[0])
+          return { tag:'SWAP', text:'COLOR CHANGED — ' + outCo[0] + ' → ' + inCo[0] + ' · ' + inPcs.toLocaleString() + ' pcs, same quantity' };
+      }
+    }
+    /* 2. 총량 그대로, 창고만 바뀜 */
+    if(net === 0 && !add.length && !del.length && moved.length){
+      /* 늘어난 창고가 "이제 여기서 나간다" 쪽이다 */
+      const gain = [];
+      moved.forEach(x=>{
+        [...new Set(Object.keys(x.wf).concat(Object.keys(x.wt)))].forEach(w=>{
+          if((Number(x.wt[w])||0) > (Number(x.wf[w])||0) && gain.indexOf(w) < 0) gain.push(w);
+        });
+      });
+      const dest = gain.join(', ');
+      return { tag:'MOVED', text:'WAREHOUSE CHANGED — same quantity, now ships from ' + (dest || 'the other warehouse') };
+    }
+    /* 1. 수량 변경 */
+    if(net > 0 && !del.length) return { tag:'MORE', text:'MORE — the order grew by ' + net.toLocaleString() + ' pcs' };
+    if(net < 0 && !add.length) return { tag:'LESS', text:'LESS — the order shrank by ' + Math.abs(net).toLocaleString() + ' pcs' };
+    if(add.length || del.length){
+      const bits = [];
+      if(add.length) bits.push('+' + add.length + ' new item' + (add.length>1?'s':''));
+      if(del.length) bits.push('-' + del.length + ' item' + (del.length>1?'s':'') + ' removed');
+      bits.push(net ? ('net ' + (net>0?'+':'') + net.toLocaleString() + ' pcs') : 'same total');
+      return { tag:'ITEMS', text:'ITEMS CHANGED — ' + bits.join(' · ') };
+    }
+    if(net === 0) return { tag:'SAME', text:'NO QUANTITY CHANGE — packing or details only' };
+    return null;
+  }catch(e){ return null; }
+}
 function revRowDelta(rec, wh, rv){
   let plus = 0, minus = 0; const items = [];
   (((rv && rv.keys) || [])).forEach(k=>{
@@ -3571,10 +3648,16 @@ function revRowsHtml(rec, wh){
        전에는 `➕ 869` 와 `↩ put back 869` 가 나란히 뜨고 글자는 되돌리는 쪽만 나와서
        "더했다 뺐다?" + "REV 가 1368 짜리인가?" 로 읽혔다. */
     const sw = revSwapOf(rec, wh, rv);
-    const chips = sw
+    /* MODCASE-1 - 창고만 바뀐 수정은 한쪽에 ➕, 다른쪽에 ↩ 가 떠서 "더했다 뺐다?" 로 읽힌다.
+       그 둘이 한 건이라는 것을 앞에 한 칩으로 말해 준다. (v1116 의 SWAP 칩과 같은 취지) */
+    const _cs = (typeof revCaseOf==='function') ? revCaseOf(rec, rv) : null;
+    const caseChip = (!sw && _cs && _cs.tag === 'MOVED')
+      ? `<span style="background:#7c2d12;color:#fff;font-weight:900;border-radius:4px;padding:1px 9px;font-size:11px;white-space:nowrap;" title="${esc(_cs.text)} — the quantity did not change. One warehouse puts it back, the other pulls it. Both sheets say the same thing.">↔ MOVED</span>`
+      : '';
+    const chips = caseChip + (sw
       ? `<span style="background:#6d28d9;color:#fff;font-weight:900;border-radius:4px;padding:1px 9px;font-size:11px;white-space:nowrap;" title="Same colour, same sizes, same quantity — only the style number changed. The old style goes back on the shelf and the new one gets pulled.">🔄 SWAP ${sw.pcs.toLocaleString()} pcs</span>`
       : ((d.plus ? `<span style="background:#1d4ed8;color:#fff;font-weight:900;border-radius:4px;padding:1px 8px;font-size:11px;white-space:nowrap;">➕ pull ${d.plus.toLocaleString()} pcs</span>` : '')
-       + (d.minus ? `<span style="background:#b45309;color:#fff;font-weight:900;border-radius:4px;padding:1px 8px;font-size:11px;white-space:nowrap;">↩ put back ${d.minus.toLocaleString()} pcs</span>` : ''));
+       + (d.minus ? `<span style="background:#b45309;color:#fff;font-weight:900;border-radius:4px;padding:1px 8px;font-size:11px;white-space:nowrap;">↩ put back ${d.minus.toLocaleString()} pcs</span>` : '')));
     const _side = (arr, lab, col) => {
       if(!arr.length) return '';
       const txt = arr.slice(0,3).map(x=>esc([x.style, x.color, x.size].filter(Boolean).join(' '))).join(' · ')
@@ -3729,6 +3812,10 @@ function buildRevDocHtml(rec, wh, n){
       <img src="${LOGO_B64}" style="height:38px;width:auto;">
       <div style="color:#fff;font-size:22px;font-weight:800;letter-spacing:2px;">PULL REQUEST · REVISION ${rv.n}</div>
     </div>
+    ${(()=>{ /* MODCASE-1 - 왜 이 종이가 나왔는지 한 줄. 창고가 제일 먼저 읽는 자리다. */
+      const cs = (typeof revCaseOf==='function') ? revCaseOf(rec, rv) : null;
+      return cs ? `<div style="background:#78350f;color:#fff;padding:9px 20px;text-align:center;font-size:13.5px;font-weight:900;letter-spacing:.6px;">WHY THIS SHEET: ${esc(cs.text)}</div>` : '';
+    })()}
     <div style="background:#b45309;color:#fff;padding:10px 20px;text-align:center;font-size:15px;font-weight:900;letter-spacing:1px;">
       ⚠ THIS IS NOT THE WHOLE ORDER — DO ONLY THE LINES ON THIS SHEET
     </div>
