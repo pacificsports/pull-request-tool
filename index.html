@@ -2202,6 +2202,19 @@ function ordHaveFor(l, wh){
     return Number(h.map[ordHaveKey(st, co, (l&&l.size), wh)]) || 0;
   }catch(e){ return 0; }
 }
+/* BXPULL-1 (2026-09-29) - 이 오더가 이 창고에서 이미 뽑아 간 **박스 개수**.
+   [stated] 하윤: "저기 누르고 모듈 뜰때 추가로 선택해야하는거만 떠야하는거아닌가?? S은 5박스 추가가되는건데"
+   실측(PO K92926): 2210 WHITE (SIDE SEAM) S 가 SC 에서 이미 5박스 OUT 인데
+   수량을 720 으로 늘리니 「Assign full box locations」 가 10박스를 다시 달라고 했다. */
+function ordHaveBoxes(l, wh){
+  try{
+    const h = window._ordHave;
+    if(!h || !h.bmap || !h.base || h.base !== window._forceBase) return 0;
+    const st = (typeof bxStyleFor==='function') ? bxStyleFor(l) : String((l&&l.style)||'');
+    const co = (typeof bxColorFor==='function') ? bxColorFor(l) : String((l&&l.color)||'');
+    return Number(h.bmap[ordHaveKey(st, co, (l&&l.size), wh)]) || 0;
+  }catch(e){ return 0; }
+}
 async function ordHaveLoad(rec){
   window._ordHave = null;
   try{
@@ -2209,13 +2222,14 @@ async function ordHaveLoad(rec){
     if(!poN || !rec) return;
     const r = await sbFetch('/rest/v1/pr_boxes?select=style,color,size,pcs,wh&status=eq.OUT&out_po=eq.' + encodeURIComponent('PO ' + poN));
     if(!r.ok) return;
-    const map = {};
+    const map = {}, bmap = {};
     (await r.json()).forEach(b=>{
       const wh = (typeof bxWh==='function') ? bxWh(b) : String(b.wh||'');
       const k = ordHaveKey(b.style, b.color, b.size, wh);
-      map[k] = (map[k] || 0) + (Number(b.pcs) || 0);
+      map[k]  = (map[k]  || 0) + (Number(b.pcs) || 0);
+      bmap[k] = (bmap[k] || 0) + 1;                 /* BXPULL-1 - 박스 개수도 센다 */
     });
-    window._ordHave = { base: rec.base, map: map };
+    window._ordHave = { base: rec.base, map: map, bmap: bmap };
     try{ _lineAvailCache = {}; if(typeof poLines!=='undefined' && poLines.length && typeof refreshRow==='function'){ poLines.forEach((l,i)=>{ try{ refreshRow(i); }catch(e){} }); } }catch(e){}
   }catch(e){}
 }
@@ -29507,7 +29521,15 @@ async function bxToPcFromEditor(i){
   }, 'topc', 1);
 }
 function bxOpenPicker(L, lwh, po, onDone, mode, needOverride){
-  const need = (needOverride!=null) ? needOverride : boxCalc(L).full;
+  /* BXPULL-1 - 이미 이 오더로 뽑아 간 박스는 다시 달라고 하지 않는다. 늘린 만큼만 묻는다.
+     ⚠ 새 오더(편집 중인 저장 오더가 아님)에서는 ordHaveBoxes 가 0 이라 예전과 똑같이 동작한다. */
+  const _fullN = boxCalc(L).full;
+  const _haveN = (needOverride!=null) ? 0 : ordHaveBoxes(L, lwh);
+  const need = (needOverride!=null) ? needOverride : Math.max(0, _fullN - _haveN);
+  if(!need && _haveN > 0 && _fullN > 0){
+    showToast('✓ All ' + _fullN + ' box(es) for this line are already pulled for this order — nothing more to assign');
+    if(onDone) onDone(false); return;
+  }
   if(!need){ showToast('⚠ This line has no full boxes (loose only) — handle it in PC Room'); if(onDone) onDone(false); return; }
   const st = bxStyleFor(L);
   const wantCol = String(bxColorFor(L)).toUpperCase();
@@ -29542,7 +29564,7 @@ function bxOpenPicker(L, lwh, po, onDone, mode, needOverride){
   // 자동 배정: 같은 변형(정확 일치) 먼저 → 같은 base 칼라의 다른 변형(US 등)까지 오래된 순 (H*/SPECIAL 3rd party는 제외) (v412) · 예약분은 자동 배정 안 함
   // 자체 bin 먼저 채우고(정렬상 앞), 남으면 LK(거래처 locker/SPECIAL*)까지 자동 배정 — locker stock 출고 허용. H*(3P·Hodge)만 회수 필요라 제외
   groups.forEach(g=>{ g.take = (bxSpecLoc(g.loc,lwh)!=='3P') ? Math.min(g.boxes.length, remaining) : 0; remaining -= g.take; });
-  bxPullCtx = {lwh, need, groups, po, mode: mode||'deduct', onDone: onDone||null, lineIdx: (typeof poLines!=='undefined'?poLines.indexOf(L):-1), sku:{style:st, color:bxColorFor(L), size:String(L.size||'').trim().toUpperCase()}, label:'['+lwh+'] '+st+' '+bxColorFor(L)+' '+String(L.size).toUpperCase(), rsvN:_rsvN, effAvail:_effAvail, useRsv:_lineUseRsv};
+  bxPullCtx = {lwh, need, haveN:_haveN, groups, po, mode: mode||'deduct', onDone: onDone||null, lineIdx: (typeof poLines!=='undefined'?poLines.indexOf(L):-1), sku:{style:st, color:bxColorFor(L), size:String(L.size||'').trim().toUpperCase()}, label:'['+lwh+'] '+st+' '+bxColorFor(L)+' '+String(L.size).toUpperCase(), rsvN:_rsvN, effAvail:_effAvail, useRsv:_lineUseRsv};
   // 부족(가용 < 필요) 시 Assign 창 안에서 바로 배분: 있는 만큼 이 창고 + 나머지는 SC/BO로 split (v449)
   const _short = (mode||'deduct')==='reserve' && _effAvail < need;
   const _other = lwh==='CA' ? 'SC' : 'CA';
@@ -29554,7 +29576,7 @@ function bxOpenPicker(L, lwh, po, onDone, mode, needOverride){
   div.onclick = e=>{ if(e.target===div) bxPullCancel(); };
   div.innerHTML = `<div style="background:#fff;border-radius:12px;max-width:560px;width:100%;max-height:85vh;display:flex;flex-direction:column;overflow:hidden;">
     <div style="background:${bxPullCtx.mode==='topc'?'#7c3aed':'#1d4ed8'};color:#fff;padding:10px 16px;font-weight:800;">${bxPullCtx.mode==='reserve'?'📍 Assign full box locations':(bxPullCtx.mode==='topc'?'📦→🧺 Move boxes to PC Room':'− Deduct full boxes')} · ${esc(bxPullCtx.label)}
-      <div style="font-weight:400;font-size:11px;color:#e9d5ff;">Need ${need} box(es) · ${_rsvN>0?('<b style="color:#fff;">'+_effAvail+' available</b> · 🔒 '+_rsvN+' reserved of '+avail.length):('stock '+avail.length)} box(es) · oldest first from top${bxPullCtx.mode==='reserve'?' (assign only for now; deducted when the PR is printed)':(bxPullCtx.mode==='topc'?' (deducts full boxes + receives to PC Room, immediate)':'')}</div></div>
+      <div style="font-weight:400;font-size:11px;color:#e9d5ff;">Need ${need} box(es)${_haveN>0?` <span style="background:#fff;color:#6d28d9;font-weight:800;border-radius:4px;padding:0 6px;">only what you added — ${_haveN} box(es) already pulled for this order</span>`:''} · ${_rsvN>0?('<b style="color:#fff;">'+_effAvail+' available</b> · 🔒 '+_rsvN+' reserved of '+avail.length):('stock '+avail.length)} box(es) · oldest first from top${bxPullCtx.mode==='reserve'?' (assign only for now; deducted when the PR is printed)':(bxPullCtx.mode==='topc'?' (deducts full boxes + receives to PC Room, immediate)':'')}</div></div>
     <div style="overflow-y:auto;padding:10px 16px;">
       ${_rsvN>0 ? `<div style="margin-bottom:8px;padding:8px 10px;background:#faf5ff;border:1px solid #c4b5fd;border-radius:8px;font-size:11.5px;color:#6d28d9;font-weight:700;line-height:1.5;">🔒 ${_rsvN} box(es) reserved${_rsvCust?' for '+esc(_rsvCust):''} — only <b>${_effAvail}</b> free for this order. Reserved boxes are <b>protected</b> and won't be auto-assigned.<button class="btn btn-sm" style="background:#7c3aed;color:#fff;border-color:#7c3aed;margin-left:8px;font-weight:800;" onclick="bxPullUseReserve()">🔓 Use reserved too</button></div>` : (_lineUseRsv ? `<div style="margin-bottom:8px;padding:7px 10px;background:#f5f3ff;border:1px solid #c4b5fd;border-radius:8px;font-size:11.5px;color:#7c3aed;font-weight:800;">🔓 Dipping into reserved stock for this line — the reserve will need a refill.</div>` : '')}
       <table class="etbl" style="font-size:12px;">
