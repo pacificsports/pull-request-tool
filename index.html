@@ -2435,6 +2435,19 @@ async function loadStyleSafe(){
     if(r.ok){ SAFE_MAP = {}; (await r.json()).forEach(function(row){ SAFE_MAP[String(row.style_number||'').trim()] = row; }); }
   }catch(e){}
 }
+/* PS4XL-1 (2026-09-29) - 어느 스타일을 4XL/5XL 로 만드는지만 알려 주는 목록.
+   금액은 없고 예/아니오만 들어 있다. styles 표는 원가 때문에 이메일 3명만 볼 수 있어서,
+   다른 직원이 가격표를 뽑으면 4XL·5XL 이 통째로 비었다.
+   뷰(style_big_sizes)가 아직 없으면 조용히 빈 채로 두고 예전처럼 행동한다. */
+let BIG_MAP = {};
+async function loadStyleBigSizes(){
+  try{
+    const r = await sbFetch('/rest/v1/style_big_sizes?select=style_number,has_4xl,has_5xl&limit=1000');
+    if(!r.ok) return;
+    BIG_MAP = {};
+    (await r.json()).forEach(function(row){ BIG_MAP[String(row.style_number||'').trim()] = row; });
+  }catch(e){}
+}
 /* 스타일 하나의 이름·카테고리·사이즈범위 — 볼 수 있는 출처에서 가져온다 */
 function psMeta(st){
   const k = String(st||'').trim();
@@ -4396,7 +4409,7 @@ async function doResetPw(){
   finally{ btn.disabled = false; btn.textContent = 'Change Password →'; }
 }
 async function enterApp(){
-  loadStyleCloud(); loadPriceList(); loadStyleSafe();
+  loadStyleCloud(); loadPriceList(); loadStyleSafe(); loadStyleBigSizes();
   loadCustomers();
   try{ invCfgLoad().catch(()=>{}); }catch(e){}   /* INVDOC-v1 - 인보이스 바닥 글자 */
   $('login-page').style.display = 'none';
@@ -41328,6 +41341,20 @@ const STYLE_FABRIC = {
   "8110":"Polyester","8150":"Cationic","8155":"Spacedye","8180":"Mesh"
 };
 function psFabric(style){ const st=String(style||'').trim(); const ov=(typeof getFabricOvr==='function')?getFabricOvr():{}; if(Object.prototype.hasOwnProperty.call(ov,st)) return ov[st]; return STYLE_FABRIC[st] || ''; }
+/* PS4XL-1 - 4XL/5XL 칸을 보일지 판정. 화면 표와 PDF/메일이 같은 것을 쓴다.
+   [stated] 하윤: "왜 peternam에서 price list 다운받은거에는 4XL 5XL 가격이 안나오는데 나는 다 나오는거야??"
+   주의: 원가가 보이는 사람(하윤/연/에리카)에게는 판정이 예전과 한 글자도 다르지 않다.
+   주의: 사이즈 범위(XS-5XL)로 때려잡으면 안 된다 - 마스터에는 거의 모든 어른 스타일이
+        XS-5XL 이라, 우리가 안 만드는 4XL 까지 거래처 가격표에 찍힌다. */
+function psHasBig(x, f){
+  const row = (x && x.row) || {};
+  const c = row['cost_' + f];
+  if(c != null && Number(c) > 0) return true;
+  if(Object.keys(row).length) return false;          /* 원가가 보이는데 값이 없다 = 안 만든다 */
+  let big = {};
+  try{ big = BIG_MAP[String((x && x.st) || '').trim()] || {}; }catch(e){ big = {}; }
+  return big['has_' + f] === true;                   /* 목록이 없으면 예전대로 숨김 */
+}
 function psRows(){
   const q = _psQ.trim().toLowerCase();
   const ps = _imsPS[_psGk] || {rows:{}};
@@ -41392,12 +41419,7 @@ function renderPsSheet(){
     const auto = s2 => b!=null ? '$'+(b+psUp(s2)).toFixed(2) : '—';
     /* 원가가 보이면 예전 판정 그대로. 원가를 못 보는 직원은 사이즈 범위로 판정한다
        (그러지 않으면 4XL·5XL 칸이 통째로 사라진다) — v1129 */
-    const has = f => {
-      const c = x.row['cost_'+f];
-      if(c != null && Number(c) > 0) return true;
-      if(Object.keys(x.row).length) return false;
-      return /5XL/i.test(String(x.sr||''));
-    };
+    const has = f => psHasBig(x, f);
     return `<tr>${common}
       <td style="white-space:nowrap;"><span style="color:#94a3b8;">$</span> ${inp(x.st,'base_price',p.base_price,'—')}</td>
       <td>${inp(x.st,'price_2xl',p.price_2xl,auto('2XL'))}</td>
@@ -41525,7 +41547,7 @@ async function psDocHtml(opts){
   const adultGrpHtml = grp=>{
     const rows = grp.list.map(x=>{ const p=x.p||{}; const b=num(p.base_price);
       const pr=s2=>{ const o=num({'2XL':p.price_2xl,'3XL':p.price_3xl,'4XL':p.price_4xl,'5XL':p.price_5xl}[s2]); if(o!=null) return o; return b!=null?b+psUp(s2):null; };
-      const has=f=>{ const c=x.row['cost_'+f]; return c!=null&&Number(c)>0; };
+      const has=f=>psHasBig(x, f);
       return `<tr style="border-bottom:1px solid #e5e7eb;"><td style="${TD}font-family:monospace;font-weight:700;">${esc(x.st)}</td><td style="${TD}">${esc(psDescFull(x.st,x.cat))}</td><td style="${TD}text-align:right;color:#1a56a0;font-weight:700;">${money(b)}</td><td style="${TD}text-align:right;">${money(pr('2XL'))}</td><td style="${TD}text-align:right;">${money(pr('3XL'))}</td><td style="${TD}text-align:right;">${has('4xl')?money(pr('4XL')):dash}</td><td style="${TD}text-align:right;">${has('5xl')?money(pr('5XL')):dash}</td></tr>`; }).join('');
     return `<div style="page-break-inside:avoid;break-inside:avoid;">`+grpTitle(grp)+`<table width="100%" cellpadding="0" cellspacing="0" style="border-collapse:collapse;font-size:11.5px;table-layout:fixed;"><colgroup><col style="width:9%"><col style="width:39%"><col style="width:10.4%"><col style="width:10.4%"><col style="width:10.4%"><col style="width:10.4%"><col style="width:10.4%"></colgroup><thead><tr style="background:#0f2744;"><th${W('9%')} style="${HTH}text-align:left;">Style #</th><th${W('39%')} style="${HTH}text-align:left;">Description</th><th${W('10.4%')} style="${HTH}text-align:right;">XS–XL</th><th${W('10.4%')} style="${HTH}text-align:right;">2XL</th><th${W('10.4%')} style="${HTH}text-align:right;">3XL</th><th${W('10.4%')} style="${HTH}text-align:right;">4XL</th><th${W('10.4%')} style="${HTH}text-align:right;">5XL</th></tr></thead><tbody>${rows}</tbody></table></div>`; };
   const kidGrpHtml = grp=>{
