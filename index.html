@@ -2178,21 +2178,70 @@ function lineAvailPcs(l, wh){
   }catch(e){}
   return out;
 }
+/* STKEDIT-1 (2026-09-29) - 저장된 오더를 열어 수량을 늘릴 때, 「이 오더가 이미 가져간 것」을 빼고 본다.
+   [stated] 하윤: "우리가 이미 지정한 박스들을 빼고 계산을 하는거 같은데 우리가 qty에 수량을
+   변하시키면 어떻케 보면 차이가 아니라 엑스트라로 더 들어가는거잖아"
+   무엇이 잘못됐었나: 창고가 이미 뽑아 간 박스는 빈에서 빠져(status OUT) 재고 숫자에서 사라지는데,
+   필요 수량은 **바뀐 전체 수량**으로 비교했다. 720 을 이미 뽑아 간 줄을 1,440 으로 늘리면
+   실제로 더 필요한 건 720 인데 화면은 1,440 을 기준으로 빨갛게 떴다 - 두 번 손해.
+   이제 필요 수량 = 새 수량 - 이 오더가 이 창고에서 이미 가져간 장수.
+   ⚠ 안전하게 **꽉 찬 박스로 뽑아 간 것(out_po = 'PO n')만** 센다. PC Room 낱장까지 더하면
+     'PC ROOM (PO n)' 박스와 _pcAuto 낱장이 겹쳐 두 번 세어질 수 있고, 그러면 모자란 줄이
+     초록으로 보인다 - 없는 재고를 있다고 하는 쪽이 제일 나쁘다. 덜 세면 예전처럼 빨갛게 뜰 뿐이다. */
+window._ordHave = null;
+function ordHaveKey(st, co, sz, wh){
+  const base = (typeof bxBaseColor==='function') ? bxBaseColor(co) : String(co||'');
+  return (String(st||'').trim()+'|'+String(base||'').trim()+'|'+String(sz||'').trim()+'|'+String(wh||'').trim()).toUpperCase();
+}
+function ordHaveFor(l, wh){
+  try{
+    const h = window._ordHave;
+    if(!h || !h.base || h.base !== window._forceBase) return 0;
+    const st = (typeof bxStyleFor==='function') ? bxStyleFor(l) : String((l&&l.style)||'');
+    const co = (typeof bxColorFor==='function') ? bxColorFor(l) : String((l&&l.color)||'');
+    return Number(h.map[ordHaveKey(st, co, (l&&l.size), wh)]) || 0;
+  }catch(e){ return 0; }
+}
+async function ordHaveLoad(rec){
+  window._ordHave = null;
+  try{
+    const poN = (typeof cxlPo==='function') ? cxlPo(rec) : String((rec && rec.meta && rec.meta.po) || '');
+    if(!poN || !rec) return;
+    const r = await sbFetch('/rest/v1/pr_boxes?select=style,color,size,pcs,wh&status=eq.OUT&out_po=eq.' + encodeURIComponent('PO ' + poN));
+    if(!r.ok) return;
+    const map = {};
+    (await r.json()).forEach(b=>{
+      const wh = (typeof bxWh==='function') ? bxWh(b) : String(b.wh||'');
+      const k = ordHaveKey(b.style, b.color, b.size, wh);
+      map[k] = (map[k] || 0) + (Number(b.pcs) || 0);
+    });
+    window._ordHave = { base: rec.base, map: map };
+    try{ _lineAvailCache = {}; if(typeof poLines!=='undefined' && poLines.length && typeof refreshRow==='function'){ poLines.forEach((l,i)=>{ try{ refreshRow(i); }catch(e){} }); } }catch(e){}
+  }catch(e){}
+}
 function whStockMini(l, wh){
   if(typeof bxLoaded==='undefined' || !bxLoaded) return '';   // 박스 로딩 전엔 표시 안 함 — "0" 오해 방지 (v495)
   const a = lineAvailPcs(l, wh);
   if(!a.loaded) return '';
-  const need = Number(l.qty)||0;
-  const ok = need>0 && a.total >= need;
-  const none = a.total<=0;
+  const qty  = Number(l.qty)||0;
+  const have = ordHaveFor(l, wh);                 /* STKEDIT-1 - 이 오더가 이미 가져간 장수 */
+  const need = Math.max(0, qty - have);
+  const ok = need<=0 || a.total >= need;
+  const none = a.total<=0 && need>0;
   const col = none ? '#c7cdd6' : (ok ? '#166534' : '#dc2626');
   const bg  = none ? 'transparent' : (ok ? '#f0fdf4' : '#fef2f2');
-  return `<div style="font-size:8px;font-weight:800;color:${col};background:${bg};border-radius:5px;line-height:1.3;margin-top:2px;white-space:nowrap;padding:0 2px;" title="${wh} available: full box ${a.boxPcs} + loose ${Math.max(0,a.loose)} = ${a.total} pcs · this line needs ${need}">${a.total.toLocaleString()}</div>`;
+  const extra = have>0
+    ? `<div style="font-size:8px;font-weight:700;color:#7c3aed;line-height:1.2;white-space:nowrap;">+${need.toLocaleString()} more</div>`
+    : '';
+  const tip = `${wh} available: full box ${a.boxPcs} + loose ${Math.max(0,a.loose)} = ${a.total} pcs`
+    + (have>0 ? ` · this order already took ${have} pcs from ${wh}, so only ${need} more is needed (line qty ${qty})` : ` · this line needs ${need}`);
+  return `<div style="font-size:8px;font-weight:800;color:${col};background:${bg};border-radius:5px;line-height:1.3;margin-top:2px;white-space:nowrap;padding:0 2px;" title="${tip}">${a.total.toLocaleString()}</div>${extra}`;
 }
 function lineIsShort(l){
   const cur = String((l&&l.wh)||'').toUpperCase();
   if(cur!=='SC' && cur!=='CA') return false;
-  const need = Number(l.qty)||0; if(need<=0) return false;
+  const need = Math.max(0, (Number(l.qty)||0) - ordHaveFor(l, cur));   /* STKEDIT-1 */
+  if(need<=0) return false;
   const a = lineAvailPcs(l, cur);
   return a.loaded && a.total < need;
 }
@@ -5037,6 +5086,7 @@ async function loadSaved(base){
     l._was = { qty:Number(l.qty)||0, price:Number(l.price)||0, wh:String(l.wh||''), pbox:String(l.pbox||''), ppb:Number(l.ppb)||0 };
   });
   renderTable(); updateNumPreview(); renderDocs();
+  try{ ordHaveLoad(rec); }catch(e){}            /* STKEDIT-1 - 이 오더가 이미 가져간 것 (비동기, 오면 줄을 다시 칠한다) */
   showToast('🔒 All lines are locked — open only the ones you are changing');
   /* 🧺 되돌리기 살리기 (v828) — 예전엔 여기서 비우고 끝이라 오더를 다시 열면 ↩ 버튼이 사라졌다.
      되돌릴 박스는 DB 에 'PC ROOM (PO xxxx)' 로 표시돼 있으니 다시 찾아 붙인다. */
@@ -5373,10 +5423,14 @@ function rpDelLine(i){
 }
 function rpAltCellsHtml(l, i){
   const dlC = 'rp-dlc-' + i, dlZ = 'rp-dlz-' + i;
+  /* OHGROW-1 (2026-09-29) - 칸을 픽셀로 고정해 놓으면 STYLE/COLOR/SIZE 칸이 표보다 넓어져
+     줄이 표 밖으로 삐져나온다. [stated] 하윤: "저기 add different item하면 저렇케 보기 싫게 밖에 나오게 못하나??"
+     자기 칸 너비에 맞춘다. size="1" 과 min-width:0 이 없으면 브라우저가 입력칸 기본 폭(20자)을
+     지키려고 칸을 도로 넓힌다 - 둘 다 있어야 한다. */
   const inp = (cls, field, val, dl, w) =>
-    '<input class="fi ' + cls + '" list="' + dl + '" value="' + esc(String(val||'')) + '"'
+    '<input class="fi ' + cls + '" size="1" list="' + dl + '" value="' + esc(String(val||'')) + '"'
     + ' onchange="rpAlt(' + i + ',\'' + field + '\',this.value)"'
-    + ' style="width:' + w + 'px;font-weight:800;text-transform:uppercase;padding:3px 5px;">';
+    + ' style="width:100%;min-width:0;max-width:' + w + 'px;box-sizing:border-box;font-size:11.5px;font-weight:800;text-transform:uppercase;padding:3px 5px;">';
   const wasTxt = l.added ? '' :
     '<div style="font-size:9px;font-weight:800;color:#be123c;line-height:1.3;white-space:nowrap;" title="what was defective">'
     + '↩ was ' + esc(String(l.origStyle||'')) + ' ' + esc(String(l.origColor||'')) + ' ' + esc(String(l.origSize||'')) + '</div>';
