@@ -39586,6 +39586,56 @@ function cmToggleAR(name){
   renderCustomers();
   if(cmOpenAR){ const p = $('cust-ar-panel'); if(p) setTimeout(()=>p.scrollIntoView({behavior:'smooth', block:'nearest'}), 60); }
 }
+/* INVPEEK-1 - [stated] 하윤: 거래처 화면에서 인보이스 번호를 누르면 내용이 뜨게.
+   종이로 뽑는 것과 **같은 함수**로 그린다 - 두 군데서 그리면 한쪽만 고쳐져 어긋난다. */
+function custInvLink(r){
+  const no = esc(r.invNo) || '';
+  if(!no || !r.base) return no || '&mdash;';
+  /* 작은따옴표가 들어와도 onclick 이 깨지지 않게 (esc 는 홑따옴표를 안 바꾼다) */
+  const q = v => esc(String(v==null?'':v).replace(/'/g, "\\'"));
+  return '<a href="javascript:void(0)" onclick="custInvPeek(\'' + q(r.base) + '\',\'' + q(r.wh) + '\')"'
+    + ' title="Open this invoice" style="color:#1d4ed8;font-weight:800;text-decoration:underline;text-underline-offset:2px;cursor:pointer;">'
+    + no + '</a>';
+}
+async function custInvPeek(base, wh){
+  let rec = (savedCache||[]).find(x=>x.base===base);
+  if(!rec){ showToast('⚠ Order not found'); return; }
+  const iv = (rec.inv||{})[wh];
+  if(!iv || !iv.savedAt){ showToast('⚠ No saved invoice for ' + wh); return; }
+  /* 목록 캐시는 줄이 비어 있을 수 있다 - 원본을 한 번 읽어 온다 */
+  if(!(Array.isArray(iv.lines) && iv.lines.length)){
+    showToast('⏳ Loading the invoice...');
+    try{ await refreshRec(base); rec = (savedCache||[]).find(x=>x.base===base) || rec; }catch(e){}
+  }
+  const iv2 = (rec.inv||{})[wh] || iv;
+  const d = Object.assign({}, iv2);
+  if(!d.date) d.date = String((rec.pl && rec.pl[wh] && rec.pl[wh].date) || iv2.savedAt || '').slice(0,10);
+  let doc = '';
+  try{ doc = buildStageDoc(rec, wh, 'invoice', d); }
+  catch(e){ showToast('⚠ Could not draw the invoice: ' + (e.message||e)); return; }
+  const ex = document.getElementById('modal-invpeek'); if(ex) ex.remove();
+  const div = document.createElement('div');
+  div.id = 'modal-invpeek';
+  div.style.cssText = 'position:fixed;inset:0;background:rgba(15,23,42,.6);z-index:220;display:flex;align-items:center;justify-content:center;padding:14px;';
+  div.onclick = e => { if(e.target === div) div.remove(); };
+  const bal = invBalance(rec, wh);
+  div.innerHTML = '<div style="background:#fff;border-radius:12px;max-width:900px;width:100%;max-height:94vh;display:flex;flex-direction:column;overflow:hidden;box-shadow:0 24px 70px rgba(0,0,0,.4);">'
+    + '<div style="background:#0f2a4a;color:#fff;padding:11px 16px;display:flex;align-items:center;gap:10px;flex-wrap:wrap;">'
+      + '<span style="font-weight:800;">🧾 Invoice ' + esc(iv2.invNo||'') + '</span>'
+      + '<span style="font-size:11.5px;color:#93c5fd;">' + esc((rec.meta&&rec.meta.cust)||'') + ' · PO ' + esc((rec.meta&&rec.meta.po)||'') + ' · ' + esc(wh) + '</span>'
+      + '<span style="margin-left:auto;font-size:11.5px;font-weight:800;color:' + (bal>0.005 ? '#fca5a5' : '#86efac') + ';">'
+        + (bal>0.005 ? ('Balance ' + payReqMoney(bal)) : 'PAID') + '</span>'
+      + '<button class="btn btn-sm" style="background:rgba(255,255,255,.18);color:#fff;border-color:transparent;font-weight:800;" onclick="document.getElementById(\'modal-invpeek\').remove()">✕</button>'
+    + '</div>'
+    + '<div style="overflow:auto;flex:1;background:#eef1f5;padding:14px;">'
+      + '<div style="background:#fff;margin:0 auto;box-shadow:0 2px 10px rgba(0,0,0,.12);">' + doc + '</div>'
+    + '</div>'
+    + '<div style="padding:9px 14px;border-top:1px solid var(--border);display:flex;gap:8px;justify-content:flex-end;">'
+      + '<button class="btn btn-sm" onclick="document.getElementById(\'modal-invpeek\').remove()">Close</button>'
+      + '<button class="btn btn-sm btn-primary" onclick="openPL(\'' + esc(base) + '\')" title="Open the full order screen">↗ Open the order</button>'
+    + '</div></div>';
+  document.body.appendChild(div);
+}
 function custARRows(cust){
   const key = custGroupName(cust);
   const rows = [];
@@ -39650,7 +39700,7 @@ function custARDetailHtml(cust){
     <table class="etbl" style="font-size:11.5px;">
       <thead><tr><th class="tl">Invoice #</th><th>Date</th><th>Terms</th><th>Due Date</th><th>Age</th><th class="tl">PO</th><th>WH</th><th>Invoice Total</th><th>Paid</th><th>Credit Memo</th><th>Balance</th><th>Status</th><th class="tl">Payment History</th></tr></thead>
       <tbody>${rows.map(r=>`<tr ${r.bal>0.005?(r.past>0?'style="background:#fef2f2;"':'style="background:#fffbeb;"'):''}>
-        <td class="tl" style="font-family:Consolas,monospace;font-weight:700;">${esc(r.invNo)||'—'}</td>
+        <td class="tl" style="font-family:Consolas,monospace;font-weight:700;">${custInvLink(r)}</td>
         <td>${esc(r.dt)}</td>
         <td style="font-size:10.5px;">${esc(r.terms)}</td>
         <td style="font-weight:700;">${esc(r.dueS)}</td>
@@ -40254,7 +40304,7 @@ function cmDetailPane(name){
     /* 최근 인보이스 */
     + '<div style="font-size:11px;font-weight:800;color:#0f2a4a;margin-bottom:5px;">🧾 Recent invoices</div>'
     + (rows.length ? '<table class="etbl" style="font-size:11px;margin-bottom:12px;"><thead><tr><th class="tl">Invoice #</th><th>Date</th><th>Due</th><th class="tl">PO</th><th>WH</th><th>Total</th><th>Balance</th><th></th></tr></thead><tbody>'
-        + rows.slice(0,5).map(r=>'<tr><td class="tl" style="font-family:Consolas,monospace;font-weight:700;">'+(esc(r.invNo)||'—')+'</td>'
+        + rows.slice(0,5).map(r=>'<tr><td class="tl" style="font-family:Consolas,monospace;font-weight:700;">'+custInvLink(r)+'</td>'
           + '<td>'+esc(r.dt)+'</td><td style="'+(r.bal>0.005&&r.past>0?'color:#b91c1c;font-weight:800;':'')+'">'+esc(r.dueS)+'</td>'
           + '<td class="tl">'+esc(r.po)+'</td><td>'+esc(r.wh)+'</td>'
           + '<td style="font-family:Consolas,monospace;">'+cmMoney(r.tot)+'</td>'
