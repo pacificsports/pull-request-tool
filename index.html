@@ -8590,7 +8590,7 @@ function openPLInner(base){
     if(!_tr.length && _uwLabel && (_uwLabel.tracking||[]).length){
       _tr = _uwLabel.tracking.slice();
       _via = 'UPS';
-      _method = ({'03':'Ground','12':'3rd Day','02':'2nd Day','01':'Next Day'})[_uwLabel.service] || _method;
+      _method = ({'03':'Ground','12':'3rd Day','02':'2nd Day','13':'Next Day','01':'Next Day'})[_uwLabel.service] || _method;
     }
     plDrafts[w] = { custEmail:i.custEmail||((rec.meta&&rec.meta.custEmail)||'')||custPlEmailFor(rec.meta&&rec.meta.cust), serial:i.serial||(_isRev ? (nextSerial(_pw) + '-R' + revNumOf(w)) : nextSerial(w)), via:_via, method:_method, freightCo:i.freightCo||'', trackings:(_tr.length?_tr:['']), date:i.date||((rec.meta&&rec.meta.futureShip)||'')||todayStr(), note:i.note||'', lines: baseLines, files: Array.isArray(i.files)?JSON.parse(JSON.stringify(i.files)):[], sendPl: (function(){ try{ if(webPoOf(rec)) return true; }catch(e){} return !!i.sendPl; })() };
     const iv = (rec.inv && rec.inv[w]) || {};
@@ -13047,6 +13047,10 @@ function wkHdr(){
    서비스(Ground/Air)로 막지 않는다: Ground 에서도 다 고를 수 있게 열어 뒀다. */
 const UPS_PACKAGING = [
   { code:'02', name:'📦 Our own box',           dims:true  },
+  /* OWNLTR-1 (2026-09-29) - 우리 봉투. UPS 코드에는 이런 것이 없다.
+     [stated] 하윤: "our own letter도 하나 만들어주고 이거는 dimention 없이 lbs만 넣고"
+     UPS 에게는 늘 02(우리 포장) + 아래 고정 치수로 보낸다. 직원은 무게만 넣는다. */
+  { code:'02L', name:'✉️ Our own letter / envelope', dims:false },
   { code:'01', name:'✉️ UPS Letter',            dims:false },
   { code:'04', name:'📨 UPS Pak',               dims:false },
   { code:'2a', name:'UPS Express Box — Small',  dims:false },
@@ -13062,9 +13066,10 @@ const UPS_PACKAGING = [
    우리가 막는 게 아니라 UPS 가 거부한다. 그래서 고르는 건 안 막고 미리 알려만 준다.
    빈 배열 = 우리 계정/국내 배송에서는 UPS 가 아예 안 받는다. */
 const UPS_PACK_SVC = {
-  '02': ['03','12','02','01'],          // 우리 박스 — 전 서비스 가능
-  '01': ['02','01'], '04': ['02','01'], '03': ['02','01'],
-  '2a': ['02','01'], '2b': ['02','01'], '2c': ['02','01'], '21': ['02','01'],
+  '02': ['03','12','02','13','01'],     // 우리 박스 — 전 서비스 가능
+  '02L': ['03','12','02','13','01'],    // 우리 봉투 — UPS 에게는 02 로 간다
+  '01': ['02','13','01'], '04': ['02','13','01'], '03': ['02','13','01'],
+  '2a': ['02','13','01'], '2b': ['02','13','01'], '2c': ['02','13','01'], '21': ['02','13','01'],
   '25': [], '24': [], '30': []
 };
 function upsPackOkFor(code, svc){
@@ -13075,10 +13080,20 @@ function upsPackNote(code){
   const a = UPS_PACK_SVC[String(code||'02')];
   if(!a) return '';
   if(!a.length) return ' — UPS declines';
-  return a.length < 4 ? ' — Air only' : '';
+  return a.length < 5 ? ' — Air only' : '';
 }
 function upsPackDims(code){ const h = UPS_PACKAGING.find(x=>x.code===String(code||'02')); return h ? h.dims : true; }
 function upsPackName(code){ const h = UPS_PACKAGING.find(x=>x.code===String(code||'02')); return h ? h.name : 'Our own box'; }
+/* OWNLTR-1 - 02L 은 우리끼리 쓰는 이름이다. UPS 워커는 모르는 코드를 만나면
+   02(우리 박스, 치수 필요)로 되돌리기 때문에, 보내기 직전에 여기서 바꿔 준다.
+   주의: UPS 로 나가는 모든 자리(라벨/요금)는 반드시 이 함수를 거쳐야 한다. */
+const OWN_LETTER_DIMS = { l:12.5, w:9.5, h:1 };
+function upsPkgOut(b){
+  const o = { l:Number(b.l)||0, w:Number(b.w)||0, h:Number(b.h)||0,
+              wt:Number(b.wt)||0, pkg:String(b.pkg||'02') };
+  if(o.pkg === '02L'){ o.pkg = '02'; o.l = OWN_LETTER_DIMS.l; o.w = OWN_LETTER_DIMS.w; o.h = OWN_LETTER_DIMS.h; }
+  return o;
+}
 /* ═══════════════════════════════════════════════════════════════════════
    UPSAD-v1 (2026-09-23) — 📦 UPS Label : 오더 없는 단발성 라벨
    [stated] 하윤: "SC·CA 직원이, 오더 없는 박스를 보낼 때"
@@ -13087,7 +13102,7 @@ function upsPackName(code){ const h = UPS_PACKAGING.find(x=>x.code===String(code
    ⚠ 이 화면은 재고를 바꾸지 않는다.
    ═══════════════════════════════════════════════════════════════════════ */
 const UPSAD_TBL = 'pr_ups_adhoc';
-const UPSAD_SVC = [['03','Ground'],['12','3 Day Select'],['02','2nd Day Air'],['01','Next Day Air']];
+const UPSAD_SVC = [['03','Ground'],['12','3 Day Select'],['02','2nd Day Air'],['13','Next Day Air Saver'],['01','Next Day Air']];
 /* UPSAD-v3 (2026-09-23) - 우리가 실제로 쓰는 박스 치수.
    [stated] 하윤: "우리 sample box사이즈는 13x11x2이야"
    UPS 포장 코드에는 이런 것이 없다. UPS 에게는 늘 02(우리 박스) + 치수를 보내고
@@ -13401,8 +13416,7 @@ function upsAdShipTo(){
            zip:String(t.zip||'').trim(), phone:String(t.phone||'').trim(), country:'US' };
 }
 function upsAdPkgs(){
-  return _upsAd.boxes.map(b=>({ l:Number(b.l)||0, w:Number(b.w)||0, h:Number(b.h)||0,
-                                wt:Number(b.wt)||0, pkg:String(b.pkg||'02') }));
+  return _upsAd.boxes.map(upsPkgOut);   /* OWNLTR-1 - 02L 은 여기서 02 + 봉투 치수로 바뀜다 */
 }
 
 async function upsAdCreate(){
@@ -14070,6 +14084,7 @@ const UPS_SERVICES = [
   {code:'03', name:'UPS Ground'},
   {code:'12', name:'UPS 3 Day Select'},
   {code:'02', name:'UPS 2nd Day Air'},
+  {code:'13', name:'UPS Next Day Air Saver'},
   {code:'01', name:'UPS Next Day Air'}
 ];
 let _lblBase='', _lblRec=null, _lblBoxes=[], _lblResult=null;
@@ -14442,7 +14457,7 @@ async function lblEstimate(opts){
   /* 🚚 UPS 는 실무게와 부피무게(가로×세로×높이÷139) 중 **큰 쪽**으로 청구한다.
      우리 상자는 크고 가벼워서 거의 항상 부피무게가 이긴다 (인보이스 16건 전수 확인).
      그래서 치수를 같이 보내야 견적이 실제 청구액과 맞는다. (v1117) */
-  const _dims = boxes.map(b=>({ l:+b.l||0, w:+b.w||0, h:+b.h||0, wt:Math.max(1,Math.round(+b.wt||0)) }));
+  const _dims = boxes.map(b=>{ const n = upsPkgOut(b); return { l:n.l, w:n.w, h:n.h, wt:Math.max(1,Math.round(n.wt)) }; });
   const sig=[sf,window._lblService||'03',wt,shipTo.zip,shipTo.state,
              _dims.map(d=>d.l+'x'+d.w+'x'+d.h+'@'+d.wt).join(',')].join('|');
   if(opts.auto && sig===window._lblEstSig && window._lblEstHtml && !/⏳|❌/.test(window._lblEstHtml)) return;  // 같은 값이면 재호출 안 함
@@ -14539,7 +14554,7 @@ async function lblCreate(){
       method:'POST', headers:wkHdr(),
       body: JSON.stringify({
         origin: window._lblShipFrom||window._lblOrigin, service: window._lblService||'03',
-        shipTo, packages: boxes.map(b=>({l:b.l,w:b.w,h:b.h,wt:b.wt,pkg:b.pkg||'02'})),
+        shipTo, packages: boxes.map(upsPkgOut),
         billing: { mode:bmode, account:bacct, zip:bzip },
         reference: (rec.meta.po||rec.base||'').slice(0,35),
         test: !!window._lblTest
@@ -14602,7 +14617,7 @@ async function lblSaveTracking(){
     const i = savedCache.findIndex(s=>s.base===rec.base); if(i>=0) savedCache[i]=rec;
     // 패킹리스트가 이 창고로 열려있으면 tracking#·Via·Method 바로 채워넣기
     try{ if(typeof plBase!=='undefined' && plBase===rec.base && plDrafts[_lblResult.origin]){
-      const S2M={'03':'Ground','12':'3rd Day','02':'2nd Day','01':'Next Day'};
+      const S2M={'03':'Ground','12':'3rd Day','02':'2nd Day','13':'Next Day','01':'Next Day'};
       const pd=plDrafts[_lblResult.origin]; pd.via='UPS'; if(S2M[_lblResult.service]) pd.method=S2M[_lblResult.service];
       pd.trackings=(_lblResult.tracking&&_lblResult.tracking.length)?_lblResult.tracking.slice():pd.trackings;
       if(typeof renderPL==='function' && plWh===_lblResult.origin) renderPL();
