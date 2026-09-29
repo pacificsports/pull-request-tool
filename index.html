@@ -39250,14 +39250,30 @@ function hiDiscrepancyReport(){
   /* 입고를 끝낸 직후엔 표가 이미 사라졌다 — 그때는 저장해둔 스냅샷으로 만든다 (v925) */
   const cur = window._hircvSnap || ((typeof hiCollectReceive==='function') ? hiCollectReceive() : []);
   const norm = (st,co,sz)=> String(st||'').trim().toUpperCase()+'|'+bxFixColor(String(co||'')).toUpperCase()+'|'+String(sz||'').trim().toUpperCase();
+  /* HIDISC-1 (2026-09-29) - [stated] 하윤: "2210 은 다 맞게 들어왔는데 왜 저렇게 나오지?"
+     ⭐ 원인: 아이티 패킹리스트에 **같은 스타일/색/사이즈가 여러 줄**로 올 때가 있다.
+        (PSH26-013: 2210 BLACK (SIDE SEAM) M 이 6 박스 줄과 33 박스 줄로 두 번 있었다.)
+        예전 코드는 열쇠가 같으면 **덮어썼다** - 그래서 서류 쪽은 한 줄, 실제 쪽은 다른 줄이
+        남아 6 vs 33 처럼 엉뚱하게 비교됐다. 화면의 줄별 대조는 멀쩡했으니 보고서만 틀렸다.
+     ⭐ 이제 같은 열쇠는 **합쳐서** 비교한다. 6+33 = 39 대 39 면 맞는 것이다.
+     ⚠ 덮어쓰기로 되돌리지 말 것 - 같은 SKU 가 두 줄로 오는 것은 정상이다. */
   const expMap={}, curMap={};
-  exp.forEach(e=>{ expMap[norm(e.style,e.color,e.size)]=e; });
-  cur.forEach(c=>{ curMap[norm(c.style,c.color,c.size)]=c; });
+  const bump = (m, o, n) => {
+    const k = norm(o.style, o.color, o.size);
+    if(!m[k]) m[k] = { style:o.style, color:o.color, size:o.size, boxes:0, rows:0 };
+    m[k].boxes += Number(n)||0; m[k].rows++;
+  };
+  exp.forEach(e=>bump(expMap, e, e.boxes));
+  cur.forEach(c=>bump(curMap, c, c.boxes));
   const changed=[], missing=[], extra=[];
-  exp.forEach(e=>{ const c=curMap[norm(e.style,e.color,e.size)]; const got=c?c.boxes:0;
-    if(got===0) missing.push({style:e.style,color:e.color,size:e.size,exp:e.boxes});
-    else if(got!==e.boxes) changed.push({style:e.style,color:e.color,size:e.size,exp:e.boxes,got}); });
-  cur.forEach(c=>{ if(!expMap[norm(c.style,c.color,c.size)] && c.boxes>0) extra.push({style:c.style,color:c.color,size:c.size,got:c.boxes}); });
+  Object.keys(expMap).forEach(k=>{
+    const e = expMap[k]; const got = curMap[k] ? curMap[k].boxes : 0;
+    if(got===0) missing.push({style:e.style,color:e.color,size:e.size,exp:e.boxes,rows:e.rows});
+    else if(got!==e.boxes) changed.push({style:e.style,color:e.color,size:e.size,exp:e.boxes,got,rows:e.rows});
+  });
+  Object.keys(curMap).forEach(k=>{
+    if(!expMap[k] && curMap[k].boxes>0) extra.push({style:curMap[k].style,color:curMap[k].color,size:curMap[k].size,got:curMap[k].boxes});
+  });
   if(!changed.length && !missing.length && !extra.length){ showToast('✅ No discrepancies — everything matches the packing list'); return; }
   const nm=x=>'  - #'+x.style+' '+bxBaseColor(String(x.color))+' '+x.size;
   const L=[];
@@ -39267,7 +39283,8 @@ function hiDiscrepancyReport(){
   L.push('');
   L.push('We received shipment '+ref+' and found the following discrepancies against the packing list:');
   L.push('');
-  if(changed.length){ L.push('QTY MISMATCH (received ≠ shipped):'); changed.forEach(x=>L.push(nm(x)+': shipped '+x.exp+' box, received '+x.got+' box ('+(x.got>x.exp?('over +'+(x.got-x.exp)):('short '+(x.exp-x.got)))+')')); L.push(''); }
+  const multi = x => (x.rows>1 ? (' [' + x.rows + ' lines on the packing list, totalled]') : '');
+  if(changed.length){ L.push('QTY MISMATCH (received ≠ shipped):'); changed.forEach(x=>L.push(nm(x)+': shipped '+x.exp+' box, received '+x.got+' box ('+(x.got>x.exp?('over +'+(x.got-x.exp)):('short '+(x.exp-x.got)))+')'+multi(x))); L.push(''); }
   if(missing.length){ L.push('MISSING (on the list but NOT received):'); missing.forEach(x=>L.push(nm(x)+': '+x.exp+' box expected, 0 received')); L.push(''); }
   if(extra.length){ L.push('EXTRA (received but NOT on the list):'); extra.forEach(x=>L.push(nm(x)+': '+x.got+' box received — not on packing list')); L.push(''); }
   L.push('Everything else matched. Please review and confirm so we can correct future shipments.');
