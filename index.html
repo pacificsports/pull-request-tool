@@ -28123,17 +28123,45 @@ async function bxRefetch(){
   return bxFetchStore();
 }
 async function _bxFetchStore(){
-  // 5만씩 페이징 + 한 묶음(4페이지=20만)을 병렬로 받아서 로딩 시간 최소화
+  /* BXLOAD-1 (2026-09-29) - 박스 목록이 조용히 잘려서 재고가 적게 보이던 것을 고침.
+     [stated] 하윤: "재고가 더 있는데 더 작게 나오고있는데" / "어 수량없네 못파네 이렇케 되잖아"
+     무엇이 잘못됐었나: 한 쪽(page)을 못 받으면 `r.ok?r.json():[]` 가 그것을 **빈 쪽**으로
+     바꿔 놓았고, 빈 쪽 = "목록 끝" 으로 읽어서 **거기서 멈췄다.** 실측(2026-09-29):
+     bxStore 가 정확히 100,000 개에서 멈췄는데 offset 110,000 에는 박스가 **있었다.**
+     즉 만 개 넘는 박스가 화면에서 통째로 사라진 채였고 아무 경고도 없었다.
+     고침 세 가지:
+       1. 못 받은 쪽은 `null` 로 돌려 **빈 쪽과 구분**한다. 못 받았다고 멈추지 않는다
+       2. 쪽을 2만으로 줄이고(무거운 쪽일수록 시간초과가 난다) 두 번까지 다시 받는다
+       3. 끝내 못 받은 쪽이 있으면 **조용히 넘어가지 않는다** - 경고를 띄우고,
+          예전 목록이 더 크면 **덮어쓰지 않는다** (적은 숫자를 보여 주느니 예전 것이 낫다)
+     주의: 정상일 때 결과는 예전과 똑같다. 검사만 늘었다. */
   try{
-    const PAGE = 50000, out = [];
-    let base = 0;
+    const PAGE = 20000, PAR = 5, out = [];
+    let base = 0, failed = 0;
+    const getPage = async (off)=>{
+      const url = '/rest/v1/pr_boxes?select=id,style,color,size,pcs,loc,wh,note,lot,in_at,in_by&status=eq.IN&order=id.asc&limit='+PAGE+'&offset='+off;
+      for(let t=0; t<3; t++){
+        try{ const r = await sbFetch(url); if(r.ok) return await r.json(); }catch(e){}
+        await new Promise(z=>setTimeout(z, 500*(t+1)));
+      }
+      return null;                                  /* 못 받았다 - 빈 쪽이 아니다 */
+    };
     while(true){
-      const rs = await Promise.all([0,1,2,3].map(i=>
-        sbFetch('/rest/v1/pr_boxes?select=id,style,color,size,pcs,loc,wh,note,lot,in_at,in_by&status=eq.IN&order=id.asc&limit='+PAGE+'&offset='+(base+i*PAGE)).then(r=>r.ok?r.json():[])));
+      const idx = []; for(let i=0;i<PAR;i++) idx.push(i);
+      const rs = await Promise.all(idx.map(i=>getPage(base + i*PAGE)));
       let short = false;
-      for(const j of rs){ out.push.apply(out, j); if(j.length < PAGE) short = true; }
+      for(const j of rs){
+        if(j === null){ failed++; short = true; continue; }
+        out.push.apply(out, j);
+        if(j.length < PAGE) short = true;
+      }
       if(short) break;
-      base += 4*PAGE;
+      base += PAR*PAGE;
+    }
+    window._bxPartial = failed > 0;
+    if(failed){
+      try{ showToast('\u26A0 Could not load the whole stock list - the numbers may read LOW. Reload with Ctrl+Shift+R.'); }catch(e){}
+      if(bxLoaded && bxStore.length > out.length) return;   /* 예전 것이 더 크면 안 덮어쓴다 */
     }
     out.forEach(b=>{ b._sk = b.style+'\u0001'+b.color+'\u0001'+b.size+'\u0001'+(b.in_at||''); });
     out.sort((a,b)=> a._sk<b._sk?-1:(a._sk>b._sk?1:0));
