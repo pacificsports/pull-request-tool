@@ -39808,16 +39808,40 @@ function savedCardPill(k, cs){
     + ' title="Stop offering this saved card. The customer enters a card again next time.">'
     + (armed ? 'Click again to remove' : 'Remove') + '</button>';
 }
+/* FORGET-1 - 우리 화면에서만 숨기면 Authorize.Net 지갑에는 카드가 그대로 남는다.
+   워커가 저쪽에서 먼저 지우고, 성공했을 때만 우리 표시를 지운다. */
 async function custForgetCard(k){
   if(_cardForgetArm !== k){ _cardForgetArm = k; renderCustomers(); return; }
   _cardForgetArm = '';
   const cur = custStore[k] || {};
+  const nm = String(cur.name || '').trim() || custNameOfKey(k);
+  showToast('⏳ Removing the saved card...');
+  let j = null;
+  try{
+    await ensureToken();
+    const r = await fetch(PAYREQ_API + '/forget', {
+      method:'POST',
+      headers:{ 'Content-Type':'application/json', Authorization:'Bearer ' + ((SESS&&SESS.token)||'') },
+      body: JSON.stringify({ cust: nm })
+    });
+    j = await r.json().catch(()=>({}));
+    if(!r.ok || !j.ok) throw new Error((j && j.error) || ('HTTP ' + r.status));
+  }catch(e){
+    showToast('⚠ NOT removed - ' + ((e && e.message) || e));
+    renderCustomers();
+    return;
+  }
   delete cur.anetPayProfileId; delete cur.anetCardLast4; delete cur.anetCardSavedAt;
-  let ok = false;
-  try{ ok = await saveCustomer(k, cur); }catch(e){ ok = false; }
-  showToast(ok ? '🔒 Saved card removed - they will enter a card next time'
-               : '⚠ NOT removed - the server refused it. Try again.');
+  showToast('🔒 Saved card removed from Authorize.Net too');
   renderCustomers();
+}
+/* 열쇠로 거래처 이름을 되찾는다 - 워커는 이름으로 찾기 때문에 필요하다. */
+function custNameOfKey(k){
+  try{
+    const r = (savedCache||[]).find(x => x.meta && custKey(x.meta.cust) === k);
+    if(r) return r.meta.cust;
+  }catch(e){}
+  return k;
 }
 function cmFlagsRow(name, cs, isCC, lim){
   const k = esc(custKey(name));
