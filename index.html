@@ -4032,7 +4032,36 @@ function mergeFailedAsEmailAtts(){
     content: String(f.data).includes(',') ? String(f.data).split(',')[1] : String(f.data)
   }));
 }
-async function makePdfBlob(docHtml, attachFiles, footerText){
+/* PDFGUARD-1 (2026-09-29) - 거래처에 빈 PDF 가 나가는 것을 막는다.
+   [stated] 하윤: "왜 SC쪽 packing list가 이런식으로 거래처에 보내진건지 CA쪽에서 나간거는 잘 나갔는데"
+   실제로 나간 것: 1장은 백지, 2장은 머리띠만 페이지 한가운데. v990 때와 같은 증상이다.
+   이번에 다른 점은 인보이스 메일이 PDF 를 연달아 두 개(인보이스 -> 패킹리스트) 만든다는 것.
+   앞 PDF 를 만드느라 브라우저가 밀려 있는데 뒤 PDF 가 아직 안 그려진 화면을 찍었다.
+   막는 방법 세 가지:
+     1. 한 번에 하나만 만든다 (줄 세우기)
+     2. 높이가 두 번 연속 같을 때까지 기다린다 (그리기가 끝났다는 뜻)
+     3. 다 만든 뒤 장수를 센다. 있어야 할 장수보다 많으면 = 앞에 백지가 붙은 것이니
+        버리고 한 번 더 만든다. 두 번 다 실패하면 던진다 - 망가진 것을 보내느니 안 보낸다.
+   주의: 정상일 때 나오는 PDF 는 예전과 똑같다. 검사만 늘었다. */
+let _pdfChain = Promise.resolve();
+function makePdfBlob(docHtml, attachFiles, footerText){
+  const run = async function(){
+    let last = null;
+    for(let i = 0; i < 2; i++){
+      try{ return await _makePdfBlobOnce(docHtml, attachFiles, footerText); }
+      catch(e){
+        last = e;
+        if(!/PDFRETRY/.test(String((e && e.message) || e))) throw e;
+        await new Promise(r=>setTimeout(r, 800));
+      }
+    }
+    throw new Error('PDF came out blank twice. Refresh (Ctrl+Shift+R) and try again.' + (last ? '' : ''));
+  };
+  const p = _pdfChain.then(run, run);
+  _pdfChain = p.then(function(){}, function(){});
+  return p;
+}
+async function _makePdfBlobOnce(docHtml, attachFiles, footerText){
   await loadPdfLib();
   /* 📄 종이를 그릴 자리 (v990에서 고침).
      [무엇이 잘못됐었나] TTY 21장을 한 번에 만들어 보냈더니 몇 장이 **머리(PACKING LIST 띠)가
@@ -4063,6 +4092,29 @@ async function makePdfBlob(docHtml, attachFiles, footerText){
   /* 자리가 실제로 잡혔는지 확인하고, 아직이면 조금 더 기다린다 (최대 ~1.2초).
      높이가 0 인 채로 찍으면 빈 종이나 어긋난 종이가 나간다. */
   for(let _t=0; _t<12 && holder.offsetHeight < 50; _t++){ await new Promise(r=>setTimeout(r, 90)); }
+  /* PDFGUARD-1 - 높이가 두 번 연속 같아질 때까지 기다린다 (최대 ~2초). */
+  let _hPrev = -1;
+  for(let _t=0; _t<20; _t++){
+    const _h = holder.offsetHeight;
+    if(_h >= 50 && _h === _hPrev) break;
+    _hPrev = _h;
+    await new Promise(r=>setTimeout(r, 100));
+  }
+  /* PDFGUARD-1 - 문서가 자리 맨 위에 붙어 있어야 한다. 아래로 밀려 있으면 앞장이 백지로 나간다. */
+  try{
+    const _first = holder.querySelector('.docpage, .inv-doc');
+    if(_first){
+      const _gap = _first.getBoundingClientRect().top - holder.getBoundingClientRect().top;
+      if(_gap > 60){ throw new Error('PDFRETRY layout not settled'); }
+    }
+  }catch(e){ if(/PDFRETRY/.test(String(e.message||e))){ if(wrap.parentNode) document.body.removeChild(wrap); window.scrollTo(_sx, _sy); throw e; } }
+  /* PDFGUARD-1 - 있어야 할 장수 */
+  const _wantPages = (function(){
+    const n = holder.querySelectorAll('.docpage').length;
+    if(n > 0) return n;
+    return Math.max(1, Math.ceil(holder.offsetHeight / 946));
+  })();
+  let _gotPages = 0;
   let blob;
   try{
     let _worker = html2pdf().set({
@@ -4072,19 +4124,23 @@ async function makePdfBlob(docHtml, attachFiles, footerText){
       jsPDF: { unit:'mm', format:'letter', orientation:'portrait' },
       pagebreak: { mode: ['css','legacy'], after: '.docpage-brk' }   /* DOCPAGE-v1 */
     }).from(holder).toPdf();
-    if(footerText){   // 📄 페이지 하단에 직접 찍는 footer — 흐름 콘텐츠가 아니라 새 페이지 안 만듦 (v750)
-      _worker = _worker.get('pdf').then(function(pdf){ try{
-        var ps=pdf.internal.pageSize, pw=(ps.getWidth?ps.getWidth():ps.width), ph=(ps.getHeight?ps.getHeight():ps.height), n=pdf.internal.getNumberOfPages();
+    _worker = _worker.get('pdf').then(function(pdf){ try{
+      var n = pdf.internal.getNumberOfPages();
+      _gotPages = n;
+      if(footerText){   // 📄 페이지 하단에 직접 찍는 footer — 흐름 콘텐츠가 아니라 새 페이지 안 만듦 (v750)
+        var ps=pdf.internal.pageSize, pw=(ps.getWidth?ps.getWidth():ps.width), ph=(ps.getHeight?ps.getHeight():ps.height);
         pdf.setFontSize(8); pdf.setTextColor(150,150,150);
         for(var i=1;i<=n;i++){ pdf.setPage(i); pdf.text(String(footerText), pw/2, ph-6, {align:'center'}); }
-      }catch(e){} });
-    }
+      }
+    }catch(e){} });
     blob = await _worker.outputPdf('blob');
   }finally{
     if(wrap.parentNode) document.body.removeChild(wrap);
     window.scrollTo(_sx, _sy);
   }
-  if(blob.size < 30000) throw new Error('PDF generation looks wrong (' + Math.round(blob.size/1024) + 'KB). Refresh (Ctrl+Shift+R) and try again.');
+  if(blob.size < 30000) throw new Error('PDFRETRY too small (' + Math.round(blob.size/1024) + 'KB)');
+  /* PDFGUARD-1 - 장수가 있어야 할 것보다 많으면 앞에 백지가 붙은 것이다. 버리고 다시 만든다. */
+  if(_gotPages && _gotPages > _wantPages) throw new Error('PDFRETRY ' + _gotPages + ' pages, expected ' + _wantPages);
   if(attachFiles && attachFiles.length){
     try{ blob = await mergePdfWithFiles(blob, attachFiles); }
     catch(e){ console.warn('Attachment merge failed:', e); mergePdfWithFiles.lastFailed = (attachFiles||[]).slice(); }
