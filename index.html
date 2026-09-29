@@ -9471,6 +9471,7 @@ function payReqOrder(base){
       <span style="margin-left:auto;font-size:11.5px;font-weight:400;color:#93c5fd;">${esc(cust)} \u00B7 PO ${esc((rec.meta&&rec.meta.po)||'')}</span>
     </div>
     <div style="padding:16px 18px;">
+      ${payReqCardStrip(cust)}
       <table class="etbl" style="width:100%;font-size:12.5px;">
         <thead><tr><th class="tl" style="width:56px;">FROM</th><th class="tl">WHAT</th><th style="width:118px;text-align:right;">AMOUNT</th></tr></thead>
         <tbody>${rows.map(r => `<tr>
@@ -9583,6 +9584,7 @@ function payReqOpen(base, wh){
         Invoice <b style="color:#0f2a4a;">${esc(iv.invNo||'')}</b> \u00B7 PO ${esc((rec.meta&&rec.meta.po)||'')}
         \u00B7 Balance <b style="color:#b91c1c;">${payReqMoney(bal)}</b>
       </div>
+      ${payReqCardStrip(cust)}
       <div style="display:flex;gap:10px;flex-wrap:wrap;">
         <div style="flex:0 0 140px;">
           <label style="font-size:10.5px;font-weight:800;color:#64748b;letter-spacing:.05em;">AMOUNT</label>
@@ -39770,7 +39772,52 @@ function cmTypeChips(name, cs, isCC){
     /* INVDOC-v1 - 인보이스에 팩터 remit-to 문구를 넣을 거래처인가.
        [stated] 하윤: "거래처 마다 체크 할수도 있게하고 기존으로 website 체크로 자동으로 구분되게"
        ⚠ 체크를 한 번도 안 건드린 거래처는 🌐 Website 의 반대로 읽는다 (csFactored). */
-    + ' ' + chip(csFactored(cs), '#7c2d12', '🏦 Factored', "cmSet('"+k+"','factored',this.checked)", 'Factored — the invoice prints the factor remit-to block (HANA). Untick for customers who pay us directly, such as website customers.');
+    + ' ' + chip(csFactored(cs), '#7c2d12', '🏦 Factored', "cmSet('"+k+"','factored',this.checked)", 'Factored — the invoice prints the factor remit-to block (HANA). Untick for customers who pay us directly, such as website customers.')
+    /* SAVECARD-1 - 거래처가 결제 링크에서 카드를 저장해 두면 여기에 뜬다.
+       카드번호는 Authorize.Net 이 갖고 있고 우리는 지갑 번호와 뒷 4자리만 안다. */
+    + savedCardPill(k, cs);
+}
+/* SAVECARD-1 - 결제 요청 창에 「이 거래처는 카드가 저장돼 있다」를 알려 준다.
+   직원이 링크를 보낼 때 거래처가 한 번에 낼 수 있다는 것을 알 수 있게. */
+function payReqCardStrip(cust){
+  let cs = null;
+  try{ if(typeof custKey === 'function' && custStore) cs = custStore[custKey(cust)]; }catch(e){}
+  if(!cs || !cs.anetProfileId) return '';
+  const last4 = String(cs.anetCardLast4||'').replace(/[^0-9]/g,'').slice(-4);
+  return '<div style="margin:0 0 12px;padding:8px 11px;background:#f0fdf4;border:1px solid #86efac;border-radius:8px;'
+    + 'font-size:11.5px;font-weight:700;color:#166534;">🔒 Card on file'
+    + (last4 ? (' ···' + esc(last4)) : '')
+    + ' <span style="font-weight:400;">- they will see it already filled in and can pay in one click.</span></div>';
+}
+/* SAVECARD-1 - 저장된 카드 알약. 두 번 눌러야 지워진다 (팝업 안 띄운다). */
+let _cardForgetArm = '';
+function savedCardPill(k, cs){
+  if(!cs || !cs.anetProfileId) return '';
+  const last4 = String(cs.anetCardLast4||'').replace(/[^0-9]/g,'').slice(-4);
+  const since = String(cs.anetCardSavedAt||'').slice(0,10);
+  const armed = (_cardForgetArm === k);
+  return ' <span title="This customer saved a card on the payment link'
+    + (since ? (' on ' + esc(since)) : '')
+    + '. Authorize.Net holds the card number, we only hold a reference. Next time they get a link the saved card is already there and they just press Pay."'
+    + ' style="display:inline-flex;align-items:center;gap:5px;font-size:11px;font-weight:800;'
+    + 'border:1px solid #065f46;background:#f0fdf4;color:#065f46;border-radius:7px;padding:3px 9px;vertical-align:middle;">'
+    + '🔒 Card saved' + (last4 ? (' ···' + esc(last4)) : '') + '</span>'
+    + ' <button class="btn btn-sm" style="font-size:10.5px;padding:2px 8px;color:' + (armed?'#fff':'#b91c1c')
+    + ';background:' + (armed?'#b91c1c':'#fff') + ';border-color:#fca5a5;font-weight:700;vertical-align:middle;"'
+    + ' onclick="custForgetCard(\'' + k + '\')"'
+    + ' title="Stop offering this saved card. The customer enters a card again next time.">'
+    + (armed ? 'Click again to remove' : 'Remove') + '</button>';
+}
+async function custForgetCard(k){
+  if(_cardForgetArm !== k){ _cardForgetArm = k; renderCustomers(); return; }
+  _cardForgetArm = '';
+  const cur = custStore[k] || {};
+  delete cur.anetProfileId; delete cur.anetCardLast4; delete cur.anetCardSavedAt;
+  let ok = false;
+  try{ ok = await saveCustomer(k, cur); }catch(e){ ok = false; }
+  showToast(ok ? '🔒 Saved card removed - they will enter a card next time'
+               : '⚠ NOT removed - the server refused it. Try again.');
+  renderCustomers();
 }
 function cmFlagsRow(name, cs, isCC, lim){
   const k = esc(custKey(name));
