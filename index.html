@@ -874,6 +874,16 @@ const szIdx = s => {
   return i === -1 ? 97 : i;
 };
 
+/* SZSORT-1 (2026-09-29) - 사람이 읽는 목록은 늘 스타일 > 색 > 사이즈(S M L XL) 순으로.
+   [stated] 하윤: "저기 순서가 S부터 XL이렇케 나와야지"
+   ⚠ DB 가 돌려주는 순서는 뜻이 없다(박스 id 순). 화면·종이에 낼 때는 반드시 여기를 거칠 것. */
+function itemSortCmp(a, b){
+  const g = (o,k1,k2) => String((o && (o[k1] != null ? o[k1] : o[k2])) || '');
+  return String(g(a,'wh','wh')).localeCompare(String(g(b,'wh','wh')))
+      || g(a,'style','st').localeCompare(g(b,'style','st'), undefined, {numeric:true})
+      || g(a,'color','co').localeCompare(g(b,'color','co'))
+      || (szIdx(g(a,'size','sz')) - szIdx(g(b,'size','sz')));
+}
 function titleCaseColor(s){
   return String(s||'').toLowerCase().replace(/(^|[\s\/\-])([a-z])/g, (m, sep, ch)=> sep + ch.toUpperCase());
 }
@@ -3826,7 +3836,7 @@ function buildRevDocHtml(rec, wh, n){
   const m = rec.meta || {};
   const when = new Date(rv.at||Date.now()).toLocaleString('en-US',{month:'numeric',day:'numeric',year:'numeric',hour:'numeric',minute:'2-digit'});
   const cell = (v)=>`<td style="text-align:center;font-weight:900;font-family:Consolas,monospace;">${v}</td>`;
-  const looseRows = w.loose.map(r=>{
+  const looseRows = w.loose.slice().sort(itemSortCmp).map(r=>{
     const bins = (r.dL > 0 && r.line) ? prLooseBinsHtml(r.line) : '';
     return `<tr>
       <td style="font-weight:700;">${esc(r.style)}</td><td class="tl">${esc(r.color)}</td><td>${esc(r.size)}</td>
@@ -3836,7 +3846,7 @@ function buildRevDocHtml(rec, wh, n){
       <td style="font-size:10px;color:#94a3b8;white-space:nowrap;">${r.qtyFrom.toLocaleString()} → ${r.qtyTo.toLocaleString()}</td>
     </tr>`;
   }).join('');
-  const fullRows = w.full.map(r=>{
+  const fullRows = w.full.slice().sort(itemSortCmp).map(r=>{
     const locs = (r.dF>0 && r.line && r.line.pickLocs && r.line.pickLocs.length)
       ? [...new Set(r.line.pickLocs.map(g=>String(g.loc)))].join(', ') : '';
     return `<tr>
@@ -4889,8 +4899,12 @@ async function _saveCurrentInner(){
          잠긴 줄은 안 건드린다는 걸 알려주는 유일한 자리다 (v974). */
     let _pulledHtml = null;
     if(_nF || _nM || _nL){
-      const _what = [...new Set(_pF.concat(_pM).map(b=>String(b.style)+' '+String(b.color).toUpperCase()+' '+String(b.size).toUpperCase())
-        .concat(_pL.map(x=>String(x.style)+' '+String(x.color).toUpperCase()+' '+String(x.size).toUpperCase())))];
+      /* SZSORT-1 - S > M > L > XL 순으로 (DB 순서 그대로 내보내면 L M S XL 처럼 나온다) */
+      const _wRows = _pF.concat(_pM).map(b=>({ style:String(b.style), color:String(b.color).toUpperCase(), size:String(b.size).toUpperCase() }))
+        .concat(_pL.map(x=>({ style:String(x.style), color:String(x.color).toUpperCase(), size:String(x.size).toUpperCase() })));
+      _wRows.sort(itemSortCmp);
+      const _wSeen = new Set(), _what = [];
+      _wRows.forEach(r=>{ const k = r.style + ' ' + r.color + ' ' + r.size; if(!_wSeen.has(k)){ _wSeen.add(k); _what.push(k); } });
       _pulledHtml = '<b>\u26a0 The warehouse has already pulled the lines you changed.</b><br>'
         + (_nF ? ('&nbsp;&nbsp;\u2022 ' + _nF + ' full box' + (_nF===1?'':'es') + ' are already out of their bins<br>') : '')
         + (_nM ? ('&nbsp;&nbsp;\u2022 ' + _nM + ' were carried to the PC Room<br>') : '')
@@ -8212,7 +8226,7 @@ function openSavePlan(info){
     const nm = x => (Number(x)||0).toLocaleString();
     const whTag = w => `<span style="background:${w==='CA'?'#9a3412':'#1d4ed8'};color:#fff;border-radius:4px;padding:0 5px;font-size:10px;font-weight:800;">${esc2(w)}</span>`;
 
-    const fullRows = (p&&p.full||[]).map(f=>`<tr style="border-bottom:1px solid #f1f5f9;">
+    const fullRows = (p&&p.full||[]).slice().sort(itemSortCmp).map(f=>`<tr style="border-bottom:1px solid #f1f5f9;">
       <td style="padding:5px 8px;">${whTag(f.wh)}</td>
       <td style="padding:5px 8px;font-weight:700;">${esc2(f.style)}</td>
       <td style="padding:5px 8px;">${esc2(f.color)}</td>
@@ -8222,7 +8236,7 @@ function openSavePlan(info){
       <td style="padding:5px 8px;font-size:11.5px;color:#475569;">${f.dir<0?'pull from':'put back to'} ${esc2(f.bins||'?')}</td>
     </tr>`).join('');
 
-    const pcRows = (p&&p.pc||[]).map(x=>`<tr style="border-bottom:1px solid #f1f5f9;">
+    const pcRows = (p&&p.pc||[]).slice().sort(itemSortCmp).map(x=>`<tr style="border-bottom:1px solid #f1f5f9;">
       <td style="padding:5px 8px;">${whTag(x.wh)}</td>
       <td style="padding:5px 8px;font-weight:700;">${esc2(x.style)}</td>
       <td style="padding:5px 8px;">${esc2(x.color)}${x.isB?' <span style="color:#b45309;font-weight:800;">B</span>':''}</td>
