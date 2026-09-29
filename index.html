@@ -15071,6 +15071,48 @@ async function sendInvoiceEmail(){
     const blob = await makePdfBlob(buildStageDoc(rec, plWh, 'invoice', invDocData()), []);
     const b64 = await blobToB64(blob);
     const meta = rec.meta || {};
+    /* INVATT-1 - [stated] 하윤: 인보이스 메일에 Packing List, signed BOL, PO 도 같이 나가야 한다.
+       없는 것은 조용히 건너뛰고, 무엇이 붙었는지 메일에 한 줄로 적는다.
+       signed BOL 은 창고가 찍은 스캔이고 Packing List PDF 뒤에 합쳐진다. */
+    const atts = [{ filename: invNo + '-INVOICE.pdf', content: b64 }];
+    const attNames = ['Invoice ' + invNo];
+    let attSkipped = [];
+    showToast('📎 Gathering the documents...');
+    /* 목록 캐시에는 첨부 파일 알맹이가 비어 있다 - 원본 줄을 다시 읽어야 한다 */
+    let rec2 = rec;
+    try{ await refreshRec(plBase); rec2 = savedCache.find(x=>x.base===plBase) || rec; }catch(e){}
+    try{
+      const pInfo = plInfo(rec2, plWh);
+      if(pInfo && pInfo.savedAt){
+        const xf = (pInfo.files||[]).concat(pInfo.scans||[]);
+        const plBlob = await makePdfBlob(buildStageDoc(rec2, plWh, 'packing', pInfo), xf);
+        atts.push({ filename: plNum(plBase, plWh) + '-PL.pdf', content: await blobToB64(plBlob) });
+        attNames.push('Packing list' + (xf.length ? ' (signed BOL included)' : ''));
+        mergeFailedAsEmailAtts().forEach(a=>{ atts.push(a); attNames.push(a.filename); });
+      } else {
+        attSkipped.push('packing list (not saved yet)');
+      }
+    }catch(e){ attSkipped.push('packing list'); }
+    try{
+      const pr = await sbFetch('/rest/v1/pr_orders?select=po_pdf&base=eq.' + encodeURIComponent(plBase));
+      const pj = pr.ok ? await pr.json() : [];
+      const raw = pj && pj[0] && pj[0].po_pdf;
+      if(raw){
+        atts.push({ filename: 'PO-' + String(meta.po || plBase).replace(/[^A-Za-z0-9_-]/g,'') + '.pdf',
+                    content: String(raw).includes(',') ? String(raw).split(',')[1] : String(raw) });
+        attNames.push('Your PO');
+      } else {
+        attSkipped.push('PO copy (none on file)');
+      }
+    }catch(e){ attSkipped.push('PO copy'); }
+    /* 메일 한 통이 너무 커지면 받는 쪽 서버가 통째로 튕긴다. 인보이스는 절대 버리지 않는다. */
+    const MAXB64 = 24000000;
+    let used = 0; const keep = [], kept = [];
+    atts.forEach((a, i)=>{
+      const n = String(a.content||'').length;
+      if(i === 0 || used + n <= MAXB64){ keep.push(a); kept.push(attNames[i]); used += n; }
+      else attSkipped.push(attNames[i] + ' (too large to email)');
+    });
     const row = (k,v) => `<tr><td style="padding:4px 14px 4px 0;color:#666;">${k}</td><td style="font-weight:700;">${v}</td></tr>`;
     /* 집 스타일로 다시 그렸다 (v1126) — 첨부 PDF 서류는 그대로 */
     const _amtStr = '$' + tot.toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2});
@@ -15084,17 +15126,20 @@ async function sendInvoiceEmail(){
         + psmRow('Invoice date', new Date().toLocaleDateString('en-US'))
         + (_termStr ? psmRow('Terms', esc(_termStr)) : '')
         + psmRow('Amount due', '<span style="font-size:16px;">' + _amtStr + '</span>'))
+      + psmP('Attached: ' + esc(kept.join(' · ')) + '.')
       + psmP('Questions about this invoice? Just reply to this email.'));
     const r = await fetch('https://po-confirm-email.hjbae.workers.dev/send-pl', {
       method:'POST', headers:{'Content-Type':'application/json'},
       body: JSON.stringify({ to: toList, subject: 'Invoice ' + invNo + ' — PO ' + (meta.po||'') + ' (Pacific Sports)', html: bodyHtml, cc: STAFF_EMAILS, reply_to: MAIL_REPLY_TO,
-        attachments: [{ filename: invNo + '-INVOICE.pdf', content: b64 }] })
+        attachments: keep })
     });
     const j = await r.json().catch(()=>({}));
     if(!r.ok || j.ok === false) throw new Error(j.error || ('HTTP ' + r.status));
     if(plDrafts[plWh] && em){ plDrafts[plWh].custEmail = em; }
     logHist(plBase, 'Invoice emailed (' + invNo + ') → ' + toList.join(', '));
-    showToast('✅ Invoice sent → ' + toList.join(', '));
+    showToast('✅ Invoice sent (' + keep.length + ' file' + (keep.length>1?'s':'') + ') → ' + toList.join(', '));
+    if(attSkipped.length) showToast('⚠ Not attached: ' + attSkipped.join(', '));
+    logHist(plBase, 'Invoice attachments: ' + kept.join(', ') + (attSkipped.length ? (' | missing: ' + attSkipped.join(', ')) : ''));
     await webOrderPushBack(rec, plWh, d, invNo, tot);
     renderPL(); renderSaved();
   }catch(e){ showToast('❌ Send failed: ' + (e.message||e)); }
