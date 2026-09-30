@@ -43205,13 +43205,24 @@ function invNpList(){
       if(w === 'BO' || w === 'NA' || w === 'PD') return;
       const pl = s.pl && s.pl[w];
       if((!pl || !pl.savedAt) && !_locker) return;
-      if(s.inv && s.inv[w] && s.inv[w].printed) return;
       const iv = (s.inv && s.inv[w]) || {};
+      /* ═══ INVDO-1 - 인보이스 한 장에는 할 일이 **둘**이다 ═══
+         [stated] 하윤: "sent email to customer 버튼 추가해서 ... 누르면 그게 resend버튼으로
+         바뀌게 ... 또 다른 버튼하나는 print 버튼이있고 print하면 샛깔이 변하면서 reprint로"
+         줄은 **둘 다 끝나야** 사라진다. 그래서 「메일 깜박했다」 가 안 생긴다.
+         ⚠ 메일 쪽은 **우리가 뽑은 것**(`printedAt`)만 따진다 - 예전 MAS 200 인보이스
+           540장이 쏟아지지 않게. 날짜 기준이 필요 없어진 자리가 바로 여기다. */
+      const _sent = invSentAt(s, w);
+      const _needPrint = !iv.printed;
+      const _needMail = !!iv.printedAt && !_sent;
+      if(!_needPrint && !_needMail) return;
       const amt = invNpAmt(s, w);
       if(!pl && _locker && !(amt > 0)) return;            // 줄도 금액도 없으면 청구할 게 없다
       out.push({ base:s.base, wh:w, po:(s.meta&&s.meta.po)||'', cust:(s.meta&&s.meta.cust)||'',
                  at:(pl && pl.savedAt) || s.savedAt, amt, invNo:iv.invNo||'',
                  locker:_locker,
+                 printed:!!iv.printed, printedAt:iv.printedAt||'', sentAt:_sent,
+                 email: String((s.meta&&s.meta.custEmail) || (typeof custEmailFor==='function' ? (custEmailFor(s.meta&&s.meta.cust)||'') : '') || ''),
                  hold:(typeof holdBlocked==='function' && holdBlocked(s)) });
     });
   });
@@ -43254,78 +43265,167 @@ function invSentAt(rec, wh){
   }
   return '';
 }
-function invNsList(){
-  const out = [];
-  (typeof savedCache!=='undefined' ? savedCache : []).forEach(s=>{
-    (s.whs||[]).forEach(w=>{
-      if(w === 'BO' || w === 'NA' || w === 'PD') return;
-      const iv = (s.inv && s.inv[w]) || {};
-      if(!iv.printed) return;              /* 아직 발행 전 - 옆 타일(Not Printed) 몫이다 */
-      if(invSentAt(s, w)) return;          /* 이미 나갔다 */
-      const _at = iv.savedAt || (s.pl && s.pl[w] && s.pl[w].savedAt) || s.savedAt;
-      /* INVSENT-2 - 날짜를 모르는 것도 뺀다. 모르는 것을 「안 보냈다」 고 몰아세우지 않는다. */
-      if(!_at || String(_at).slice(0,10) < invSentFrom()) return;
-      out.push({ base:s.base, wh:w, po:(s.meta&&s.meta.po)||'', cust:(s.meta&&s.meta.cust)||'',
-                 invNo: iv.invNo||'', amt: invNpAmt(s, w),
-                 at: _at,
-                 email: (typeof custEmailFor==='function' ? (custEmailFor(s.meta&&s.meta.cust)||'') : ''),
-                 hold: (typeof holdBlocked==='function' && holdBlocked(s)) });
-    });
-  });
-  out.sort((a,b)=> String(a.at)<String(b.at) ? -1 : (String(a.at)>String(b.at) ? 1 : 0));
-  return out;
+/* INVDO-1 - 「Not Sent」 목록·타일은 없앴다. 인쇄와 발송을 **한 줄에서** 끝내는 쪽이
+   헷갈릴 자리가 없다 (하윤 결정, 2026-09-30). `invSentAt`·`invSentFrom` 은 그대로 쓰인다. */
+/* ═══ INVDO-1 - 화면(PL 탭)을 거치지 않고 한 장 보내기 ═══
+   `sendInvoiceEmail()` 은 PL 화면의 입력칸·전역(plBase·plWh)에 묶여 있어서 목록에서 못 부른다.
+   여기서는 오더와 창고만 받아서 같은 메일을 보낸다 - 서류·첨부·본문 모양은 전부 같다.
+   ⚠ 메일이 나간 뒤에는 무슨 일이 있어도 발송을 되돌리지 않는다. 표시 저장이 실패해도 그렇다. */
+async function invSendFor(base, wh, toList){
+  const rec = savedCache.find(s=>s.base===base); if(!rec) throw new Error('order not found');
+  const meta = rec.meta || {};
+  rec.inv = rec.inv || {};
+  const iv = rec.inv[wh] || {};
+  const pld = (rec.pl && rec.pl[wh]) || {};
+  const invNo = iv.invNo || await nextInvNo();
+  let lines = (Array.isArray(iv.lines) && iv.lines.length) ? iv.lines
+            : ((Array.isArray(pld.lines) && pld.lines.length) ? JSON.parse(JSON.stringify(pld.lines)) : []);
+  if(!lines.length && meta.lockerStock)
+    lines = (rec.lines||[]).filter(l=>l && String(l.wh||'').trim().toUpperCase()===wh && (Number(l.qty)||0)>0)
+      .map(l=>({ style:l.style||'', desc:l.desc||'', color:l.color||'', size:l.size||'', qty:l.qty||0,
+                 price:l.price||0, ppb:l.ppb||72, pbox:l.pbox||'', wh:l.wh||'' }));
+  const d = { ...pld, lines, date: pld.date || meta.date || todayStr(), freight:Number(iv.freight)||0,
+              invNo, termType: iv.termType||'', termDays: iv.termDays||0 };
+  const tot = lines.reduce((a,l)=>a+(Number(l.qty)||0)*(Number(l.price)||0), 0) + (Number(d.freight)||0);
+  const blob = await makePdfBlob(buildStageDoc(rec, wh, 'invoice', d), []);
+  const atts = [{ filename: invNo + '-INVOICE.pdf', content: await blobToB64(blob) }];
+  const kept = ['Invoice ' + invNo];
+  /* 첨부(Packing List + signed BOL, PO) - 화면에서 보낼 때와 같다. 없으면 조용히 건너뛴다. */
+  let rec2 = rec;
+  try{ await refreshRec(base); rec2 = savedCache.find(x=>x.base===base) || rec; }catch(e){}
+  try{
+    const pInfo = plInfo(rec2, wh);
+    if(pInfo && pInfo.savedAt){
+      const xf = (pInfo.files||[]).concat(pInfo.scans||[]);
+      const plBlob = await makePdfBlob(buildStageDoc(rec2, wh, 'packing', pInfo), xf);
+      atts.push({ filename: plNum(base, wh) + '-PL.pdf', content: await blobToB64(plBlob) });
+      kept.push('Packing list' + (xf.length ? ' (signed BOL included)' : ''));
+    }
+  }catch(e){}
+  try{
+    const pr = await sbFetch('/rest/v1/pr_orders?select=po_pdf&base=eq.' + encodeURIComponent(base));
+    const pj = pr.ok ? await pr.json() : [];
+    const raw = pj && pj[0] && pj[0].po_pdf;
+    if(raw){
+      atts.push({ filename:'PO-' + String(meta.po || base).replace(/[^A-Za-z0-9_-]/g,'') + '.pdf',
+                  content: String(raw).includes(',') ? String(raw).split(',')[1] : String(raw) });
+      kept.push('Your PO');
+    }
+  }catch(e){}
+  const MAXB64 = 24000000; let used = 0; const keep = [], keptN = [];
+  atts.forEach((a,i)=>{ const n=String(a.content||'').length;
+    if(i===0 || used+n<=MAXB64){ keep.push(a); keptN.push(kept[i]); used+=n; } });
+  const _invDate = d.date ? new Date(d.date + 'T00:00:00') : new Date();
+  let _ti = termInfo(d);
+  if(!_ti){ try{ _ti = termInfo(custStore[custKey(meta.cust||'')] || {}); }catch(e){ _ti = null; } }
+  let _dueStr = '';
+  if(_ti){ const _dd = new Date(_invDate); _dd.setDate(_dd.getDate() + (Number(_ti.days)||0));
+    _dueStr = (Number(_ti.days)||0) === 0 ? 'Due on receipt' : _dd.toLocaleDateString('en-US'); }
+  const _amtStr = '$' + tot.toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2});
+  const bodyHtml = psmWrap('Invoice',
+      psmHead('Invoice ' + esc(invNo), 'PO # ' + esc(meta.po||''))
+    + psmP('Your invoice is attached to this email as a PDF.')
+    + psmTable(
+        psmRow('Invoice #', esc(invNo))
+      + psmRow('PO #', esc(meta.po||''))
+      + psmRow('Invoice date', _invDate.toLocaleDateString('en-US'))
+      + (_ti ? psmRow('Terms', esc(_ti.label)) : '')
+      + (_dueStr ? psmRow('Due date', '<b>' + esc(_dueStr) + '</b>') : '')
+      + psmRow('Amount due', '<span style="font-size:16px;">' + _amtStr + '</span>'))
+    + psmP('Attached: ' + esc(keptN.join(' \u00b7 ')) + '.')
+    + psmP('Questions about this invoice? Just reply to this email.'));
+  const r = await fetch('https://po-confirm-email.hjbae.workers.dev/send-pl', {
+    method:'POST', headers:{'Content-Type':'application/json'},
+    body: JSON.stringify({ to: toList, subject:'Invoice ' + invNo + ' \u2014 PO ' + (meta.po||'') + ' (Pacific Sports)',
+      html: bodyHtml, cc: STAFF_EMAILS, reply_to: MAIL_REPLY_TO, attachments: keep })});
+  const j = await r.json().catch(()=>({}));
+  if(!r.ok || j.ok === false) throw new Error(j.error || ('HTTP ' + r.status));
+  /* 나갔다 - 여기서부터는 실패해도 되돌리지 않는다 */
+  const _r = savedCache.find(x=>x.base===base) || rec;
+  _r.inv = _r.inv || {}; _r.inv[wh] = { ..._r.inv[wh], invNo, emailedAt:new Date().toISOString(), emailedTo:toList.join(', ') };
+  _r.meta = _r.meta || {}; _r.meta.custEmail = toList.join(', ');
+  try{ await sbFetch('/rest/v1/pr_orders?base=eq.'+encodeURIComponent(base), {method:'PATCH', headers:{Prefer:'return=minimal'},
+        body: JSON.stringify({ inv:_r.inv, meta:_r.meta })}); }catch(e){ console.warn('[INVDO] flag not saved', e); }
+  logHist(base, 'Invoice emailed (' + invNo + ') \u2192 ' + toList.join(', '));
+  try{ await webOrderPushBack(_r, wh, d, invNo, tot); }catch(e){}
+  return { invNo, tot, files: keep.length };
 }
-function invNsOpen(){
-  const rows = invNsList();
-  const money = v => '$' + Number(v||0).toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2});
-  const body = rows.length ? rows.map(r=>{
-    const d = String(r.at||'').slice(0,10);
-    return '<div style="display:flex;align-items:center;gap:9px;padding:8px 12px;border-bottom:1px solid #f1f5f9;font-size:12.5px;">'
-      + '<span style="font-family:Consolas,monospace;font-weight:800;color:#0f2a4a;min-width:96px;">PO '+esc(r.po||'—')+'</span>'
-      + '<span style="flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">'+esc(r.cust||'')
-      +   (r.email ? '' : ' <span style="font-size:10px;font-weight:800;color:#b91c1c;">no email on file</span>')+'</span>'
-      + '<span style="font-family:Consolas,monospace;font-size:10.5px;font-weight:800;color:'+(r.wh==='CA'?'#c2410c':'#1d4ed8')+';background:'+(r.wh==='CA'?'#fff7ed':'#eff6ff')+';border-radius:5px;padding:1px 7px;">'+esc(r.wh)+'</span>'
-      + '<span style="font-family:Consolas,monospace;font-size:11px;font-weight:800;color:#0e7490;">'+esc(r.invNo||'—')+'</span>'
-      + '<span class="muted" style="font-size:10.5px;font-family:Consolas,monospace;">'+esc(d)+'</span>'
-      + '<span style="font-family:Consolas,monospace;font-weight:700;min-width:92px;text-align:right;">'+money(r.amt)+'</span>'
-      + '<button class="btn btn-sm" style="padding:2px 9px;font-size:10.5px;background:#0e7490;color:#fff;border-color:#0e7490;font-weight:800;" onclick="document.getElementById(\'modal-invns\').remove();openInvoiceWh(\''+esc(r.base)+'\',\''+esc(r.wh)+'\')" title="Open this invoice and press Email to customer">📧 Open</button>'
-      + '</div>';
-  }).join('') : '<div class="muted" style="padding:26px 14px;text-align:center;font-size:12.5px;">🎉 Every invoice raised here since '+esc(invSentFrom())+' has been emailed to the customer.</div>';
-  const tot = rows.reduce((a,r)=>a+(Number(r.amt)||0), 0);
-  const ex = document.getElementById('modal-invns'); if(ex) ex.remove();
-  const div = document.createElement('div');
-  div.id = 'modal-invns';
-  div.style.cssText = 'position:fixed;inset:0;background:rgba(15,23,42,.55);z-index:130;display:flex;align-items:center;justify-content:center;padding:14px;';
-  div.innerHTML = '<div style="background:#fff;border-radius:12px;width:780px;max-width:100%;max-height:86vh;display:flex;flex-direction:column;overflow:hidden;">'
-    + '<div style="background:#0e7490;color:#fff;padding:10px 14px;font-weight:800;font-size:13px;">📧 Invoice Not Sent to Customer'
-    +   '<button class="btn btn-sm" style="float:right;background:transparent;color:#a5f3fc;border-color:#67e8f9;" onclick="document.getElementById(\'modal-invns\').remove()">✕</button>'
-    +   '<div style="font-weight:400;font-size:10.5px;opacity:.92;">The invoice is printed and has a number, but it has not gone out to the customer yet. Open it and press <b>Email to customer</b>.</div></div>'
-    + '<div style="overflow-y:auto;flex:1;">'+body+'</div>'
-    + '<div style="padding:7px 12px;border-top:1px solid #a5f3fc;background:#ecfeff;font-size:12px;font-family:Consolas,monospace;color:#155e75;text-align:right;">'
-    +   '<b>'+rows.length+'</b> waiting &middot; <b>'+money(tot)+'</b> total</div>'
-    + '<div style="padding:8px 12px;border-top:1px solid var(--border);font-size:10.5px;color:#64748b;">Printing an invoice does <b>not</b> email it, and emailing does <b>not</b> replace the paper copy you enter into MAS 200 — each invoice needs both.<br>Only invoices raised here from <b>'+esc(invSentFrom())+'</b> onward are counted. Anything older was invoiced out of MAS 200 and sent separately, so it is not listed.</div>'
-    + '</div>';
-  document.body.appendChild(div);
-  if(typeof initModalDrag==='function') initModalDrag(div);
+/* 목록의 한 줄에서 메일 보내기 */
+async function invNpSend(base, wh, btnId){
+  const inp = document.getElementById('invnp-em-' + btnId);
+  const to = String((inp && inp.value) || '').split(',').map(e=>e.trim()).filter(e=>e.includes('@'));
+  if(!to.length){ alert('\u26a0 Type the customer email address in the box on this row first.'); if(inp) inp.focus(); return; }
+  const rec = savedCache.find(s=>s.base===base);
+  const amt = rec ? invNpAmt(rec, wh) : 0;
+  if(!confirm('\ud83d\udce7 Send this invoice?\n\n   ' + ((rec&&rec.meta&&rec.meta.cust)||'') + '  PO ' + ((rec&&rec.meta&&rec.meta.po)||'')
+    + '\n   ' + wh + '  $' + Number(amt).toFixed(2)
+    + '\n\n\u2192 ' + to.join(', '))) return;
+  const b = document.getElementById('invnp-mail-' + btnId);
+  if(b){ b.disabled = true; b.textContent = 'Sending\u2026'; }
+  try{
+    const out = await invSendFor(base, wh, to);
+    showToast('\u2705 Invoice ' + out.invNo + ' sent (' + out.files + ' file' + (out.files>1?'s':'') + ') \u2192 ' + to.join(', '));
+  }catch(e){
+    showToast('\u274c Send failed: ' + (e.message||e));
+    if(b){ b.disabled = false; b.textContent = '\ud83d\udce7 Email to customer'; }
+    return;
+  }
+  invNpRender();
+  if(typeof renderKpi==='function') renderKpi();
+  if(typeof renderSaved==='function') renderSaved();
+}
+/* 목록의 한 줄만 인쇄 */
+async function invNpPrintOne(base, wh){
+  await printBatchInvoices([{base, wh}]);
+  invNpRender();
+  if(typeof renderKpi==='function') renderKpi();
+}
+/* 주소를 고치면 그 오더에 저장해 둔다 - 다음에 또 안 쳐도 되게 */
+async function invNpEmailSave(base, val){
+  const rec = savedCache.find(s=>s.base===base); if(!rec) return;
+  const v = String(val||'').trim();
+  rec.meta = rec.meta || {}; rec.meta.custEmail = v;
+  try{ await sbFetch('/rest/v1/pr_orders?base=eq.'+encodeURIComponent(base), {method:'PATCH', headers:{Prefer:'return=minimal'}, body:JSON.stringify({meta:rec.meta})}); }
+  catch(e){ showToast('\u26a0 Email address not saved \u2014 you can still send with it'); }
 }
 function invNpRowsHtml(){
   const rows = invNpList();
-  if(!rows.length) return '<div class="muted" style="padding:26px 14px;text-align:center;font-size:12.5px;">🎉 인쇄할 인보이스가 없어 — 전부 발행됐어.</div>';
-  return rows.map(r=>{
+  if(!rows.length) return '<div class="muted" style="padding:26px 14px;text-align:center;font-size:12.5px;">\ud83c\udf89 Every invoice is printed and emailed \u2014 nothing left to do.</div>';
+  /* INVDO-1 - 한 줄에 할 일 둘. 끝난 것은 색으로 바로 보이고, 단추 글자도 바뀐다. */
+  return rows.map((r, idx)=>{
     const d = String(r.at||'').slice(0,10);
     const money = '$' + Number(r.amt||0).toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2});
-    return '<label style="display:flex;align-items:center;gap:9px;padding:8px 12px;border-bottom:1px solid #f1f5f9;font-size:12.5px;cursor:'+(r.hold?'not-allowed':'pointer')+';'+(r.hold?'background:#fef2f2;':'')+'">'
-      + (r.hold ? '<span style="width:16px;text-align:center;">🔒</span>'
-                : '<input type="checkbox" class="invnp-cb" data-base="'+esc(r.base)+'" data-wh="'+esc(r.wh)+'" data-amt="'+(Number(r.amt)||0)+'" checked style="width:16px;height:16px;accent-color:#065f46;" onchange="invNpCount()">')
-      + '<span style="font-family:Consolas,monospace;font-weight:800;color:#0f2a4a;min-width:96px;">PO '+esc(r.po||'—')+'</span>'
-      + '<span style="flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">'+esc(r.cust||'')+'</span>'
-      + '<span style="font-family:Consolas,monospace;font-size:10.5px;font-weight:800;color:'+(r.wh==='CA'?'#c2410c':'#1d4ed8')+';background:'+(r.wh==='CA'?'#fff7ed':'#eff6ff')+';border-radius:5px;padding:1px 7px;">'+esc(r.wh)+'</span>'
-      + (r.invNo ? '<span style="font-family:Consolas,monospace;font-size:10.5px;color:#64748b;">'+esc(r.invNo)+'</span>' : '')
-      + '<span class="muted" style="font-size:10.5px;font-family:Consolas,monospace;">'+d+'</span>'
-      + '<span style="font-family:Consolas,monospace;font-weight:700;min-width:92px;text-align:right;">'+money+'</span>'
-      + (r.hold ? '<span style="font-size:10px;font-weight:800;color:#b91c1c;">CREDIT HOLD</span>'
-                : '<button class="btn btn-sm" style="padding:2px 9px;font-size:10.5px;" onclick="event.preventDefault();event.stopPropagation();openInvoiceWh(\''+esc(r.base)+'\',\''+esc(r.wh)+'\')" title="이 인보이스만 열어서 확인/수정">Invoice</button>')
-      + '</label>';
+    const id = String(idx);
+    const eb = esc(r.base), ew = esc(r.wh);
+    const prBtn = r.hold
+      ? '<span style="font-size:10px;font-weight:800;color:#b91c1c;background:#fee2e2;border-radius:6px;padding:4px 9px;white-space:nowrap;">\ud83d\udd12 CREDIT HOLD</span>'
+      : (r.printed
+        ? '<button class="btn btn-sm" style="padding:3px 10px;font-size:10.5px;background:#ecfdf5;color:#065f46;border-color:#6ee7b7;font-weight:800;white-space:nowrap;" onclick="invNpPrintOne(\'' + eb + '\',\'' + ew + '\')" title="Printed already \u2014 press to print it again">\u2713 Reprint</button>'
+        : '<button class="btn btn-sm" style="padding:3px 10px;font-size:10.5px;background:#c2410c;color:#fff;border-color:#c2410c;font-weight:800;white-space:nowrap;" onclick="invNpPrintOne(\'' + eb + '\',\'' + ew + '\')" title="Print this invoice \u2014 it gets its number and goes to Complete">\ud83d\udda8 Print</button>');
+    const mailBtn = !r.printed
+      ? '<span style="font-size:10px;color:#94a3b8;font-weight:700;white-space:nowrap;" title="Print it first \u2014 the invoice needs its number">print first</span>'
+      : (r.sentAt
+        ? '<button class="btn btn-sm" id="invnp-mail-' + id + '" style="padding:3px 10px;font-size:10.5px;background:#ecfeff;color:#155e75;border-color:#67e8f9;font-weight:800;white-space:nowrap;" onclick="invNpSend(\'' + eb + '\',\'' + ew + '\',\'' + id + '\')" title="Sent ' + esc(String(r.sentAt).slice(0,16).replace("T"," ")) + ' \u2014 press to send it again">\u2713 Resend</button>'
+        : '<button class="btn btn-sm" id="invnp-mail-' + id + '" style="padding:3px 10px;font-size:10.5px;background:#0e7490;color:#fff;border-color:#0e7490;font-weight:800;white-space:nowrap;" onclick="invNpSend(\'' + eb + '\',\'' + ew + '\',\'' + id + '\')" title="Email the invoice (with the packing list and your PO) to the customer">\ud83d\udce7 Email to customer</button>');
+    const bg = (r.printed && r.sentAt) ? '#f0fdf4' : (r.printed ? '#ecfeff' : '#fff');
+    return '<div style="border-bottom:1px solid #f1f5f9;padding:8px 12px;background:' + bg + ';">'
+      + '<div style="display:flex;align-items:center;gap:9px;font-size:12.5px;flex-wrap:wrap;">'
+      +   (r.hold || r.printed ? '<span style="width:16px;text-align:center;">' + (r.hold?'\ud83d\udd12':'\u2713') + '</span>'
+            : '<input type="checkbox" class="invnp-cb" data-base="' + eb + '" data-wh="' + ew + '" data-amt="' + (Number(r.amt)||0) + '" checked style="width:16px;height:16px;accent-color:#065f46;" onchange="invNpCount()" title="Include in \u2018Print selected\u2019">')
+      +   '<span style="font-family:Consolas,monospace;font-weight:800;color:#0f2a4a;min-width:96px;">PO ' + esc(r.po||'\u2014') + '</span>'
+      +   '<span style="flex:1;min-width:120px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">' + esc(r.cust||'') + '</span>'
+      +   '<span style="font-family:Consolas,monospace;font-size:10.5px;font-weight:800;color:' + (r.wh==='CA'?'#c2410c':'#1d4ed8') + ';background:' + (r.wh==='CA'?'#fff7ed':'#eff6ff') + ';border-radius:5px;padding:1px 7px;">' + esc(r.wh) + '</span>'
+      +   (r.invNo ? '<span style="font-family:Consolas,monospace;font-size:10.5px;font-weight:800;color:#0e7490;">' + esc(r.invNo) + '</span>' : '')
+      +   '<span class="muted" style="font-size:10.5px;font-family:Consolas,monospace;">' + esc(d) + '</span>'
+      +   '<span style="font-family:Consolas,monospace;font-weight:700;min-width:92px;text-align:right;">' + money + '</span>'
+      +   '<button class="btn btn-sm" style="padding:2px 8px;font-size:10px;" onclick="openInvoiceWh(\'' + eb + '\',\'' + ew + '\')" title="Open this invoice to check or change the lines">Open</button>'
+      + '</div>'
+      + '<div style="display:flex;align-items:center;gap:7px;margin-top:6px;padding-left:25px;flex-wrap:wrap;">'
+      +   '<span style="font-size:10px;font-weight:800;color:#64748b;white-space:nowrap;">\ud83d\udce7 to</span>'
+      +   '<input class="fi" id="invnp-em-' + id + '" type="email" value="' + esc(r.email||'') + '" placeholder="customer@example.com" onchange="invNpEmailSave(\'' + eb + '\',this.value)" style="flex:1;min-width:170px;max-width:340px;font-size:11.5px;padding:3px 7px;">'
+      +   prBtn + mailBtn
+      +   (r.sentAt ? '<span style="font-size:10px;color:#166534;font-weight:800;white-space:nowrap;">sent ' + esc(String(r.sentAt).slice(0,10)) + '</span>' : '')
+      + '</div></div>';
   }).join('');
 }
 function invNpMoney(v){ return '$' + Number(v||0).toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2}); }
@@ -43376,9 +43476,9 @@ function invNpOpen(){
   div.id = 'modal-invnp';
   div.style.cssText = 'position:fixed;inset:0;background:rgba(15,23,42,.55);z-index:130;display:flex;align-items:center;justify-content:center;padding:14px;';
   div.innerHTML = '<div style="background:#fff;border-radius:12px;width:760px;max-width:100%;max-height:86vh;display:flex;flex-direction:column;overflow:hidden;">'
-    + '<div style="background:#c2410c;color:#fff;padding:10px 14px;font-weight:800;font-size:13px;">🧾 Invoice Not Printed'
+    + '<div style="background:#c2410c;color:#fff;padding:10px 14px;font-weight:800;font-size:13px;">🧾 Invoice To Do'
     +   '<button class="btn btn-sm" style="float:right;background:transparent;color:#fed7aa;border-color:#fdba74;" onclick="document.getElementById(\'modal-invnp\').remove()">✕</button>'
-    +   '<div style="font-weight:400;font-size:10.5px;opacity:.92;">Packing List는 저장됐는데 인보이스가 아직 발행 안 된 건 — 골라서 바로 인쇄</div></div>'
+    +   '<div style="font-weight:400;font-size:10.5px;opacity:.92;">Each invoice needs BOTH: printed for MAS 200, and emailed to the customer. A row leaves this list when both are done.</div></div>'
     + '<div style="display:flex;align-items:center;gap:10px;padding:8px 12px;background:#fff7ed;border-bottom:1px solid #fed7aa;">'
     +   '<label style="display:flex;align-items:center;gap:7px;font-size:12px;font-weight:800;color:#9a3412;cursor:pointer;">'
     +     '<input type="checkbox" id="invnp-all" checked style="width:16px;height:16px;accent-color:#c2410c;" onchange="invNpToggleAll(this.checked)"> Select all</label>'
@@ -43389,7 +43489,7 @@ function invNpOpen(){
     +   '</span></div>'
     + '<div id="invnp-body" style="overflow-y:auto;flex:1;"></div>'
     + '<div id="invnp-foot" style="padding:7px 12px;border-top:1px solid #fed7aa;background:#fffbeb;font-size:12px;font-family:Consolas,monospace;color:#78350f;text-align:right;"></div>'
-    + '<div style="padding:8px 12px;border-top:1px solid var(--border);font-size:10.5px;color:#64748b;">인쇄하면 인보이스 번호가 부여되고 <b>Complete(초록)</b> 로 바뀌어 — 개별로 인쇄할 때와 똑같아. 🔒 는 Credit Hold 라 승인 전에는 인쇄 안 돼.</div>'
+    + '<div style="padding:8px 12px;border-top:1px solid var(--border);font-size:10.5px;color:#64748b;">Printing gives the invoice its number and turns the order <b>Complete</b> — same as printing it on its own. 🔒 Credit Hold cannot be printed until it is approved.<br>Only invoices printed here are chased for the email — ones raised in MAS 200 before are not listed.</div>'
     + '</div>';
   document.body.appendChild(div);
   if(typeof initModalDrag==='function') initModalDrag(div);
@@ -43424,7 +43524,11 @@ async function printBatchInvoices(pairsIn){
         .filter(l => l && String(l.wh||'').trim().toUpperCase() === wh && (Number(l.qty)||0) > 0)
         .map(l => ({ style:l.style||'', desc:l.desc||'', color:l.color||'', size:l.size||'',
                      qty:l.qty||0, price:l.price||0, ppb:l.ppb||72, pbox:l.pbox||'', wh:l.wh||'' }));
-    rec.inv[wh] = { ...iv, savedAt: iv.savedAt || new Date().toISOString(), auto: false, printed: true, lines: lines, freight: Number(iv.freight)||0 };
+    /* INVDO-1 - `printedAt` = 「이 인보이스는 psflowx 에서 우리가 뽑았다」 는 표시다.
+       ⚠⚠ 이 표시가 있는 것만 「메일 보냈나」 를 따진다. 예전 MAS 200 인보이스에는 이게
+          없으니 목록에 영영 안 들어온다 - 날짜 기준이 필요 없어지는 이유가 이것이다. */
+    rec.inv[wh] = { ...iv, savedAt: iv.savedAt || new Date().toISOString(), auto: false, printed: true,
+                    printedAt: iv.printedAt || new Date().toISOString(), lines: lines, freight: Number(iv.freight)||0 };
     /* ⚠ PL 이 없으면 날짜도 없다 — 인보이스에 빈 날짜가 찍히지 않게 오더 날짜로 메운다 */
     const d = { ...pld, lines: lines, date: pld.date || (rec.meta && rec.meta.date) || todayStr(),
                 freight: Number(iv.freight)||0, invNo: iv.invNo, termType: iv.termType||'', termDays: iv.termDays||0 };
@@ -44399,14 +44503,6 @@ function renderKpi(){
     rows.forEach(r=>{ bases.add(r.base); uninvAmt += Number(r.amt)||0; });
     uninv = bases.size;
   })();
-  /* INVSENT-1 - 같은 규칙: 건수는 오더당 1, 금액은 창고별 전부. 타일과 목록이 같은 함수를 본다. */
-  let unsent = 0, unsentAmt = 0;
-  (function(){
-    const rows = (typeof invNsList === 'function') ? invNsList() : [];
-    const bs = new Set();
-    rows.forEach(r=>{ bs.add(r.base); unsentAmt += Number(r.amt)||0; });
-    unsent = bs.size;
-  })();
   cache.forEach(s=>{
     const done = recIsDone(s);
     const shipped = _allShipped(s);
@@ -44527,10 +44623,7 @@ function renderKpi(){
   const _kpiHtml = newsBarHtml() + `<div style="display:grid;grid-template-columns:repeat(6,minmax(0,1fr));gap:8px;margin-bottom:8px;align-items:stretch;">
     ${openTile(open, _oW, _pW, _oAmt, _oWAmt)}
     ${numTile('🔥 Rush', rush.toLocaleString(), '#dc2626', '#fef2f2', "kpiOpenOrders(true)", '', '', _rushAmt, 'Value still to be pulled on rush orders')}
-    ${`<div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;align-items:stretch;">`
-      + numTile('🧾 Not Printed', uninv.toLocaleString(), '#c2410c', '#fff7ed', "invNpOpen()", '', '', uninvAmt, 'Total of every invoice waiting to be printed')
-      + numTile('📧 Not Sent', unsent.toLocaleString(), '#0e7490', '#ecfeff', "invNsOpen()", '', '', unsentAmt, 'Printed invoices that have not been emailed to the customer yet')
-      + `</div>`}
+    ${numTile('🧾 Invoice To Do', uninv.toLocaleString(), '#c2410c', '#fff7ed', "invNpOpen()", '', '', uninvAmt, 'Invoices still waiting to be printed or emailed to the customer')}
     ${numTile('📝 CM Not Sent', pret.toLocaleString(), '#ea580c', '#fff7ed', "kpiPendingReturns()", '', '', 0, 'Returns whose credit memo is prepared but not sent to the customer yet')}
     ${numTile('💳 Refund Pending', refund.toLocaleString(), '#7c2d12', '#faf5ff')}
     ${`<div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;align-items:stretch;">`
