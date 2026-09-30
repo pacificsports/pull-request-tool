@@ -43843,10 +43843,13 @@ function kpiPendingReturns(){
       if(!r || retCmStatus(r) !== 'prepared') return;
       rows0.push({ base:s.base, ra:r.ra, po:(s.meta&&s.meta.po)||'', cust:(s.meta&&s.meta.cust)||'',
                    at:r.createdAt||r.at||r.created||'', cm:retCmNo(r),
+                   /* CMQFIX-1 - 이 줄이 **무엇을 기다리는지** 같이 들고 간다 */
+                   here:(r.status === 'arrived'),
                    reason:r.reason||r.note||'', qty:(r.lines||[]).reduce((a,l)=>a+(Number(l.qty)||0),0) });
     });
   });
-  rows0.sort((a,b)=> String(a.at) < String(b.at) ? -1 : 1);
+  /* CMQFIX-1 - 지금 손댈 수 있는 것(물건이 와 있는 것)을 맨 위로. 그 안에서는 오래된 것부터. */
+  rows0.sort((a,b)=> (a.here===b.here) ? (String(a.at) < String(b.at) ? -1 : 1) : (a.here ? -1 : 1));
   const rows = rows0.map(r=>
     '<div style="display:flex;align-items:center;gap:10px;padding:10px 14px;border-bottom:1px solid #f1f5f9;cursor:pointer;"'
     + ' onclick="kpiGoReturn(\''+esc(r.base)+'\',\''+esc(r.ra)+'\')" onmouseover="this.style.background=\'#fff7ed\'" onmouseout="this.style.background=\'\'">'
@@ -43865,11 +43868,20 @@ function kpiPendingReturns(){
         return '<span style="font-size:10px;font-weight:800;color:'+(hot?'#b91c1c':'#64748b')+';background:'
           + (hot?'#fee2e2':'#f1f5f9')+';border-radius:20px;padding:3px 9px;white-space:nowrap;">'+d+'d</span>'; })()
     + (r.qty?'<span style="font-family:Consolas,monospace;font-size:12px;font-weight:700;">'+r.qty.toLocaleString()+' pcs</span>':'')
-    + '<span style="font-size:10px;font-weight:800;color:#9a3412;background:#ffedd5;border-radius:20px;padding:3px 9px;white-space:nowrap;">NOT SENT</span>'
+    /* CMQFIX-1 - 딱지가 **다음에 무엇을 해야 하는지**를 말한다.
+       🔴 그전까지: 전부 「NOT SENT」 였다. 크레딧 메모가 이미 만들어져 있고 보내기만 하면
+          되는 것처럼 읽혀서, 물건이 아직 안 온 건까지 같은 딱지를 달고 있었다.
+          [stated] 하윤: "우리가 물건 받았다고 confirm 해서 credit memo도 발행해서
+          거래처에 보냈는데 저기서 안사라지네" - 실제로는 📥 Received(도착 표시)만 눌렀고
+          ✓ Confirm & Credit Memo 는 안 눌렀다. 딱지와 안내문이 그 차이를 안 알려줬다. */
+    + (r.here
+        ? '<span style="font-size:10px;font-weight:800;color:#fff;background:#16a34a;border-radius:20px;padding:3px 9px;white-space:nowrap;" title="The boxes are here. Open this row and press the green Confirm &amp; Credit Memo button.">READY TO CREDIT</span>'
+        : '<span style="font-size:10px;font-weight:800;color:#64748b;background:#f1f5f9;border-radius:20px;padding:3px 9px;white-space:nowrap;" title="The customer has not sent the boxes back yet.">WAITING FOR BOXES</span>')
     + '<span style="font-size:12px;font-weight:800;color:#ea580c;">›</span></div>'
-  ).join('') || '<div style="padding:24px;text-align:center;color:#94a3b8;font-size:13px;">Every credit memo has been sent 🎉</div>';
-  kpiShell('modal-kpiret', '📝 Credit Memo Not Sent ('+rows0.length+')', '#ea580c', rows,
-           'A credit memo is already prepared for each of these. Open a row and press Return Received to send it.');
+  ).join('') || '<div style="padding:24px;text-align:center;color:#94a3b8;font-size:13px;">Every return has been credited 🎉</div>';
+  kpiShell('modal-kpiret', '📝 Credit Memo Not Issued ('+rows0.length+')', '#ea580c', rows,
+           'None of these has a credit memo yet. Open a green READY TO CREDIT row and press ✓ Confirm &amp; Credit Memo — that is the button that issues the number. '
+         + 'Marking a return \u{1F4E5} Received only tells the customer their boxes arrived; it does NOT issue the credit.');
 }
 function laneListOpen(eff, isLtl){
   const legs = laneReadyLegs().filter(l=> l.eff===eff && l.isLtl===!!isLtl);
