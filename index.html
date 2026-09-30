@@ -6396,6 +6396,22 @@ function openReturnReceive(base, ra){
         <tfoot><tr style="background:#f0fdf4;font-weight:800;"><td colspan="10" style="border:1px solid #e5e7eb;padding:6px 8px;text-align:right;">CREDIT MEMO TOTAL</td><td style="border:1px solid #e5e7eb;padding:6px 8px;text-align:right;color:#166534;font-size:14px;" id="rr-total">$0.00</td></tr></tfoot>
       </table>
       ${ret.cc?'<div class="muted" style="font-size:10.5px;margin-top:8px;color:#b91c1c;">💳 Credit-card customer — the credit memo will be marked "refund to card required".</div>':''}
+      ${(function(){
+        /* CMNOIN-1 - [stated] 하윤이 정했다: 이미 밖으로 나간 번호가 있으면 그 번호를 그대로 쓴다.
+           🔴 왜 필요한가: 2026-09-30 에 Lone Rock 크레딧 메모가 기록 없이 나가면서
+              번호가 `CM-0917LRC40003` 으로 찍혔다. 손님은 그 번호를 들고 있는데 우리가
+              새 번호를 뽑으면 두 장부의 번호가 영영 다르다.
+           ⓘ 비워 두면 예전과 똑같다 - 공용 송장 카운터에서 다음 번호를 뽑는다.
+           ⚠ 같은 번호를 두 번 쓰는 것은 막는다 (아래 returnReceiveConfirm 이 검사한다). */
+        const _pre = (typeof retCmNo==='function') ? retCmNo(ret) : '';
+        return `<div style="margin-top:12px;background:#f8fafc;border:1px solid #e2e8f0;border-radius:9px;padding:10px 13px;">
+          <label style="display:flex;align-items:center;gap:9px;flex-wrap:wrap;font-size:12px;font-weight:800;color:#334155;">
+            Credit memo #
+            <input class="fi" id="rr-cmno" value="${esc(_pre)}" placeholder="leave blank — take the next number"
+              style="width:250px;font-family:Consolas,monospace;font-weight:800;text-transform:uppercase;padding:4px 8px;">
+          </label>
+          <div style="font-size:10.5px;color:#64748b;margin-top:5px;">Leave it blank and the next number comes from the shared invoice counter. Type a number only when a credit memo with that number has <b>already gone to the customer</b> — then our books match what they are holding.</div>
+        </div>`; })()}
     </div>
     <div style="padding:10px 16px;border-top:1px solid var(--border);display:flex;gap:8px;justify-content:flex-end;">
       <button class="btn" onclick="document.getElementById('modal-rareceive').remove()">Cancel</button>
@@ -6441,7 +6457,12 @@ async function returnReceiveConfirm(base, ra){
   const ncPcs = recvLines.filter(l=>l.noCredit).reduce((a,l)=>a+(Number(l.receivedQty)||0),0);
   /* CMSEQ-v1 - 번호는 아래 confirm 을 통과한 뒤에 뽑는다. 여기서 미리 뽑으면
      취소할 때마다 번호가 버려져서 AR 번호에 구멍이 생긴다. */
-  if(!confirm('Confirm receipt of '+ra+'?\n\n• Credit memo:  $'+creditAmt.toFixed(2)+' ('+(totA+totB+totF).toLocaleString()+' pcs)\n'
+  /* CMNOIN-1 - 어떤 번호로 나가는지 누르기 전에 보여준다 */
+  const _cmPre = String((document.getElementById('rr-cmno')||{}).value||'').trim().toUpperCase();
+  if(!confirm('Confirm receipt of '+ra+'?\n\n'
+    + (_cmPre ? ('• Credit memo #: '+_cmPre+'  (you typed this \u2014 no new number will be taken)\n')
+              : (retCmNo(ret) ? ('• Credit memo #: '+retCmNo(ret)+'\n') : '• Credit memo #: the next number from the counter\n'))
+    + '• Credit memo:  $'+creditAmt.toFixed(2)+' ('+(totA+totB+totF).toLocaleString()+' pcs)\n'
     + (ncPcs?('• Overship (never billed): '+ncPcs.toLocaleString()+' pcs → back to stock, NO credit\n'):'')
     + '• A Grade: '+totA.toLocaleString()+' → stock · B Grade: '+totB.toLocaleString()+' → B-grade · Failed: '+totF.toLocaleString()+' → scrap\n\nThis cannot be edited afterward.')) return;
   /* CMSEQ-v1 - 인보이스와 **같은** 공용 카운터에서 7자 번호를 뽑는다 (MAS 칸 모양).
@@ -6450,7 +6471,22 @@ async function returnReceiveConfirm(base, ra){
         저장된 값을 읽으므로 번호가 또 안 늘어난다. */
   /* RACM-v1 - 번호는 RA 를 만들 때 이미 뽑아 뒀다. 있으면 그걸 그대로 쓴다.
      ⚠ 여기서 또 뽑으면 같은 크레딧에 번호가 두 개 생긴다. */
-  let cm = retCmNo(ret);
+  /* CMNOIN-1 - 사람이 친 번호가 1순위, 그 다음이 RA 에 미리 달린 번호, 마지막이 카운터. */
+  let cm = String((document.getElementById('rr-cmno')||{}).value||'').trim().toUpperCase();
+  const _typed = !!cm;
+  if(_typed){
+    /* ⚠⚠ 같은 크레딧 메모 번호가 두 장 생기면 장부에서 영영 못 가른다. 세게 막는다. */
+    let dup = null;
+    try{ dup = (typeof cmAllMemos==='function' ? cmAllMemos() : [])
+              .find(m=>String(m.cm||'').trim().toUpperCase() === cm && m.ra !== ra); }catch(e){}
+    if(dup){
+      alert('\u26d4 Credit memo ' + cm + ' is already used.\n\n'
+          + '   ' + (dup.cust||'') + ' \u00b7 PO ' + (dup.po||'') + ' \u00b7 $' + Number(dup.amt||0).toFixed(2) + '\n\n'
+          + 'Two credit memos cannot share a number. Clear the box to take the next number instead.');
+      return;
+    }
+  }
+  if(!cm) cm = retCmNo(ret);
   if(!cm) cm = await nextInvNo();
   for(const l of recvLines){
     const toWh=(l.toWh||l.wh)==='CA'?'CA':'SC';
@@ -34337,6 +34373,9 @@ async function trBuilderOpen(existingId, route){
     if(trIsMultiRoute(_shipRoute)){
       const _st = trStopsOf({meta:_shipMeta});
       _shipPallets.forEach(p=>{ const i = trStopIdxOfPallet({meta:_shipMeta}, p); if(_st.length && i>=0) p.stop = i; });
+      /* OSCASTOP-1 - 위 줄은 정차지를 못 찾으면 **마지막 정차지**를 준다 (안전한 기본값이라 일부러 그렇다).
+         오더만 실린 팔레트에는 그게 틀린 답이다 - 실린 오더가 이미 답을 알고 있다. 여기서 바로잡는다. */
+      try{ trOsSyncStops(); }catch(e){}
     }
   }
   // 🚚 오더 박스만 실린 팔레트도 유지 (라인이 없어도 사라지지 않게)
@@ -35627,6 +35666,21 @@ function trOsSyncStops(){
     if(!_st.length) return;
     _shipMeta = _shipMeta || {};
     if(!Array.isArray(_shipMeta.stops) || !_shipMeta.stops.length) _shipMeta.stops = _st;
+    /* OSCASTOP-1 - 오더만 실린 팔레트는 그 오더가 내리는 곳에서 내린다. 사람이 고를 일이 아니다.
+       ⚠ 재고 줄이 있는 팔레트는 건드리지 않는다 - 거기는 사람이 정한 것이다.
+       ⚠ 한 팔레트에 갈래가 섞여 있으면 손대지 않는다 - 무엇이 옳은지 알 수 없다. */
+    try{
+      const _os = (_shipMeta.orderShip) || [];
+      (_shipPallets||[]).forEach(p=>{
+        if(p && p.lines && p.lines.length) return;
+        const mine = _os.filter(x=>x && x.pallet === p.label);
+        if(!mine.length) return;
+        const ks = [...new Set(mine.map(x=>osOrderKind(x.base)).filter(Boolean))];
+        if(ks.length !== 1) return;
+        const i = _st.indexOf(ks[0]);
+        if(i >= 0) p.stop = i;
+      });
+    }catch(e){}
     _shipMeta.palletStop = _shipMeta.palletStop || {};
     (_shipPallets||[]).forEach(p=>{ const v = Number(p && p.stop);
       if(v >= 0 && v < _st.length) _shipMeta.palletStop[p.label] = v; });
@@ -35651,6 +35705,21 @@ async function trOsMoveTo(rid, pid){
     if(!tgt) return;
   }
   if(o.pallet === tgt.label) return;
+  /* OSCASTOP-1 - 재고 줄이 있는 팔레트는 정차지가 이미 사람 손으로 정해져 있다.
+     갈래가 다르면 오더가 엉뚱한 문 앞에서 내린다 - 막는다.
+     ⓘ 오더만 실린 팔레트는 아래 `trOsSyncStops` 가 정차지를 맞춰 주므로 그냥 보낸다. */
+  try{
+    const _k2 = osOrderKind(o.base);
+    const _st2 = trIsMultiRoute(_shipRoute) ? trStopsOf({meta:_shipMeta}) : [];
+    if(_k2 && _st2.length >= 2 && tgt.lines && tgt.lines.length){
+      const _ti = trPalStopIdxDisp({meta:_shipMeta, pallets:_shipPallets}, tgt);
+      if(_ti >= 0 && _st2[_ti] !== _k2){
+        showToast('\u26a0 ' + (o.cust||'This order') + ' comes off at ' + trKindShort(_k2)
+                + ' \u2014 put it on a ' + trStopPfx(_k2) + ' pallet.');
+        return;
+      }
+    }
+  }catch(e){}
   o.pallet = tgt.label;
   trOsSyncStops();
   if(_shipId){ try{ await trPatchRec(_shipId, {meta:_shipMeta}); }catch(e){} }
@@ -37486,7 +37555,7 @@ async function trOrderShipAdd(){
   const _asSt = trIsMultiRoute(_shipRoute) ? trStopsOf({meta:_shipMeta}) : [];
   const _asKind = window._oshipKind || {};
   const _now = new Date().toISOString(), _by = (SESS&&SESS.email)||'';
-  let _madePal = 0;
+  let _madePal = 0; const _badStop = [];
   cbs.forEach(c=>{
     const base = c.getAttribute('data-base');
     const row = (c.closest && c.closest('label')) || null;
@@ -37495,12 +37564,13 @@ async function trOrderShipAdd(){
     const tb = parseInt(c.getAttribute('data-boxes'),10)||0;
     const tp = parseInt(c.getAttribute('data-pcs'),10)||0;
     const cust = c.getAttribute('data-cust')||'', po = c.getAttribute('data-po')||'';
-    /* 이 오더가 내리는 정차지. 후보 목록이 이미 갈래(CA / LK)를 적어 뒀다. */
+    /* OSCASTOP-1 - 이 오더가 내리는 정차지는 오더가 정한다 (`osOrderKind`).
+       ⚠⚠ 못 찾으면 **마지막 정차지로 떨어뜨리지 않는다.** 그게 CA 짐을 MC 로 보내던 버그다. */
     let sIdx = -1;
     if(_asSt.length){
-      const k = _asKind[base];
-      const i = k ? _asSt.indexOf(k) : -1;
-      sIdx = (i >= 0) ? i : (_asSt.length - 1);
+      const k = osOrderKind(base) || _asKind[base] || '';
+      sIdx = k ? _asSt.indexOf(k) : -1;
+      if(sIdx < 0){ _badStop.push((c.getAttribute('data-cust')||base) + ' (' + (k||'?') + ')'); return; }
     }
     let labs;
     if(np >= 2){
@@ -37527,7 +37597,11 @@ async function trOrderShipAdd(){
   const m=document.getElementById('modal-oship'); if(m) m.remove();
   if(_shipId){ try{ await trPatchRec(_shipId, {meta:_shipMeta}); }catch(e){} }
   trRenderPallets();
-  showToast('🚚 '+cbs.length+' order(s) loaded' + (_madePal ? (' \u00b7 ' + _madePal + ' new pallet(s)') : (' \u2192 ' + pal)));
+  /* OSCASTOP-1 - 실을 수 없었던 것은 조용히 넘기지 않는다 */
+  if(_badStop.length) alert('\u26a0 Not loaded \u2014 this truck does not stop where these orders come off:\n\n   '
+    + _badStop.join('\n   ') + '\n\nAdd that stop on the STOPS bar first, then load them.');
+  const _okN = cbs.length - _badStop.length;
+  if(_okN > 0) showToast('🚚 '+_okN+' order(s) loaded' + (_madePal ? (' \u00b7 ' + _madePal + ' new pallet(s)') : (' \u2192 ' + pal)));
 }
 /* ═══ OSSPLIT-1 - 오더 하나가 팔레트 여러 장에 나뉘어 실린다 ═══
    [stated] 하윤: "각 PO마다 2 pallet 들은데 우리 현재 시스템으로는 저거를 놔눠서 트럭에 못넣게
@@ -37539,6 +37613,25 @@ async function trOrderShipAdd(){
 function osRid(o){ return String((o && (o.rid || o.base)) || ''); }
 /* 실린 오더들의 **오더 번호**만 (중복 없이). 팔레트가 나뉘어도 오더 도장은 한 번만 찍는다. */
 function osBases(arr){ return [...new Set((arr||[]).map(o=>String((o&&o.base)||'')).filter(Boolean))]; }
+/* ═══ OSCASTOP-1 - 실린 오더가 **어느 정차지에서 내리는지** ═══
+   [stated] 하윤: "CA warehouse로 보내서 거래처에 내보내는 물건들이 자꾸 MC로 지정이 되는데
+   고쳐줘. CA에서 받아서 거래처에 내보내는거는 CA warehouse만 선택되게해야돼"
+   🔴 그전까지: `window._oshipKind` (선택창이 채우는 임시 값)만 봤고, 거기 없으면
+      `trStopIdxOfPallet` 의 기본값인 **마지막 정차지**로 떨어졌다. 마지막이 보통 MC 라서
+      CA 로 갈 오더가 말없이 MC 팔레트에 붙었다.
+   ⭐ 이제 오더 자체로 정한다 - 창을 닫았다 열어도, 새로고침해도 답이 같다.
+     · 멜마크 오더  -> LK (그 거래처 문 앞)
+     · 그 외        -> CA (우리 CA 창고에서 받아 거래처로 내보낸다)
+   ⚠ 이 트럭에 실릴 수 있는 오더는 이 둘뿐이다 (`trOrderShipEligible` 과 같은 규칙). */
+function osOrderKind(base){
+  const rec = ((typeof savedCache!=='undefined' && savedCache) || []).find(r=>r && r.base===base);
+  if(!rec) return '';
+  try{
+    const c = String(((rec.meta)||{}).cust||'').toUpperCase();
+    if(c && typeof trLkCustMatch==='function' && c.indexOf(trLkCustMatch()) >= 0) return 'LK';
+  }catch(e){}
+  return 'CA';
+}
 function osFindRid(rid){ return ((_shipMeta&&_shipMeta.orderShip)||[]).find(x=>osRid(x)===String(rid)); }
 /* 박스/장수를 팔레트 수만큼 고르게 나눈다. 남는 것은 앞쪽 팔레트에 하나씩. */
 function osSplitN(total, n){
