@@ -5819,6 +5819,15 @@ function retCmNo(ret){
   if(!ret) return '';
   return String(ret.cm || (ret.received && ret.received.cm) || '');
 }
+/* ═══ CMGUARD-1 - 크레딧 메모는 **발행된 뒤에만** 밖으로 나간다 ═══
+   🔴 2026-09-30 실제 사고: RA-0917LRC40003 (Lone Rock) 의 크레딧 메모 $303.24 가
+      거래처에게 나갔는데 우리 기록에는 아무것도 없다. 번호도 `CM-0917LRC40003` 이었다 -
+      송장 카운터에서 뽑은 번호가 아니라 **RA 이름을 바꿔서 지어낸 번호**다.
+      뿌리: `openCreditMemo`/`printCreditMemo`/`buildCreditMemoDoc` 이 번호가 없으면
+      `ra.replace('RA-','CM-')` 로 만들어 냈고, 메일 보내는 곳에 「발행됐나」 검사가 없었다.
+   ⚠⚠ 돈이 걸린 종이는 **기록이 먼저**다. 발행 = `ret.received.cm` 이 있는 것 하나뿐이고,
+      그건 ✓ Confirm & Credit Memo 만 만든다. */
+function cmIssued(ret){ return !!(ret && ret.received && ret.received.cm); }
 /* prepared = 번호는 있고 아직 안 나갔다 | sent = 나갔다 | void = RA 가 취소됐다 */
 function retCmStatus(ret){
   if(!ret) return '';
@@ -6472,8 +6481,14 @@ function buildCreditMemoHtml(rec, ret){
 function printCreditMemo(base, ra){
   const rec=savedCache.find(s=>s.base===base); if(!rec) return;
   const ret=recReturns(rec).find(r=>r.ra===ra); if(!ret) return;
-  const cm=(ret.received&&ret.received.cm)||ra.replace(/^RA-/,'CM-');
-  printDocHtml(buildCreditMemoHtml(rec, ret), cm);
+  /* CMGUARD-1 */
+  if(!cmIssued(ret)){
+    alert('This credit memo has not been issued yet, so it has no number.\n\n'
+        + 'Open the return and press  \u2713 Confirm & Credit Memo  first \u2014 that is what checks the\n'
+        + 'quantities, sets the amount and takes the next credit memo number.');
+    return;
+  }
+  printDocHtml(buildCreditMemoHtml(rec, ret), ret.received.cm);
 }
 // ═══ 📚 발행된 Credit Memo 이력 (v773) ═══
 // 내용은 원래부터 오더 레코드(meta._returns[].received)에 저장돼 있었지만, 그 오더를 찾아가야만 볼 수 있었다.
@@ -6545,20 +6560,31 @@ function cmHistSet(base, ra, mode){
 function openCreditMemo(base, ra){
   const rec=savedCache.find(s=>s.base===base); if(!rec) return;
   const ret=recReturns(rec).find(r=>r.ra===ra); if(!ret) return;
-  const cm=(ret.received&&ret.received.cm)||ra.replace(/^RA-/,'CM-');
+  /* CMGUARD-1 - 발행 안 된 반품도 이 창을 열 수는 있다 (미리보기). 다만 **번호를 지어내지 않고**
+     내보내는 단추를 숨긴다. 예전에는 가짜 번호가 제목에 떠서 이미 발행된 것처럼 보였다. */
+  const _issued = cmIssued(ret);
+  const cm = _issued ? ret.received.cm : '';
   const ex=document.getElementById('modal-cm'); if(ex) ex.remove();
   const div=document.createElement('div'); div.id='modal-cm';
   div.style.cssText='position:fixed;inset:0;background:rgba(15,23,42,.6);z-index:102;display:flex;align-items:center;justify-content:center;padding:20px;';
   div.onclick=e=>{ if(e.target===div) div.remove(); };
   div.innerHTML=`<div style="background:#fff;border-radius:12px;max-width:840px;width:100%;max-height:92vh;display:flex;flex-direction:column;overflow:hidden;">
-    <div style="background:#0f2a4a;color:#fff;padding:10px 16px;font-weight:800;display:flex;align-items:center;gap:10px;">📝 Credit Memo ${esc(cm)}
+    <div style="background:${_issued?'#0f2a4a':'#7f1d1d'};color:#fff;padding:10px 16px;font-weight:800;display:flex;align-items:center;gap:10px;">📝 Credit Memo ${_issued?esc(cm):'&mdash; NOT ISSUED YET'}
       <button class="btn btn-sm" style="margin-left:auto;background:transparent;color:#cbd5e1;border-color:#475569;" onclick="document.getElementById('modal-cm').remove()">✕</button></div>
-    <div style="overflow-y:auto;padding:16px;background:#eef2f7;">${buildCreditMemoHtml(rec, ret)}<div id="cm-hist">${cmHistHtml(base, ra, 'cust')}</div></div>
+    <div style="overflow-y:auto;padding:16px;background:#eef2f7;">${_issued?'':`<div style="background:#fef2f2;border:2px solid #fca5a5;border-radius:10px;padding:12px 16px;margin-bottom:14px;color:#7f1d1d;font-size:13px;line-height:1.7;">
+        <div style="font-weight:900;font-size:14px;margin-bottom:5px;">&#9940; This is a preview only &mdash; no credit memo exists yet</div>
+        Nothing is recorded on our side: no credit memo number, no amount, no inspected quantities.
+        <b>It must not be sent or printed for the customer.</b><br>
+        Close this and press <b>&#10003; Confirm &amp; Credit Memo</b> on the return &mdash; that step checks the
+        quantities, sets the amount, takes the next credit memo number and writes it to the books.
+      </div>`}${buildCreditMemoHtml(rec, ret)}<div id="cm-hist">${cmHistHtml(base, ra, 'cust')}</div></div>
     <div style="padding:10px 16px;border-top:1px solid var(--border);display:flex;gap:8px;justify-content:flex-end;flex-wrap:wrap;align-items:center;">
-      <span id="cm-emailed" style="margin-right:auto;font-size:11.5px;font-weight:800;color:#166534;">${(ret.received&&ret.received.cmEmailedAt)?('✅ Emailed to customer · '+new Date(ret.received.cmEmailedAt).toLocaleString()):''}</span>
+      ${_issued?`<span id="cm-emailed" style="margin-right:auto;font-size:11.5px;font-weight:800;color:#166534;">${(ret.received&&ret.received.cmEmailedAt)?('✅ Emailed to customer · '+new Date(ret.received.cmEmailedAt).toLocaleString()):''}</span>
       <input class="fi" id="cm-email" type="email" value="${esc(ret.custEmail||custEmailFor(rec.meta&&rec.meta.cust)||'')}" placeholder="customer@example.com" style="flex:1;min-width:180px;">
       <button class="btn" onclick="printCreditMemo('${esc(base)}','${esc(ra)}')">🖨 Print / PDF</button>
-      <button class="btn btn-primary" id="cm-email-btn" style="background:#0e7490;border-color:#0e7490;" onclick="creditMemoEmail('${esc(base)}','${esc(ra)}')">📧 ${(ret.received&&ret.received.cmEmailedAt)?'Resend to customer':'Email to customer'}</button>
+      <button class="btn btn-primary" id="cm-email-btn" style="background:#0e7490;border-color:#0e7490;" onclick="creditMemoEmail('${esc(base)}','${esc(ra)}')">📧 ${(ret.received&&ret.received.cmEmailedAt)?'Resend to customer':'Email to customer'}</button>`
+      :`<span style="margin-right:auto;font-size:11.5px;font-weight:800;color:#b91c1c;">Nothing can be sent until the return is confirmed.</span>
+      <button class="btn btn-primary" style="background:#16a34a;border-color:#16a34a;font-weight:800;" onclick="document.getElementById('modal-cm').remove();openReturnReceive('${esc(base)}','${esc(ra)}')">✓ Confirm &amp; Credit Memo</button>`}
     </div></div>`;
   document.body.appendChild(div);
 }
@@ -6602,9 +6628,18 @@ function buildCreditMemoEmailBody(rec, ret, cm){
 async function creditMemoEmail(base, ra){
   const rec=savedCache.find(s=>s.base===base); if(!rec) return;
   const ret=recReturns(rec).find(r=>r.ra===ra); if(!ret) return;
+  /* ⚠⚠ CMGUARD-1 - 기록이 없는 크레딧은 절대 내보내지 않는다. 거래처는 우리 장부에 없는
+     금액을 자기 장부에 올리게 되고, 나중에 맞춰볼 방법이 없다. */
+  if(!cmIssued(ret)){
+    alert('\u26d4 This credit memo has NOT been issued \u2014 nothing is recorded on our side.\n\n'
+        + 'If it goes out now, the customer books a credit we have no record of,\n'
+        + 'and the number on it is not a real credit memo number.\n\n'
+        + 'Press  \u2713 Confirm & Credit Memo  on this return first, then send.');
+    return;
+  }
   const email=String((document.getElementById('cm-email')||{}).value||ret.custEmail||'').trim();
   if(!email.includes('@')){ alert('⚠ Enter a valid customer email.'); return; }
-  const cm=(ret.received&&ret.received.cm)||ra.replace(/^RA-/,'CM-');
+  const cm=ret.received.cm;
   const toArr=String(email).split(',').map(e=>e.trim()).filter(e=>e.includes('@'));
   showToast('📧 Building credit memo PDF...');
   try{
@@ -11808,7 +11843,8 @@ function buildCreditMemoDoc(rec, ret){
   const money = n => '$' + Number(n).toLocaleString(undefined, { minimumFractionDigits:2, maximumFractionDigits:2 });
   const meta = rec.meta || {};
   const rc   = ret.received || {};
-  const cm   = rc.cm || String(ret.ra || '').replace(/^RA-/, 'CM-');
+  /* CMGUARD-1 - 번호를 **지어내지 않는다.** 없으면 없다고 찍는다. */
+  const cm   = rc.cm || ret.cm || 'NOT ISSUED';
   /* 돌아온 창고 — 줄에 toWh 가 있으면 그게 진짜 도착지다 */
   const wh   = (ret.lines && ret.lines[0] && (ret.lines[0].toWh || ret.lines[0].wh)) || 'SC';
   const dt   = rc.at ? new Date(rc.at) : new Date();
@@ -15458,6 +15494,16 @@ async function sendInvoiceEmail(){
     const j = await r.json().catch(()=>({}));
     if(!r.ok || j.ok === false) throw new Error(j.error || ('HTTP ' + r.status));
     if(plDrafts[plWh] && em){ plDrafts[plWh].custEmail = em; }
+    /* INVSENT-1 - 「보냈다」 를 인보이스 자체에 적는다. 기록 줄만으로는 셀 수가 없다.
+       ⚠ 위에서 `refreshRec` 이 savedCache 의 객체를 바꿔치기했을 수 있으니 여기서 다시 찾는다.
+       ⚠ 메일은 이미 나갔다 - 이 저장이 실패해도 발송을 되돌리지 않는다. */
+    try{
+      const _r = savedCache.find(x=>x.base===plBase) || rec;
+      _r.inv = _r.inv || {}; _r.inv[plWh] = _r.inv[plWh] || {};
+      _r.inv[plWh].emailedAt = new Date().toISOString();
+      _r.inv[plWh].emailedTo = toList.join(', ');
+      await sbFetch('/rest/v1/pr_orders?base=eq.'+encodeURIComponent(plBase), {method:'PATCH', headers:{Prefer:'return=minimal'}, body:JSON.stringify({inv:_r.inv})});
+    }catch(e){ console.warn('[INVSENT] sent-flag not saved', e); }
     logHist(plBase, 'Invoice emailed (' + invNo + ') → ' + toList.join(', '));
     showToast('✅ Invoice sent (' + keep.length + ' file' + (keep.length>1?'s':'') + ') → ' + toList.join(', '));
     if(attSkipped.length) showToast('⚠ Not attached: ' + attSkipped.join(', '));
@@ -42866,6 +42912,78 @@ function invNpList(){
   out.sort((a,b)=> String(a.at)<String(b.at) ? -1 : (String(a.at)>String(b.at) ? 1 : 0));
   return out;
 }
+/* ═══ INVSENT-1 - 📧 Invoice Not Sent to Customer ═══
+   [stated] 하윤: "invoice not printed처럼 invoice not sent to customer 도 하나 만들자.
+   어짜피 우리는 두개다 해야하는거니까. 이멜도 나가야하고 프린트도 해서 우리가 mas200에
+   다시 넣어야 하니까"
+   인보이스 한 장에는 할 일이 **둘**이다: ① 거래처에 메일 ② 종이로 뽑아 MAS 200 입력.
+   옆 타일(Invoice Not Printed)이 ②를 세니 이 타일이 ①을 센다.
+   ⚠ 「보냈다」 표시(`inv[wh].emailedAt`)는 오늘부터 찍힌다. 그 전에 나간 것은 기록 줄
+     (`Invoice emailed (번호)`) 로 찾는다 - 안 그러면 배포하는 날 이미 보낸 인보이스가
+     전부 「안 보냄」 으로 떠서 타일을 아무도 안 믿게 된다. */
+function invSentAt(rec, wh){
+  const iv = (rec && rec.inv && rec.inv[wh]) || {};
+  if(iv.emailedAt) return String(iv.emailedAt);
+  const no = String(iv.invNo||'').trim();
+  if(!no) return '';
+  const h = (rec && Array.isArray(rec.history)) ? rec.history : [];
+  for(let i=h.length-1; i>=0; i--){
+    const e = String((h[i] && h[i].e) || '');
+    if(e.indexOf('Invoice emailed') === 0 && e.indexOf('(' + no + ')') > 0) return String((h[i] && h[i].t) || '1');
+  }
+  return '';
+}
+function invNsList(){
+  const out = [];
+  (typeof savedCache!=='undefined' ? savedCache : []).forEach(s=>{
+    (s.whs||[]).forEach(w=>{
+      if(w === 'BO' || w === 'NA' || w === 'PD') return;
+      const iv = (s.inv && s.inv[w]) || {};
+      if(!iv.printed) return;              /* 아직 발행 전 - 옆 타일(Not Printed) 몫이다 */
+      if(invSentAt(s, w)) return;          /* 이미 나갔다 */
+      out.push({ base:s.base, wh:w, po:(s.meta&&s.meta.po)||'', cust:(s.meta&&s.meta.cust)||'',
+                 invNo: iv.invNo||'', amt: invNpAmt(s, w),
+                 at: iv.savedAt || (s.pl && s.pl[w] && s.pl[w].savedAt) || s.savedAt,
+                 email: (typeof custEmailFor==='function' ? (custEmailFor(s.meta&&s.meta.cust)||'') : ''),
+                 hold: (typeof holdBlocked==='function' && holdBlocked(s)) });
+    });
+  });
+  out.sort((a,b)=> String(a.at)<String(b.at) ? -1 : (String(a.at)>String(b.at) ? 1 : 0));
+  return out;
+}
+function invNsOpen(){
+  const rows = invNsList();
+  const money = v => '$' + Number(v||0).toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2});
+  const body = rows.length ? rows.map(r=>{
+    const d = String(r.at||'').slice(0,10);
+    return '<div style="display:flex;align-items:center;gap:9px;padding:8px 12px;border-bottom:1px solid #f1f5f9;font-size:12.5px;">'
+      + '<span style="font-family:Consolas,monospace;font-weight:800;color:#0f2a4a;min-width:96px;">PO '+esc(r.po||'—')+'</span>'
+      + '<span style="flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">'+esc(r.cust||'')
+      +   (r.email ? '' : ' <span style="font-size:10px;font-weight:800;color:#b91c1c;">no email on file</span>')+'</span>'
+      + '<span style="font-family:Consolas,monospace;font-size:10.5px;font-weight:800;color:'+(r.wh==='CA'?'#c2410c':'#1d4ed8')+';background:'+(r.wh==='CA'?'#fff7ed':'#eff6ff')+';border-radius:5px;padding:1px 7px;">'+esc(r.wh)+'</span>'
+      + '<span style="font-family:Consolas,monospace;font-size:11px;font-weight:800;color:#0e7490;">'+esc(r.invNo||'—')+'</span>'
+      + '<span class="muted" style="font-size:10.5px;font-family:Consolas,monospace;">'+esc(d)+'</span>'
+      + '<span style="font-family:Consolas,monospace;font-weight:700;min-width:92px;text-align:right;">'+money(r.amt)+'</span>'
+      + '<button class="btn btn-sm" style="padding:2px 9px;font-size:10.5px;background:#0e7490;color:#fff;border-color:#0e7490;font-weight:800;" onclick="document.getElementById(\'modal-invns\').remove();openInvoiceWh(\''+esc(r.base)+'\',\''+esc(r.wh)+'\')" title="Open this invoice and press Email to customer">📧 Open</button>'
+      + '</div>';
+  }).join('') : '<div class="muted" style="padding:26px 14px;text-align:center;font-size:12.5px;">🎉 Every printed invoice has been emailed to the customer.</div>';
+  const tot = rows.reduce((a,r)=>a+(Number(r.amt)||0), 0);
+  const ex = document.getElementById('modal-invns'); if(ex) ex.remove();
+  const div = document.createElement('div');
+  div.id = 'modal-invns';
+  div.style.cssText = 'position:fixed;inset:0;background:rgba(15,23,42,.55);z-index:130;display:flex;align-items:center;justify-content:center;padding:14px;';
+  div.innerHTML = '<div style="background:#fff;border-radius:12px;width:780px;max-width:100%;max-height:86vh;display:flex;flex-direction:column;overflow:hidden;">'
+    + '<div style="background:#0e7490;color:#fff;padding:10px 14px;font-weight:800;font-size:13px;">📧 Invoice Not Sent to Customer'
+    +   '<button class="btn btn-sm" style="float:right;background:transparent;color:#a5f3fc;border-color:#67e8f9;" onclick="document.getElementById(\'modal-invns\').remove()">✕</button>'
+    +   '<div style="font-weight:400;font-size:10.5px;opacity:.92;">The invoice is printed and has a number, but it has not gone out to the customer yet. Open it and press <b>Email to customer</b>.</div></div>'
+    + '<div style="overflow-y:auto;flex:1;">'+body+'</div>'
+    + '<div style="padding:7px 12px;border-top:1px solid #a5f3fc;background:#ecfeff;font-size:12px;font-family:Consolas,monospace;color:#155e75;text-align:right;">'
+    +   '<b>'+rows.length+'</b> waiting &middot; <b>'+money(tot)+'</b> total</div>'
+    + '<div style="padding:8px 12px;border-top:1px solid var(--border);font-size:10.5px;color:#64748b;">Printing an invoice does <b>not</b> email it, and emailing does <b>not</b> replace the paper copy you enter into MAS 200 — each invoice needs both.</div>'
+    + '</div>';
+  document.body.appendChild(div);
+  if(typeof initModalDrag==='function') initModalDrag(div);
+}
 function invNpRowsHtml(){
   const rows = invNpList();
   if(!rows.length) return '<div class="muted" style="padding:26px 14px;text-align:center;font-size:12.5px;">🎉 인쇄할 인보이스가 없어 — 전부 발행됐어.</div>';
@@ -43957,6 +44075,14 @@ function renderKpi(){
     rows.forEach(r=>{ bases.add(r.base); uninvAmt += Number(r.amt)||0; });
     uninv = bases.size;
   })();
+  /* INVSENT-1 - 같은 규칙: 건수는 오더당 1, 금액은 창고별 전부. 타일과 목록이 같은 함수를 본다. */
+  let unsent = 0, unsentAmt = 0;
+  (function(){
+    const rows = (typeof invNsList === 'function') ? invNsList() : [];
+    const bs = new Set();
+    rows.forEach(r=>{ bs.add(r.base); unsentAmt += Number(r.amt)||0; });
+    unsent = bs.size;
+  })();
   cache.forEach(s=>{
     const done = recIsDone(s);
     const shipped = _allShipped(s);
@@ -44077,7 +44203,10 @@ function renderKpi(){
   const _kpiHtml = newsBarHtml() + `<div style="display:grid;grid-template-columns:repeat(6,minmax(0,1fr));gap:8px;margin-bottom:8px;align-items:stretch;">
     ${openTile(open, _oW, _pW, _oAmt, _oWAmt)}
     ${numTile('🔥 Rush', rush.toLocaleString(), '#dc2626', '#fef2f2', "kpiOpenOrders(true)", '', '', _rushAmt, 'Value still to be pulled on rush orders')}
-    ${numTile('🧾 Invoice Not Printed', uninv.toLocaleString(), '#c2410c', '#fff7ed', "invNpOpen()", '', '', uninvAmt, 'Total of every invoice waiting to be printed')}
+    ${`<div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;align-items:stretch;">`
+      + numTile('🧾 Not Printed', uninv.toLocaleString(), '#c2410c', '#fff7ed', "invNpOpen()", '', '', uninvAmt, 'Total of every invoice waiting to be printed')
+      + numTile('📧 Not Sent', unsent.toLocaleString(), '#0e7490', '#ecfeff', "invNsOpen()", '', '', unsentAmt, 'Printed invoices that have not been emailed to the customer yet')
+      + `</div>`}
     ${numTile('📝 CM Not Sent', pret.toLocaleString(), '#ea580c', '#fff7ed', "kpiPendingReturns()", '', '', 0, 'Returns whose credit memo is prepared but not sent to the customer yet')}
     ${numTile('💳 Refund Pending', refund.toLocaleString(), '#7c2d12', '#faf5ff')}
     ${`<div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;align-items:stretch;">`
