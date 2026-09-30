@@ -15537,6 +15537,7 @@ async function sendInvoiceEmail(){
       const _r = savedCache.find(x=>x.base===plBase) || rec;
       _r.inv = _r.inv || {}; _r.inv[plWh] = _r.inv[plWh] || {};
       _r.inv[plWh].emailedAt = new Date().toISOString();
+      _r.inv[plWh].emailedBy = (SESS&&SESS.email)||'';
       _r.inv[plWh].emailedTo = toList.join(', ');
       await sbFetch('/rest/v1/pr_orders?base=eq.'+encodeURIComponent(plBase), {method:'PATCH', headers:{Prefer:'return=minimal'}, body:JSON.stringify({inv:_r.inv})});
     }catch(e){ console.warn('[INVSENT] sent-flag not saved', e); }
@@ -43212,7 +43213,8 @@ function invNpList(){
          줄은 **둘 다 끝나야** 사라진다. 그래서 「메일 깜박했다」 가 안 생긴다.
          ⚠ 메일 쪽은 **우리가 뽑은 것**(`printedAt`)만 따진다 - 예전 MAS 200 인보이스
            540장이 쏟아지지 않게. 날짜 기준이 필요 없어진 자리가 바로 여기다. */
-      const _sent = invSentAt(s, w);
+      const _si = invSentInfo(s, w);
+      const _sent = _si.at;
       const _needPrint = !iv.printed;
       const _needMail = !!iv.printedAt && !_sent;
       if(!_needPrint && !_needMail) return;
@@ -43222,6 +43224,7 @@ function invNpList(){
                  at:(pl && pl.savedAt) || s.savedAt, amt, invNo:iv.invNo||'',
                  locker:_locker,
                  printed:!!iv.printed, printedAt:iv.printedAt||'', sentAt:_sent,
+                 sentBy:_si.by, sentTo:_si.to,
                  email: String((s.meta&&s.meta.custEmail) || (typeof custEmailFor==='function' ? (custEmailFor(s.meta&&s.meta.cust)||'') : '') || ''),
                  hold:(typeof holdBlocked==='function' && holdBlocked(s)) });
     });
@@ -43253,18 +43256,28 @@ function invSentFrom(){
      ⓘ 바꾸려면 배포 없이: localStorage.inv_sent_from = '2026-10-01' */
   return '2026-09-24';
 }
-function invSentAt(rec, wh){
+/* ═══ INVCC-1 - 누가 언제 보냈나 ═══
+   [stated] 하윤: "credit card 거래처 같은경우에는 우리 직원이 erika가 프린트 하기 전에
+   그냥 먼저 invoice 거래처에 보내야할때가 있거든 ... erika가 프린트하면 이멜 이미 나갔으면
+   이멜은 누가 언제 보냈다가 나와서 또 안보내게 하자"
+   ⚠ 같은 인보이스가 거래처에 두 번 가면 저쪽 회계가 두 장으로 잡는다. **누가 언제** 를
+     줄에 박아 두는 것이 「또 보내지 마라」 를 말하는 가장 확실한 방법이다. */
+function invSentInfo(rec, wh){
   const iv = (rec && rec.inv && rec.inv[wh]) || {};
-  if(iv.emailedAt) return String(iv.emailedAt);
+  if(iv.emailedAt) return { at:String(iv.emailedAt), by:String(iv.emailedBy||''), to:String(iv.emailedTo||'') };
   const no = String(iv.invNo||'').trim();
-  if(!no) return '';
+  if(!no) return { at:'', by:'', to:'' };
   const h = (rec && Array.isArray(rec.history)) ? rec.history : [];
   for(let i=h.length-1; i>=0; i--){
     const e = String((h[i] && h[i].e) || '');
-    if(e.indexOf('Invoice emailed') === 0 && e.indexOf('(' + no + ')') > 0) return String((h[i] && h[i].t) || '1');
+    if(e.indexOf('Invoice emailed') === 0 && e.indexOf('(' + no + ')') > 0){
+      const m = e.split('\u2192');
+      return { at:String((h[i] && h[i].t) || '1'), by:String((h[i] && h[i].by) || ''), to:String((m[1]||'').trim()) };
+    }
   }
-  return '';
+  return { at:'', by:'', to:'' };
 }
+function invSentAt(rec, wh){ return invSentInfo(rec, wh).at; }
 /* INVDO-1 - 「Not Sent」 목록·타일은 없앴다. 인쇄와 발송을 **한 줄에서** 끝내는 쪽이
    헷갈릴 자리가 없다 (하윤 결정, 2026-09-30). `invSentAt`·`invSentFrom` 은 그대로 쓰인다. */
 /* ═══ INVDO-1 - 화면(PL 탭)을 거치지 않고 한 장 보내기 ═══
@@ -43342,7 +43355,8 @@ async function invSendFor(base, wh, toList){
   if(!r.ok || j.ok === false) throw new Error(j.error || ('HTTP ' + r.status));
   /* 나갔다 - 여기서부터는 실패해도 되돌리지 않는다 */
   const _r = savedCache.find(x=>x.base===base) || rec;
-  _r.inv = _r.inv || {}; _r.inv[wh] = { ..._r.inv[wh], invNo, emailedAt:new Date().toISOString(), emailedTo:toList.join(', ') };
+  _r.inv = _r.inv || {}; _r.inv[wh] = { ..._r.inv[wh], invNo, emailedAt:new Date().toISOString(),
+    emailedBy:(SESS&&SESS.email)||'', emailedTo:toList.join(', ') };
   _r.meta = _r.meta || {}; _r.meta.custEmail = toList.join(', ');
   try{ await sbFetch('/rest/v1/pr_orders?base=eq.'+encodeURIComponent(base), {method:'PATCH', headers:{Prefer:'return=minimal'},
         body: JSON.stringify({ inv:_r.inv, meta:_r.meta })}); }catch(e){ console.warn('[INVDO] flag not saved', e); }
@@ -43357,9 +43371,15 @@ async function invNpSend(base, wh, btnId){
   if(!to.length){ alert('\u26a0 Type the customer email address in the box on this row first.'); if(inp) inp.focus(); return; }
   const rec = savedCache.find(s=>s.base===base);
   const amt = rec ? invNpAmt(rec, wh) : 0;
+  const _iv = (rec && rec.inv && rec.inv[wh]) || {};
+  const _noYet = !String(_iv.invNo||'').trim();
   if(!confirm('\ud83d\udce7 Send this invoice?\n\n   ' + ((rec&&rec.meta&&rec.meta.cust)||'') + '  PO ' + ((rec&&rec.meta&&rec.meta.po)||'')
     + '\n   ' + wh + '  $' + Number(amt).toFixed(2)
-    + '\n\n\u2192 ' + to.join(', '))) return;
+    + (_iv.invNo ? ('\n   Invoice # ' + _iv.invNo) : '')
+    + '\n\n\u2192 ' + to.join(', ')
+    /* INVCC-1 - 아직 안 뽑았으면 이 발송이 번호를 가져간다. 말없이 가져가지 않는다. */
+    + (_noYet ? '\n\n\u26a0 It has not been printed yet \u2014 sending now gives it its invoice number.\n   It stays on this list until somebody prints it for MAS 200.' : '')
+  )) return;
   const b = document.getElementById('invnp-mail-' + btnId);
   if(b){ b.disabled = true; b.textContent = 'Sending\u2026'; }
   try{
@@ -43411,11 +43431,21 @@ function invNpRowsHtml(){
       : (r.printed
         ? '<button class="btn btn-sm" style="padding:3px 10px;font-size:10.5px;background:#f0fdf4;color:#15803d;border-color:#86efac;font-weight:800;white-space:nowrap;" onclick="invNpPrintOne(\'' + eb + '\',\'' + ew + '\')" title="Already printed \u2014 press to print the same invoice again (the number does not change)">\u2713 Reprint</button>'
         : '<button class="btn btn-sm" style="padding:3px 10px;font-size:10.5px;background:#c2410c;color:#fff;border-color:#c2410c;font-weight:800;white-space:nowrap;" onclick="invNpPrintOne(\'' + eb + '\',\'' + ew + '\')" title="Print it \u2014 the invoice takes its number and the order turns Complete">\ud83d\udda8 Print</button>');
-    const mailBtn = !r.printed
-      ? '<button class="btn btn-sm" disabled style="padding:3px 10px;font-size:10.5px;background:#f1f5f9;color:#94a3b8;border-color:#e2e8f0;font-weight:800;white-space:nowrap;cursor:not-allowed;" title="Print it first \u2014 an invoice with no number must not go to the customer">\ud83d\udce7 Email</button>'
-      : (r.sentAt
-        ? '<button class="btn btn-sm" id="invnp-mail-' + id + '" style="padding:3px 10px;font-size:10.5px;background:#ecfeff;color:#155e75;border-color:#67e8f9;font-weight:800;white-space:nowrap;" onclick="invNpSend(\'' + eb + '\',\'' + ew + '\',\'' + id + '\')" title="Sent ' + esc(String(r.sentAt).slice(0,16).replace("T"," ")) + ' \u2014 press to send it again">\u2713 Resend</button>'
-        : '<button class="btn btn-sm" id="invnp-mail-' + id + '" style="padding:3px 10px;font-size:10.5px;background:#0e7490;color:#fff;border-color:#0e7490;font-weight:800;white-space:nowrap;" onclick="invNpSend(\'' + eb + '\',\'' + ew + '\',\'' + id + '\')" title="Email the invoice, packing list and your PO to this address">\ud83d\udce7 Email</button>');
+    /* ═══ INVCC-1 - 이미 나갔으면 **단추를 없애고** 누가 언제 보냈는지를 보여준다 ═══
+       [stated] 하윤: 카드 거래처는 직원이 프린트 전에 먼저 보내는 일이 있다. 그때 에리카는
+       아침에 이 목록을 보고 **프린트만** 하면 끝이어야 한다 - 또 보내면 거래처 회계가
+       같은 인보이스를 두 장으로 잡는다.
+       ⓘ 그래서 프린트 전에도 메일을 보낼 수 있게 열어 뒀다 (보내는 순간 번호가 붙는다).
+       ⓘ 다시 보내야 하면 인보이스 화면에서 보낸다 - 이 줄에서는 일부러 못 하게 둔다. */
+    const _who = String(r.sentBy||'').split('@')[0];
+    const mailBtn = r.sentAt
+      ? '<span style="display:inline-flex;align-items:center;gap:5px;background:#f0fdf4;border:1px solid #86efac;border-radius:7px;padding:3px 9px;font-size:10px;font-weight:800;color:#15803d;white-space:nowrap;"'
+        + ' title="Already emailed to ' + esc(r.sentTo||'the customer') + ' \u2014 do not send it again. Just print it.">'
+        + '\u2713 emailed' + (_who ? ' \u00b7 ' + esc(_who) : '') + ' \u00b7 ' + esc(String(r.sentAt).slice(0,10)) + '</span>'
+      : '<button class="btn btn-sm" id="invnp-mail-' + id + '" style="padding:3px 10px;font-size:10.5px;background:#0e7490;color:#fff;border-color:#0e7490;font-weight:800;white-space:nowrap;" onclick="invNpSend(\'' + eb + '\',\'' + ew + '\',\'' + id + '\')" title="'
+        + (r.printed ? 'Email the invoice, packing list and your PO to this address'
+                     : 'Send it now, before printing \u2014 the invoice takes its number as it goes out. Erika still needs to print it for MAS 200.')
+        + '">\ud83d\udce7 Email</button>';
     const noEm = !String(r.email||'').includes('@');
     return '<div style="display:flex;align-items:center;gap:10px;padding:9px 12px;border-bottom:1px solid #f1f5f9;font-size:12.5px;' + (r.printed ? 'background:#f6feff;' : '') + '">'
       + lead
