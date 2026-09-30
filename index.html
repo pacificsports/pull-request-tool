@@ -34373,13 +34373,17 @@ async function trBuilderOpen(existingId, route){
     if(trIsMultiRoute(_shipRoute)){
       const _st = trStopsOf({meta:_shipMeta});
       _shipPallets.forEach(p=>{ const i = trStopIdxOfPallet({meta:_shipMeta}, p); if(_st.length && i>=0) p.stop = i; });
-      /* OSCASTOP-1 - 위 줄은 정차지를 못 찾으면 **마지막 정차지**를 준다 (안전한 기본값이라 일부러 그렇다).
-         오더만 실린 팔레트에는 그게 틀린 답이다 - 실린 오더가 이미 답을 알고 있다. 여기서 바로잡는다. */
-      try{ trOsSyncStops(); }catch(e){}
     }
   }
   // 🚚 오더 박스만 실린 팔레트도 유지 (라인이 없어도 사라지지 않게)
   try{ ((_shipMeta.orderShip)||[]).forEach(o=>{ if(o.pallet && !_shipPallets.some(p=>p.label===o.pallet)) _shipPallets.push({ id:'p_'+Math.random().toString(36).slice(2,9), label:o.pallet, lines:[] }); }); }catch(e){}
+  /* ⚠⚠ OSCASTOP-1 (고침 2) - 이 줄은 **반드시 위 복원 루프 뒤에** 있어야 한다.
+     오더만 실린 팔레트는 줄이 하나도 없어서 `trLinesFlat()` 로 안 돌아온다. 바로 위 루프가
+     `meta.orderShip[].pallet` 를 보고 **그때** 다시 만드는데, 정차지 없이 만든다.
+     정차지가 없으면 앱 기본값이 **마지막 정차지**(= MC)라 CA 로 갈 오더가 MC 로 보였다.
+     🔴 처음 고칠 때 이 줄을 루프 **앞**에 뒀다 - 그래서 아무 것도 안 고쳐졌다 (하윤: "이것도 안고쳐졌는데").
+     ⓘ 실린 오더가 답을 알고 있다 (`osOrderKind`). trOsSyncStops 가 그걸로 정차지를 박는다. */
+  if(trIsMultiRoute(_shipRoute)){ try{ trOsSyncStops(); }catch(e){} }
   // 3rd party 출발은 bin(=팔레트) 단위로 통째로 오므로 빈 팔레트를 미리 만들지 않는다
   if(_shipPallets.length===0 && !trSrcAutoPallet(_shipRoute)) _shipPallets.push({ id:'p_'+Math.random().toString(36).slice(2,9), label:'Pallet 1', lines:[] });
   const today = new Date().toISOString().slice(0,10);
@@ -35675,7 +35679,8 @@ function trOsSyncStops(){
         if(p && p.lines && p.lines.length) return;
         const mine = _os.filter(x=>x && x.pallet === p.label);
         if(!mine.length) return;
-        const ks = [...new Set(mine.map(x=>osOrderKind(x.base)).filter(Boolean))];
+        /* 줄에 박아둔 값이 1순위, 없으면 오더에서 찾는다 (옛 줄) */
+        const ks = [...new Set(mine.map(x=>String((x && x.kind) || osOrderKind(x.base) || '')).filter(Boolean))];
         if(ks.length !== 1) return;
         const i = _st.indexOf(ks[0]);
         if(i >= 0) p.stop = i;
@@ -37585,6 +37590,9 @@ async function trOrderShipAdd(){
     labs.forEach((lb, i)=>{
       const rec = { base, rid:(np>1 ? (base+'#'+(i+1)) : base), cust, po,
         boxes:bxs[i], pcs:pcs[i], pallet:lb, addedAt:_now, addedBy:_by };
+      /* OSCASTOP-1 - 내리는 곳을 **줄에 박아 둔다.** savedCache 가 아직 안 찼거나 그 오더가
+         목록에서 빠져도(완료 처리 등) 종이와 화면이 같은 답을 낸다. */
+      try{ const _k2 = osOrderKind(base); if(_k2) rec.kind = _k2; }catch(e){}
       if(np>1){ rec.part = i+1; rec.parts = np; }
       _shipMeta.orderShip.push(rec);
     });
@@ -43014,6 +43022,17 @@ function invNpList(){
    ⚠ 「보냈다」 표시(`inv[wh].emailedAt`)는 오늘부터 찍힌다. 그 전에 나간 것은 기록 줄
      (`Invoice emailed (번호)`) 로 찾는다 - 안 그러면 배포하는 날 이미 보낸 인보이스가
      전부 「안 보냄」 으로 떠서 타일을 아무도 안 믿게 된다. */
+/* INVSENT-2 - 이 타일은 **오늘 이후에 우리가 뽑은 인보이스**만 센다.
+   [stated] 하윤: "저기 not sent에 저게 다나오면 안되고 지금 우리가 print안한것부터 나오게 하자.
+   나머지는 이미 다 우리가 mas200에서 인보이스 뽑아서 따로 보냈어"
+   🔴 그전까지: 481건이 떴다. 예전 인보이스는 MAS 200 에서 뽑아 따로 보냈으니 psflowx 에는
+      「보냈다」 기록이 있을 수가 없다. 숫자가 그렇게 크면 아무도 그 타일을 안 본다.
+   ⓘ 날짜를 바꾸고 싶으면 배포 없이: localStorage.inv_sent_from = '2026-10-15' */
+function invSentFrom(){
+  try{ const v = String(localStorage.getItem('inv_sent_from')||'').trim();
+       if(/^\d{4}-\d{2}-\d{2}$/.test(v)) return v; }catch(e){}
+  return '2026-09-30';
+}
 function invSentAt(rec, wh){
   const iv = (rec && rec.inv && rec.inv[wh]) || {};
   if(iv.emailedAt) return String(iv.emailedAt);
@@ -43034,9 +43053,12 @@ function invNsList(){
       const iv = (s.inv && s.inv[w]) || {};
       if(!iv.printed) return;              /* 아직 발행 전 - 옆 타일(Not Printed) 몫이다 */
       if(invSentAt(s, w)) return;          /* 이미 나갔다 */
+      const _at = iv.savedAt || (s.pl && s.pl[w] && s.pl[w].savedAt) || s.savedAt;
+      /* INVSENT-2 - 날짜를 모르는 것도 뺀다. 모르는 것을 「안 보냈다」 고 몰아세우지 않는다. */
+      if(!_at || String(_at).slice(0,10) < invSentFrom()) return;
       out.push({ base:s.base, wh:w, po:(s.meta&&s.meta.po)||'', cust:(s.meta&&s.meta.cust)||'',
                  invNo: iv.invNo||'', amt: invNpAmt(s, w),
-                 at: iv.savedAt || (s.pl && s.pl[w] && s.pl[w].savedAt) || s.savedAt,
+                 at: _at,
                  email: (typeof custEmailFor==='function' ? (custEmailFor(s.meta&&s.meta.cust)||'') : ''),
                  hold: (typeof holdBlocked==='function' && holdBlocked(s)) });
     });
@@ -43059,7 +43081,7 @@ function invNsOpen(){
       + '<span style="font-family:Consolas,monospace;font-weight:700;min-width:92px;text-align:right;">'+money(r.amt)+'</span>'
       + '<button class="btn btn-sm" style="padding:2px 9px;font-size:10.5px;background:#0e7490;color:#fff;border-color:#0e7490;font-weight:800;" onclick="document.getElementById(\'modal-invns\').remove();openInvoiceWh(\''+esc(r.base)+'\',\''+esc(r.wh)+'\')" title="Open this invoice and press Email to customer">📧 Open</button>'
       + '</div>';
-  }).join('') : '<div class="muted" style="padding:26px 14px;text-align:center;font-size:12.5px;">🎉 Every printed invoice has been emailed to the customer.</div>';
+  }).join('') : '<div class="muted" style="padding:26px 14px;text-align:center;font-size:12.5px;">🎉 Every invoice raised here since '+esc(invSentFrom())+' has been emailed to the customer.</div>';
   const tot = rows.reduce((a,r)=>a+(Number(r.amt)||0), 0);
   const ex = document.getElementById('modal-invns'); if(ex) ex.remove();
   const div = document.createElement('div');
@@ -43072,7 +43094,7 @@ function invNsOpen(){
     + '<div style="overflow-y:auto;flex:1;">'+body+'</div>'
     + '<div style="padding:7px 12px;border-top:1px solid #a5f3fc;background:#ecfeff;font-size:12px;font-family:Consolas,monospace;color:#155e75;text-align:right;">'
     +   '<b>'+rows.length+'</b> waiting &middot; <b>'+money(tot)+'</b> total</div>'
-    + '<div style="padding:8px 12px;border-top:1px solid var(--border);font-size:10.5px;color:#64748b;">Printing an invoice does <b>not</b> email it, and emailing does <b>not</b> replace the paper copy you enter into MAS 200 — each invoice needs both.</div>'
+    + '<div style="padding:8px 12px;border-top:1px solid var(--border);font-size:10.5px;color:#64748b;">Printing an invoice does <b>not</b> email it, and emailing does <b>not</b> replace the paper copy you enter into MAS 200 — each invoice needs both.<br>Only invoices raised here from <b>'+esc(invSentFrom())+'</b> onward are counted. Anything older was invoiced out of MAS 200 and sent separately, so it is not listed.</div>'
     + '</div>';
   document.body.appendChild(div);
   if(typeof initModalDrag==='function') initModalDrag(div);
