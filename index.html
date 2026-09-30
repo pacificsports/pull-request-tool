@@ -6263,15 +6263,38 @@ async function returnMarkReceived(base, ra){
   renderSaved();
   printReturnInspection(base, ra);
 }
+/* RRMAIL-1 - 「물건 받았습니다」 메일도 집 옷(psmWrap)으로.
+   RA · Credit Memo · Order Shipped 와 같은 머리·같은 표·같은 꼬리라야 거래처가
+   한 회사에서 온 메일로 읽는다. 이 메일만 옛 남색 띠 그대로 남아 있었다.
+   ⚠ 남색(#0f2a4a)은 우리 내부 서류(PDF·인쇄물) 색이다 - 그쪽은 안 건드린다.
+   ⓘ 이 시점에는 아직 검품 전이라 `receivedQty` 가 없다. RA 에 적힌 수량을 보여주고,
+     최종 금액은 검품 뒤에 정해진다고 본문에 적는다. */
 async function sendReturnReceivedEmail(rec, ret, email){
   const meta=rec.meta||{};
-  const lineRows=(ret.lines||[]).map(l=>`<tr><td style="border:1px solid #ddd;padding:5px 8px;font-weight:700;">${esc(l.style)}</td><td style="border:1px solid #ddd;padding:5px 8px;">${esc(bxBaseColor(l.color))}</td><td style="border:1px solid #ddd;padding:5px 8px;text-align:center;">${esc(l.size)}</td><td style="border:1px solid #ddd;padding:5px 8px;text-align:right;font-weight:700;">${(Number(l.qty)||0).toLocaleString()}</td></tr>`).join('');
-  const html=`<div style="font-family:Helvetica,Arial,sans-serif;font-size:14px;color:#111;">
-    <table width="100%" cellpadding="0" cellspacing="0" style="background:#0f2a4a;border-collapse:collapse;"><tr><td style="padding:12px 18px;"><span style="color:#fff;font-size:19px;font-weight:900;letter-spacing:2px;">PACIFIC SPORTS</span></td><td style="padding:12px 18px;text-align:right;color:#fff;font-size:15px;font-weight:800;letter-spacing:1.5px;white-space:nowrap;">RETURN RECEIVED</td></tr></table>
-    <p style="margin-top:16px;">Hello,</p>
-    <p>We have <b>received</b> your returned items for <b>RA ${esc(ret.ra)}</b> (PO ${esc(meta.po||'')}). Our team is now inspecting them and a credit memo will be issued shortly.</p>
-    <table style="border-collapse:collapse;font-size:13px;margin-top:6px;"><thead><tr style="background:#f3f4f6;"><th style="border:1px solid #ddd;padding:5px 8px;text-align:left;">Style</th><th style="border:1px solid #ddd;padding:5px 8px;text-align:left;">Color</th><th style="border:1px solid #ddd;padding:5px 8px;">Size</th><th style="border:1px solid #ddd;padding:5px 8px;">Qty</th></tr></thead><tbody>${lineRows}</tbody></table>
-    <p style="margin-top:16px;">Thank you.</p></div>`;
+  const _ls=(ret.lines||[]);
+  const lineRows=_ls.map((l,_n)=>`<tr style="background:${_n % 2 ? '#faf9f5' : '#fdfdfb'};">`
+    + psmTd('<b>'+esc(l.style)+'</b>')
+    + psmTd(esc(bxBaseColor(l.color)))
+    + psmTd(esc(l.size), 'center')
+    + psmTd('<b>'+(Number(l.qty)||0).toLocaleString()+'</b>', 'right')
+    + '</tr>').join('');
+  const _tot=_ls.reduce((a,l)=>a+(Number(l.qty)||0),0);
+  const _cm=(typeof retCmNo==='function') ? retCmNo(ret) : '';
+  const html=psmWrap('Return Received',
+      psmHead('Return received', 'RA # ' + esc(ret.ra) + (meta.po ? (' &middot; PO # ' + esc(meta.po)) : ''))
+    + psmP('We have <b>received</b> your returned items. Our team is inspecting them now, and a credit memo will follow.')
+    + psmTable(
+        psmRow('RA #', esc(ret.ra))
+      + psmRow('PO #', esc(meta.po||'—'))
+      + psmRow('Received', new Date(ret.arrivedAt || Date.now()).toLocaleDateString('en-US'))
+      + psmRow('Total', _tot.toLocaleString()+' pcs')
+      + (_cm ? psmRow('Credit memo #', '<b>'+esc(_cm)+'</b>') : ''))
+    + psmList(psmTh('Style') + psmTh('Color') + psmTh('Size','center') + psmTh('Qty','right'), lineRows)
+    + psmNote('&#128179; &nbsp;' + (_cm
+        ? ('Credit memo <b>' + esc(_cm) + '</b> is already prepared for this return and will be issued once inspection is complete.')
+        : 'A credit memo will be issued once inspection is complete.')
+      + ' The credited quantities are set by the inspection, so they may differ from the list above.')
+    + psmP('Questions about this return? Just reply to this email.'));
   const toArr=String(email).split(',').map(e=>e.trim()).filter(e=>e.includes('@'));
   const r=await fetch('https://po-confirm-email.hjbae.workers.dev/send-pl', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({ to:toArr, subject:'Return Received — RA '+ret.ra+' · '+((meta.cust)||'')+' PO '+((meta.po)||''), html, cc: STAFF_EMAILS, reply_to: MAIL_REPLY_TO })});
   if(!r.ok){ const je=await r.json().catch(()=>({})); throw new Error(je.error||je.message||('HTTP '+r.status)); }
@@ -35002,8 +35025,10 @@ async function trSplitPallet(pid){
   if(!newId){ showToast('⚠ Could not create the new shipment — nothing was changed'); return; }
   /* 원래 초안에서 뺀다. 박스 PATCH 는 하지 않는다 — 새 행이 같은 박스 id 를 들고 있다. */
   _shipPallets = _shipPallets.filter(x=>x.id!==pid);
-  const gone = new Set(myOrders.map(o=>o.base));
-  _shipMeta.orderShip = ((_shipMeta.orderShip)||[]).filter(o=>!gone.has(o.base));
+  /* OSSPLIT-1 - 줄 단위로 뺀다. `base` 로 빼면 **다른 팔레트에 남아 있는 같은 오더의 몫까지**
+     같이 사라진다 (오더가 여러 팔레트에 나뉘어 실리고부터 생긴 자리다). */
+  const gone = new Set(myOrders.map(o=>osRid(o)));
+  _shipMeta.orderShip = ((_shipMeta.orderShip)||[]).filter(o=>!gone.has(osRid(o)));
   try{ if(_shipMeta.designatedByPallet) delete _shipMeta.designatedByPallet[p.label]; }catch(e){}
   try{ delete trHbinMap()[p.label]; }catch(e){}
   if(!trSrcAutoPallet(_shipRoute)){
@@ -35563,8 +35588,8 @@ function trOsSyncStops(){
 }
 /* MSOSDRAG-1 - 오더 하나를 팔레트로 옮긴다. pid 가 비면 새 팔레트를 만든다
    (맨 아래 「새 팔레트」 칸에 놓았을 때 - 줄 끌기와 같은 규칙). */
-async function trOsMoveTo(base, pid){
-  const o = ((_shipMeta&&_shipMeta.orderShip)||[]).find(x=>x.base===base);
+async function trOsMoveTo(rid, pid){
+  const o = osFindRid(rid);
   if(!o) return;
   let tgt;
   if(!pid){
@@ -37049,7 +37074,7 @@ async function trPost(){
     if(_need.length){ await trPatchBoxes(_need, {wh:'TRANSIT'}); const _s=new Set(_need); bxStore.forEach(b=>{ if(_s.has(b.id)) b.wh='TRANSIT'; }); }
   }catch(e){}
   // 🚚 실린 Ship-from-CA 오더들을 "SC몫 CA로 이동중" 표시
-  try{ for(const o of ((_shipMeta.orderShip)||[])){ await _scToCaMark(o.base, 'transit', _shipNo); } if(typeof renderSaved==='function') renderSaved(); }catch(e){}
+  try{ for(const b of osBases((_shipMeta.orderShip)||[])){ await _scToCaMark(b, 'transit', _shipNo); } if(typeof renderSaved==='function') renderSaved(); }catch(e){}
   await trSendShipEmail(D, notify);   // 직원 알림 이메일 (실패해도 post 는 유지 — 내부에서 catch)
   const m = document.getElementById('modal-trb'); if(m) m.remove();
   _shipId = null; _shipNo = null; _shipMeta = {}; _shipPallets = [];
@@ -37096,7 +37121,7 @@ async function trPostFromList(id){
     const need = bxStore.filter(b=>pids.includes(b.id) && bxWh(b)!=='TRANSIT').map(b=>b.id);
     if(need.length){ await trPatchBoxes(need, {wh:'TRANSIT'}); const st=new Set(need); bxStore.forEach(b=>{ if(st.has(b.id)) b.wh='TRANSIT'; }); }
   }catch(e){}
-  try{ for(const o of (((rec.meta||{}).orderShip)||[])) await _scToCaMark(o.base, 'transit', rec.ref); if(typeof renderSaved==='function') renderSaved(); }catch(e){}
+  try{ for(const b of osBases(((rec.meta||{}).orderShip)||[])) await _scToCaMark(b, 'transit', rec.ref); if(typeof renderSaved==='function') renderSaved(); }catch(e){}
   try{
     const pm = {}; lines.forEach(l=>{ const k=l.pallet||'Pallet 1'; (pm[k]=pm[k]||[]).push(l); });
     await trSendShipEmail({ no:rec.ref, meta:rec.meta||{}, route:trRoute(rec),
@@ -37303,8 +37328,10 @@ async function trOrderShipOpen(){
   if(elig.length){
     try{
       const bases=elig.map(r=>r.base);
-      const r=await sbFetch('/rest/v1/pr_pack?wh=eq.SC&select=base,total_boxes,boxes&base=in.('+bases.map(b=>'"'+b+'"').join(',')+')');
-      if(r.ok){ (await r.json()).forEach(p=>{ packMap[p.base]={boxes:(p.total_boxes!=null?p.total_boxes:(Array.isArray(p.boxes)?p.boxes.length:0))}; }); }
+      /* OSSPLIT-1 - `pallets` 는 SC 창고가 쌀 때 직접 친 팔레트 장수다. 그게 진실이라
+         「몇 장에 나눌까」 의 기본값으로 그대로 쓴다 (매니저가 고칠 수 있다). */
+      const r=await sbFetch('/rest/v1/pr_pack?wh=eq.SC&select=base,total_boxes,boxes,pallets&base=in.('+bases.map(b=>'"'+b+'"').join(',')+')');
+      if(r.ok){ (await r.json()).forEach(p=>{ packMap[p.base]={boxes:(p.total_boxes!=null?p.total_boxes:(Array.isArray(p.boxes)?p.boxes.length:0)), pals:Math.max(0, parseInt(p.pallets,10)||0)}; }); }
     }catch(e){}
   }
   const ex=document.getElementById('modal-oship'); if(ex) ex.remove();
@@ -37326,10 +37353,15 @@ async function trOrderShipOpen(){
     const estBx=Object.keys(_ppbGrp).reduce((s,pb)=>s+Math.ceil(_ppbGrp[pb]/Number(pb)),0);
     const packed=packedBx>0;
     const bx=packed?packedBx:estBx;   // 매니저가 모달에서 수정 가능
+    /* OSSPLIT-1 - 창고가 적어둔 장수가 있으면 그것, 없으면 1 */
+    const nPal=Math.max(1, (packMap[r.base]||{}).pals||1);
     return `<label style="display:flex;align-items:center;gap:10px;padding:9px 11px;border:1px solid #e5e7eb;border-radius:9px;margin-bottom:7px;cursor:pointer;">
       <input type="checkbox" class="oship-cb" data-base="${esc(r.base)}" data-cust="${esc(String(r.meta.cust||'').replace(/"/g,''))}" data-po="${esc(String(r.meta.po||'').replace(/"/g,''))}" data-boxes="${bx}" data-pcs="${scPcs}" checked style="width:16px;height:16px;">
       <div style="flex:1;min-width:0;"><div style="font-weight:800;color:#0f2a4a;">${esc(r.meta.cust||'—')}${(_msOn && (window._oshipKind||{})[r.base]) ? ` <span style="font-size:10px;font-weight:800;color:#6d28d9;background:#f3e8ff;border-radius:20px;padding:2px 7px;vertical-align:1px;" title="Belongs at the ${esc(trStopPfx((window._oshipKind||{})[r.base]))} stop">${esc(trStopPfx((window._oshipKind||{})[r.base]))}</span>` : ''}</div><div style="font-size:11px;color:#64748b;">PO ${esc(r.meta.po||'—')} · SC ${scPcs.toLocaleString()} pcs</div></div>
       ${packed?`<span style="font-size:11px;font-weight:800;color:#16a34a;background:#dcfce7;border-radius:20px;padding:3px 10px;">📦 ${bx} box</span>`:`<span style="font-size:11px;font-weight:800;color:#b45309;background:#fff7ed;border-radius:20px;padding:3px 10px;" title="Estimated from pcs — SC hasn't packed boxes yet. Edit on the pallet if needed.">≈ ${bx} box (est)</span>`}
+      <span style="display:flex;align-items:center;gap:4px;font-size:10.5px;font-weight:800;color:#7b1fa2;white-space:nowrap;" title="How many pallets this order takes up. 2 or more gives this order its own pallets and splits the boxes between them.">on
+        <input type="number" class="oship-np" min="1" max="20" value="${nPal}" onclick="event.stopPropagation();" style="width:48px;font-size:13px;padding:3px 4px;text-align:center;font-weight:800;border:1.5px solid #d8b4fe;border-radius:6px;">
+        pallet(s)</span>
     </label>`;
   }).join('') : (trOrderShipToCust(_shipRoute)
       ? `<div style="color:#94a3b8;font-size:12.5px;padding:14px;text-align:center;">No ${esc(trLkCustMatch())} order is waiting with SC boxes. (Orders already marked Complete are not listed.)</div>`
@@ -37353,8 +37385,11 @@ async function trOrderShipOpen(){
         ? `<div style="font-size:11.5px;color:#6d28d9;background:#faf5ff;border:1px solid #ddd6fe;border-radius:8px;padding:8px 10px;margin-bottom:10px;">📍 This truck makes several stops. <b>The pallet decides where an order comes off</b> — put ${esc(trLkCustMatch())} orders on an <b>MC</b> pallet and Ship-from-CA orders on a <b>CA</b> pallet.</div>`
         : ''}
       <div style="display:flex;align-items:center;gap:8px;margin-bottom:12px;padding:8px 10px;background:#faf5ff;border:1px solid #e9d5ff;border-radius:8px;">
-        <span style="font-size:12px;font-weight:800;color:#7b1fa2;">📍 Put on pallet:</span>
+        <span style="font-size:12px;font-weight:800;color:#7b1fa2;white-space:nowrap;">📍 1-pallet orders go on:</span>
         <select id="oship-pallet" class="fi" style="font-size:12px;padding:5px 8px;flex:1;">${palOpts}</select>
+      </div>
+      <div style="font-size:11.5px;color:#7b1fa2;background:#fdf4ff;border:1px solid #f0abfc;border-radius:8px;padding:8px 10px;margin-bottom:10px;">
+        📦 <b>An order that needs 2 or more pallets gets its own new pallets</b> — the boxes are split between them evenly, and each pallet gets its own Pull Request. Change a pallet's box count on its card afterwards if the warehouse split them differently.
       </div>
       ${rows}
       ${(trOrderShipToCust(_shipRoute) && (Number(window._oshipHidden)||0))
@@ -37396,37 +37431,94 @@ async function trOrderShipAdd(){
     pal=_shipPallets[_shipPallets.length-1].label;
   }
   if(!pal){ pal=(_shipPallets[0]||{}).label||'Pallet 1'; }
+  _shipMeta=_shipMeta||{}; _shipMeta.orderShip=_shipMeta.orderShip||[];
+  /* ═══ OSSPLIT-1 - 오더 하나가 팔레트 여러 장을 먹는다 ═══
+     한 장이면 예전 그대로 위에서 고른 팔레트에 얹는다. 두 장 이상이면 **그 오더 몫으로**
+     새 팔레트를 그만큼 만들고 박스·장수를 고르게 나눈다. 정차지는 그 오더가 내릴 곳으로
+     박아 둔다 - 안 그러면 서류가 마지막 정차지로 떨어진다.
+     ⚠ 팔레트 카드의 boxes 칸에서 나중에 손으로 고칠 수 있다 (창고가 다르게 쌓았을 때). */
+  const _asSt = trIsMultiRoute(_shipRoute) ? trStopsOf({meta:_shipMeta}) : [];
+  const _asKind = window._oshipKind || {};
+  const _now = new Date().toISOString(), _by = (SESS&&SESS.email)||'';
+  let _madePal = 0;
+  cbs.forEach(c=>{
+    const base = c.getAttribute('data-base');
+    const row = (c.closest && c.closest('label')) || null;
+    const npEl = row ? row.querySelector('.oship-np') : null;
+    const np = Math.max(1, Math.min(20, parseInt(npEl && npEl.value, 10) || 1));
+    const tb = parseInt(c.getAttribute('data-boxes'),10)||0;
+    const tp = parseInt(c.getAttribute('data-pcs'),10)||0;
+    const cust = c.getAttribute('data-cust')||'', po = c.getAttribute('data-po')||'';
+    /* 이 오더가 내리는 정차지. 후보 목록이 이미 갈래(CA / LK)를 적어 뒀다. */
+    let sIdx = -1;
+    if(_asSt.length){
+      const k = _asKind[base];
+      const i = k ? _asSt.indexOf(k) : -1;
+      sIdx = (i >= 0) ? i : (_asSt.length - 1);
+    }
+    let labs;
+    if(np >= 2){
+      labs = [];
+      for(let i=0;i<np;i++){ labs.push(osNewPallet(sIdx).label); _madePal++; }
+    }else{
+      labs = [pal];
+    }
+    const bxs = osSplitN(tb, np), pcs = osSplitN(tp, np);
+    /* 같은 오더를 다시 실으면(후보 목록에서 걸러지므로 드물다) 옛 줄을 먼저 치운다 */
+    _shipMeta.orderShip = _shipMeta.orderShip.filter(x=>x.base !== base);
+    labs.forEach((lb, i)=>{
+      const rec = { base, rid:(np>1 ? (base+'#'+(i+1)) : base), cust, po,
+        boxes:bxs[i], pcs:pcs[i], pallet:lb, addedAt:_now, addedBy:_by };
+      if(np>1){ rec.part = i+1; rec.parts = np; }
+      _shipMeta.orderShip.push(rec);
+    });
+  });
   /* ⚠ MSORDER-v1 - 오더만 실린 팔레트는 **줄이 없다.** `trStopIdxOfPallet` 는 `p.stop` 을
      안 읽으므로(표시용 `trPalNames` 만 읽는다) `meta.palletStop` 에 안 넣으면 서류에서
-     마지막 정차지로 떨어진다. 이 함수는 `trCaptureInfo` 를 안 거치고 바로 저장한다. */
-  try{
-    const _asSt = trIsMultiRoute(_shipRoute) ? trStopsOf({meta:_shipMeta}) : [];
-    if(_asSt.length){
-      _shipMeta=_shipMeta||{};
-      if(!Array.isArray(_shipMeta.stops) || !_shipMeta.stops.length) _shipMeta.stops=_asSt;
-      _shipMeta.palletStop=_shipMeta.palletStop||{};
-      (_shipPallets||[]).forEach(p=>{ const v=Number(p&&p.stop);
-        if(v >= 0 && v < _asSt.length) _shipMeta.palletStop[p.label]=v; });
-    }
-  }catch(e){}
-  _shipMeta=_shipMeta||{}; _shipMeta.orderShip=_shipMeta.orderShip||[];
-  cbs.forEach(c=>{ const base=c.getAttribute('data-base');
-    const ex=_shipMeta.orderShip.find(o=>o.base===base);
-    if(ex){ ex.pallet=pal; return; }
-    _shipMeta.orderShip.push({ base, cust:c.getAttribute('data-cust')||'', po:c.getAttribute('data-po')||'', boxes:parseInt(c.getAttribute('data-boxes'),10)||0, pcs:parseInt(c.getAttribute('data-pcs'),10)||0, pallet:pal, addedAt:new Date().toISOString(), addedBy:(SESS&&SESS.email)||'' }); });
+     마지막 정차지로 떨어진다. 이 함수는 `trCaptureInfo` 를 안 거치고 바로 저장한다.
+     ⚠ 팔레트를 다 만든 **뒤에** 부른다 - 전에 부르면 새 팔레트가 빠진다. */
+  trOsSyncStops();
   const m=document.getElementById('modal-oship'); if(m) m.remove();
   if(_shipId){ try{ await trPatchRec(_shipId, {meta:_shipMeta}); }catch(e){} }
   trRenderPallets();
-  showToast('🚚 '+cbs.length+' order(s) → '+pal);
+  showToast('🚚 '+cbs.length+' order(s) loaded' + (_madePal ? (' \u00b7 ' + _madePal + ' new pallet(s)') : (' \u2192 ' + pal)));
 }
-function trOrderShipDel(base){
+/* ═══ OSSPLIT-1 - 오더 하나가 팔레트 여러 장에 나뉘어 실린다 ═══
+   [stated] 하윤: "각 PO마다 2 pallet 들은데 우리 현재 시스템으로는 저거를 놔눠서 트럭에 못넣게
+   되어있네. LA T shirt pallet 이 22 랑 23이 되야하고 aquasea pallet 이 24 랑 25가 되야하는데"
+   ⚠⚠ 예전에는 `meta.orderShip` 한 줄 = 오더 하나였고 `base` 가 곧 줄의 열쇠였다.
+      이제 같은 `base` 가 여러 줄이 될 수 있으므로 **줄의 열쇠는 `rid`** 다.
+      옛 기록에는 `rid` 가 없다 - 그때는 `base` 가 그대로 열쇠라 `osRid` 가 알아서 맞춘다.
+   ⓘ `base` 는 여전히 **오더**의 열쇠다 (`_scToCaMark` · 후보 목록에서 빼기 · 스캔 대조). */
+function osRid(o){ return String((o && (o.rid || o.base)) || ''); }
+/* 실린 오더들의 **오더 번호**만 (중복 없이). 팔레트가 나뉘어도 오더 도장은 한 번만 찍는다. */
+function osBases(arr){ return [...new Set((arr||[]).map(o=>String((o&&o.base)||'')).filter(Boolean))]; }
+function osFindRid(rid){ return ((_shipMeta&&_shipMeta.orderShip)||[]).find(x=>osRid(x)===String(rid)); }
+/* 박스/장수를 팔레트 수만큼 고르게 나눈다. 남는 것은 앞쪽 팔레트에 하나씩. */
+function osSplitN(total, n){
+  const t=Math.max(0, Number(total)||0), k=Math.max(1, Number(n)||1);
+  const q=Math.floor(t/k), r=t%k, out=[];
+  for(let i=0;i<k;i++) out.push(q + (i<r ? 1 : 0));
+  return out;
+}
+/* 이름표가 겹치지 않는 새 팔레트. `trAddPallet` 과 같은 규칙이지만 화면을 다시 그리거나
+   토스트를 띄우지 않는다 - 여러 장을 한 번에 만들 때 화면이 번쩍이지 않게. */
+function osNewPallet(sIdx){
+  let n=_shipPallets.length+1; while(_shipPallets.some(x=>x.label==='Pallet '+n)) n++;
+  const p={ id:'p_'+Math.random().toString(36).slice(2,9), label:'Pallet '+n, lines:[] };
+  const st = trIsMultiRoute(_shipRoute) ? trStopsOf({meta:_shipMeta}) : [];
+  if(st.length){ const i=Number(sIdx); p.stop = (i>=0 && i<st.length) ? i : (st.length-1); }
+  _shipPallets.push(p);
+  return p;
+}
+function trOrderShipDel(rid){
   if(!_shipMeta||!Array.isArray(_shipMeta.orderShip)) return;
-  _shipMeta.orderShip=_shipMeta.orderShip.filter(o=>o.base!==base);
+  _shipMeta.orderShip=_shipMeta.orderShip.filter(o=>osRid(o)!==String(rid));
   if(_shipId){ try{ trPatchRec(_shipId, {meta:_shipMeta}); }catch(e){} }
   trRenderPallets();
 }
-function trOrderShipEditBoxes(base, val){
-  const o=((_shipMeta&&_shipMeta.orderShip)||[]).find(x=>x.base===base); if(!o) return;
+function trOrderShipEditBoxes(rid, val){
+  const o=osFindRid(rid); if(!o) return;
   o.boxes=Math.max(0, parseInt(val,10)||0);
   if(_shipId){ try{ trPatchRec(_shipId, {meta:_shipMeta}); }catch(e){} }
   trSummary();
@@ -37438,10 +37530,10 @@ function trOrderShipRowsForPallet(label){
   return `<div style="border-top:2px dashed #f0abfc;background:#fdf4ff;">
     <div style="padding:5px 12px;font-size:10.5px;font-weight:800;color:#a21caf;">🚚 SHIP-FROM-CA ORDER BOXES ON THIS PALLET — routed to order at CA (not CA stock)</div>
     ${arr.map(o=>`<div style="display:flex;align-items:center;gap:9px;padding:5px 12px;border-top:1px dashed #f5d0fe;">
-      <span draggable="true" ondragstart="trOsDragStart(event,'${esc(o.base)}')" ondragend="trOsDragEnd()" title="Drag to another pallet" style="cursor:grab;color:#c084fc;font-size:13px;font-weight:900;user-select:none;flex:none;">⠿</span>
-      <div style="flex:1;min-width:0;"><b style="color:#0f2a4a;font-size:12px;">${esc(o.cust||'—')}</b> <span style="font-size:11px;color:#64748b;">PO ${esc(o.po||'—')} · ${(o.pcs||0).toLocaleString()} pcs</span></div>
-      <label style="font-size:10px;color:#7b1fa2;font-weight:800;display:flex;align-items:center;gap:4px;">boxes <input type="number" min="0" value="${o.boxes||0}" onchange="trOrderShipEditBoxes('${esc(o.base)}',this.value)" style="width:56px;font-size:12px;padding:3px 5px;text-align:center;font-weight:800;border:1px solid #e9d5ff;border-radius:6px;"></label>
-      <button onclick="trOrderShipDel('${esc(o.base)}')" style="border:none;background:none;color:#e53935;cursor:pointer;font-weight:800;" title="Remove from truck">✕</button>
+      <span draggable="true" ondragstart="trOsDragStart(event,'${esc(osRid(o))}')" ondragend="trOsDragEnd()" title="Drag to another pallet" style="cursor:grab;color:#c084fc;font-size:13px;font-weight:900;user-select:none;flex:none;">⠿</span>
+      <div style="flex:1;min-width:0;"><b style="color:#0f2a4a;font-size:12px;">${esc(o.cust||'—')}</b>${(Number(o.parts)>1)?` <span style="font-size:10px;font-weight:900;color:#fff;background:#a21caf;border-radius:20px;padding:1px 8px;" title="This order is split over ${Number(o.parts)} pallets">PART ${Number(o.part)||1} OF ${Number(o.parts)}</span>`:''} <span style="font-size:11px;color:#64748b;">PO ${esc(o.po||'—')} · ${(o.pcs||0).toLocaleString()} pcs</span></div>
+      <label style="font-size:10px;color:#7b1fa2;font-weight:800;display:flex;align-items:center;gap:4px;">boxes <input type="number" min="0" value="${o.boxes||0}" onchange="trOrderShipEditBoxes('${esc(osRid(o))}',this.value)" style="width:56px;font-size:12px;padding:3px 5px;text-align:center;font-weight:800;border:1px solid #e9d5ff;border-radius:6px;"></label>
+      <button onclick="trOrderShipDel('${esc(osRid(o))}')" style="border:none;background:none;color:#e53935;cursor:pointer;font-weight:800;" title="Remove from truck">✕</button>
     </div>`).join('')}</div>`;
 }
 // 어느 팔레트에도 안 붙은(orphan) 오더 박스 — 하단 별도 표시 + 팔레트 재배정
@@ -37459,13 +37551,13 @@ function trRenderOrderShip(){
   el.innerHTML=`<div style="border:2px solid #fca5a5;border-radius:8px;background:#fff;margin-top:10px;">
     <div style="background:#fef2f2;padding:8px 14px;font-weight:800;color:#b91c1c;font-size:12px;">⚠ Order boxes not on any pallet — assign a pallet so CA can find them</div>
     <div style="padding:6px 10px;">${orphan.map(o=>`<div style="display:flex;align-items:center;gap:9px;padding:6px 4px;border-bottom:1px dashed #fecaca;">
-      <div style="flex:1;min-width:0;"><b style="color:#0f2a4a;">${esc(o.cust||'—')}</b> <span style="font-size:11px;color:#64748b;">PO ${esc(o.po||'—')} · ${o.boxes||0} box</span></div>
-      <select class="fi" onchange="trOrderShipSetPallet('${esc(o.base)}',this.value)" style="font-size:11px;padding:3px 6px;"><option value="">— pallet —</option>${palOpts}</select>
-      <button onclick="trOrderShipDel('${esc(o.base)}')" style="border:none;background:none;color:#e53935;cursor:pointer;font-weight:800;">✕</button>
+      <div style="flex:1;min-width:0;"><b style="color:#0f2a4a;">${esc(o.cust||'—')}</b>${(Number(o.parts)>1)?` <span style="font-size:10px;font-weight:900;color:#fff;background:#a21caf;border-radius:20px;padding:1px 8px;">PART ${Number(o.part)||1} OF ${Number(o.parts)}</span>`:''} <span style="font-size:11px;color:#64748b;">PO ${esc(o.po||'—')} · ${o.boxes||0} box</span></div>
+      <select class="fi" onchange="trOrderShipSetPallet('${esc(osRid(o))}',this.value)" style="font-size:11px;padding:3px 6px;"><option value="">— pallet —</option>${palOpts}</select>
+      <button onclick="trOrderShipDel('${esc(osRid(o))}')" style="border:none;background:none;color:#e53935;cursor:pointer;font-weight:800;">✕</button>
     </div>`).join('')}</div></div>`;
 }
-function trOrderShipSetPallet(base, label){
-  const o=((_shipMeta&&_shipMeta.orderShip)||[]).find(x=>x.base===base); if(!o||!label) return;
+function trOrderShipSetPallet(rid, label){
+  const o=osFindRid(rid); if(!o||!label) return;
   o.pallet=label;
   trOsSyncStops();   /* MSOSDRAG-1 - 이 경로에도 빠져 있었다 */
   if(_shipId){ try{ trPatchRec(_shipId, {meta:_shipMeta}); }catch(e){} }
@@ -38067,7 +38159,7 @@ async function trRecvPost(){
   _trRecvPallets.forEach(p=>p.lines.forEach(l=>savedLines.push({...l, pallet:p.label})));
   await trPatchRec(_trRecvRec.id, { status:'RECEIVED', lines:savedLines, received_at:new Date().toISOString(), received_by:(SESS&&SESS.email)||'' });
   // 🚚 이 트럭에 실린 Ship-from-CA 오더들 → "SC몫 CA 도착" 표시 (재고 이동 없음 · 오더에 이미 지정됨)
-  try{ const _os=(_trRecvRec.meta&&_trRecvRec.meta.orderShip)||[]; for(const o of _os){ await _scToCaMark(o.base, 'arrived', _trRecvRec.ref); } if(typeof renderSaved==='function') renderSaved(); }catch(e){}
+  try{ const _os=(_trRecvRec.meta&&_trRecvRec.meta.orderShip)||[]; for(const b of osBases(_os)){ await _scToCaMark(b, 'arrived', _trRecvRec.ref); } if(typeof renderSaved==='function') renderSaved(); }catch(e){}
   await bxRefetch();
   if($('bx-body')) renderBoxRoom();
   const m = document.getElementById('modal-trr'); if(m) m.remove();
