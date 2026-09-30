@@ -34958,10 +34958,33 @@ async function trStopOnly(i){
   if(!(i >= 0 && i < st.length)) return;
   const k = st[i];
   const mv = _shipPallets.filter(p=>Number(p.stop) !== i).length;
+  /* ═══ OSCAONLY-2 - 실린 **오더**는 다르다 ═══
+     [stated] 하윤: "multi stop에서 만약에 CA로 다 바꾸면 MC에 들어가있던 물건들은 어떻케 되는거야?"
+     재고 줄은 어디서 내리든 우리 물건이라 창고만 바뀐다. 그런데 실린 오더는 **이미 판 물건**이다.
+     멜마크 오더를 CA 에 내려놓으면 거래처 문 앞까지 갈 다리가 없어진다 - 다시 실어 보내야 한다.
+     막지는 않는다 (일부러 그럴 때가 있다). 대신 무슨 일이 생기는지 이름까지 대고 묻는다. */
+  const _osStuck = [];
+  try{
+    const _os = (_shipMeta.orderShip) || [];
+    const _seen = {};
+    _os.forEach(x=>{
+      const kk = String((x && x.kind) || osOrderKind(x && x.base) || '');
+      if(!kk || kk === k) return;
+      const nm = String((x && x.cust) || (x && x.po) || (x && x.base) || 'order') + ' (' + trKindShort(kk) + ')';
+      if(!_seen[nm]){ _seen[nm] = 1; _osStuck.push(nm); }
+    });
+  }catch(e){}
   if(!confirm('Send the WHOLE truck to ' + trKindShort(k) + '?\n\n'
     + '   \u00b7 every pallet comes off there' + (mv ? ('  (' + mv + ' pallet(s) move)') : '') + '\n'
     + '   \u00b7 the other stop(s) are removed\n'
     + '   \u00b7 one packing list and one BOL, both to ' + trKindShort(k) + '\n\n'
+    + (_osStuck.length
+        ? ('\u26a0 THESE CUSTOMER ORDERS WERE GOING SOMEWHERE ELSE:\n   '
+           + _osStuck.join('\n   ')
+           + '\n\nThey are already sold. If the truck stops only at ' + trKindShort(k) + ', their boxes\n'
+           + 'come off at ' + trKindShort(k) + ' and somebody has to send them on from there.\n'
+           + 'Take them off this truck first if that is not what you want.\n\n')
+        : '')
     + 'Pallets go back to being named Pallet 1, 2, 3 \u2026\n'
     + 'You can split the truck again by adding a stop back.')) return;
   _shipMeta.stops = [k];
@@ -37476,7 +37499,7 @@ async function trOrderShipOpen(){
     /* OSSPLIT-1 - 창고가 적어둔 장수가 있으면 그것, 없으면 1 */
     const nPal=Math.max(1, (packMap[r.base]||{}).pals||1);
     return `<label style="display:flex;align-items:center;gap:10px;padding:9px 11px;border:1px solid #e5e7eb;border-radius:9px;margin-bottom:7px;cursor:pointer;">
-      <input type="checkbox" class="oship-cb" data-base="${esc(r.base)}" data-cust="${esc(String(r.meta.cust||'').replace(/"/g,''))}" data-po="${esc(String(r.meta.po||'').replace(/"/g,''))}" data-boxes="${bx}" data-pcs="${scPcs}" checked style="width:16px;height:16px;">
+      <input type="checkbox" class="oship-cb" onchange="oshipSyncPal()" data-base="${esc(r.base)}" data-cust="${esc(String(r.meta.cust||'').replace(/"/g,''))}" data-po="${esc(String(r.meta.po||'').replace(/"/g,''))}" data-boxes="${bx}" data-pcs="${scPcs}" checked style="width:16px;height:16px;">
       <div style="flex:1;min-width:0;"><div style="font-weight:800;color:#0f2a4a;">${esc(r.meta.cust||'—')}${(_msOn && (window._oshipKind||{})[r.base]) ? ` <span style="font-size:10px;font-weight:800;color:#6d28d9;background:#f3e8ff;border-radius:20px;padding:2px 7px;vertical-align:1px;" title="Belongs at the ${esc(trStopPfx((window._oshipKind||{})[r.base]))} stop">${esc(trStopPfx((window._oshipKind||{})[r.base]))}</span>` : ''}</div><div style="font-size:11px;color:#64748b;">PO ${esc(r.meta.po||'—')} · SC ${scPcs.toLocaleString()} pcs</div></div>
       ${packed?`<span style="font-size:11px;font-weight:800;color:#16a34a;background:#dcfce7;border-radius:20px;padding:3px 10px;">📦 ${bx} box</span>`:`<span style="font-size:11px;font-weight:800;color:#b45309;background:#fff7ed;border-radius:20px;padding:3px 10px;" title="Estimated from pcs — SC hasn't packed boxes yet. Edit on the pallet if needed.">≈ ${bx} box (est)</span>`}
       <span style="display:flex;align-items:center;gap:4px;font-size:10.5px;font-weight:800;color:#7b1fa2;white-space:nowrap;" title="How many pallets this order takes up. 2 or more gives this order its own pallets and splits the boxes between them.">on
@@ -37489,8 +37512,12 @@ async function trOrderShipOpen(){
         + (trOrderShipWants().lk ? ', or pack the SC part of a ' + esc(trLkCustMatch()) + ' order' : '') + '.</div>');
   /* MSORDER-v1 - 「새 팔레트」도 정차지마다 따로 준다 - 안 그러면 마지막 정차지로 생긴다
      MSORD2-v1 - 차례도 카드와 같게 (`trPalRenderOrder`). ⚠ value 는 저장 이름표 그대로 */
-  const palOpts = trPalRenderOrder().map(p=>`<option value="${esc(p.label)}">${esc(_msOn?trPalDisp(_msD,p.label):p.label)}</option>`).join('')
-    + (_msOn ? _msSt.map((k,i)=>`<option value="__new__${i}">+ New ${esc(trStopPfx(k))} pallet</option>`).join('')
+  /* OSCAONLY-1 - 목록은 체크 상태에 따라 다시 그려진다 (`oshipSyncPal`). 처음 그림은 아래에서. */
+  const palOpts = trPalRenderOrder()
+    .filter(p=>{ if(!_msOn) return true; const _k = osPalKind(p.label);
+                 return !_k || elig.some(r=>osOrderKind(r.base)===_k); })
+    .map(p=>`<option value="${esc(p.label)}">${esc(_msOn?trPalDisp(_msD,p.label):p.label)}</option>`).join('')
+    + (_msOn ? _msSt.map((k,i)=> elig.some(r=>osOrderKind(r.base)===k) ? `<option value="__new__${i}">+ New ${esc(trStopPfx(k))} pallet</option>` : '').join('')
              : '<option value="__new__">+ New pallet</option>');
   d.innerHTML=`<div style="background:#fff;border-radius:12px;width:520px;max-width:95vw;max-height:88vh;overflow-y:auto;box-shadow:0 20px 60px rgba(0,0,0,.35);">
     <div style="background:#7b1fa2;color:#fff;padding:12px 16px;font-weight:800;display:flex;justify-content:space-between;align-items:center;">
@@ -37521,6 +37548,8 @@ async function trOrderShipOpen(){
       <button class="btn btn-sm" style="background:#7b1fa2;color:#fff;border-color:#7b1fa2;font-weight:800;" onclick="trOrderShipAdd()">Add to pallet</button>
     </div></div>`;
   document.body.appendChild(d);
+  /* OSCAONLY-1 - 처음 체크 상태에 맞춰 한 번 더 좁힌다 */
+  try{ oshipSyncPal(); }catch(e){}
 }
 async function trOrderShipAdd(){
   const cbs=[...document.querySelectorAll('#modal-oship .oship-cb:checked')];
@@ -37560,7 +37589,7 @@ async function trOrderShipAdd(){
   const _asSt = trIsMultiRoute(_shipRoute) ? trStopsOf({meta:_shipMeta}) : [];
   const _asKind = window._oshipKind || {};
   const _now = new Date().toISOString(), _by = (SESS&&SESS.email)||'';
-  let _madePal = 0; const _badStop = [];
+  let _madePal = 0; const _badStop = [], _moved = [];
   cbs.forEach(c=>{
     const base = c.getAttribute('data-base');
     const row = (c.closest && c.closest('label')) || null;
@@ -37582,7 +37611,13 @@ async function trOrderShipAdd(){
       labs = [];
       for(let i=0;i<np;i++){ labs.push(osNewPallet(sIdx).label); _madePal++; }
     }else{
-      labs = [pal];
+      /* ⚠⚠ OSCAONLY-1 - 한 장짜리도 위에서 고른 팔레트를 **그냥 믿지 않는다.**
+         목록을 좁혀 놨어도 고른 뒤에 체크를 바꾸면 남아 있을 수 있다. 정차지가 다르면
+         그 오더 몫으로 제 정차지에 한 장 만든다 - 엉뚱한 문 앞에 내려놓는 것보다 낫다. */
+      const _pk = (_asSt.length >= 2) ? osPalKind(pal) : '';
+      const _ok = !_pk || (sIdx >= 0 && _asSt[sIdx] === _pk);
+      if(_ok){ labs = [pal]; }
+      else { labs = [osNewPallet(sIdx).label]; _madePal++; _moved.push(cust || base); }
     }
     const bxs = osSplitN(tb, np), pcs = osSplitN(tp, np);
     /* 같은 오더를 다시 실으면(후보 목록에서 걸러지므로 드물다) 옛 줄을 먼저 치운다 */
@@ -37608,6 +37643,8 @@ async function trOrderShipAdd(){
   /* OSCASTOP-1 - 실을 수 없었던 것은 조용히 넘기지 않는다 */
   if(_badStop.length) alert('\u26a0 Not loaded \u2014 this truck does not stop where these orders come off:\n\n   '
     + _badStop.join('\n   ') + '\n\nAdd that stop on the STOPS bar first, then load them.');
+  /* OSCAONLY-1 - 고른 팔레트가 그 오더의 정차지가 아니어서 따로 만든 경우 */
+  if(_moved.length) showToast('\u26a0 ' + _moved.join(', ') + ' \u2014 put on its own pallet at the right stop, not the one picked');
   const _okN = cbs.length - _badStop.length;
   if(_okN > 0) showToast('🚚 '+_okN+' order(s) loaded' + (_madePal ? (' \u00b7 ' + _madePal + ' new pallet(s)') : (' \u2192 ' + pal)));
 }
@@ -37631,6 +37668,42 @@ function osBases(arr){ return [...new Set((arr||[]).map(o=>String((o&&o.base)||'
      · 멜마크 오더  -> LK (그 거래처 문 앞)
      · 그 외        -> CA (우리 CA 창고에서 받아 거래처로 내보낸다)
    ⚠ 이 트럭에 실릴 수 있는 오더는 이 둘뿐이다 (`trOrderShipEligible` 과 같은 규칙). */
+/* OSCAONLY-1 - 팔레트가 **어느 정차지 것인지**. 화면 이름(CA 3 / MC 1)과 같은 값을 본다. */
+function osPalKind(label){
+  try{
+    const st = trIsMultiRoute(_shipRoute) ? trStopsOf({meta:_shipMeta}) : [];
+    if(st.length < 2) return '';
+    const p = (_shipPallets||[]).find(x=>x && x.label===label);
+    if(!p) return '';
+    const i = trPalStopIdxDisp({meta:_shipMeta, pallets:_shipPallets}, p);
+    return (i >= 0 && i < st.length) ? st[i] : '';
+  }catch(e){ return ''; }
+}
+/* OSCAONLY-1 - 선택창의 팔레트 목록. **체크된 오더가 내리는 정차지의 팔레트만** 보여준다.
+   [stated] 하윤: "여기에 아에 MC에는 못넣게 만들자"
+   🔴 그전까지: CA 로 갈 오더를 고르고도 목록에 MC 1/2/3 과 「+ New MC pallet」 이 같이 떠서
+      누르면 그대로 들어갔다. 고를 수 있으면 언젠가 눌린다 - 아예 안 보이게 한다. */
+function oshipPalOptsHtml(){
+  const _D = { meta:_shipMeta, pallets:_shipPallets };
+  const st = trIsMultiRoute(_shipRoute) ? trStopsOf({meta:_shipMeta}) : [];
+  const on = st.length >= 2;
+  const ks = new Set();
+  try{ document.querySelectorAll('#modal-oship .oship-cb:checked').forEach(c=>{
+    const k = osOrderKind(c.getAttribute('data-base')); if(k) ks.add(k); }); }catch(e){}
+  const okKind = k => !on || !ks.size || ks.has(k);
+  let opts = trPalRenderOrder()
+    .filter(p=>{ if(!on) return true; const k = osPalKind(p.label); return !k || okKind(k); })
+    .map(p=>`<option value="${esc(p.label)}">${esc(on ? trPalDisp(_D, p.label) : p.label)}</option>`).join('');
+  opts += on ? st.map((k,i)=> okKind(k) ? `<option value="__new__${i}">+ New ${esc(trStopPfx(k))} pallet</option>` : '').join('')
+             : '<option value="__new__">+ New pallet</option>';
+  return opts;
+}
+function oshipSyncPal(){
+  const sel = document.getElementById('oship-pallet'); if(!sel) return;
+  const keep = sel.value;
+  sel.innerHTML = oshipPalOptsHtml();
+  if(keep && [...sel.options].some(o=>o.value===keep)) sel.value = keep;
+}
 function osOrderKind(base){
   const rec = ((typeof savedCache!=='undefined' && savedCache) || []).find(r=>r && r.base===base);
   if(!rec) return '';
