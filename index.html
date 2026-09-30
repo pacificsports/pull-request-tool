@@ -34948,12 +34948,111 @@ function trStopOnlyHtml(){
     + `<span style="font-size:10.5px;color:#6d28d9;font-weight:800;">Changed your mind? Send the whole truck to one place:</span>`
     + st.map((k,i)=>{ const t = trStopTheme(k);
         return `<button class="btn btn-sm" style="background:${t.bg};color:${t.fg};border-color:${t.bd};font-weight:800;" `
-          + `onclick="trStopOnly(${i})" `
+          + `onclick="trStopPlanOpen(${i})" `
           + `title="Every pallet comes off at ${esc(trKindShort(k))} and the other stop(s) are removed — one packing list, one BOL">`
           + `📦 All to ${esc(trStopPfx(k))}</button>`; }).join(' ')
     + `</div>`;
 }
-async function trStopOnly(i){
+/* ═══ SOPLAN-1 - 정차지를 하나로 줄일 때, 남는 팔레트를 **매니저가 하나씩 정한다** ═══
+   [stated] 하윤: "매니저가 MC 1은 CA pallet으로 변경 MC 2는 그냥 sc inventory 에 다시
+   돌려보내 그리고 이거 선택하면 location bin 지정할수있게"
+   🔴 그전까지: 「All to CA」 를 누르면 MC 팔레트가 전부 말없이 CA 로 따라왔다.
+      멜마크로 갈 물건이 우리 CA 창고에 쌓이고, 아무도 그걸 모른다.
+   ⓘ 「되돌리기」 는 이미 있는 ↩ Put Back Request 를 그대로 쓴다 - 거기에 bin 칸이 있고
+     종이도 나오고 기록도 남는다. 새로 만들지 않는다. */
+function trStopPlanOpen(i){
+  const st = trStopsOf({meta:_shipMeta});
+  if(!(i >= 0 && i < st.length)) return;
+  const k = st[i];
+  const D = { meta:_shipMeta, pallets:_shipPallets };
+  const os = (_shipMeta.orderShip) || [];
+  const others = _shipPallets.filter(p=>trPalStopIdxDisp(D, p) !== i);
+  if(!others.length){ trStopOnly(i); return; }          /* 정할 게 없으면 예전 길 그대로 */
+  window._soPlan = { i, k, ids:others.map(p=>p.id) };
+  const rows = others.map(p=>{
+    const nb = (p.lines||[]).reduce((a,l)=>a+trLineBoxes(l), 0);
+    const np = (p.lines||[]).reduce((a,l)=>a+trLinePcs(l), 0);
+    const mine = os.filter(o=>o && o.pallet === p.label);
+    const hasStock = (p.lines||[]).some(l=>l && !l.is_manual && (l.ids||[]).length);
+    const ordTxt = mine.length
+      ? `<div style="font-size:11px;color:#a21caf;font-weight:800;margin-top:3px;">🚚 ${mine.map(o=>esc(String(o.cust||o.po||'order'))).join(' · ')} &mdash; already sold, not our stock</div>` : '';
+    return `<div style="border:1px solid #e5e7eb;border-radius:10px;padding:10px 12px;margin-bottom:8px;background:#fff;">
+      <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;">
+        <span style="font-weight:900;color:#5b21b6;background:#f5f3ff;border:1px solid #d8b4fe;border-radius:8px;padding:3px 10px;">📦 ${esc(trPalDisp(D, p.label))}</span>
+        <span style="font-size:11.5px;color:#64748b;">${(p.lines||[]).length} line(s) · ${nb.toLocaleString()} box(es) · ${np.toLocaleString()} pcs</span>
+        <select class="so-act fi" data-pid="${esc(p.id)}" style="margin-left:auto;font-size:12px;font-weight:800;padding:4px 8px;">
+          <option value="move">→ Move to ${esc(trStopPfx(k))} — comes off with the rest</option>
+          ${hasStock ? `<option value="back">↩ Put back to ${esc(trWhOfKind(trSrcKind(_shipRoute)))} stock — you pick the bin next</option>` : ''}
+          ${mine.length ? `<option value="off">✕ Take the order off this truck — it stays open</option>` : ''}
+        </select>
+      </div>${ordTxt}</div>`;
+  }).join('');
+  const ex = document.getElementById('modal-soplan'); if(ex) ex.remove();
+  const d = document.createElement('div'); d.id='modal-soplan';
+  d.style.cssText='position:fixed;inset:0;background:rgba(15,23,42,.6);z-index:140;display:flex;align-items:center;justify-content:center;padding:14px;';
+  d.onclick = e=>{ if(e.target===d) d.remove(); };
+  d.innerHTML = `<div style="background:#fff;border-radius:12px;max-width:720px;width:100%;max-height:90vh;display:flex;flex-direction:column;overflow:hidden;">
+    <div style="background:#6d28d9;color:#fff;padding:12px 18px;font-weight:800;font-size:15px;">📦 All to ${esc(trStopPfx(k))} — what happens to the other pallets?
+      <button class="btn btn-sm" style="float:right;background:transparent;color:#ddd6fe;border-color:#a78bfa;" onclick="document.getElementById('modal-soplan').remove()">✕</button>
+      <div style="font-weight:400;font-size:11px;color:#ddd6fe;margin-top:3px;">${others.length} pallet(s) were coming off somewhere else. Decide each one — nothing moves until you press Apply.</div></div>
+    <div style="padding:14px 18px;overflow-y:auto;flex:1;background:#f8fafc;">${rows}</div>
+    <div style="padding:12px 18px;border-top:1px solid #eee;display:flex;gap:8px;justify-content:flex-end;">
+      <button class="btn" onclick="document.getElementById('modal-soplan').remove()">Cancel</button>
+      <button class="btn btn-primary" style="background:#6d28d9;border-color:#6d28d9;font-weight:800;" onclick="trStopPlanApply()">Apply</button>
+    </div></div>`;
+  document.body.appendChild(d);
+}
+async function trStopPlanApply(){
+  const plan = window._soPlan; if(!plan) return;
+  const acts = {};
+  document.querySelectorAll('#modal-soplan .so-act').forEach(sel=>{ acts[sel.getAttribute('data-pid')] = sel.value; });
+  const backIds = Object.keys(acts).filter(id=>acts[id]==='back');
+  const offIds  = Object.keys(acts).filter(id=>acts[id]==='off');
+  /* 되돌릴 줄은 정차지를 건드리기 **전에** 모은다 - 줄의 bin 이 진실이고 그건 안 바뀌지만,
+     팔레트가 지워진 뒤에 찾으면 못 찾는다. */
+  const pbRows = backIds.length ? trPbGatherPallets(backIds) : [];
+  /* 트럭에서 내리는 오더 */
+  if(offIds.length){
+    const labs = {};
+    offIds.forEach(id=>{ const p=_shipPallets.find(x=>x.id===id); if(p) labs[p.label]=1; });
+    _shipMeta.orderShip = ((_shipMeta.orderShip)||[]).filter(o=>!(o && labs[o.pallet]));
+  }
+  /* 되돌리는 팔레트에 오더가 같이 있으면 그 오더도 내린다 - 박스가 창고로 돌아가니까 */
+  if(backIds.length){
+    const labs = {};
+    backIds.forEach(id=>{ const p=_shipPallets.find(x=>x.id===id); if(p) labs[p.label]=1; });
+    _shipMeta.orderShip = ((_shipMeta.orderShip)||[]).filter(o=>!(o && labs[o.pallet]));
+  }
+  /* 「내리기」만 고른 빈 팔레트는 지운다 (줄이 없는 것만 - 재고는 절대 안 건드린다) */
+  _shipPallets = _shipPallets.filter(p=>!(offIds.indexOf(p.id) >= 0 && !(p.lines||[]).length));
+  const m = document.getElementById('modal-soplan'); if(m) m.remove();
+  window._soPlan = null;
+  window._pbPalletIds = backIds.length ? backIds.slice() : null;
+  await trStopOnly(plan.i, true);
+  if(pbRows.length){
+    window._pbRows = pbRows;
+    trPutBackOpenRows(pbRows);
+  }
+}
+/* 이미 만들어 둔 줄로 ↩ Put Back Request 를 연다 (모양·확정은 전부 기존 것 그대로) */
+function trPutBackOpenRows(rows){
+  if(!rows || !rows.length){ showToast('⚠ Nothing to put back'); return; }
+  window._pbRows = rows;
+  const _keep = window._pbRows;
+  trPutBackOpen(null, null);
+  /* trPutBackOpen 은 화면의 체크박스를 다시 읽는다 - 우리 줄로 덮어쓰고 다시 그린다 */
+  window._pbRows = _keep;
+  const body = document.querySelector('#modal-pb tbody');
+  if(body) body.innerHTML = _keep.map((r,i)=>`<tr>
+    <td style="font-family:Consolas,monospace;font-weight:700;">#${esc(r.style)}</td>
+    <td>${esc(bxBaseColor(r.color))}</td>
+    <td style="text-align:center;">${esc(r.size)}</td>
+    <td style="text-align:center;color:#64748b;">${esc(r.bin||'TRANSFER')}</td>
+    <td style="text-align:center;"><input class="fi" type="number" min="1" max="${r.max}" value="${r.qty}" onchange="trPbEdit(${i},'qty',this.value)" style="width:58px;text-align:center;font-weight:800;font-size:12px;padding:3px 4px;"> <span style="font-size:10px;color:#94a3b8;">/ ${r.max}</span></td>
+    <td style="text-align:center;"><input class="fi" value="${esc(r.dest)}" onchange="trPbEdit(${i},'dest',this.value)" placeholder="Bin" style="width:82px;text-align:center;font-weight:700;font-size:12px;padding:3px 6px;text-transform:uppercase;"></td>
+  </tr>`).join('');
+}
+async function trStopOnly(i, planned){
   const st = trStopsOf({meta:_shipMeta});
   if(!(i >= 0 && i < st.length)) return;
   const k = st[i];
@@ -34974,7 +35073,7 @@ async function trStopOnly(i){
       if(!_seen[nm]){ _seen[nm] = 1; _osStuck.push(nm); }
     });
   }catch(e){}
-  if(!confirm('Send the WHOLE truck to ' + trKindShort(k) + '?\n\n'
+  if(!planned && !confirm('Send the WHOLE truck to ' + trKindShort(k) + '?\n\n'
     + '   \u00b7 every pallet comes off there' + (mv ? ('  (' + mv + ' pallet(s) move)') : '') + '\n'
     + '   \u00b7 the other stop(s) are removed\n'
     + '   \u00b7 one packing list and one BOL, both to ' + trKindShort(k) + '\n\n'
@@ -35271,6 +35370,21 @@ function trPbGather(pid, li){
   });
   return out;
 }
+/* SOPLAN-1 - 팔레트 통째로 되돌릴 줄 모으기. `trPbGather` 와 **같은 모양**의 줄을 만든다 -
+   그래야 bin 칸·인쇄·확정이 전부 그대로 쓰인다. 손으로 넣은 줄은 되돌릴 bin 이 없어 빠진다. */
+function trPbGatherPallets(pids){
+  const out = [];
+  (pids||[]).forEach(pid=>{
+    const p = _shipPallets.find(x=>x.id===pid); if(!p) return;
+    (p.lines||[]).forEach((l, li)=>{
+      if(!l || l.is_manual || !(l.ids||[]).length) return;
+      out.push({ pid, li, style:l.style, color:l.color, size:l.size,
+        bin:String(l.bin||'').toUpperCase(), ppb:Number(l.ppb)||Number(l.pcs)||0,
+        max:(l.ids||[]).length, qty:(l.ids||[]).length, dest:String(l.bin||'').toUpperCase() });
+    });
+  });
+  return out;
+}
 function trPutBackOpen(pid, li){
   const rows = trPbGather(pid, li);
   if(!rows.length){ showToast('⚠ No stock lines selected'); return; }
@@ -35374,6 +35488,24 @@ async function trPutBackConfirm(){
   await trSaveDraftLines();
   // 📝 기록 저장 — 나중에 다시 보고 프린트 가능 (프린트 놓쳐도 History에서 재출력)
   if(savedLines.length){ try{ await sbFetch('/rest/v1/pr_putback', {method:'POST', headers:{Prefer:'return=minimal'}, body:JSON.stringify([{ref:_shipNo||'', wh:_rw, lines:savedLines, created_by:(SESS&&SESS.email)||''}])}); }catch(e){} }
+  /* SOPLAN-1 - 팔레트 통째 되돌리기였으면 빈 껍데기를 남기지 않는다.
+     ⚠ 오더가 아직 붙어 있는 팔레트는 남긴다 - 그건 박스가 아직 그 위에 있다는 뜻이다. */
+  try{
+    const _ids = window._pbPalletIds;
+    if(Array.isArray(_ids) && _ids.length){
+      const _os = ((_shipMeta && _shipMeta.orderShip) || []);
+      _shipPallets = _shipPallets.filter(p=>{
+        if(_ids.indexOf(p.id) < 0) return true;
+        if((p.lines||[]).length) return true;
+        if(_os.some(o=>o && o.pallet === p.label)) return true;
+        return false;
+      });
+      if(!trSrcAutoPallet(_shipRoute)) trPalRenumber();
+      window._pbPalletIds = null;
+      await trSaveDraftLines();
+      if(_shipId){ try{ trCaptureInfo(); await trPatchRec(_shipId, { meta:_shipMeta, lines:trLinesFlat() }); }catch(e){} }
+    }
+  }catch(e){ console.warn('[SOPLAN] empty pallet cleanup', e); }
   const m = document.getElementById('modal-pb'); if(m) m.remove();
   if(typeof bxRefetch==='function'){ try{ await bxRefetch(); }catch(e){} }
   trRenderPallets();
@@ -43104,7 +43236,11 @@ function invNpList(){
 function invSentFrom(){
   try{ const v = String(localStorage.getItem('inv_sent_from')||'').trim();
        if(/^\d{4}-\d{2}-\d{2}$/.test(v)) return v; }catch(e){}
-  return '2026-09-30';
+  /* INVSENT-3 - 실측으로 정한 날짜다 (2026-09-30 확인).
+     인보이스 번호가 MAS 200 계열(`26-5556`)에서 psflowx 공용 카운터(`0265557`)로
+     넘어간 날이 **2026-09-24** 다. 그 앞은 MAS 200 에서 뽑아 따로 보낸 것들이다.
+     ⓘ 바꾸려면 배포 없이: localStorage.inv_sent_from = '2026-10-01' */
+  return '2026-09-24';
 }
 function invSentAt(rec, wh){
   const iv = (rec && rec.inv && rec.inv[wh]) || {};
