@@ -10454,11 +10454,16 @@ function psmHead(title, sub){
     ${sub ? `<div style="margin-top:8px;font-family:Arial,Helvetica,sans-serif;font-size:14px;color:#8b8880;">${sub}</div>` : ''}
   </td></tr></table>`;
 }
-function psmRow(k, v){
+function psmRow(k, v, padTop){
   /* WHLABEL-1 - 왼쪽 글이 길면 오른쪽 금액에 달라붙어 겹쳐 보였다.
      칸 사이를 항상 띄운다 (짧은 글에서는 보이는 것이 달라지지 않는다). */
-  return `<tr><td style="padding:9px 18px 9px 0;border-bottom:1px solid #f0ede5;font-family:Arial,Helvetica,sans-serif;font-size:10.5px;letter-spacing:.11em;text-transform:uppercase;color:#8b8880;white-space:nowrap;vertical-align:top;width:170px;">${k}</td>`
-       + `<td style="padding:9px 0;border-bottom:1px solid #f0ede5;font-family:Arial,Helvetica,sans-serif;font-size:14px;color:#1c1c1a;font-weight:bold;white-space:nowrap;">${v}</td></tr>`;
+  /* AMTGAP-2 - [stated] 하윤: "글자 크기를 키우는게 아니라 그냥 ship from이랑 amount due
+     공간을 좀더 늘려서 살짝 떨어져있는 느낌". 빈 줄을 넣는 건 너무 벌어져서 퇴짜 맞았다 -
+     그 줄의 **위쪽 여백만** 조금 늘린다. `padTop` 을 안 주면 예전과 글자 하나도 안 달라진다.
+     ⚠ 글자 크기는 건드리지 않는다 (19px 로 키운 것도 퇴짜). */
+  const _pt = 9 + (Number(padTop) || 0);
+  return `<tr><td style="padding:${_pt}px 18px 9px 0;border-bottom:1px solid #f0ede5;font-family:Arial,Helvetica,sans-serif;font-size:10.5px;letter-spacing:.11em;text-transform:uppercase;color:#8b8880;white-space:nowrap;vertical-align:top;width:170px;">${k}</td>`
+       + `<td style="padding:${_pt}px 0 9px;border-bottom:1px solid #f0ede5;font-family:Arial,Helvetica,sans-serif;font-size:14px;color:#1c1c1a;font-weight:bold;white-space:nowrap;">${v}</td></tr>`;
 }
 function psmTable(rows){
   return rows ? `<table width="100%" cellpadding="0" cellspacing="0" style="border-collapse:collapse;margin:4px 0 18px;">${rows}</table>` : '';
@@ -15560,15 +15565,20 @@ async function sendInvoiceEmail(){
       + psmTable(
           psmRow('Invoice #', esc(invNo))
         + psmRow('PO #', esc(meta.po||''))
-        /* SHIPFROM-1 - [stated] 하윤: "SHIP FROM 추가해서 SC invoice면 Sumter SC 나오고
-           CA invoice면 Eastvale CA나오게". 거래처가 어느 창고에서 온 짐인지 메일만 보고 안다.
-           ⚠ 「🚚 Ship from CA」 를 켠 오더의 SC 몫은 **실제로 CA 에서 나간다** -
-             그래서 창고 글자를 그대로 쓰지 않고 `lblShipFromFor` 에 묻는다 (라벨·요금이 보는 그 답). */
-        + psmRow('Ship from', esc(WH_LABEL[(typeof lblShipFromFor==='function') ? lblShipFromFor(rec, plWh) : plWh] || plWh))
         + psmRow('Invoice date', _invDate.toLocaleDateString('en-US'))
         + (_termStr ? psmRow('Terms', esc(_termStr)) : '')
         + (_dueStr ? psmRow('Due date', '<b>' + esc(_dueStr) + '</b>') : '')
-        + psmRow('Amount due', '<span style="font-size:16px;">' + _amtStr + '</span>'))
+        + psmRow('Amount due', '<span style="font-size:16px;">' + _amtStr + '</span>')
+        /* SHIPFROM-1 - [stated] 하윤: "SHIP FROM 추가해서 SC invoice면 Sumter SC 나오고
+           CA invoice면 Eastvale CA나오게". 거래처가 어느 창고에서 온 짐인지 메일만 보고 안다.
+           ⚠ 「Ship from CA」 를 켠 오더의 SC 몫은 **실제로 CA 에서 나간다** - 그래서 창고 글자를
+             그대로 쓰지 않고 `lblShipFromFor` 에 묻는다 (라벨·요금이 보는 그 답).
+           ⚠ [stated] 하윤이 Ship from · PO status 를 **Amount due 아래**로 내리기로 정했다 -
+             돈이 먼저 보이고 짐 얘기가 뒤에 온다. 위로 되돌리지 말 것. */
+        + psmRow('Ship from', esc(WH_LABEL[(typeof lblShipFromFor==='function') ? lblShipFromFor(rec, plWh) : plWh] || plWh), 11)   /* AMTGAP-2 - Amount due 와 살짝 띄운다 */
+        /* POSTAT-1 - PO 전체의 형편. 지금 보내는 이 몫은 나간 것으로 센다. */
+        + (function(){ const _ps = (typeof invPoStatusHtml==='function') ? invPoStatusHtml(rec, plWh) : '';
+            return _ps ? psmRow('PO status', _ps) : ''; })())
       + psmP('Attached: ' + esc(kept.join(' · ')) + '.')
       + psmP('Questions about this invoice? Just reply to this email.'));
     const r = await fetch('https://po-confirm-email.hjbae.workers.dev/send-pl', {
@@ -43341,6 +43351,60 @@ function invSentInfo(rec, wh){
   return { at:'', by:'', to:'' };
 }
 function invSentAt(rec, wh){ return invSentInfo(rec, wh).at; }
+/* POSTAT-1 - 거래처가 메일만 보고 「이 PO 더 올 게 있나」 를 안다.
+   [stated] 하윤: "po를 다 complete 했으면 PO STATUS COMPLETED 나오고 만약 SC 쪽 나간거고
+     CA 아직 안나갔으면 ... SC COMPLETED CA PENDING 뭐 이런식으로"
+   [stated] 하윤: "같은날 두곳에서 물건이 같이 나가서 complete됐어도 ... 먼저 보내지는 이멜에는
+     그쪽 warehouse complete 됐고 반대쪽 warehouse는 pending ... 그 다음 이멜 나갈때는 PO COMPLETED"
+   → 그래서 판정 기준은 「물건이 나갔나」 가 아니라 「거래처에 인보이스가 나갔나」 다.
+     지금 보내는 이 몫은 나간 것으로 센다 (메일이 바로 나가니까).
+   ⚠ 서류 칸 목록은 `plWhList` 를 그대로 쓴다 - 🚚 Ship from CA 는 SC 몫이 CA 서류 한 장에
+     합쳐져 칸이 하나뿐이고, 그럼 첫 메일에서 바로 PO COMPLETED 가 된다 (맞는 답이다).
+   ⚠ PD·BO·NA 는 창고가 아니다 (거래처로 물건이 안 나간다) - 세지 않는다.
+   ⚠ 칸이 하나뿐이면 「PARTIALLY」 가 나올 수가 없다 - 바로 PO COMPLETED. */
+function invPoParts(rec, nowKey){
+  let keys = [];
+  try{ keys = (typeof plWhList === 'function') ? (plWhList(rec) || []) : []; }catch(e){ keys = []; }
+  if(!keys.length) keys = Object.keys((rec && rec.inv) || {});
+  keys = keys.map(k=>String(k)).filter(k => {
+    const w = (typeof revIsKey === 'function' && revIsKey(k)) ? revParentWh(k) : k;
+    return w === 'SC' || w === 'CA';
+  });
+  const now = String(nowKey || '');
+  if(now && keys.indexOf(now) < 0) keys.push(now);
+  if(!keys.length) return null;
+  const parts = keys.map(k => ({
+    label: (typeof revIsKey === 'function' && revIsKey(k)) ? (revParentWh(k) + ' REV ' + revNumOf(k)) : k,
+    done: (k === now) || !!invSentAt(rec, k)
+  }));
+  return { parts: parts, all: (keys.length === 1) || parts.every(p => p.done) };
+}
+/* 글자만 (기록·화면용) */
+function invPoStatus(rec, nowKey){
+  const o = invPoParts(rec, nowKey);
+  if(!o) return '';
+  if(o.all) return 'PO COMPLETED';
+  return 'PARTIALLY COMPLETED · ' + o.parts.map(p => p.label + ' ' + (p.done ? 'COMPLETED' : 'PENDING')).join(' · ');
+}
+/* 메일 칸에 들어가는 모양 - [stated] 하윤: "partially completed 일때는
+   [SC completed] [ CA pending] 이런식으로". 창고별 딱지라 눈에 바로 들어온다.
+   ⚠ psmRow 의 오른쪽 칸은 `white-space:nowrap` 이다 - 딱지가 두 개 이상이면 줄이 안 바뀌어
+     잘릴 수 있으니 안쪽 div 에서 다시 풀어준다 (nowrap 을 지우면 다른 줄의 금액이 깨진다).
+   ⚠ 메일에서는 flex·grid 가 안 통한다 - inline-block 딱지로 간다. */
+function invPoStatusHtml(rec, nowKey){
+  const o = invPoParts(rec, nowKey);
+  if(!o) return '';
+  if(o.all) return '<span style="color:#243425;">PO COMPLETED</span>';
+  const chip = (t, done) => '<span style="display:inline-block;border:1px solid '
+    + (done ? '#9fb79b' : '#ddd9d0') + ';background:' + (done ? '#eef3ec' : '#faf9f5')
+    + ';color:' + (done ? '#243425' : '#8b8880')
+    + ';border-radius:4px;padding:3px 9px;font-family:Arial,Helvetica,sans-serif;font-size:11px;'
+    + 'font-weight:bold;letter-spacing:.05em;white-space:nowrap;margin:0 6px 4px 0;">' + t + '</span>';
+  return '<div style="white-space:normal;">'
+    + '<div style="font-size:11px;letter-spacing:.09em;color:#8b8880;font-weight:bold;margin:0 0 6px;">PARTIALLY COMPLETED</div>'
+    + o.parts.map(p => chip(esc(p.label) + ' ' + (p.done ? 'COMPLETED' : 'PENDING'), p.done)).join('')
+    + '</div>';
+}
 /* INVDO-1 - 「Not Sent」 목록·타일은 없앴다. 인쇄와 발송을 **한 줄에서** 끝내는 쪽이
    헷갈릴 자리가 없다 (하윤 결정, 2026-09-30). `invSentAt`·`invSentFrom` 은 그대로 쓰인다. */
 /* ═══ INVDO-1 - 화면(PL 탭)을 거치지 않고 한 장 보내기 ═══
@@ -43404,12 +43468,14 @@ async function invSendFor(base, wh, toList){
     + psmTable(
         psmRow('Invoice #', esc(invNo))
       + psmRow('PO #', esc(meta.po||''))
-      /* SHIPFROM-1 - 두 발송 경로가 **같은 메일**이어야 한다 (위 sendInvoiceEmail 과 같은 줄) */
-      + psmRow('Ship from', esc(WH_LABEL[(typeof lblShipFromFor==='function') ? lblShipFromFor(rec, wh) : wh] || wh))
       + psmRow('Invoice date', _invDate.toLocaleDateString('en-US'))
       + (_ti ? psmRow('Terms', esc(_ti.label)) : '')
       + (_dueStr ? psmRow('Due date', '<b>' + esc(_dueStr) + '</b>') : '')
-      + psmRow('Amount due', '<span style="font-size:16px;">' + _amtStr + '</span>'))
+      + psmRow('Amount due', '<span style="font-size:16px;">' + _amtStr + '</span>')
+      /* SHIPFROM-1 + POSTAT-1 - 두 발송 경로가 **같은 메일**이어야 한다 (위 sendInvoiceEmail 과 같은 차례) */
+      + psmRow('Ship from', esc(WH_LABEL[(typeof lblShipFromFor==='function') ? lblShipFromFor(rec, wh) : wh] || wh), 11)   /* AMTGAP-2 */
+      + (function(){ const _ps = (typeof invPoStatusHtml==='function') ? invPoStatusHtml(rec, wh) : '';
+          return _ps ? psmRow('PO status', _ps) : ''; })())
     + psmP('Attached: ' + esc(keptN.join(' \u00b7 ')) + '.')
     + psmP('Questions about this invoice? Just reply to this email.'));
   const r = await fetch('https://po-confirm-email.hjbae.workers.dev/send-pl', {
