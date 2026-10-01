@@ -43395,18 +43395,42 @@ function invPoParts(rec, nowKey){
   const now = String(nowKey || '');
   if(now && keys.indexOf(now) < 0) keys.push(now);
   if(!keys.length) return null;
-  const parts = keys.map(k => ({
-    label: (typeof revIsKey === 'function' && revIsKey(k)) ? (revParentWh(k) + ' REV ' + revNumOf(k)) : k,
-    done: (k === now) || !!invSentAt(rec, k)
-  }));
+  /* POSTAT-2 - [stated] 하윤: "SC-completed (9/30) CA-completed (10/1) 뭐이런식으로
+     언제 다 나간거까지 볼수있게". 날짜는 **그 몫의 인보이스가 거래처에 나간 날**이다
+     (완료 판정과 같은 사건이라 둘이 어긋날 수가 없다).
+     ⚠ 지금 보내는 몫은 아직 `emailedAt` 이 안 찍혔다 - 메일을 만드는 이 순간이 그 날짜다. */
+  const parts = keys.map(k => {
+    const at = (k === now) ? new Date().toISOString() : invSentAt(rec, k);
+    return {
+      label: (typeof revIsKey === 'function' && revIsKey(k)) ? (revParentWh(k) + ' REV ' + revNumOf(k)) : k,
+      done: (k === now) || !!invSentAt(rec, k),
+      at: String(at || '')
+    };
+  });
   return { parts: parts, all: (keys.length === 1) || parts.every(p => p.done) };
+}
+/* 「9/30」 - 거래처가 한눈에 읽는 짧은 날짜. 못 읽는 값이면 날짜를 아예 안 적는다 (지어내지 않는다) */
+function invPoDate(at){
+  if(!at) return '';
+  /* ⚠ `invSentInfo` 는 기록에 시각이 없으면 at:'1' 을 준다 - new Date('1') 은 2001-01-01 로
+     읽혀서 「(1/1)」 이라는 **없는 날짜**가 거래처 메일에 박힌다. 모양부터 검사한다. */
+  if(!/^\d{4}-\d{2}-\d{2}/.test(String(at))) return '';
+  const d = new Date(at);
+  if(isNaN(d.getTime())) return '';
+  return (d.getMonth() + 1) + '/' + d.getDate();
+}
+/* 한 칸의 글: 'SC COMPLETED (9/30)' · 'CA PENDING' */
+function invPoPartTxt(p){
+  const dt = p.done ? invPoDate(p.at) : '';
+  return p.label + ' ' + (p.done ? 'COMPLETED' : 'PENDING') + (dt ? (' (' + dt + ')') : '');
 }
 /* 글자만 (기록·화면용) */
 function invPoStatus(rec, nowKey){
   const o = invPoParts(rec, nowKey);
   if(!o) return '';
-  if(o.all) return 'PO COMPLETED';
-  return 'PARTIALLY COMPLETED · ' + o.parts.map(p => p.label + ' ' + (p.done ? 'COMPLETED' : 'PENDING')).join(' · ');
+  if(o.parts.length < 2) return 'PO COMPLETED';
+  return (o.all ? 'PO COMPLETED' : 'PARTIALLY COMPLETED') + ' · '
+    + o.parts.map(invPoPartTxt).join(' · ');
 }
 /* 메일 칸에 들어가는 모양 - [stated] 하윤: "partially completed 일때는
    [SC completed] [ CA pending] 이런식으로". 창고별 딱지라 눈에 바로 들어온다.
@@ -43416,15 +43440,18 @@ function invPoStatus(rec, nowKey){
 function invPoStatusHtml(rec, nowKey){
   const o = invPoParts(rec, nowKey);
   if(!o) return '';
-  if(o.all) return '<span style="color:#243425;">PO COMPLETED</span>';
+  /* 칸이 하나뿐이면 딱지가 할 말이 없다 - 한 줄로 끝낸다 */
+  if(o.parts.length < 2) return '<span style="color:#243425;">PO COMPLETED</span>';
   const chip = (t, done) => '<span style="display:inline-block;border:1px solid '
     + (done ? '#9fb79b' : '#ddd9d0') + ';background:' + (done ? '#eef3ec' : '#faf9f5')
     + ';color:' + (done ? '#243425' : '#8b8880')
     + ';border-radius:4px;padding:3px 9px;font-family:Arial,Helvetica,sans-serif;font-size:11px;'
     + 'font-weight:bold;letter-spacing:.05em;white-space:nowrap;margin:0 6px 4px 0;">' + t + '</span>';
+  /* POSTAT-2 - 다 끝났을 때도 창고별 딱지를 그대로 둔다 (언제 나갔는지가 거기 적혀 있다) */
   return '<div style="white-space:normal;">'
-    + '<div style="font-size:11px;letter-spacing:.09em;color:#8b8880;font-weight:bold;margin:0 0 6px;">PARTIALLY COMPLETED</div>'
-    + o.parts.map(p => chip(esc(p.label) + ' ' + (p.done ? 'COMPLETED' : 'PENDING'), p.done)).join('')
+    + '<div style="font-size:11px;letter-spacing:.09em;color:' + (o.all ? '#243425' : '#8b8880')
+      + ';font-weight:bold;margin:0 0 6px;">' + (o.all ? 'PO COMPLETED' : 'PARTIALLY COMPLETED') + '</div>'
+    + o.parts.map(p => chip(esc(invPoPartTxt(p)), p.done)).join('')
     + '</div>';
 }
 /* INVDO-1 - 「Not Sent」 목록·타일은 없앴다. 인쇄와 발송을 **한 줄에서** 끝내는 쪽이
