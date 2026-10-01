@@ -2396,7 +2396,7 @@ function openSplitLine(i, tgt){
     <div style="background:#0f2a4a;color:#fff;padding:11px 16px;font-weight:800;">✂ Split Qty — ${esc(l.style||'?')} ${esc(l.color||'')} ${esc(l.size||'')} (total ${tot.toLocaleString()} pcs)</div>
     <div style="padding:14px 16px;display:grid;grid-template-columns:1fr 1fr;gap:10px;">
       ${window._spWhs.map(w=>`<div><label style="display:flex;align-items:center;gap:8px;font-size:13px;font-weight:800;color:${whColor[w]};">${w}
-        <input class="fi num" id="sp-${w}" value="${l.wh===w?tot:''}" placeholder="0" oninput="splitSum()" style="width:100%;text-align:center;font-family:Consolas,monospace;font-weight:700;"></label>${(w==='SC'||w==='CA')?`<div id="sp-av-${w}" onclick="splitFill('${w}')" title="Click to put as much as ${w} can cover" style="margin-top:3px;font-size:10px;font-weight:800;line-height:1.35;border-radius:5px;padding:1px 4px;cursor:pointer;white-space:nowrap;"></div>`:(whHint[w]?`<div style="margin-top:3px;font-size:9.5px;font-weight:700;color:${whColor[w]};opacity:.85;white-space:nowrap;">${whHint[w]}</div>`:'')}</div>`).join('')}
+        <input class="fi num" id="sp-${w}" value="${l.wh===w?tot:''}" placeholder="0" oninput="splitSum()" style="width:100%;text-align:center;font-family:Consolas,monospace;font-weight:700;"></label>${(w==='SC'||w==='CA'||w==='IT')?`<div id="sp-av-${w}" onclick="splitFill('${w}')" title="Click to put as much as ${w} can cover" style="margin-top:3px;font-size:10px;font-weight:800;line-height:1.35;border-radius:5px;padding:1px 4px;cursor:pointer;white-space:nowrap;"></div>`:(whHint[w]?`<div style="margin-top:3px;font-size:9.5px;font-weight:700;color:${whColor[w]};opacity:.85;white-space:nowrap;">${whHint[w]}</div>`:'')}</div>`).join('')}
     </div>
     <div id="sp-sum" style="padding:0 16px 4px;font-size:12px;font-weight:700;color:var(--text2);"></div>
     <div style="padding:10px 16px 14px;display:flex;gap:8px;justify-content:flex-end;">
@@ -2410,6 +2410,26 @@ function openSplitLine(i, tgt){
      풀박스 장수 + PC Room 낱장 = 그 창고가 지금 낼 수 있는 장수.
      숫자를 누르면 그 창고가 감당할 만큼 자동으로 채워 넣는다. */
   window.splitAvPaint = () => {
+    /* ITAVAIL-1 - IT 칸: 이미 CA 행 트럭에 실린 몫 */
+    (function(){
+      const el = document.getElementById('sp-av-IT'); if(!el) return;
+      const a = itAvailPcs(l);
+      if(!a.loaded){ el.textContent = 'stock loading\u2026'; el.style.color = '#94a3b8'; el.style.background = 'transparent'; return; }
+      const want = parseInt((document.getElementById('sp-IT')||{}).value)||0;
+      const over = want > a.pcs;
+      el.style.color = over ? '#b91c1c' : (a.pcs > 0 ? '#9a3412' : '#94a3b8');
+      el.style.background = over ? '#fef2f2' : (a.pcs > 0 ? '#fff7ed' : 'transparent');
+      const rfs = Object.keys(a.refs);
+      el.title = a.pcs
+        ? ('Already loaded on a truck to CA: ' + a.boxes + ' box = ' + a.pcs.toLocaleString() + ' pcs'
+           + (rfs.length ? (' (' + rfs.join(', ') + ')') : '') + ' \u2014 click to fill')
+        : 'Nothing of this item is on a truck to CA yet';
+      el.innerHTML = a.pcs
+        ? ('\u{1F69A} <b>' + a.pcs.toLocaleString() + '</b> pcs on the truck'
+           + (rfs.length === 1 ? (' \u00b7 ' + rfs[0].replace(/^3P-/, '')) : '')
+           + (over ? (' \u00b7 \u26a0 only ' + a.pcs.toLocaleString()) : ''))
+        : 'nothing on a truck yet';
+    })();
     ['SC','CA'].forEach(w=>{
       const el = document.getElementById('sp-av-'+w); if(!el) return;
       const a = lineAvailPcs(l, w);
@@ -2429,7 +2449,10 @@ function openSplitLine(i, tgt){
      다른 칸이 이미 다 차 있으면 거기서 덜어낸다 — NA · BO · 나머지 창고 순으로.
      안 그러면 SC 에 전량이 들어가 있을 때 CA 를 눌러도 0 이 들어가서 아무 일도 안 난다. */
   window.splitFill = (w) => {
-    const a = lineAvailPcs(l, w); if(!a.loaded) return;
+    /* ITAVAIL-1 - IT 는 재고가 아니라 트럭에 실린 몫으로 센다 */
+    const a = (w === 'IT') ? (function(){ const x = itAvailPcs(l); return { loaded:x.loaded, total:x.pcs }; })()
+                           : lineAvailPcs(l, w);
+    if(!a.loaded) return;
     const put = Math.min(a.total, tot);
     const me = document.getElementById('sp-'+w); if(me) me.value = put || '';
     const order = (window._spWhs||['SC','CA','BO','NA']).filter(x=>x!==w);
@@ -26470,7 +26493,24 @@ function bxVariantLabel(c, style){
    막는 방법: 아직 안 끝난 이송(LOADING/TRANSIT)에 실린 박스 id 를 들고 있다가
    오더가 박스를 고를 때 빼버린다. 재고 숫자에서 빼지는 않는다 — 아직 SC 에 있는 게 맞으니까.
    집을 수만 없게 한다. */
-let TXHOLD = new Set(), TXHOLD_REF = {}, TXHOLD_TID = {}, TXHOLD_ST = {}, _txHoldAt = 0;
+let TXHOLD = new Set(), TXHOLD_REF = {}, TXHOLD_TID = {}, TXHOLD_ST = {}, TXHOLD_WH = {}, _txHoldAt = 0;
+/* ITAVAIL-1 - [stated] 하윤: "저기 IT쪽에 몇개가 IT으로 준비되어있는지 나오게 할수있나?"
+   IT 로 적을 수 있는 몫 = 이 품목 중에 **이미 CA 행 트럭에 실린** 박스들이다.
+   (아직 트럭에 안 실린 SC 재고는 SC 칸이 세어 준다 - 두 번 세지 않게 여기서는 뺀다.) */
+function itAvailPcs(l){
+  const out = { pcs:0, boxes:0, refs:{}, loaded:true };
+  try{
+    if(typeof bxLoaded !== 'undefined' && !bxLoaded){ out.loaded = false; return out; }
+    const list = bxFindBase(bxStyleFor(l), bxColorFor(l), l.size, 'SC');
+    list.forEach(b=>{
+      if(!txHeld(b.id)) return;
+      if(String(TXHOLD_WH[b.id] || '').toUpperCase() !== 'CA') return;
+      out.boxes++; out.pcs += Number(b.pcs) || 0;
+      const rf = TXHOLD_REF[b.id]; if(rf) out.refs[rf] = (out.refs[rf] || 0) + 1;
+    });
+  }catch(e){}
+  return out;
+}
 async function txHoldRefresh(force){
   if(!force && Date.now() - _txHoldAt < 60000) return TXHOLD;
   try{
@@ -26478,10 +26518,18 @@ async function txHoldRefresh(force){
        아직 안 떠난 트럭(LOADING)인지 가리고, 그 트럭 줄을 찾아 고친다. */
     const r = await sbFetch('/rest/v1/pr_transfers?select=id,ref,status,lines&status=in.(LOADING,TRANSIT)&limit=200');
     if(!r.ok) return TXHOLD;
-    const set = new Set(), ref = {}, tid = {}, st = {};
-    (await r.json()).forEach(t=>{ (Array.isArray(t.lines)?t.lines:[]).forEach(l=>{
-      (l.ids||[]).forEach(id=>{ set.add(id); ref[id] = t.ref || '(transfer)'; tid[id] = t.id; st[id] = String(t.status||''); }); }); });
-    TXHOLD = set; TXHOLD_REF = ref; TXHOLD_TID = tid; TXHOLD_ST = st; _txHoldAt = Date.now();
+    const set = new Set(), ref = {}, tid = {}, st = {}, dw = {};
+    (await r.json()).forEach(t=>{
+      /* ITAVAIL-1 - 이 줄이 **어느 창고로** 가는지. multi 면 그 줄의 정차지를 본다. */
+      const rt = TR_ROUTES[(t.meta && t.meta.route)] || TR_ROUTES.SC2CA;
+      const stops = (t.meta && Array.isArray(t.meta.stops) && t.meta.stops.length) ? t.meta.stops : null;
+      (Array.isArray(t.lines)?t.lines:[]).forEach(l=>{
+        const dk = (rt.multi && stops) ? (stops[Number(l.stop)||0] || stops[0]) : rt.dest;
+        const w = trWhOfKind(dk);
+        (l.ids||[]).forEach(id=>{ set.add(id); ref[id] = t.ref || '(transfer)'; tid[id] = t.id; st[id] = String(t.status||''); dw[id] = w; });
+      });
+    });
+    TXHOLD = set; TXHOLD_REF = ref; TXHOLD_TID = tid; TXHOLD_ST = st; TXHOLD_WH = dw; _txHoldAt = Date.now();
   }catch(e){}
   return TXHOLD;
 }
