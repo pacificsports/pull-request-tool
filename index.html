@@ -35239,6 +35239,69 @@ async function trStopPlanApply(){
   }
 }
 /* 이미 만들어 둔 줄로 ↩ Put Back Request 를 연다 (모양·확정은 전부 기존 것 그대로) */
+/* ═══ BINCHK-1 - 없는 선반 이름이 조용히 들어가는 것을 막는다 ═══
+   [stated] 하윤: "내가 일부러 spelling 틀리게 넣어 봤는데 바로 들어가지네. 저러면 안되지."
+   TAMPORARY 처럼 한 글자 틀리면 그 박스들은 아무도 모르는 선반으로 들어간다. 찾으러 가면 없다.
+   그래서 치는 대로 바로 맞춰 본다: 있는 선반이면 초록 체크, 없으면 빨간 X 와 「new bin?」.
+   새 선반을 진짜 만들 때가 있으니 막지는 않는다 - 다만 **한 번 누르게** 한다.
+   ⚠ 비교는 binNorm 으로 한다 (1G-11 과 1G11 은 같은 선반이다). */
+let _pbBinsCache = null, _pbBinsRef = null, _pbBinsLen = -1, _pbBinsWh = '';
+function trPbKnownBins(wh){
+  const w = String(wh || '').toUpperCase();
+  if(_pbBinsCache && _pbBinsRef === bxStore && _pbBinsLen === bxStore.length && _pbBinsWh === w) return _pbBinsCache;
+  const set = new Set();
+  (typeof bxStore !== 'undefined' ? bxStore : []).forEach(b=>{
+    if(w && bxWh(b) !== w) return;
+    const n = binNorm(b.loc); if(n) set.add(n);
+  });
+  _pbBinsCache = set; _pbBinsRef = bxStore; _pbBinsLen = bxStore.length; _pbBinsWh = w;
+  return set;
+}
+function trPbWh(){
+  try{ return window._pbWh || trWhOfKind(trSrcKind(_shipRoute)) || 'SC'; }catch(e){ return window._pbWh || 'SC'; }
+}
+/* 'ok' 있는 선반 · 'new' 없는 선반 · 'newok' 없는데 하윤이 만들겠다고 누른 것 · 'empty' 안 적음 */
+function trPbBinState(r){
+  const d = binNorm(r && r.dest);
+  if(!d) return 'empty';
+  if(trPbKnownBins(trPbWh()).has(d)) return 'ok';
+  return (r._newOk && binNorm(r._newOk) === d) ? 'newok' : 'new';
+}
+function trPbBinBadge(i){
+  const r = (window._pbRows || [])[i]; if(!r) return '';
+  const st = trPbBinState(r);
+  if(st === 'empty') return '<span style="font-size:10px;color:#dc2626;font-weight:800;">\u2716 no bin</span>';
+  if(st === 'ok') return '<span style="font-size:10px;color:#166534;font-weight:800;">\u2714 existing bin</span>';
+  if(st === 'newok') return '<span style="font-size:10px;color:#b45309;font-weight:800;">\u002b new bin</span>';
+  return '<span style="font-size:10px;color:#dc2626;font-weight:800;">\u2716 no such bin</span>'
+    + ' <button class="btn btn-sm" style="padding:0 6px;font-size:10px;background:#b45309;color:#fff;border-color:#b45309;font-weight:800;" '
+    + 'onclick="trPbNewBinOk(' + i + ')" title="There is no bin with this name. Press this only if you really are making a new one.">new bin?</button>';
+}
+function trPbBinSync(i){
+  const el = document.getElementById('pb-bs-' + i);
+  if(el) el.innerHTML = trPbBinBadge(i);
+}
+function trPbBinSyncAll(){ (window._pbRows || []).forEach((r,i)=>trPbBinSync(i)); }
+function trPbNewBinOk(i){
+  const r = (window._pbRows || [])[i]; if(!r) return;
+  const d = String(r.dest || '').trim().toUpperCase();
+  if(!d) return;
+  if(!confirm('Make a new bin called ' + d + '?\n\n'
+    + 'There is no bin with this name in ' + trPbWh() + ' today.\n'
+    + 'Check the spelling first - a typo here sends the boxes to a shelf nobody knows about.')) return;
+  r._newOk = binNorm(d);
+  trPbBinSync(i);
+}
+function trPbRowHtml(r, i){
+  return `<tr>
+    <td style="font-family:Consolas,monospace;font-weight:700;">#${esc(r.style)}</td>
+    <td>${esc(bxBaseColor(r.color))}</td>
+    <td style="text-align:center;">${esc(r.size)}</td>
+    <td style="text-align:center;color:#64748b;">${esc(r.bin||'TRANSFER')}</td>
+    <td style="text-align:center;"><input class="fi" type="number" min="1" max="${r.max}" value="${r.qty}" onchange="trPbEdit(${i},'qty',this.value)" style="width:58px;text-align:center;font-weight:800;font-size:12px;padding:3px 4px;"> <span style="font-size:10px;color:#94a3b8;">/ ${r.max}</span></td>
+    <td style="text-align:center;white-space:nowrap;"><input class="fi" value="${esc(r.dest)}" oninput="trPbEdit(${i},'dest',this.value)" onchange="trPbEdit(${i},'dest',this.value)" placeholder="Bin" style="width:82px;text-align:center;font-weight:700;font-size:12px;padding:3px 6px;text-transform:uppercase;"><div id="pb-bs-${i}" style="margin-top:3px;">${trPbBinBadge(i)}</div></td>
+  </tr>`;
+}
 function trPutBackOpenRows(rows){
   if(!rows || !rows.length){ showToast('⚠ Nothing to put back'); return; }
   window._pbRows = rows;
@@ -35249,14 +35312,7 @@ function trPutBackOpenRows(rows){
   window._pbRows = _keep;
   const body = document.querySelector('#modal-pb tbody');
   if(!body){ showToast('\u26a0 Could not open the Put Back window'); return; }
-  if(body) body.innerHTML = _keep.map((r,i)=>`<tr>
-    <td style="font-family:Consolas,monospace;font-weight:700;">#${esc(r.style)}</td>
-    <td>${esc(bxBaseColor(r.color))}</td>
-    <td style="text-align:center;">${esc(r.size)}</td>
-    <td style="text-align:center;color:#64748b;">${esc(r.bin||'TRANSFER')}</td>
-    <td style="text-align:center;"><input class="fi" type="number" min="1" max="${r.max}" value="${r.qty}" onchange="trPbEdit(${i},'qty',this.value)" style="width:58px;text-align:center;font-weight:800;font-size:12px;padding:3px 4px;"> <span style="font-size:10px;color:#94a3b8;">/ ${r.max}</span></td>
-    <td style="text-align:center;"><input class="fi" value="${esc(r.dest)}" onchange="trPbEdit(${i},'dest',this.value)" placeholder="Bin" style="width:82px;text-align:center;font-weight:700;font-size:12px;padding:3px 6px;text-transform:uppercase;"></td>
-  </tr>`).join('');
+  if(body) body.innerHTML = _keep.map((r,i)=>trPbRowHtml(r,i)).join('');
 }
 /* PBPAL-1 - 창 맨 위 칸에 bin 을 한 번만 치면 모든 줄의 「To bin」 에 꽂힌다.
    [stated] 하윤: "저거 다 temporary bin으로 옮겨야되는데" - 줄마다 타자 치게 하지 않는다. */
@@ -35271,6 +35327,8 @@ function trPbSetAllBins(){
     if(last && last.type !== 'number') last.value = v;
   });
   if(el) el.value = v;
+  (window._pbRows || []).forEach(r=>{ if(r._newOk && r._newOk !== binNorm(v)) r._newOk = ''; });
+  trPbBinSyncAll();
   showToast('\ud83d\udccd All lines \u2192 ' + v);
 }
 /* PBPAL-1 - 팔레트 머리의 한 버튼으로 그 팔레트를 통째로 bin 에 되돌린다.
@@ -35624,7 +35682,9 @@ function trPbGatherPallets(labs){
   });
   return out;
 }
-function trPutBackOpen(pid, li, rowsIn){
+function trPutBackOpen(pid, li, rowsIn, whIn){
+  /* BINCHK-1 - 어느 창고의 선반 목록과 맞춰 볼지 */
+  try{ window._pbWh = String(whIn || trWhOfKind(trSrcKind(_shipRoute)) || 'SC').toUpperCase(); }catch(e){ window._pbWh = String(whIn||'SC').toUpperCase(); }
   /* PBPAL-1 - 줄을 밖에서 통째로 넘길 수 있다 (팔레트 되돌리기). 넘기면 화면 체크박스는 안 본다. */
   const rows = (rowsIn && rowsIn.length) ? rowsIn : trPbGather(pid, li);
   if(!rows.length){ showToast('⚠ No stock lines selected'); return; }
@@ -35635,14 +35695,7 @@ function trPutBackOpen(pid, li, rowsIn){
   const ex = document.getElementById('modal-pb'); if(ex) ex.remove();
   const div = document.createElement('div'); div.id='modal-pb';
   div.style.cssText='position:fixed;inset:0;background:rgba(15,23,42,.6);z-index:130;display:flex;align-items:center;justify-content:center;padding:12px;';
-  const body = rows.map((r,i)=>`<tr>
-    <td style="font-family:Consolas,monospace;font-weight:700;">#${esc(r.style)}</td>
-    <td>${esc(bxBaseColor(r.color))}</td>
-    <td style="text-align:center;">${esc(r.size)}</td>
-    <td style="text-align:center;color:#64748b;">${esc(r.bin||'TRANSFER')}</td>
-    <td style="text-align:center;"><input class="fi" type="number" min="1" max="${r.max}" value="${r.qty}" onchange="trPbEdit(${i},'qty',this.value)" style="width:58px;text-align:center;font-weight:800;font-size:12px;padding:3px 4px;"> <span style="font-size:10px;color:#94a3b8;">/ ${r.max}</span></td>
-    <td style="text-align:center;"><input class="fi" value="${esc(r.dest)}" onchange="trPbEdit(${i},'dest',this.value)" placeholder="Bin" style="width:82px;text-align:center;font-weight:700;font-size:12px;padding:3px 6px;text-transform:uppercase;"></td>
-  </tr>`).join('');
+  const body = rows.map((r,i)=>trPbRowHtml(r,i)).join('');
   div.innerHTML = `<div style="background:#fff;border-radius:12px;max-width:680px;width:100%;max-height:90vh;display:flex;flex-direction:column;overflow:hidden;">
     <div style="background:#c2410c;color:#fff;padding:12px 18px;font-size:15px;font-weight:800;display:flex;align-items:center;gap:8px;">↩ Put Back Request <span style="font-size:11px;font-weight:400;color:#fed7aa;">— return prepared boxes to their location bin</span>
       <button class="btn btn-sm" style="margin-left:auto;background:transparent;color:#fed7aa;border-color:#fdba74;" onclick="document.getElementById('modal-pb').remove()">✕</button></div>
@@ -35668,7 +35721,12 @@ function trPutBackOpen(pid, li, rowsIn){
 function trPbEdit(i, field, val){
   const r = (window._pbRows||[])[i]; if(!r) return;
   if(field==='qty'){ let n=parseInt(val,10)||0; if(n<1)n=1; if(n>r.max)n=r.max; r.qty=n; const inp=document.querySelectorAll('#modal-pb input[type=number]')[i]; if(inp) inp.value=n; }
-  else if(field==='dest'){ r.dest=String(val||'').trim().toUpperCase(); }
+  else if(field==='dest'){
+    r.dest=String(val||'').trim().toUpperCase();
+    /* BINCHK-1 - 이름을 고치면 「새로 만들기」 승인은 풀린다. 다른 이름이니까. */
+    if(r._newOk && r._newOk !== binNorm(r.dest)) r._newOk = '';
+    trPbBinSync(i);
+  }
 }
 function trPutBackPrint(){ trPutBackPrintFrom(window._pbRows||[], _shipNo, trWhOfKind(trSrcKind(_shipRoute))); }
 function trPutBackPrintFrom(rows, shipNo, srcWh){
@@ -35709,6 +35767,15 @@ function trPutBackPrintFrom(rows, shipNo, srcWh){
 }
 async function trPutBackConfirm(){
   const rows = window._pbRows||[]; if(!rows.length) return;
+  /* BINCHK-1 - 없는 선반 이름인 채로는 못 넘어간다. 진짜 새 선반이면 「new bin?」 를 누르면 된다. */
+  const bad = rows.filter(r=>{ const st = trPbBinState(r); return st === 'new' || st === 'empty'; });
+  if(bad.length){
+    const names = [...new Set(bad.map(r=>String(r.dest||'(blank)')))];
+    alert('\u26d4 Nothing was put back.\n\n'
+      + 'There is no bin called ' + names.join(', ') + ' in ' + trPbWh() + '.\n\n'
+      + '\u2192 Fix the spelling, or press the orange "new bin?" button next to it if you really are making a new bin.');
+    return;
+  }
   const btn = document.getElementById('pb-go'); if(btn){ btn.disabled=true; btn.textContent='Working…'; }
   const _rw = trWhOfKind(trSrcKind(_shipRoute));
   /* PBPAL-1 - 창을 띄워 둔 사이에 화면이 다시 그려지면 줄을 못 찾는다. 그러면 **인쇄하기 전에**
@@ -36458,9 +36525,9 @@ function trRenderPallets(){
         <button class="btn btn-sm" style="background:#0f766e;color:#fff;border-color:#0f766e;font-weight:800;" onclick="trPalTagPrint('${p.id}')" title="Print a 4 x 6 tag for this pallet - big name and the box count, nothing else">🏷 Tag</button>
         ${_noPR?'':`<button class="btn btn-sm" style="background:#6d28d9;color:#fff;border-color:#6d28d9;" onclick="trQrPallet('${p.id}')" title="Print a 2&quot; x 2&quot; box QR sticker for every box on this pallet. New carton numbers — only for boxes that have no QR yet.">⬛ Box QR</button>`}
         <button class="btn btn-sm" onclick="trManualLine('${p.id}')">+ Manual</button>
-        ${(p.lines||[]).some(l=>l && !l.is_manual && (l.ids||[]).length) ? `<button class="btn btn-sm" style="background:#c2410c;color:#fff;border-color:#c2410c;font-weight:800;" onclick="trPalPutBack('${esc(p.label)}')" title="Take this whole pallet off the truck and put every box back into a location bin \u2014 you pick the bin">\u21a9 Put back pallet</button>` : ''}
-        ${_shipPallets.length>1 ? `<button class="btn btn-sm" style="background:#fff7ed;color:#c2410c;border-color:#fdba74;font-weight:800;" onclick="trSplitPallet('${p.id}')" title="Move this pallet into its own shipment — stock does not move, the boxes on it just travel to the new shipment">\u2702 Split off</button>` : ''}
-        <button class="btn btn-sm" style="background:#fee2e2;color:#c62828;border-color:#fecaca;" onclick="trDelPallet('${p.id}')">✕ ${_spSrc?'Remove this bin':'Delete pallet'}</button>
+        ${(p.lines||[]).some(l=>l && !l.is_manual && (l.ids||[]).length) ? `<button class="btn btn-sm" style="background:#c2410c;color:#fff;border-color:#c2410c;font-weight:800;" onclick="trPalPutBack('${esc(p.label)}')" title="Take this whole pallet off the truck and put every box back into a location bin \u2014 you pick the bin">\u21a9 Put back</button>` : ''}
+        ${_shipPallets.length>1 ? `<button class="btn btn-sm" style="background:#fff7ed;color:#c2410c;border-color:#fdba74;font-weight:800;" onclick="trSplitPallet('${p.id}')" title="Move this pallet into its own shipment — stock does not move, the boxes on it just travel to the new shipment">\u2702</button>` : ''}
+        <button class="btn btn-sm" style="background:#fee2e2;color:#c62828;border-color:#fecaca;padding:0 9px;" onclick="trDelPallet('${p.id}')" title="${_spSrc?'Remove this bin from the shipment':'Delete this pallet'}">✕</button>
       </div>
       <div style="overflow-x:auto;">
       <table class="etbl" style="font-size:12px;">
