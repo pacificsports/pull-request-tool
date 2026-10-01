@@ -542,6 +542,7 @@ try{ applyWide(localStorage.getItem('psx_wide') !== '0'); }catch(e){ applyWide(t
         <button class="btn btn-sm" id="cc-filter-btn" onclick="ccOnly=!ccOnly;renderSaved();" title="Show only credit-card customers">💳 Credit Card</button>
         <button class="btn btn-sm" id="web-filter-btn" onclick="webOnly=!webOnly;renderSaved();" title="Show only website customers">🌐 Website</button>
         <button class="btn btn-sm" style="background:#065f46;color:#fff;border-color:#065f46;font-weight:700;" onclick="openBulkPay()" title="Upload a factoring remittance PDF to auto-match invoices and post payments in bulk">💰 Bulk Payment</button>
+        <button class="btn btn-sm" style="background:#7c2d12;color:#fff;border-color:#7c2d12;font-weight:700;" onclick="factorOpen()" title="Build today's HANA assignment file from the invoices and credit memos that have not been sent yet">🏦 Factor File</button>
         <button class="btn btn-sm" id="ship-draft-btn" style="display:none;background:#0891b2;color:#fff;border-color:#0891b2;font-weight:700;" onclick="icResumeDraft()" title="Resume the saved 'Inform Customer' ship draft (restores the selected orders + pallets)">📄 Ship Draft<span id="ship-draft-when" style="font-weight:400;opacity:.85;"></span></button>
         <button class="btn btn-sm" onclick="openTrash()" title="Deleted orders (kept 30 days)">🗑</button>
         <input class="fi" id="saved-search" placeholder="🔍 Search customer / PO# / Ref# / style · color (e.g. 1315 NAVY)" oninput="savedQuery=this.value;renderSaved();" style="flex:1 1 260px;min-width:220px;font-size:12px;padding:6px 10px;font-weight:400;">
@@ -40704,6 +40705,8 @@ function cmPlEmailOf(name){
 function cmAddrRow(name, em){
   const b = cmBillOf(name);
   const nm = esc(name).replace(/'/g,"\\'");
+  /* FACTOR-1 - 이 거래처 카드 (HANA 칸을 보일지 결정한다) */
+  let cs = {}; try{ cs = custStore[custKey(name)] || {}; }catch(e){ cs = {}; }
   if(!_cmEditAddr){
     const l1 = b.name || '';
     const l2 = b.addr || '';
@@ -40731,7 +40734,20 @@ function cmAddrRow(name, em){
               'Where the invoice email goes. Use commas for more than one.')
       + emRow('📦 PACKING LIST', 'plEmail', cmPlEmailOf(name),
               'same as the invoice address',
-              'Where the packing list email goes. Leave it blank and the invoice address is used.');
+              'Where the packing list email goes. Leave it blank and the invoice address is used.')
+      /* FACTOR-1 - HANA 에 보내는 assignment 파일이 요구하는 두 칸.
+         [stated] 하윤: "hana factor에 assignment을 ... excel 포맷처럼 만들어서 매일 보내거든"
+         ⚠ 팩터를 안 쓰는 거래처(웹샵·카드)에는 이 칸을 아예 안 보여준다 - 빈 칸이 늘면
+           「뭘 안 채웠나」 가 매일 눈에 밟힌다.
+         ⚠ [stated] 승인번호는 거래처마다 고정이다 - 그래서 오더가 아니라 거래처 카드에 둔다. */
+      + ((typeof csFactored==='function' && csFactored(cs)) ? (
+            emRow('🏦 HANA CODE', 'hanaCode', (cs&&cs.hanaCode)||'',
+                  'LONEROCK, MARKINGS ...',
+                  'The customer code HANA uses. It goes in the Customer_ID column of the daily assignment file.')
+          + emRow('🏦 HANA APPROVAL #', 'hanaAppr', (cs&&cs.hanaAppr)||'',
+                  '10 digits',
+                  'The 10-digit HANA approval number for this customer. It goes in the Approval_Number column.')
+        ) : '');
   }
   const fld = (f, ph, w, extra, fn) => '<input class="fi" value="'+esc((f==='email'?(em||''):(b[f]||'')))+'" placeholder="'+ph+'" '
     + 'onchange="'+(fn||("cmAddrSet('"+nm+"','"+f+"',this.value)"))+'" '
@@ -45592,6 +45608,248 @@ function loadDraft(){
 document.addEventListener('input', e=>{ if(e.target.classList.contains('fi')) saveDraft(); });
 
 // ═══════════════ 초기화 ═══════════════
+/* ═══════════ 🏦 HANA Factor File (FACTOR-1, 2026-10-01) ═══════════
+   [stated] 하윤: "우리가 hana factor에 assignment을 ... excel 포맷처럼 만들어서 매일 보내거든.
+     이거를 ... 아침에 print랑 이멜 다한다음 다운받던지 아님 거기서 hana로 바로 보낼수있게"
+   보내준 실물 파일(0925-2026-ECS.xlsx)을 그대로 읽어서 맞췄다:
+     1행 Client_ID · Schedule_Date · Schedule_Amount
+     2행 6547 · 날짜 · 합계
+     3행 Customer_ID · Invoice_Date · Invoice_Amount · Invoice_No · Term_Code · Due_Date · Approval_Number · PO_Number · Store_No
+     4행 설명줄
+     5행부터 한 줄 = 서류 한 장
+   ⚠⚠ 이 파일은 **돈을 넘기는 서류**다. 틀린 금액이 나가면 되돌리기 어렵다. 그래서:
+     · 줄을 사람이 체크해서 고른다 [stated] ("우리가 선택해서 넣을수있게")
+     · HANA 코드가 없는 거래처 줄은 **자동으로 안 켜진다** (빈 칸으로 나가면 저쪽이 못 읽는다)
+     · 한 번 내보낸 서류에는 도장을 찍어서 다음 날 또 안 뜬다
+   ⚠ [stated] 크레딧 메모도 **마이너스 줄**로 같이 넣는다.
+     ⓘ HANA 가 마이너스 줄을 받는지는 하윤이 확인하기로 했다 - 형식만 맞춰 둔다. */
+const FACTOR_CLIENT_ID = '6547';
+/* 우리 조건(일수) → HANA 코드. 표는 보내준 파일의 TERM CODE 시트 그대로. */
+const FACTOR_TERMS = {5:'N05',7:'N07',10:'N10',15:'N15',20:'N20',30:'N30',40:'N40',45:'N45',
+  55:'N55',60:'N60',70:'N70',75:'N75',80:'N80',90:'N90',120:'N120',150:'N150',180:'N180'};
+function factorTermCode(days){
+  const d = Number(days)||0;
+  return FACTOR_TERMS[d] || '';   /* 모르는 일수면 빈 칸 - 지어내지 않는다 */
+}
+function factorCustCard(cust){
+  try{ return ((typeof custGroupStore==='function') ? custGroupStore(cust) : custStore[custKey(cust)]) || {}; }
+  catch(e){ return {}; }
+}
+/* mm/dd/yyyy - 보내준 파일이 쓰는 형식 */
+function factorDate(v){
+  if(!v) return '';
+  const d = (typeof v === 'string' && /^\d{4}-\d{2}-\d{2}/.test(v)) ? new Date(v.slice(0,10)+'T00:00:00') : new Date(v);
+  if(isNaN(d.getTime())) return '';
+  return (d.getMonth()+1)+'/'+d.getDate()+'/'+d.getFullYear();
+}
+function factorYmd(v){
+  if(!v) return '';
+  const d = (typeof v === 'string' && /^\d{4}-\d{2}-\d{2}/.test(v)) ? new Date(v.slice(0,10)+'T00:00:00') : new Date(v);
+  if(isNaN(d.getTime())) return '';
+  return d.getFullYear()+'-'+String(d.getMonth()+1).padStart(2,'0')+'-'+String(d.getDate()).padStart(2,'0');
+}
+/* 이 창고 몫 인보이스의 금액 - iv.lines 가 비었으면 패킹리스트 줄로 센다 */
+function factorAmt(rec, wh){
+  const iv = (rec.inv && rec.inv[wh]) || {};
+  const ls = (Array.isArray(iv.lines) && iv.lines.length) ? iv.lines
+           : (((rec.pl && rec.pl[wh] && rec.pl[wh].lines) || []));
+  const t = ls.reduce((a,l)=>a+(Number(l.qty)||0)*(Number(l.price)||0),0) + (Number(iv.freight)||0);
+  return Math.round(t*100)/100;
+}
+/* 인보이스 하나의 조건 - 인보이스에 박힌 것이 먼저, 없으면 거래처 카드 */
+function factorTermOf(rec, wh){
+  const iv = (rec.inv && rec.inv[wh]) || {};
+  let ti = null;
+  try{ ti = termInfo({termType:iv.termType, termDays:iv.termDays}); }catch(e){}
+  if(!ti){ try{ ti = termInfo(factorCustCard(rec.meta && rec.meta.cust)); }catch(e){} }
+  return ti;
+}
+/* 아직 HANA 로 안 보낸 서류를 모은다. days 안쪽만 본다 (오래된 것까지 들추지 않는다). */
+function factorCandidates(days){
+  const back = Math.max(1, Number(days)||14);
+  const cut = Date.now() - back*86400000;
+  const out = [];
+  (savedCache||[]).forEach(rec=>{
+    const meta = rec.meta || {};
+    if(meta._cancelled) return;
+    const cs = factorCustCard(meta.cust);
+    const fac = (typeof csFactored==='function') ? csFactored(cs) : true;
+    /* 인보이스 */
+    Object.keys(rec.inv||{}).forEach(wh=>{
+      const iv = rec.inv[wh] || {};
+      const no = String(iv.invNo||'').trim();
+      if(!no) return;                       /* 번호가 없으면 아직 서류가 아니다 */
+      if(iv.factorAt) return;               /* 이미 보냈다 */
+      const dt = factorYmd((rec.pl && rec.pl[wh] && rec.pl[wh].date) || iv.savedAt);
+      if(!dt) return;
+      if(new Date(dt+'T00:00:00').getTime() < cut) return;
+      const ti = factorTermOf(rec, wh);
+      const amt = factorAmt(rec, wh);
+      if(!(Math.abs(amt) > 0.004)) return;  /* $0 짜리는 보낼 것이 없다 */
+      let due = '';
+      if(ti){ const d0 = new Date(dt+'T00:00:00'); d0.setDate(d0.getDate()+(Number(ti.days)||0)); due = factorYmd(d0); }
+      out.push({ kind:'inv', base:rec.base, wh:wh, cust:String(meta.cust||''),
+        hana:String(cs.hanaCode||'').trim(), appr:String(cs.hanaAppr||'').trim(),
+        date:dt, amt:amt, no:no, term:ti?factorTermCode(ti.days):'', termLabel:ti?ti.label:'',
+        due:due, po:String(meta.po||''), factored:!!fac });
+    });
+    /* 크레딧 메모 - 마이너스 줄 */
+    let memos = [];
+    try{ memos = (typeof memoHistRows==='function') ? memoHistRows(rec.base) : []; }catch(e){ memos = []; }
+    const done = (meta._factorCm && typeof meta._factorCm === 'object') ? meta._factorCm : {};
+    memos.forEach(m=>{
+      const ref = String(m.ref||'').trim();
+      if(!ref || !(Number(m.amt) > 0.004)) return;
+      if(done[ref]) return;                 /* 이미 보냈다 */
+      const dt = factorYmd(m.at);
+      if(!dt || new Date(dt+'T00:00:00').getTime() < cut) return;
+      const ti = factorTermOf(rec, m.wh || Object.keys(rec.inv||{})[0] || 'SC');
+      out.push({ kind:'cm', base:rec.base, wh:String(m.wh||''), cust:String(meta.cust||''),
+        hana:String(cs.hanaCode||'').trim(), appr:String(cs.hanaAppr||'').trim(),
+        date:dt, amt:-Math.round(Number(m.amt)*100)/100, no:ref,
+        term:ti?factorTermCode(ti.days):'', termLabel:ti?ti.label:'', due:dt,
+        po:String(meta.po||''), factored:!!fac, ref:ref });
+    });
+  });
+  out.sort((a,b)=> String(b.date).localeCompare(String(a.date)) || String(a.no).localeCompare(String(b.no)));
+  return out;
+}
+/* ───────── 화면 ───────── */
+let _factorRows = [], _factorDays = 14;
+function factorMoney(n){ return (n<0?'-':'') + '$' + Math.abs(Number(n)||0).toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2}); }
+function factorRowId(r){ return r.kind + '|' + r.base + '|' + (r.wh||'') + '|' + r.no; }
+function factorOpen(days){
+  if(days) _factorDays = Number(days)||14;
+  _factorRows = factorCandidates(_factorDays);
+  const noCode = _factorRows.filter(r=>r.factored && !r.hana);
+  const body = `
+    <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-bottom:10px;">
+      <span style="font-size:11.5px;font-weight:800;color:#64748b;">Look back</span>
+      <select class="fi" onchange="factorOpen(this.value)" style="font-size:12px;padding:4px 8px;width:110px;">
+        ${[7,14,30,60].map(d=>`<option value="${d}" ${d===_factorDays?'selected':''}>${d} days</option>`).join('')}
+      </select>
+      <span style="font-size:11.5px;color:#94a3b8;">Only documents that have not been sent to HANA yet.</span>
+      <span style="margin-left:auto;display:flex;gap:6px;">
+        <button class="btn btn-sm" onclick="factorPick(1)">Select all</button>
+        <button class="btn btn-sm" onclick="factorPick(0)">Clear</button>
+      </span>
+    </div>
+    ${noCode.length ? `<div style="margin-bottom:10px;padding:8px 12px;background:#fef2f2;border:1.5px solid #fca5a5;border-radius:8px;font-size:12px;font-weight:700;color:#b91c1c;">
+      ⚠ ${noCode.length} document(s) belong to a factored customer with no HANA code yet — they cannot be selected.
+      Open Customers, find the customer and fill in 🏦 HANA CODE.</div>` : ''}
+    <div style="max-height:52vh;overflow:auto;border:1px solid var(--border);border-radius:8px;">
+      <table style="width:100%;border-collapse:collapse;font-size:12px;">
+        <thead><tr style="background:#f8fafc;color:#64748b;position:sticky;top:0;">
+          <th style="padding:6px 8px;width:30px;"></th>
+          <th style="padding:6px 8px;text-align:left;">Customer_ID</th>
+          <th style="padding:6px 8px;text-align:left;">Customer</th>
+          <th style="padding:6px 8px;">Invoice_Date</th>
+          <th style="padding:6px 8px;text-align:right;">Amount</th>
+          <th style="padding:6px 8px;">Invoice_No</th>
+          <th style="padding:6px 8px;">Term</th>
+          <th style="padding:6px 8px;">Due_Date</th>
+          <th style="padding:6px 8px;">Approval_No</th>
+          <th style="padding:6px 8px;text-align:left;">PO_Number</th>
+        </tr></thead>
+        <tbody>${_factorRows.map((r,i)=>{
+          const bad = !r.hana, cm = r.kind==='cm';
+          return `<tr style="border-top:1px solid #f1f5f9;${bad?'background:#fef2f2;':(cm?'background:#fff7ed;':'')}">
+            <td style="padding:5px 8px;text-align:center;"><input type="checkbox" class="fct-cb" data-i="${i}" ${(!bad && r.factored)?'checked':''} ${bad?'disabled':''} onchange="factorSum()" style="width:14px;height:14px;cursor:${bad?'not-allowed':'pointer'};"></td>
+            <td style="padding:5px 8px;font-weight:800;color:${bad?'#b91c1c':'#0f2a4a'};font-family:Consolas,monospace;">${bad?'— no code':esc(r.hana)}</td>
+            <td style="padding:5px 8px;color:#475569;">${esc(r.cust)}${cm?' <span style="font-size:10px;font-weight:800;color:#c2410c;">CREDIT MEMO</span>':''}${r.factored?'':' <span style="font-size:10px;color:#94a3b8;">not factored</span>'}</td>
+            <td style="padding:5px 8px;text-align:center;font-family:Consolas,monospace;">${esc(factorDate(r.date))}</td>
+            <td style="padding:5px 8px;text-align:right;font-family:Consolas,monospace;font-weight:800;color:${r.amt<0?'#b91c1c':'#0f2a4a'};">${factorMoney(r.amt)}</td>
+            <td style="padding:5px 8px;text-align:center;font-family:Consolas,monospace;">${esc(r.no)}</td>
+            <td style="padding:5px 8px;text-align:center;font-weight:700;color:${r.term?'#0f2a4a':'#b45309'};" title="${esc(r.termLabel||'')}">${r.term?esc(r.term):'⚠ none'}</td>
+            <td style="padding:5px 8px;text-align:center;font-family:Consolas,monospace;">${esc(factorDate(r.due))}</td>
+            <td style="padding:5px 8px;text-align:center;font-family:Consolas,monospace;color:${r.appr?'#0f2a4a':'#94a3b8'};">${r.appr?esc(r.appr):'—'}</td>
+            <td style="padding:5px 8px;font-family:Consolas,monospace;">${esc(r.po)}</td>
+          </tr>`;
+        }).join('') || '<tr><td colspan="10" style="padding:22px;text-align:center;color:#94a3b8;">Nothing waiting — every document in this window has already gone to HANA.</td></tr>'}</tbody>
+      </table>
+    </div>
+    <div id="fct-sum" style="margin-top:10px;"></div>`;
+  kpiShell('modal-factor', '🏦 HANA Factor File — daily assignment', '#7c2d12', body, '', '1060px', true);
+  factorSum();
+}
+function factorPick(on){
+  document.querySelectorAll('#modal-factor .fct-cb').forEach(cb=>{ if(!cb.disabled) cb.checked = !!on; });
+  factorSum();
+}
+function factorPicked(){
+  const out = [];
+  document.querySelectorAll('#modal-factor .fct-cb').forEach(cb=>{ if(cb.checked && !cb.disabled){ const r=_factorRows[Number(cb.dataset.i)]; if(r) out.push(r); } });
+  return out;
+}
+function factorSum(){
+  const el = document.getElementById('fct-sum'); if(!el) return;
+  const pick = factorPicked();
+  const tot = Math.round(pick.reduce((a,r)=>a+r.amt,0)*100)/100;
+  const noTerm = pick.filter(r=>!r.term).length;
+  el.innerHTML = `<div style="display:flex;align-items:center;gap:14px;flex-wrap:wrap;padding:10px 14px;background:#fff7ed;border:1.5px solid #fed7aa;border-radius:9px;">
+    <span style="font-size:12px;font-weight:800;color:#7c2d12;">${pick.length} document(s)</span>
+    <span style="font-size:17px;font-weight:800;color:#7c2d12;font-family:Consolas,monospace;">${factorMoney(tot)}</span>
+    ${noTerm?`<span style="font-size:11.5px;font-weight:800;color:#b91c1c;">⚠ ${noTerm} with no HANA term code — fix the terms first</span>`:''}
+    <span style="margin-left:auto;display:flex;gap:7px;">
+      <button class="btn btn-sm" style="background:#166534;color:#fff;border-color:#166534;font-weight:800;" onclick="factorExcel()" ${pick.length?'':'disabled'}>⬇ Excel for HANA</button>
+      <button class="btn btn-sm" style="background:#7c2d12;color:#fff;border-color:#7c2d12;font-weight:800;" onclick="factorMarkSent()" ${pick.length?'':'disabled'} title="Stamp these documents as sent, so they stop showing up here. Do this after HANA has the file.">✓ Mark as sent</button>
+    </span></div>`;
+}
+/* 보내준 실물 파일과 같은 자리·같은 글자로 쓴다 */
+async function factorExcel(){
+  const pick = factorPicked();
+  if(!pick.length){ showToast('⚠ Nothing selected'); return; }
+  try{ await loadXlsxLib(); }catch(e){ showToast('❌ Excel library did not load'); return; }
+  const tot = Math.round(pick.reduce((a,r)=>a+r.amt,0)*100)/100;
+  const today = todayStr();
+  const aoa = [
+    ['Client_ID','Schedule_Date','Schedule_Amount','Bulk Invoice Entry '],
+    [FACTOR_CLIENT_ID, factorDate(today), tot],
+    ['Customer_ID','Invoice_Date','Invoice_Amount','Invoice_No','Term_Code','Due_Date','Approval_Number','PO_Number','Store_No'],
+    ['*Hana Code Only*','*format: mmddyyyy or mm/dd/yyyy','*Numeric*','*Alphanumeric*','*Hana Code Only*','*format: mmddyyyy or mm/dd/yyyy','*10-Digit Hana Approval # with dash or without dash','*Alphanumeric*','*Numeric*']
+  ];
+  pick.forEach(r=>{
+    const noNum = /^\d+$/.test(String(r.no)) ? Number(String(r.no).replace(/^0+/,'')) : String(r.no);
+    aoa.push([ r.hana, factorDate(r.date), r.amt, noNum, r.term, factorDate(r.due),
+               r.appr ? (/^\d+$/.test(r.appr) ? Number(r.appr) : r.appr) : '', r.po, '' ]);
+  });
+  const wb = XLSX.utils.book_new();
+  const ws = XLSX.utils.aoa_to_sheet(aoa);
+  XLSX.utils.book_append_sheet(wb, ws, 'InvoiceBulk');
+  const d = new Date(today + 'T00:00:00');
+  const fn = String(d.getMonth()+1).padStart(2,'0') + String(d.getDate()).padStart(2,'0') + '-' + d.getFullYear() + '-ECS.xlsx';
+  XLSX.writeFile(wb, fn);
+  showToast('⬇ ' + fn + ' — ' + pick.length + ' line(s), ' + factorMoney(tot));
+}
+/* 도장 - 이 서류들은 HANA 로 갔다. 다음 날 또 안 뜬다. */
+async function factorMarkSent(){
+  const pick = factorPicked();
+  if(!pick.length) return;
+  const tot = Math.round(pick.reduce((a,r)=>a+r.amt,0)*100)/100;
+  if(!confirm('✓ Mark ' + pick.length + ' document(s) — ' + factorMoney(tot) + ' — as sent to HANA?\n\n'
+    + 'They will stop showing up in this list.\nDo this only after HANA actually has the file.')) return;
+  const byBase = {};
+  pick.forEach(r=>{ (byBase[r.base] = byBase[r.base] || []).push(r); });
+  const stamp = new Date().toISOString(), by = (SESS&&SESS.email)||'';
+  let okN = 0; const bad = [];
+  for(const base of Object.keys(byBase)){
+    const rec = (savedCache||[]).find(x=>x.base===base); if(!rec){ bad.push(base); continue; }
+    const rows = byBase[base];
+    rows.forEach(r=>{
+      if(r.kind === 'inv'){ rec.inv = rec.inv || {}; rec.inv[r.wh] = { ...(rec.inv[r.wh]||{}), factorAt: stamp, factorBy: by }; }
+      else { rec.meta = rec.meta || {}; rec.meta._factorCm = { ...(rec.meta._factorCm||{}), [r.ref || r.no]: stamp }; }
+    });
+    try{
+      await sbSaveRow('/rest/v1/pr_orders?base=eq.'+encodeURIComponent(base),
+        {inv:rec.inv, meta:rec.meta, updated_at:new Date().toISOString()}, 'Factor stamp ' + base);
+      okN += rows.length;
+      logHist(base, 'Sent to HANA factor — ' + rows.map(x=>x.no).join(', '));
+    }catch(e){ bad.push(base + ' (' + ((e&&e.message)||e) + ')'); }
+  }
+  if(bad.length) alert('⚠ ' + okN + ' stamped, but these did NOT save:\n\n' + bad.join('\n') + '\n\nThey will show up again next time.');
+  else showToast('✓ ' + okN + ' document(s) marked as sent to HANA');
+  factorOpen(_factorDays);
+}
 function todayStr(){
   const d = new Date();
   return d.getFullYear()+'-'+String(d.getMonth()+1).padStart(2,'0')+'-'+String(d.getDate()).padStart(2,'0');
