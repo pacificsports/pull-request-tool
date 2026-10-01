@@ -12585,32 +12585,20 @@ function buildIdLabelZpl(order){
   const S=blDpi()/203; const k=v=>Math.round(v*S);
   const fit=(txt,maxFont,avail)=>{ const n=Math.max(1,String(txt).length); return Math.max(18,Math.min(maxFont,Math.floor(avail/(n*0.60)))); };
   const cust=String((order&&order.customer_name)||'').toUpperCase().substring(0,30)||'-';
-  const poTxt='PO# '+String((order&&order.customer_po)||'').substring(0,40);
+  /* TAGID-1 - [stated] 하윤: "PO#가 저렇케 두줄로 나오면 안되지. 한줄에 나오던지 아님
+     그냥 PO#이거 빼고 그냥 PO#에사용되는것만 나오게 해서 공간을 더 확보해서 한줄에"
+     그전까지: 'PO# ' 네 글자가 폭을 잡아먹어서 K92926 이 'PO# K929' / '26' 으로 갈라졌다.
+     이제 번호만, 언제나 한 줄. 네 글자가 비니까 번호가 더 크게 나온다. */
+  const poTxt=String((order&&order.customer_po)||'').trim().substring(0,40);
   const fC=fit(cust,96,386);
-  /* PO 가 길면(최대 40자) 한 줄로는 최소 글자 크기 아래로 못 내려가 라벨을 넘는다.
-     글자 크기를 한 칸씩 낮춰 보면서, 그 크기에서 몇 글자가 들어가는지로 줄을 나눈다.
-     띄어쓰기가 아예 없는 PO 번호도 있으므로 그때는 글자 수로 자른다. */
-  const wrapFit = (txt, maxF, minF, avail, maxLines)=>{
-    for(let f=maxF; f>=minF; f--){
-      const cpl = Math.floor(avail / (f * 0.60));
-      if(cpl < 2) continue;
-      const lines=[]; let rest=String(txt);
-      while(rest.length && lines.length < maxLines){
-        if(rest.length <= cpl){ lines.push(rest); rest=''; break; }
-        let cut = rest.lastIndexOf(' ', cpl);
-        if(cut < cpl/2) cut = cpl;                 // 띄어쓰기가 없거나 너무 왼쪽이면 글자 수로
-        lines.push(rest.slice(0,cut).trim()); rest = rest.slice(cut).trim();
-      }
-      if(!rest.length) return { lines, f };
-    }
-    // 최소 크기로도 안 들어가면 잘라서라도 라벨 안에 넣는다 (넘치면 아예 안 보인다)
-    const cpl = Math.max(1, Math.floor(avail / (minF * 0.60)));
-    const out=[]; let rest=String(txt);
-    for(let i=0;i<maxLines && rest.length;i++){ out.push(rest.slice(0,cpl)); rest=rest.slice(cpl); }
-    return { lines: out, f: minF };
-  };
-  const _po = wrapFit(poTxt, 80, 18, 386, 2);
-  const poL = _po.lines, fP = _po.f;
+  let poShow=poTxt, fP=0;
+  if(poShow){
+    const n=Math.max(1,poShow.length);
+    fP=Math.max(14,Math.min(120,Math.floor(386/(n*0.60))));
+    const cpl=Math.max(1,Math.floor(386/(fP*0.60)));
+    if(poShow.length>cpl) poShow=poShow.slice(0,cpl);   // 그래도 길면 잘라서라도 한 줄
+  }
+  const poL = poShow ? [poShow] : [];
   const gap=18, H=406, tot=fC+gap+poL.length*fP+(poL.length-1)*4;
   const top=Math.max(20,Math.round((H-tot)/2));
   const poY=top+fC+gap;
@@ -36164,7 +36152,7 @@ async function trLnDrop(ev, pid, el){
 function trPalTagPrn(){
   try{ return localStorage.getItem('bl_printer_pallet_match') || '.62'; }catch(e){ return '.62'; }
 }
-function trPalTagZpl(name, boxLine){
+function trPalTagZpl(name, boxLine, extra){
   const D = blDpi(), R = v => Math.round(v * 203);      /* 203dpi 로 짜고 끝에서 배율 */
   const W = 812, H = 1218;                              /* 4in x 6in */
   const asc = t => pbSafe(String(t == null ? '' : t)
@@ -36175,22 +36163,45 @@ function trPalTagZpl(name, boxLine){
     const L = Math.max(1, String(t).length);
     return Math.max(min, Math.min(max, Math.floor(avail / (L * 0.60))));
   };
+  /* TAGORD-1 - 오더가 실린 팔레트는 박스 수 아래에 거래처·PO·박스 수를 더 찍는다.
+     [stated] 하윤: "오더만들어서 옮기는게 들어가있으면 total box 수량 아래 거래처 이름 po# total box 수도 나오게"
+     ⚠ 추가줄이 없으면 예전과 **글자 하나 안 틀리게** 나와야 한다 - 지금 붙여 쓰는 태그다. */
+  const ex = (extra || []).map(t => asc(t).toUpperCase().trim()).filter(Boolean).slice(0, 6);
   const big = asc(name).toUpperCase();
-  const fBig = fit(big, RUN, R(2.00), R(0.55));
   const box = asc(boxLine || '').toUpperCase();
   const fBox = box ? R(0.50) : 0;
-  const gap = R(0.18);
-  /* 이름+박스줄을 한 덩어리로 보고 4in 폭 가운데 맞춤 */
-  const total = fBig + (box ? gap + fBox : 0);
-  const xBox = Math.max(R(0.12), Math.round((W - total) / 2));
-  const xBig = xBox + (box ? fBox + gap : 0);
+  const gap = R(0.18), gapE = R(0.12);
+  /* TAGORD-1 - [stated] 하윤: "PALLET 넘버랑 total box수 font가 줄어들지 않아도 될꺼 같은데"
+     그래서 팔레트 이름과 박스 수는 예전 크기 그대로 두고, 자리가 모자랄 때만 줄인다. */
+  let fBig = fit(big, RUN, R(2.00), R(0.55));
+  let fEx = ex.length
+    ? Math.min.apply(null, ex.map(t => fit(t, RUN, R(0.34), R(0.13))))
+    : 0;
+  const budget = W - R(0.16);
+  const tot = () => fBig + (box ? gap + fBox : 0) + ex.length * (gapE + fEx);
+  while(tot() > budget && fBig > R(1.10)) fBig -= 4;
+  while(tot() > budget && fEx > R(0.13)) fEx -= 2;
+  /* 이름+박스줄(+추가줄)을 한 덩어리로 보고 4in 폭 가운데 맞춤.
+     x 가 클수록 위에 찍힌다 - 제일 아래줄부터 쌓는다. */
+  const total = fBig + (box ? gap + fBox : 0) + ex.length * (gapE + fEx);
+  let x = Math.max(R(0.10), Math.round((W - total) / 2));
+  const rows = [];
+  for(let i = ex.length - 1; i >= 0; i--){ rows.push([x, fEx, ex[i]]); x += fEx + gapE; }
+  if(box){ rows.push([x, fBox, box]); x += fBox + gap; }
+  rows.push([x, fBig, big]);
   const line = (x, h, t) => '^FO' + x + ',' + padY + '^FB' + RUN + ',1,0,C,0^A0R,'
       + h + ',' + h + '^FD' + t + '^FS\n';
   const z = '^XA\n^POI\n^MMT\n^PW' + W + '\n^LL' + H + '\n^LS0\n'
-      + line(xBig, fBig, big)
-      + (box ? line(xBox, fBox, box) : '')
+      + rows.map(r => line(r[0], r[1], r[2])).join('')
       + '^XZ';
   return zplScale(z, D / 203);
+}
+/* TAGORD-1 - 태그에 찍는 거래처 이름. 한 줄에 다 들어가야 해서 회사 꼬리말은 뗀다. */
+function trTagCust(v){
+  return String(v == null ? '' : v).trim()
+    .replace(/[.,]?\s*\b(INC|INCORPORATED|LLC|CO|CORP|CORPORATION|LTD|LIMITED|COMPANY)\b\.?\s*$/i, '')
+    .replace(/[\s,.-]+$/, '')
+    .trim();
 }
 /* pid 가 비면 트럭의 모든 팔레트. 화면에 보이는 차례 그대로. */
 async function trPalTagPrint(pid){
@@ -36211,7 +36222,20 @@ async function trPalTagPrint(pid){
     const ob = ((_shipMeta && _shipMeta.orderShip) || [])
       .filter(o => o.pallet === p.label).reduce((a, o) => a + (Number(o.boxes) || 0), 0);
     const n = bx + ob;
-    const z = trPalTagZpl(nm, n + (n === 1 ? ' BOX' : ' BOXES'));
+    /* TAGORD-1 - 이 팔레트에 실린 거래처 오더를 한 건씩 두 줄로 찍는다 (이름 / PO · 박스). */
+    const extra = [];
+    ((_shipMeta && _shipMeta.orderShip) || [])
+      .filter(o => o && o.pallet === p.label)
+      .forEach(o => {
+        const cu = trTagCust(o.cust);
+        const po = String(o.po || '').trim();
+        const nb = Number(o.boxes) || 0;
+        const inner = (po ? 'PO#' + po : '')
+          + (nb ? ((po ? ' / ' : '') + nb + (nb === 1 ? ' BOX' : ' BOXES')) : '');
+        const t = cu + (inner ? ((cu ? ' ' : '') + '(' + inner + ')') : '');
+        if(t) extra.push(t);
+      });
+    const z = trPalTagZpl(nm, n + (n === 1 ? ' BOX' : ' BOXES'), extra);
     for(let i = 0; i < PER_PALLET; i++) parts.push(z);
   });
   const ok = await sendToZebraBrowserPrint(parts.join('\n'), parts.length, trPalTagPrn());
