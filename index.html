@@ -98,6 +98,7 @@ tr.polk{background:#f8fafc;}
 .chip-SC{background:#1d4ed8;color:#fff;letter-spacing:.5px;}
 .chip-CA{background:#c2410c;color:#fff;letter-spacing:.5px;}
 .chip-PD{background:#0891b2;color:#fff;letter-spacing:.5px;}
+.chip-IT{background:#c2410c;color:#fff;letter-spacing:.5px;}
 .chip-BO{background:#b91c1c;color:#fff;letter-spacing:.5px;}
 .chip-NA{background:#e5e7eb;color:#374151;}
 /* doc */
@@ -483,6 +484,7 @@ try{ applyWide(localStorage.getItem('psx_wide') !== '0'); }catch(e){ applyWide(t
         <th data-i18n="h_ppb">Pcs/Box (PPB)</th><th>Full Box</th><th>Loose</th><th>P.Box#</th>
         <th style="width:52px;text-align:center;">SC<br><input type="checkbox" id="wh-all-sc" onchange="whAllToggle('SC',this.checked)" title="All SC" style="accent-color:#60a5fa;width:15px;height:15px;margin-top:3px;cursor:pointer;"></th>
         <th style="width:52px;text-align:center;">CA<br><input type="checkbox" id="wh-all-ca" onchange="whAllToggle('CA',this.checked)" title="All CA" style="accent-color:#fb923c;width:15px;height:15px;margin-top:3px;cursor:pointer;"></th>
+        <th style="width:52px;text-align:center;">IT<br><input type="checkbox" id="wh-all-it" onchange="whAllToggle('IT',this.checked)" title="All In Transit - our stock, sitting in SC and moving to CA. Left out of the CA pull request, packing list and invoice until the truck lands. Customer documents show it as CA." style="accent-color:#f59e0b;width:15px;height:15px;margin-top:3px;cursor:pointer;"></th>
         <th style="width:52px;text-align:center;">PD<br><input type="checkbox" id="wh-all-pd" onchange="whAllToggle('PD',this.checked)" title="All Pending — waiting on an incoming container. No stock is touched, no packing list / invoice / box label. Move to SC when the goods arrive." style="accent-color:#22d3ee;width:15px;height:15px;margin-top:3px;cursor:pointer;"></th>
         <th style="width:52px;text-align:center;">BO<br><input type="checkbox" id="wh-all-bo" onchange="whAllToggle('BO',this.checked)" title="All Back Order" style="accent-color:#f87171;width:15px;height:15px;margin-top:3px;cursor:pointer;"></th>
         <th style="width:52px;text-align:center;">NA<br><input type="checkbox" id="wh-all-na" onchange="whAllToggle('NA',this.checked)" title="All Not Available (not carried)" style="accent-color:#6b7280;width:15px;height:15px;margin-top:3px;cursor:pointer;"></th><th style="width:30px;"></th>
@@ -830,7 +832,18 @@ let poLines = [];   // {style,color,size,qty,price,ppb,wh}
    재고 계산은 SC·CA 만 보므로 PD 는 **재고를 전혀 안 건들인다**(물건이 아직 없다).
    패킹리스트·인보이스·박스라바·Batch Ship 에서도 BO 와 같이 모두 배제된다.
    물건이 들어오면 PD → SC 로 옮기면 평소 플로우에 그대로 합료한다 */
-const WH_LIST = ['SC','CA','PD','BO','NA'];
+/* ═══ IT-1 - SC 에 있고 CA 로 가는 중인 몫 ═══
+   [stated] 하윤: "오더 넣을떄 PD처럼 IT하나 더 만들자. 이것도 PD처럼 internal용으로 해서
+     우리가 이번에 LAT 오더 같은경우를 대비하자. CA에서 288장 IT 에 432장 지정해서
+     CA쪽에서는 트럭도착하면 pull request 진행해서 나머지 준비해서 한번에 보낼수있게"
+   PD 와 같은 자리, 다른 뜻:
+     PD = 아직 우리 창고에 없다 (아이티에서 오는 중) -> 거래처 서류에서 SC 로 접힌다
+     IT = 우리 물건인데 SC 에 있고 CA 로 가는 중      -> 거래처 서류에서 CA 로 접힌다
+   둘 다 재고를 안 건드린다. [stated] 하윤이 「안 잡는다」를 골랐다 - 실제로 막는 것은
+   그 박스를 트럭에 실을 때다 (트럭에 올라간 박스는 오더가 못 가져간다).
+   트럭이 CA 에 닿으면 IT -> CA 로 바꿔 저장하면 ↳ REV 줄의 Pull Request 가 그 몫만 찍는다.
+   패킹리스트·인보이스는 계속 한 개다 (PD 가 쓰는 길 그대로 - 새로 만들면 두 갈래가 생겨 꼬인다) */
+const WH_LIST = ['SC','CA','IT','PD','BO','NA'];
 const WH_ADDR = {
   SC: '1605 South Guignard Parkway\nSumter SC 29150\nTel: (803) 773-2177',
   CA: '14129 The Merge Street, Unit B\nEastvale, CA 92880',
@@ -2046,12 +2059,13 @@ function refreshRow(i){
   // 구성(SIDE SEAM / TUB) 칩 — 설명·스타일·색이 바뀌면 뜻이 달라지므로 같이 다시 그린다 (v852)
   const vc=$('vchip-'+i); if(vc) vc.innerHTML = varChip(l) + skuChip(l, i);
   pcPulseSync(i);   // PC Room 부족 깜빡임도 같이 갱신 (v915)
-  const sc=$('whsc-'+i), ca=$('whca-'+i), bo=$('whbo-'+i), pd=$('whpd-'+i), row=$('row-'+i);
+  const sc=$('whsc-'+i), ca=$('whca-'+i), bo=$('whbo-'+i), pd=$('whpd-'+i), it=$('whit-'+i), row=$('row-'+i);
   if(sc) sc.checked = (l.wh==='SC');
   if(ca) ca.checked = (l.wh==='CA');
   if(bo) bo.checked = (l.wh==='BO');
   if(pd) pd.checked = (l.wh==='PD');
-  if(row) row.style.background = (l.wh==='BO') ? '#fef2f2' : ((l.wh==='PD') ? '#ecfeff' : '');
+  if(it) it.checked = (l.wh==='IT');
+  if(row) row.style.background = (l.wh==='BO') ? '#fef2f2' : ((l.wh==='PD') ? '#ecfeff' : ((l.wh==='IT') ? '#fffbeb' : ''));
   const msc=$('whmini-sc-'+i), mca=$('whmini-ca-'+i);   // SC/CA 가용재고 숫자도 갱신 — 박스 로드 후 0에 멈추던 문제 수정 (v495)
   if(msc) msc.innerHTML = whStockMini(l,'SC');
   if(mca) mca.innerHTML = whStockMini(l,'CA');
@@ -2095,13 +2109,14 @@ function whLineToggle(i, wh, checked){
   renderDocs(); saveDraft();
 }
 function syncWhAll(){
-  const sc = $('wh-all-sc'), ca = $('wh-all-ca'), bo = $('wh-all-bo'), na = $('wh-all-na'), pd = $('wh-all-pd');
+  const sc = $('wh-all-sc'), ca = $('wh-all-ca'), bo = $('wh-all-bo'), na = $('wh-all-na'), pd = $('wh-all-pd'), it = $('wh-all-it');
   if(!sc || !ca) return;
   sc.checked = poLines.length>0 && poLines.every(l=>l.wh==='SC');
   ca.checked = poLines.length>0 && poLines.every(l=>l.wh==='CA');
   if(bo) bo.checked = poLines.length>0 && poLines.every(l=>l.wh==='BO');
   if(na) na.checked = poLines.length>0 && poLines.every(l=>l.wh==='NA');
   if(pd) pd.checked = poLines.length>0 && poLines.every(l=>l.wh==='PD');
+  if(it) it.checked = poLines.length>0 && poLines.every(l=>l.wh==='IT');
 }
 // 🚚 SC+CA 통합 발송(Ship from CA) 문서에서 박스 수가 절반으로 나오던 버그 때문에 생긴 규칙:
 //   partial box 번호는 '창고별로' 매겨진다. SC Box 1 과 CA Box 1 은 서로 다른 실제 박스다.
@@ -2713,6 +2728,7 @@ function renderTable(){
       <td id="pbox-td-${i}" style="white-space:nowrap;">${b.loose ? pboxCellHtml(l,i) : ''}</td>
       <td style="text-align:center;vertical-align:top;"><input type="checkbox" id="whsc-${i}" ${l.wh==='SC'?'checked':''} onchange="whLineToggle(${i},'SC',this.checked)" style="accent-color:#1d4ed8;width:16px;height:16px;cursor:pointer;"><span id="whmini-sc-${i}">${whStockMini(l,'SC')}</span></td>
       <td style="text-align:center;vertical-align:top;"><input type="checkbox" id="whca-${i}" ${l.wh==='CA'?'checked':''} onchange="whLineToggle(${i},'CA',this.checked)" style="accent-color:#c2410c;width:16px;height:16px;cursor:pointer;"><span id="whmini-ca-${i}">${whStockMini(l,'CA')}</span></td>
+      <td style="text-align:center;"><input type="checkbox" id="whit-${i}" ${l.wh==='IT'?'checked':''} onchange="whLineToggle(${i},'IT',this.checked)" title="🚚 In Transit - this qty is in SC and moving to CA. Left out of the pull request, packing list and invoice until you move it to CA when the truck lands. The customer sees it as shipping from CA." style="accent-color:#d97706;width:16px;height:16px;cursor:pointer;"></td>
       <td style="text-align:center;"><input type="checkbox" id="whpd-${i}" ${l.wh==='PD'?'checked':''} onchange="whLineToggle(${i},'PD',this.checked)" title="🚢 Pending — waiting on an incoming container. This line is left out of the pull request, packing list and invoice until you move it to SC." style="accent-color:#0891b2;width:16px;height:16px;cursor:pointer;"></td>
       <td style="text-align:center;"><input type="checkbox" id="whbo-${i}" ${l.wh==='BO'?'checked':''} onchange="whLineToggle(${i},'BO',this.checked)" style="accent-color:#dc2626;width:16px;height:16px;cursor:pointer;"></td>
       <td style="text-align:center;"><input type="checkbox" id="whna-${i}" ${l.wh==='NA'?'checked':''} onchange="whLineToggle(${i},'NA',this.checked)" style="accent-color:#6b7280;width:16px;height:16px;cursor:pointer;"></td>
@@ -3166,8 +3182,8 @@ function buildDocHtml(wh, opts){
   return `<div class="inv-doc">
     <div style="background:#0f2a4a;padding:12px 20px;display:flex;justify-content:space-between;align-items:center;">
       <img src="${LOGO_B64}" style="height:42px;width:auto;">
-      <div style="color:#fff;font-size:24px;font-weight:800;letter-spacing:3px;">${wh==='PD' ? 'ARRIVAL PENDING LIST' : 'PULL REQUEST'}</div>
-    </div>${wh==='PD' ? `<div style="background:#0891b2;color:#fff;padding:10px 20px;text-align:center;font-size:19px;font-weight:900;letter-spacing:2px;">\u{1F6A2} NOT IN THE WAREHOUSE YET — DO NOT PULL</div>` : ''}
+      <div style="color:#fff;font-size:24px;font-weight:800;letter-spacing:3px;">${wh==='PD' ? 'ARRIVAL PENDING LIST' : (wh==='IT' ? 'IN TRANSIT LIST' : 'PULL REQUEST')}</div>
+    </div>${wh==='PD' ? `<div style="background:#0891b2;color:#fff;padding:10px 20px;text-align:center;font-size:19px;font-weight:900;letter-spacing:2px;">\u{1F6A2} NOT IN THE WAREHOUSE YET — DO NOT PULL</div>` : (wh==='IT' ? `<div style="background:#c2410c;color:#fff;padding:10px 20px;text-align:center;font-size:19px;font-weight:900;letter-spacing:2px;">🚚 ON THE TRUCK FROM SC — PULL WHEN IT LANDS</div>` : '')}
     ${$('m-urgent') && $('m-urgent').checked ? `<div style="background:#dc2626;color:#fff;padding:10px 20px;text-align:center;font-size:20px;font-weight:900;letter-spacing:4px;">🔥 RUSH — PROCESS FIRST 🔥</div>` : ''}
     ${$('m-futureship') && $('m-futureship').value ? `<div style="background:#b45309;color:#fff;padding:9px 20px;text-align:center;font-size:16px;font-weight:900;letter-spacing:2px;">🚀 FUTURE SHIP DATE: ${new Date($('m-futureship').value+'T00:00:00').toLocaleDateString('en-US',{month:'long',day:'numeric',year:'numeric'})} — DO NOT SHIP BEFORE THIS DATE</div>` : ''}
     <div style="display:flex;justify-content:space-between;gap:16px;background:#f5f7fa;border:1px solid var(--border);border-top:none;padding:10px 20px;margin-bottom:14px;">
@@ -3820,6 +3836,34 @@ function pdRowHtml(rec){
       물건이 도착하면 → <b>Open &amp; Edit</b> 에서 이 줄을 <b>PD → SC</b> 로 바꾸고 박스 지정하고 <b>Save</b>.
       그러면 아래에 <b>↳ REV</b> 줄이 생기고 <b>그 몫만</b> 찍는 Pull Request 가 나온다.
       패킹리스트와 인보이스는 계속 <b>한 개</b>다.
+    </div>
+  </div>`;
+}
+
+/* IT-1 - 오더 목록의 🚚 IT 줄. PD 줄과 같은 모양, 읽기 전용. */
+function itLinesOf(rec){
+  return ((rec && rec.lines) || []).filter(l=>String((l&&l.wh)||'')==='IT' && (Number(l.qty)||0)>0);
+}
+function itRowHtml(rec){
+  const ls = itLinesOf(rec);
+  if(!ls.length) return '';
+  const pcs = ls.reduce((a,l)=>a+(Number(l.qty)||0), 0);
+  const mp = (rec.meta && rec.meta._printed && rec.meta._printed['IT']) || {};
+  const pby = v => (v && v.by)
+    ? `<span style="font-size:9px;opacity:.9;font-weight:700;" title="${esc(String(v.by))} · ${esc(String(v.at||'').slice(0,16).replace('T',' '))}"> ✓${esc(String(v.by).split('@')[0])} ${String(v.at||'').slice(5,10)}</span>`
+    : '';
+  const what = ls.slice(0,3).map(l=>esc([l.style, l.color, l.size].filter(Boolean).join(' '))).join(' · ')
+             + (ls.length > 3 ? (' <span style="color:#94a3b8;">+' + (ls.length-3) + ' more</span>') : '');
+  const prC = mp.pr ? '#16a34a' : '#c2410c';
+  return `<div style="display:flex;align-items:center;gap:6px;flex-wrap:wrap;margin-top:4px;margin-left:26px;padding:5px 8px;background:#fff7ed;border:1px solid #fdba74;border-left:4px solid #c2410c;border-radius:6px;">
+    <span class="chip chip-IT" style="min-width:34px;text-align:center;">IT</span>
+    <span style="font-weight:900;color:#9a3412;font-size:11.5px;white-space:nowrap;" title="In Transit - our stock, in SC and moving to CA. Not on the CA pull request, packing list or invoice until you move it to CA.">🚚 SC → CA ${pcs.toLocaleString()} pcs · ${ls.length} line(s)</span>
+    <span style="font-size:11px;color:#475569;font-weight:700;">${what}</span>
+    <button class="btn btn-sm" style="background:${prC};color:#fff;border-color:${prC};font-weight:800;" onclick="docBtnClick('${esc(rec.base)}','IT','pr')" oncontextmenu="return docBtnMenu(event,'${esc(rec.base)}','IT','pr')" title="Only the IT lines. The sheet says PULL WHEN IT LANDS, because the boxes are still on the truck. Right-click: ${mp.pr?'clear':'mark'} done.">🖨 Pull Request${pby(mp.pr)}</button>
+    <span style="margin-left:auto;font-size:10.5px;color:#9a3412;font-weight:800;white-space:nowrap;">${mp.pr ? '✓ CA has this list' : '⏳ not given yet'}</span>
+    <div style="width:100%;margin-top:4px;padding:5px 9px;background:#fff;border:1px solid #fed7aa;border-radius:6px;font-size:11px;font-weight:700;color:#7c2d12;">
+      When the truck lands at CA → open <b>Open &amp; Edit</b>, switch these lines <b>IT → CA</b>, assign boxes, <b>Save</b>.
+      A <b>↳ REV</b> row appears and its Pull Request prints <b>only that part</b>. The packing list and invoice stay as <b>one</b>.
     </div>
   </div>`;
 }
@@ -7431,8 +7475,13 @@ function buildOrderSummaryHtml(rec, opts){
      ⚠ 재고는 이것과 아무 상관없다 — 재고 계산은 `rec.lines` 의 진짜 `wh` 를 보고,
         PD 는 SC·CA 가 아니니 그대로 건너뛴다 */
   const _pdN = (rec.lines||[]).filter(l=>(l.qty||0)>0 && String(l.wh||'')==='PD').reduce((a,l)=>a+(Number(l.qty)||0),0);
+  /* IT-1 - IT 는 CA 로 접는다. 트럭이 CA 에 닿은 뒤 CA 에서 한 번에 나가니까
+     거래처에게는 처음부터 CA 에서 나가는 것으로 보이는 게 맞다. */
+  const _itLines = (rec.lines||[]).filter(l=>(l.qty||0)>0 && String(l.wh||'')==='IT');
+  const _itN = _itLines.reduce((a,l)=>a+(Number(l.qty)||0),0);
   const lines = (rec.lines||[]).filter(l=>(l.qty||0)>0)
-    .map(l => (String(l.wh||'')==='PD' ? Object.assign({}, l, {wh:'SC'}) : l));
+    .map(l => (String(l.wh||'')==='PD' ? Object.assign({}, l, {wh:'SC'})
+             : (String(l.wh||'')==='IT' ? Object.assign({}, l, {wh:'CA'}) : l)));
   const sum = a => a.reduce((s,l)=>s+(l.qty||0),0);
   const scT = sum(lines.filter(l=>l.wh==='SC'));
   const caT = sum(lines.filter(l=>l.wh==='CA'));
@@ -7497,6 +7546,15 @@ function buildOrderSummaryHtml(rec, opts){
         거래처에게 주문을 다 커버하는 것으로 보이게 하려는 것. <b>재고·패킹리스트·인보이스는 전혀 안 건드린다.</b>
         물건이 들어오면 PD → SC 로 옮길 것. <i>(이 줄은 거래처 이메일·PDF 에 안 나간다)</i>
       </div>` : '';
+  /* IT-1 - [stated] 하윤: "NOTE적는곳에 이스타일 사이즈 수량이 SC에서 CA로 in transit 중이다
+     라는 식으로 자동으로 적히게" - 손으로 적은 Note 는 그대로 두고 그 위에 따로 붙인다. */
+  const itNote = _itN ? `<div style="background:#fff7ed;border:1.5px solid #fdba74;border-radius:6px;padding:11px 15px;margin-bottom:16px;">
+        <div style="font-size:12px;font-weight:800;color:#9a3412;margin-bottom:5px;">🚚 In transit to our CA warehouse</div>
+        <div style="font-size:12.5px;color:#7c2d12;line-height:1.6;">The items below are on their way from our Sumter, SC warehouse to Eastvale, CA. They ship together with the rest of this order, out of CA.</div>
+        <ul style="margin:7px 0 0;padding-left:18px;font-size:12.5px;color:#7c2d12;line-height:1.7;">
+          ${_itLines.map(l=>`<li><strong>${esc(String(l.style||''))}</strong> ${esc(String(l.color||''))} ${esc(String(l.size||'').toUpperCase())} &mdash; <strong>${(Number(l.qty)||0).toLocaleString()} pcs</strong></li>`).join('')}
+        </ul>
+      </div>` : '';
   const bxWarn = (opts.staffWarn && bxAll.unLines) ? `<div style="background:#fef3c7;border:1.5px solid #f59e0b;border-radius:6px;padding:8px 14px;margin-bottom:16px;font-size:12px;color:#92400e;font-weight:700;">
         ⚠ 직원용 &mdash; ${bxAll.unLines} loose line(s) have <b>no P.Box#</b>, so ${bxAll.est} partial box(es) are an <b>estimate</b> from pcs/box.
         Fill in P.Box# on the order screen to make it exact. <i>(this note is not in the customer email or PDF)</i>
@@ -7534,7 +7592,7 @@ function buildOrderSummaryHtml(rec, opts){
           &nbsp;&middot;&nbsp; <strong>${bxAll.total.toLocaleString()} box${bxAll.total===1?'':'es'}</strong>${bxAll.total?`<span style="color:#8b8880;font-size:12px;"> (${bxAll.full.toLocaleString()} full + ${bxAll.partial.toLocaleString()} partial)</span>`:''}
         </div>
       </div>
-      ${pdNote}${bxWarn}
+      ${pdNote}${itNote}${bxWarn}
       ${backSection}${naSection}
       ${String(meta.confNote||'').trim() ? `<div style="background:#fffbeb;border:1.5px solid #f59e0b;border-radius:6px;padding:11px 15px;margin-bottom:16px;">
         <div style="font-size:12px;font-weight:800;color:#92400e;margin-bottom:4px;">📝 Note from Pacific Sports</div>
@@ -12352,7 +12410,7 @@ function openBoxLabelForRec(base, mode){
   window._blMode = (mode==='full') ? 'full' : 'box';
   const rec = savedCache.find(s=>s.base===base); if(!rec) return;
   let boxes = [], guess = 0;
-  (rec.whs||[]).filter(w=>w!=='BO' && w!=='NA' && w!=='PD').forEach(w=>{
+  (rec.whs||[]).filter(w=>w!=='BO' && w!=='NA' && w!=='PD' && w!=='IT').forEach(w=>{
     const src = blOrderLike((rec.pl && rec.pl[w] && Array.isArray(rec.pl[w].lines) && rec.pl[w].lines.length)
       ? rec.pl[w].lines
       : (rec.lines||[]).filter(l=>l.wh===w), rec, w);   /* 순서는 오더 줄 순서 (v1091) */
@@ -31800,7 +31858,7 @@ function trBarHtml(){
       return `<div style="padding:6px 0;border-top:1px solid #ede9fe;">
         <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;font-size:12px;">
         <b style="font-family:Consolas,monospace;color:#7b1fa2;cursor:pointer;text-decoration:underline;" onclick="${r.status==='LOADING'?`trBuilderOpen('${r.id}')`:`trView('${r.id}')`}" title="Open">${esc(r.ref||'(no #)')}</b>
-        ${trRouteChip(trRoute(r))}
+        ${trRouteChip(trRoute(r), null, r)}
         <span style="background:${st.bg};border-radius:6px;padding:0 8px;font-weight:800;color:${st.c};">${st.lb}</span>
         <span>${lines.length} line · <b>${nb}</b> box · ${np.toLocaleString()} pcs</span>
         <span class="muted" style="font-size:10.5px;">${r.departed_at?('departed '+new Date(r.departed_at).toLocaleDateString()):(r.created_at?new Date(r.created_at).toLocaleDateString():'')}</span>
@@ -34229,8 +34287,25 @@ function trStopBanner(g, n){
        + `this sheet covers ONLY this stop</div></div>`;
 }
 /* 길 딱지 하나 — 목록·상세 어디서나 같은 모양으로 (v992) */
-function trRouteChip(route, size){
-  const rt = TR_ROUTES[route] || TR_ROUTES.SC2CA;
+function trRouteChip(route, size, rec){
+  let rt = TR_ROUTES[route] || TR_ROUTES.SC2CA;
+  /* ROUTECHIP-1 - 정차지를 하나로 접었으면 더 이상 multi 가 아니다.
+     [stated] 하윤: "multi 에서 CA로 가는걸로 바꿨는데 아직 multi로 나오네"
+     `meta.route` 는 MULTI_SC 그대로 남는다 (정차지를 다시 늘릴 수 있어야 하니까).
+     그래서 **보여줄 때만** 지금 정차지를 보고 평범한 길처럼 적는다. */
+  try{
+    if(rec && rt.multi){
+      const st = trStopsOf(rec);
+      if(st.length === 1){
+        let hit = null;
+        Object.keys(TR_ROUTES).forEach(k=>{
+          const r2 = TR_ROUTES[k];
+          if(!hit && !r2.multi && !r2.legacy && r2.from === rt.from && r2.dest === st[0]) hit = r2;
+        });
+        rt = hit || Object.assign({}, rt, { short: trStopPfx(rt.from) + '\u2192' + trStopPfx(st[0]) });
+      }
+    }
+  }catch(e){}
   const fs = size==='sm' ? '10.5px' : '11.5px';
   return `<span style="background:${rt.bg};color:#fff;font-weight:800;font-size:${fs};letter-spacing:.02em;`
        + `border-radius:6px;padding:2px 9px;white-space:nowrap;font-family:Consolas,monospace;">${esc(rt.short)}</span>`;
@@ -43188,12 +43263,15 @@ function invDoneFor(s, w){
 function recStatus(s){
   /* 취소된 오더는 다른 어떤 상태보다 먼저다 — 문서가 얼마나 진행됐든 상관없다 (v863) */
   if(s && s.meta && s.meta._cancelled) return { label:'\u274C CANCELLED', color:'#fff', bg:'#b91c1c', cancelled:true };
-  let whs = (s.whs||[]).filter(w=>w!=='BO' && w!=='NA' && w!=='PD');
+  let whs = (s.whs||[]).filter(w=>w!=='BO' && w!=='NA' && w!=='PD' && w!=='IT');
   // 🚚 CA 통합 발송: SC 몫은 CA 문서로 합쳐지므로 SC를 상태 집계에서 제외 (CA 한 곳만 카운트)
   if(recShipFromCA(s) && whs.includes('CA')) whs = whs.filter(w=>w!=='SC');
   /* 🚢 PD 만 있는 오더는 BACK ORDER 가 아니다 — 물건은 오는 중이고 날짜만 안 맞는 것이다 (v1107) */
   if(!whs.length && (s.whs||[]).includes('PD') && !(s.whs||[]).includes('BO') && !(s.whs||[]).includes('NA'))
     return { label: '🚢 ARRIVAL PENDING', color:'#0e7490', bg:'#cffafe' };
+  /* IT-1 - IT 만 있는 오더도 BACK ORDER 가 아니다. 물건은 있고 트럭 위에 있을 뿐이다. */
+  if(!whs.length && (s.whs||[]).includes('IT') && !(s.whs||[]).includes('BO') && !(s.whs||[]).includes('NA'))
+    return { label: '🚚 IN TRANSIT', color:'#9a3412', bg:'#ffedd5' };
   if(!whs.length) return { label: t('st_bo'), color:'#b91c1c', bg:'#fee2e2' };
   const _locker = !!(s.meta && s.meta.lockerStock);
   const plDone = whs.filter(w=>(s.pl && s.pl[w] && s.pl[w].savedAt) || _locker).length;
@@ -43670,7 +43748,7 @@ function invNpList(){
          없다는 이유로 저절로 빠졌다. 안 걸면 아직 물건도 없는 몫이 청구 대기로 뜬다. */
     const _locker = !!(s.meta && s.meta.lockerStock);
     (s.whs||[]).forEach(w=>{
-      if(w === 'BO' || w === 'NA' || w === 'PD') return;
+      if(w === 'BO' || w === 'NA' || w === 'PD' || w === 'IT') return;
       const pl = s.pl && s.pl[w];
       if((!pl || !pl.savedAt) && !_locker) return;
       const iv = (s.inv && s.inv[w]) || {};
@@ -44867,7 +44945,7 @@ function kpiDocGo(base, wh, kind){
 /* 이 칼럼(SC / CA)에서 그 오더의 어느 창고 몫을 보여줄지 (v929).
    Ship-from-CA 오더는 CA 칸에 서지만 서류는 SC 몫이라 그걸 그대로 쓴다. */
 function kpiColWhs(s, onlyW){
-  const all = ((s&&s.whs)||[]).filter(w=> w!=='BO' && w!=='NA' && w!=='PD');
+  const all = ((s&&s.whs)||[]).filter(w=> w!=='BO' && w!=='NA' && w!=='PD' && w!=='IT');
   if(!onlyW) return all;
   const hit = all.filter(w=> w===onlyW);
   if(hit.length) return hit;
@@ -45611,7 +45689,7 @@ function renderSaved(){
     const hoursElapsed = Math.max(0, (Date.now() - startTs) / 3600000);
     const _h = Math.floor(hoursElapsed), _dd = Math.floor(_h/24), _rem = _h % 24;
     const ageLabel = _dd > 0 ? `${_dd}d ${_rem}h ago` : `${_h}h ago`;
-    const whsNB = (s.whs||[]).filter(w=>w!=='BO' && w!=='NA' && w!=='PD');
+    const whsNB = (s.whs||[]).filter(w=>w!=='BO' && w!=='NA' && w!=='PD' && w!=='IT');
     const plDoneN = whsNB.filter(w=>s.pl && s.pl[w] && s.pl[w].savedAt).length;
     const stuck = whsNB.length > 0 && plDoneN < whsNB.length && hoursElapsed > 24;
     const _md = s.meta && s.meta._modified;
@@ -45704,15 +45782,15 @@ function renderSaved(){
         const invPr = s.inv && s.inv[w] && s.inv[w].printed;
         const consolSC = recShipFromCA(s) && w==='SC' && (s.whs||[]).includes('CA');   // 🚚 SC 몫은 CA로 통합 — 고객문서(패킹/인보이스) 없음, pull request만 (CA 몫 있을 때만)
         return `<div style="display:flex;align-items:center;gap:6px;flex-wrap:wrap;margin-top:6px;padding-top:6px;border-top:1px dashed var(--border);">
-        ${w!=='BO' && w!=='NA' && w!=='PD' && !consolSC ? `<input type="checkbox" class="bship-cb" data-base="${esc(s.base)}" data-wh="${w}" onchange="updateBatchBar()" title="Include in batch (pre-ship = Batch Ship / post-ship = Invoice Print)" style="width:15px;height:15px;accent-color:#1d4ed8;cursor:pointer;">` : ''}
+        ${w!=='BO' && w!=='NA' && w!=='PD' && w!=='IT' && !consolSC ? `<input type="checkbox" class="bship-cb" data-base="${esc(s.base)}" data-wh="${w}" onchange="updateBatchBar()" title="Include in batch (pre-ship = Batch Ship / post-ship = Invoice Print)" style="width:15px;height:15px;accent-color:#1d4ed8;cursor:pointer;">` : ''}
         <span class="chip chip-${w}" style="min-width:34px;text-align:center;">${w}</span>
-        ${(w!=='BO' && w!=='NA' && w!=='PD' && !consolSC) ? tdBtn(s.base, w) + pcrChip(s.base, w) : ''}
+        ${(w!=='BO' && w!=='NA' && w!=='PD' && w!=='IT' && !consolSC) ? tdBtn(s.base, w) + pcrChip(s.base, w) : ''}
         <button class="btn btn-sm" style="background:${c};color:#fff;border-color:${c};" onclick="docBtnClick('${esc(s.base)}','${w}','pr')" oncontextmenu="return docBtnMenu(event,'${esc(s.base)}','${w}','pr')" title="The WHOLE order for ${w}. Right-click: ${mp.pr?'clear':'mark'} done (green)">🖨 Pull Request${pby(mp.pr)}</button>
         ${_stale ? `<span title="The sheet the warehouse is holding was printed ${esc(String(_stale.printedAt||'').slice(0,16).replace('T',' '))}, but the order changed afterwards (${_stale.ns ? 'REV ' + esc(_stale.ns) : 'P.Box# changed'}). ${_stale.ns ? 'Give them the REV sheet below — or reprint this one.' : 'Reprint this one — the box numbers on it are old.'}" style="padding:3px 10px;border-radius:20px;font-size:10.5px;font-weight:900;background:#fef2f2;color:#b91c1c;border:1.5px solid #fca5a5;white-space:nowrap;">⚠ paper is OLD — changed after printing (${_stale.ns ? 'REV ' + esc(_stale.ns) : 'P.Box#'})</span>` : ''}
         ${'' /* v1054 — 이 버튼은 아래 ↳ REV 줄로 옮겼다. 원래 줄에 얹혀 있으면 끝난 일인지 알 수가 없었다. */}
         ${w==='BO' ? (()=>{ const days = Math.floor((Date.now() - new Date(s.savedAt||s.meta.date||Date.now()).getTime())/86400000); const c2 = days>=14?'#dc2626':(days>=7?'#ea580c':'#6b7280'); return `<span style="padding:2px 8px;border-radius:20px;font-size:10px;font-weight:800;background:#fff;color:${c2};border:1.5px solid ${c2};white-space:nowrap;${days>=14?'animation:overdue-pulse 1s ease-in-out infinite;':''}">⏳ Day ${days}</span>`; })() : ''}
         ${(w==='BO'||w==='NA') ? `<button class="btn btn-sm" style="background:#f5f3ff;color:#6d28d9;border-color:#c4b5fd;font-weight:700;" onclick="processFromWh('${esc(s.base)}','${w}','SC')" title="Stock arrived — split into a separate order (-${w==='BO'?'B':'N'}) and ship from SC">⚙ Process from SC</button><button class="btn btn-sm" style="background:#fff7ed;color:#c2410c;border-color:#fed7aa;font-weight:700;" onclick="processFromWh('${esc(s.base)}','${w}','CA')" title="Stock arrived — split into a separate order (-${w==='BO'?'B':'N'}) and ship from CA">⚙ Process from CA</button><button class="btn btn-sm" style="background:#fee2e2;color:#b91c1c;border-color:#fca5a5;font-weight:700;" onclick="boAltFromList('${esc(s.base)}')" title="Replace a back-ordered item with an in-stock alternative (style / color / size / qty), then finish the order">⇄ Alternate</button>` : ''}
-        ${w!=='BO' && w!=='NA' && w!=='PD' ? `<button class="btn btn-sm" style="background:${(mp.label||locker)?'#16a34a':'#7c3aed'};color:#fff;border-color:${(mp.label||locker)?'#16a34a':'#7c3aed'};" onclick="docBtnClick('${esc(s.base)}','${w}','label')" oncontextmenu="return docBtnMenu(event,'${esc(s.base)}','${w}','label')" title="Right-click: ${mp.label?'clear':'mark'} done (green)">🏷 Box Label${pby(mp.label)}</button><button class="btn btn-sm" style="background:#0f766e;color:#fff;border-color:#0f766e;" onclick="openBoxLabelForRecWh('${esc(s.base)}','${w}','full')" title="Small 2x1 label for individual full boxes (load 2x1 label stock)">🏷 Full Box</button>
+        ${w!=='BO' && w!=='NA' && w!=='PD' && w!=='IT' ? `<button class="btn btn-sm" style="background:${(mp.label||locker)?'#16a34a':'#7c3aed'};color:#fff;border-color:${(mp.label||locker)?'#16a34a':'#7c3aed'};" onclick="docBtnClick('${esc(s.base)}','${w}','label')" oncontextmenu="return docBtnMenu(event,'${esc(s.base)}','${w}','label')" title="Right-click: ${mp.label?'clear':'mark'} done (green)">🏷 Box Label${pby(mp.label)}</button><button class="btn btn-sm" style="background:#0f766e;color:#fff;border-color:#0f766e;" onclick="openBoxLabelForRecWh('${esc(s.base)}','${w}','full')" title="Small 2x1 label for individual full boxes (load 2x1 label stock)">🏷 Full Box</button>
         ${consolSC ? `<span style="padding:3px 10px;border-radius:20px;font-size:10.5px;font-weight:800;background:#fff7ed;color:#b45309;border:1px solid #fed7aa;white-space:nowrap;" title="This SC portion transfers to CA and ships out combined with the CA portion — the packing slip &amp; invoice are on the CA (SC+CA) document.">🚚 → ships from CA (combined doc)</span>` : `<button class="btn btn-sm" style="${((s.pl && s.pl[w] && s.pl[w]._completed) || locker)?'background:#16a34a;border-color:#16a34a;':(plSaved?'background:#0e7490;border-color:#0e7490;':'background:#f59e0b;border-color:#f59e0b;')}color:#fff;" onclick="openPLWh('${esc(s.base)}','${w}')" oncontextmenu="return plBtnMenu(event,'${esc(s.base)}','${w}')" title="${plSaved && !(s.pl[w]&&s.pl[w]._completed)?'Saved — not Complete yet (no email sent) · ':''}Right-click: toggle Complete (without email)">📦 Packing List</button>`}
         ${plSaved && recRepFree(s) ? `<span style="padding:3px 10px;border-radius:20px;font-size:10.5px;font-weight:800;background:#fff1f2;color:#be123c;border:1px solid #fda4af;white-space:nowrap;" title="Defect replacement order — no invoice issued">🔁 Free replacement — no Invoice</span>` : ''}${plSaved && recIsReplace(s) && !recRepFree(s) ? `<span style="padding:3px 10px;border-radius:20px;font-size:10.5px;font-weight:800;background:#fffbeb;color:#92400e;border:1px solid #fcd34d;white-space:nowrap;" title="A different item was sent instead, so this one is invoiced — the like-for-like lines are $0.00">🔁⇄ Swapped item — invoiced</span>` : ''}
         ${(plSaved || locker) && !recRepFree(s) ? `<button class="btn btn-sm" style="${invPr?'background:#16a34a;border-color:#16a34a;':'background:#dc2626;border-color:#dc2626;'}color:#fff;" onclick="docBtnClick('${esc(s.base)}','${w}','inv')" oncontextmenu="return docBtnMenu(event,'${esc(s.base)}','${w}','inv')" title="Right-click: ${invPr?'clear':'mark'} done (green)">🧾 Invoice</button>${invPr ? `<button class="btn btn-sm" style="background:#065f46;color:#fff;border-color:#065f46;" onclick="payFromRow('${esc(s.base)}','${w}')" title="Record payment (full/partial)">💰 Payment</button><button class="btn btn-sm" style="background:#e5ff00;color:#1c1917;border-color:#c2d900;font-weight:800;" onclick="payReqOpen('${esc(s.base)}','${w}')" title="Email the customer a secure link so they can pay this invoice by card themselves">📧 Request payment</button><button class="btn btn-sm" style="background:#7c2d12;color:#fff;border-color:#7c2d12;" onclick="memoFromRow('${esc(s.base)}','${w}')" title="Credit Memo (returns) — MAS200 file can be attached">📝 Credit Memo</button>` : ''}` : ''}
@@ -45756,7 +45834,7 @@ function renderSaved(){
         ${(()=>{ const ws = whStatus(s, w); return `<span style="${plSaved?'':'margin-left:auto;'}padding:2px 10px;border-radius:20px;font-size:10.5px;font-weight:800;background:${ws.bg};color:${ws.color};white-space:nowrap;">${ws.label}</span>`; })()}
         </div>${revRowsHtml(s, w)}`;
       }).join('')}
-      ${pdRowHtml(s)}
+      ${pdRowHtml(s)}${itRowHtml(s)}
       ${['BO','NA'].filter(w=>!whs.includes(w) && s.meta && s.meta._processed && s.meta._processed[w]).map(w=>{ const p = s.meta._processed[w]; return `<div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-top:6px;padding-top:6px;border-top:1px dashed var(--border);opacity:.75;">
         <span class="chip chip-${w}" style="min-width:34px;text-align:center;">${w}</span>
         <span class="muted" style="font-size:11.5px;">⚙ → <b style="font-family:Consolas,monospace;">${esc(p.to)}</b> (${esc(p.target||'')}, ${(p.q||0).toLocaleString()} pcs) ${fmtD(p.at)} split off</span>
