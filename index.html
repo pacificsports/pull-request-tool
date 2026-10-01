@@ -34419,13 +34419,47 @@ function trNewOpen(){
   document.body.appendChild(div);
 }
 async function trGet(id){ try{ const r = await sbFetch('/rest/v1/pr_transfers?id=eq.'+id+'&select=*'); if(r.ok) return (await r.json())[0]; }catch(e){} return null; }
-async function trPatchRec(id, body){ try{ await sbFetch('/rest/v1/pr_transfers?id=eq.'+id, {method:'PATCH', headers:{Prefer:'return=minimal'}, body:JSON.stringify(body)}); }catch(e){} }
+/* ═══ TRSAVE-1 - 이송이 조용히 안 저장되는 일을 끝낸다 ═══
+   🔴 2026-10-01 실제 사고: Put Back 으로 박스 30개가 TEMPORARY 로 돌아갔는데
+      트럭 줄은 그대로 남았다. 트럭은 없는 박스 30개를 싣고 있다고 믿고 있었다.
+      (실측: 3P-SC-260929-1517 Pallet 8 - FL8 10 · 1T14 18 · 1T15 2, 박스는 전부 SC:TEMPORARY)
+   뿌리는 여기였다 - `sbFetch` 는 4xx/5xx 에 throw 하지 않는데 이 함수는 그 결과를
+   아예 보지 않고 try/catch 로 삼켰다. 서버가 거절해도, 0 줄이 바뀌어도 아무도 몰랐다.
+   이제 셋 다 소리낸다: ① 네트워크 오류 ② 4xx/5xx ③ 0 줄 변경.
+   ⚠ `select=id` 를 붙여서 돌려받는 건 id 하나뿐이다 - 줄 수백 개를 되받지 않는다.
+   ⚠ `return=minimal` 로 되돌리지 말 것 - 그러면 ③ 을 다시 못 본다. */
+function trSaveFailed(id, why){
+  try{ console.warn('[TRSAVE-1] shipment not saved', id, why); }catch(e){}
+  try{ showToast('\u26d4 The shipment was NOT saved \u2014 ' + why); }catch(e){}
+  try{ alert('\u26d4 The shipment was NOT saved.\n\n' + why + '\n\n'
+    + 'What you see on this screen is NOT what the server has.\n\n'
+    + '\u2192 Stop working in this window. Reload with Ctrl+Shift+R, open the shipment again,\n'
+    + '   and check it before doing anything else.'); }catch(e){}
+}
+async function trPatchRec(id, body){
+  let r = null;
+  try{
+    r = await sbFetch('/rest/v1/pr_transfers?id=eq.' + id + '&select=id',
+      { method:'PATCH', headers:{ Prefer:'return=representation' }, body: JSON.stringify(body) });
+  }catch(e){ trSaveFailed(id, 'could not reach the server (' + ((e && e.message) || e) + ')'); return false; }
+  if(!r || !r.ok){
+    let txt = ''; try{ txt = String(await r.text()).slice(0, 200); }catch(e){}
+    trSaveFailed(id, 'the server refused it (' + ((r && r.status) || '?') + (txt ? (' - ' + txt) : '') + ')');
+    return false;
+  }
+  let j = null; try{ j = await r.json(); }catch(e){}
+  if(Array.isArray(j) && j.length === 0){
+    trSaveFailed(id, 'the shipment row did not change - 0 rows (it may have been deleted, or the rules blocked it)');
+    return false;
+  }
+  return true;
+}
 function trLinesFlat(){ return _shipPallets.reduce((a,p)=>a.concat(p.lines.map(l=>({...l, pallet:p.label,
   ...(p.hbin ? { ca_bin:p.hbin } : {}),
   /* 🛛 내리는 정차지를 **줄에** 박는다 (v1076) — 팔레트 이름은 지우면 다시 번호가
      매겨지지만 줄은 팔레트와 함께 움직인다. 받을 때 이 값이 1순위다. */
   ...(p.stop >= 0 ? { stop:Number(p.stop) } : {}) }))),[]); }   // 팔레트에 매긴 H bin 을 라인에도 (받을 때 자동 입력) (v827)
-async function trSaveDraftLines(){ if(_shipId) await trPatchRec(_shipId, {lines: trLinesFlat()}); }
+async function trSaveDraftLines(){ return _shipId ? await trPatchRec(_shipId, {lines: trLinesFlat()}) : true; }
 function trLineBoxes(l){ return l.is_manual ? (Number(l.boxes)||0) : (l.ids||[]).length; }
 function trLinePcs(l){ return trLineBoxes(l) * (Number(l.ppb)||Number(l.pcs)||0); }
 function trLinePpb(l){ return Number(l.ppb)||Number(l.pcs)||0; }
