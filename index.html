@@ -6515,12 +6515,6 @@ async function returnReceiveConfirm(base, ra){
   }
   if(!cm) cm = retCmNo(ret);
   if(!cm) cm = await nextInvNo();
-  for(const l of recvLines){
-    const toWh=(l.toWh||l.wh)==='CA'?'CA':'SC';
-    const k=pcKey(l.style, l.color, toWh), sz=String(l.size).toUpperCase();
-    if(l.gradeA>0){ try{ await pcCellChange(k, sz, '+'+l.gradeA, null, '↩ Return '+ra+' received (A grade)'); }catch(e){} }
-    if(l.gradeB>0){ try{ await pcAddB(k, sz, l.gradeB, '↩ Return '+ra+' received (B grade)'); }catch(e){} }
-  }
   ret.status='received';
   /* RACM-v1 - 두 축을 같이 찍는다. 이 판에서는 발송과 재고가 아직 한 버튼에 있다.
      버튼을 쪼개는 것은 다음 판이다 - 그때 이 두 줄이 갈라진다. */
@@ -6540,6 +6534,18 @@ async function returnReceiveConfirm(base, ra){
       + '\n\u2192 Do NOT send anything to the customer.'
       + '\n\u2192 Log out and log back in, then press Confirm again.');
     return;
+  }
+  /* ═══ RETORD-1 - 재고는 **저장이 끝난 뒤에만** 움직인다 ═══
+     🔴 2026-09-30 실제 사고: 예전에는 재고 복구가 저장보다 **먼저** 돌았다. 저장이 거절당해도
+        재고는 이미 들어갔고 되돌려지지 않았다. 그래서 하윤이 다시 눌렀더니
+        같은 반품 102 pcs 가 **두 번** 들어갔다 (1368 NATURAL CA · 9/30 10:49 와 19:29).
+     ⭐ 이제 저장이 성공한 뒤에만 재고를 넣는다. 저장이 막히면 재고는 한 톨도 안 움직이므로
+        다시 눌러도 두 번 들어갈 일이 없다 (맨 위 `status==='received'` 가 또 막아준다). */
+  for(const l of recvLines){
+    const toWh=(l.toWh||l.wh)==='CA'?'CA':'SC';
+    const k=pcKey(l.style, l.color, toWh), sz=String(l.size).toUpperCase();
+    if(l.gradeA>0){ try{ await pcCellChange(k, sz, '+'+l.gradeA, null, '↩ Return '+ra+' received (A grade)'); }catch(e){} }
+    if(l.gradeB>0){ try{ await pcAddB(k, sz, l.gradeB, '↩ Return '+ra+' received (B grade)'); }catch(e){} }
   }
   logHist(base, '↩ Return received — '+ra+' · '+cm+' $'+creditAmt.toFixed(2)+' · restock A '+restockA+' / B '+restockB+' pcs');
   div.remove();
@@ -15554,6 +15560,11 @@ async function sendInvoiceEmail(){
       + psmTable(
           psmRow('Invoice #', esc(invNo))
         + psmRow('PO #', esc(meta.po||''))
+        /* SHIPFROM-1 - [stated] 하윤: "SHIP FROM 추가해서 SC invoice면 Sumter SC 나오고
+           CA invoice면 Eastvale CA나오게". 거래처가 어느 창고에서 온 짐인지 메일만 보고 안다.
+           ⚠ 「🚚 Ship from CA」 를 켠 오더의 SC 몫은 **실제로 CA 에서 나간다** -
+             그래서 창고 글자를 그대로 쓰지 않고 `lblShipFromFor` 에 묻는다 (라벨·요금이 보는 그 답). */
+        + psmRow('Ship from', esc(WH_LABEL[(typeof lblShipFromFor==='function') ? lblShipFromFor(rec, plWh) : plWh] || plWh))
         + psmRow('Invoice date', _invDate.toLocaleDateString('en-US'))
         + (_termStr ? psmRow('Terms', esc(_termStr)) : '')
         + (_dueStr ? psmRow('Due date', '<b>' + esc(_dueStr) + '</b>') : '')
@@ -25253,7 +25264,12 @@ async function pcCellChange(k, size, val, inputEl, note){
       else pcLocSetList(row, size, []);
     }
   }catch(e){}
-  pcSaveRow(row);
+  /* ⚠⚠ PCRACE-1 - **반드시 기다린다.** `pcSaveRow` 는 행을 **통째로** 덮어쓴다.
+     여러 사이즈를 줄줄이 고칠 때(반품 복구가 S·M·L·XL·2XL 를 연달아 고친다) 기다리지 않으면
+     다음 사이즈가 아직 안 저장된 **낡은 행**을 읽어서, 방금 쓴 사이즈를 지워 버린다.
+     🔴 2026-09-30 실측: 1368 NATURAL CA 복구에서 M 27 · XL 21 이 이렇게 사라졌다
+        (이동 기록에는 들어갔는데 행에는 없다). */
+  await pcSaveRow(row);
   if(inputEl){ inputEl.value = n || ''; inputEl.style.color = n < 0 ? '#dc2626' : ''; inputEl.style.fontWeight = n < 0 ? '800' : ''; }
   const rt = $('pcrt-'+cssId(k)); if(rt) rt.textContent = pcRowTotal(row) || '';
   const st = $('pcst-'+cssId(String(row.style))); if(st) st.textContent = pcStyleTotal(row.style).toLocaleString();
@@ -43263,7 +43279,16 @@ function invNpList(){
                  locker:_locker,
                  printed:!!iv.printed, printedAt:iv.printedAt||'', sentAt:_sent,
                  sentBy:_si.by, sentTo:_si.to,
-                 email: String((s.meta&&s.meta.custEmail) || (typeof custEmailFor==='function' ? (custEmailFor(s.meta&&s.meta.cust)||'') : '') || ''),
+                 /* ═══ INVEM-1 - 받는 주소는 **거래처 카드가 master** ═══
+                    🔴 2026-10-01 실측: T-Shirt Tycoon 카드에는 `bianca@ , ap@` 두 개가 적혀 있는데
+                       줄에는 `bianca@` 만 떴다. 오더마다 박혀 있는 `meta.custEmail` (PL 화면에서
+                       누군가 한 번 친 한 개짜리 값)이 카드를 이기고 있었다 -> **ap@ 가 통째로 빠졌다.**
+                    ⭐ 순서: ① 이 줄에서 직접 고친 값(`meta.invEmail`) ② 거래처 카드 ③ 옛 오더 값
+                       카드를 고치면 모든 줄에 바로 반영되고, 한 건만 다르게 보낼 일은 ①로 덮는다.
+                    ⚠ `meta.custEmail` 을 다시 1순위로 올리지 말 것 - 그게 이 버그였다. */
+                 email: String((s.meta&&s.meta.invEmail)
+                   || (typeof custEmailFor==='function' ? (custEmailFor(s.meta&&s.meta.cust)||'') : '')
+                   || (s.meta&&s.meta.custEmail) || ''),
                  hold:(typeof holdBlocked==='function' && holdBlocked(s)) });
     });
   });
@@ -43379,6 +43404,8 @@ async function invSendFor(base, wh, toList){
     + psmTable(
         psmRow('Invoice #', esc(invNo))
       + psmRow('PO #', esc(meta.po||''))
+      /* SHIPFROM-1 - 두 발송 경로가 **같은 메일**이어야 한다 (위 sendInvoiceEmail 과 같은 줄) */
+      + psmRow('Ship from', esc(WH_LABEL[(typeof lblShipFromFor==='function') ? lblShipFromFor(rec, wh) : wh] || wh))
       + psmRow('Invoice date', _invDate.toLocaleDateString('en-US'))
       + (_ti ? psmRow('Terms', esc(_ti.label)) : '')
       + (_dueStr ? psmRow('Due date', '<b>' + esc(_dueStr) + '</b>') : '')
@@ -43395,7 +43422,7 @@ async function invSendFor(base, wh, toList){
   const _r = savedCache.find(x=>x.base===base) || rec;
   _r.inv = _r.inv || {}; _r.inv[wh] = { ..._r.inv[wh], invNo, emailedAt:new Date().toISOString(),
     emailedBy:(SESS&&SESS.email)||'', emailedTo:toList.join(', ') };
-  _r.meta = _r.meta || {}; _r.meta.custEmail = toList.join(', ');
+  _r.meta = _r.meta || {}; _r.meta.invEmail = toList.join(', ');   /* INVEM-1 - 카드를 덮지 않는다 */
   try{ await sbFetch('/rest/v1/pr_orders?base=eq.'+encodeURIComponent(base), {method:'PATCH', headers:{Prefer:'return=minimal'},
         body: JSON.stringify({ inv:_r.inv, meta:_r.meta })}); }catch(e){ console.warn('[INVDO] flag not saved', e); }
   logHist(base, 'Invoice emailed (' + invNo + ') \u2192 ' + toList.join(', '));
@@ -43453,7 +43480,10 @@ async function invNpPrintOne(base, wh){
 async function invNpEmailSave(base, val){
   const rec = savedCache.find(s=>s.base===base); if(!rec) return;
   const v = String(val||'').trim();
-  rec.meta = rec.meta || {}; rec.meta.custEmail = v;
+  /* INVEM-1 - 이 줄에서 고친 값은 **이 오더 전용**이다 (`invEmail`).
+     ⚠ `custEmail` 에 쓰지 않는다 - 그러면 패킹리스트 쪽 주소까지 같이 바뀌고,
+       다음부터 거래처 카드를 고쳐도 이 오더만 옛 주소를 쓴다 (그게 이 버그의 뿌리였다). */
+  rec.meta = rec.meta || {}; rec.meta.invEmail = v;
   try{ await sbFetch('/rest/v1/pr_orders?base=eq.'+encodeURIComponent(base), {method:'PATCH', headers:{Prefer:'return=minimal'}, body:JSON.stringify({meta:rec.meta})}); }
   catch(e){ showToast('\u26a0 Email address not saved \u2014 you can still send with it'); }
 }
@@ -43501,8 +43531,14 @@ function invNpRowsHtml(){
       + '<div style="flex:1;min-width:0;">'
       +   '<div style="font-weight:800;color:#0f2a4a;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">' + esc(r.cust||'(no name)')
       +     ' <span style="font-family:Consolas,monospace;color:#64748b;font-weight:600;">\u00b7 PO ' + esc(r.po||'\u2014') + '</span></div>'
-      +   '<input class="fi" id="invnp-em-' + id + '" type="email" value="' + esc(r.email||'') + '" placeholder="no email on file \u2014 type one" onchange="invNpEmailSave(\'' + eb + '\',this.value)"'
-      +     ' style="width:100%;max-width:290px;margin-top:3px;font-size:11px;padding:3px 7px;' + (noEm ? 'border-color:#fca5a5;background:#fef2f2;' : '') + '">'
+      +   '<div style="display:flex;align-items:center;gap:6px;margin-top:3px;">'
+      +     '<input class="fi" id="invnp-em-' + id + '" type="email" value="' + esc(r.email||'') + '" placeholder="no email on file \u2014 type one" onchange="invNpEmailSave(\'' + eb + '\',this.value)"'
+      +       ' title="' + esc(r.email || 'No email on file for this customer') + '"'
+      +       ' style="flex:1;min-width:0;max-width:330px;font-size:11px;padding:3px 7px;' + (noEm ? 'border-color:#fca5a5;background:#fef2f2;' : '') + '">'
+      /* INVEM-1 - 칸이 좁아서 두 번째 주소부터 안 보인다. 몇 군데로 가는지 숫자로 박아 둔다. */
+      +     (function(){ const nA = String(r.email||'').split(',').map(x=>x.trim()).filter(x=>x.indexOf('@')>0).length;
+             return nA > 1 ? '<span style="font-size:10px;font-weight:800;color:#155e75;background:#ecfeff;border:1px solid #a5f3fc;border-radius:20px;padding:2px 7px;white-space:nowrap;" title="' + esc(String(r.email||'').split(',').map(x=>x.trim()).join('\n')) + '">' + nA + ' addresses</span>' : ''; })()
+      +   '</div>'
       + '</div>'
       + '<span style="font-family:Consolas,monospace;font-size:10px;font-weight:800;color:' + (r.wh==='CA'?'#c2410c':'#1d4ed8') + ';background:' + (r.wh==='CA'?'#fff7ed':'#eff6ff') + ';border-radius:5px;padding:1px 6px;">' + esc(r.wh) + '</span>'
       + (r.invNo ? '<span style="font-family:Consolas,monospace;font-size:10.5px;font-weight:800;color:#0e7490;min-width:58px;" title="Invoice number">' + esc(r.invNo) + '</span>'
