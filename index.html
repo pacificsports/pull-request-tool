@@ -34291,12 +34291,14 @@ function trStopBanner(g, n){
        + `this sheet covers ONLY this stop</div></div>`;
 }
 /* 길 딱지 하나 — 목록·상세 어디서나 같은 모양으로 (v992) */
-function trRouteChip(route, size, rec){
+/* ROUTECHIP-1 - 정차지를 하나로 접었으면 더 이상 multi 가 아니다.
+   [stated] 하윤: "multi 에서 CA로 가는걸로 바꿨는데 아직 multi로 나오네"
+   [stated] 하윤: "저 위에도 multi stop이라고 module title도 이제 고쳐져야하는거 아니야"
+   `meta.route` 는 MULTI_SC 그대로 남는다 (정차지를 다시 늘릴 수 있어야 하니까).
+   그래서 **보여줄 때만** 지금 정차지를 보고 평범한 길처럼 적는다.
+   알약도 창 제목도 전부 이 하나를 쓴다 - 두 군데가 서로 다른 말을 하지 않게. */
+function trRouteNow(route, rec){
   let rt = TR_ROUTES[route] || TR_ROUTES.SC2CA;
-  /* ROUTECHIP-1 - 정차지를 하나로 접었으면 더 이상 multi 가 아니다.
-     [stated] 하윤: "multi 에서 CA로 가는걸로 바꿨는데 아직 multi로 나오네"
-     `meta.route` 는 MULTI_SC 그대로 남는다 (정차지를 다시 늘릴 수 있어야 하니까).
-     그래서 **보여줄 때만** 지금 정차지를 보고 평범한 길처럼 적는다. */
   try{
     if(rec && rt.multi){
       const st = trStopsOf(rec);
@@ -34306,10 +34308,17 @@ function trRouteChip(route, size, rec){
           const r2 = TR_ROUTES[k];
           if(!hit && !r2.multi && !r2.legacy && r2.from === rt.from && r2.dest === st[0]) hit = r2;
         });
-        rt = hit || Object.assign({}, rt, { short: trStopPfx(rt.from) + '\u2192' + trStopPfx(st[0]) });
+        rt = hit || Object.assign({}, rt, {
+          short: trStopPfx(rt.from) + '\u2192' + trStopPfx(st[0]),
+          label: trKindShort(rt.from) + ' \u2192 ' + trKindShort(st[0])
+        });
       }
     }
   }catch(e){}
+  return rt;
+}
+function trRouteChip(route, size, rec){
+  const rt = trRouteNow(route, rec);
   const fs = size==='sm' ? '10.5px' : '11.5px';
   return `<span style="background:${rt.bg};color:#fff;font-weight:800;font-size:${fs};letter-spacing:.02em;`
        + `border-radius:6px;padding:2px 9px;white-space:nowrap;font-family:Consolas,monospace;">${esc(rt.short)}</span>`;
@@ -34703,7 +34712,7 @@ async function trBuilderOpen(existingId, route){
   div.id = 'modal-trb';
   div.style.cssText = 'position:fixed;inset:0;background:rgba(15,23,42,.55);z-index:99;display:flex;align-items:center;justify-content:center;padding:10px;';
   div.innerHTML = `<div style="background:#fff;border-radius:12px;max-width:1200px;width:98vw;max-height:96vh;display:flex;flex-direction:column;overflow:hidden;">
-    <div style="background:${TR_ROUTES[_shipRoute].color};color:#fff;padding:10px 16px;font-weight:800;display:flex;align-items:center;">🚛 ${TR_ROUTES[_shipRoute].label} Shipment Builder
+    <div style="background:${trRouteNow(_shipRoute, {meta:_shipMeta}).color};color:#fff;padding:10px 16px;font-weight:800;display:flex;align-items:center;">🚛 ${trRouteNow(_shipRoute, {meta:_shipMeta}).label} Shipment Builder
       <button class="btn btn-sm" style="margin-left:auto;background:transparent;color:#e9d5ff;border-color:#a78bfa;" onclick="trBuilderClose()" title="Save and close — nothing is lost">✕</button></div>
     <div style="padding:12px 16px;overflow-y:auto;flex:1;">
       <div style="background:#fef3f9;border:1px solid #d8b4fe;border-radius:8px;padding:12px;margin-bottom:12px;">
@@ -35772,17 +35781,53 @@ async function _trAddLinesBulk(items){
   await trSaveDraftLines();
   return ok;
 }
+/* ═══ DELLINE-1 - 이미 선반으로 돌아간 박스를 다시 옮기지 않는다 ═══
+   [stated] 하윤이 ✕ 를 눌렀을 때 뜬 말: "Delete this line and return 10 box(es) to bin FL8?"
+   🔴 그런데 그 10박스는 이미 TEMPORARY 에 들어가 있었다 (Put Back 은 됐는데 트럭 줄만 남았던 건).
+      OK 를 눌렀으면 멀쩡히 TEMPORARY 에 있던 박스가 FL8 로 옮겨졌을 것이다 - 두 번째 사고.
+   이제 박스 하나하나의 **지금 자리**를 보고 가른다:
+     · 아직 TRANSFER(이송 대기) 에 있는 박스  -> 원래 bin 으로 돌려놓는다 (예전 그대로)
+     · 이미 다른 선반에 들어가 있는 박스      -> **손대지 않는다**. 줄만 뺀다.
+   그리고 묻는 말에 그 숫자를 그대로 적는다 - 무슨 일이 생기는지 보고 누르게. */
+function _trLineSplitBack(l){
+  const ids = (l && l.ids) || [];
+  const byId = {};
+  try{ (typeof bxStore !== 'undefined' ? bxStore : []).forEach(b=>{ if(b) byId[b.id] = b; }); }catch(e){}
+  const back = [], keep = [], keepWhere = {};
+  ids.forEach(id=>{
+    const b = byId[id];
+    const loc = b ? String(b.loc || '').toUpperCase() : '';
+    if(!b || !loc || loc === 'TRANSFER'){ back.push(id); return; }   /* 모르면 예전처럼 되돌린다 */
+    keep.push(id);
+    const k = String(b.wh || 'SC').toUpperCase() + ' ' + loc;
+    keepWhere[k] = (keepWhere[k] || 0) + 1;
+  });
+  return { back, keep, keepWhere };
+}
 async function _trRemoveLine(pid, li, silent){
   const p = _shipPallets.find(x=>x.id===pid); if(!p) return false;
   const l = p.lines[li]; if(!l) return false;
   if(!l.is_manual && (l.ids||[]).length){
-    if(!silent && !confirm('Delete this line and return '+trLineBoxes(l)+' box(es) to bin '+(l.bin||'?')+'?\n'+l.style+' '+l.color+' '+l.size)) return false;
-    const _rw = trWhOfKind(trSrcKind(_shipRoute));
+    const sp = _trLineSplitBack(l);
     const _back = String(l.bin||'').toUpperCase();   // 원래 bin으로 복구
-    try{ await trPatchBoxes(l.ids, _back?{wh:_rw, loc:_back}:{wh:_rw}); }
-    catch(e){ showToast('⚠ Restore failed'); return false; }
-    const idSet = new Set(l.ids);
-    bxStore.forEach(b=>{ if(idSet.has(b.id)){ b.wh = _rw; if(_back) b.loc = _back; } });
+    if(!silent){
+      const whereTxt = Object.keys(sp.keepWhere).map(k=>sp.keepWhere[k] + ' in ' + k).join(', ');
+      const msg = sp.keep.length
+        ? ('Delete this line?\n' + l.style + ' ' + l.color + ' ' + l.size + '\n\n'
+           + '\u2713 ' + sp.keep.length + ' box(es) are already back in stock (' + whereTxt + ') \u2014 they stay where they are.\n'
+           + (sp.back.length
+              ? ('\u21a9 ' + sp.back.length + ' box(es) still waiting on the truck go back to bin ' + (_back || '?') + '.')
+              : 'Nothing is moved \u2014 only the line comes off the truck.'))
+        : ('Delete this line and return ' + trLineBoxes(l) + ' box(es) to bin ' + (l.bin||'?') + '?\n' + l.style + ' ' + l.color + ' ' + l.size);
+      if(!confirm(msg)) return false;
+    }
+    if(sp.back.length){
+      const _rw = trWhOfKind(trSrcKind(_shipRoute));
+      try{ await trPatchBoxes(sp.back, _back?{wh:_rw, loc:_back}:{wh:_rw}); }
+      catch(e){ showToast('⚠ Restore failed'); return false; }
+      const idSet = new Set(sp.back);
+      bxStore.forEach(b=>{ if(idSet.has(b.id)){ b.wh = _rw; if(_back) b.loc = _back; } });
+    }
   }
   p.lines.splice(li,1);
   await trSaveDraftLines();
