@@ -35042,7 +35042,15 @@ function trStopPlanOpen(i){
   const os = (_shipMeta.orderShip) || [];
   const others = _shipPallets.filter(p=>trPalStopIdxDisp(D, p) !== i);
   if(!others.length){ trStopOnly(i); return; }          /* 정할 게 없으면 예전 길 그대로 */
-  window._soPlan = { i, k, ids:others.map(p=>p.id) };
+  /* SOPLANFIX-1 - [stated] 하윤: "ship to all to CA 눌러서 location bin 을 지정할수있어야지"
+     🔴 원인: 여기서 팔레트를 **id** 로 기억했는데 그 id 는 화면을 다시 그릴 때마다
+       `Math.random()` 으로 새로 뽑힌다 (trBuilderOpen 이 _shipPallets 를 다시 만든다).
+       창을 띄워 둔 사이에 한 번만 다시 그려지면 창 안의 id 가 전부 죽은 번호가 되고,
+       Apply 가 팔레트를 **하나도 못 찾아서** 되돌릴 줄이 0개 -> bin 고르는 창이 안 떴다.
+       (증거: orderShip 줄도 안 지워졌다 - 같은 find 를 쓰는 코드다)
+     ⚠⚠ 이 앱의 팔레트 식별자는 **label** 이다 (hodgePalTxt · designatedByPallet ·
+        orderShip[].pallet · meta.palletStop 전부 label 을 쓴다). 여기만 id 를 쓰고 있었다. */
+  window._soPlan = { i, k, labs:others.map(p=>p.label) };
   const rows = others.map(p=>{
     const nb = (p.lines||[]).reduce((a,l)=>a+trLineBoxes(l), 0);
     const np = (p.lines||[]).reduce((a,l)=>a+trLinePcs(l), 0);
@@ -35054,7 +35062,7 @@ function trStopPlanOpen(i){
       <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;">
         <span style="font-weight:900;color:#5b21b6;background:#f5f3ff;border:1px solid #d8b4fe;border-radius:8px;padding:3px 10px;">📦 ${esc(trPalDisp(D, p.label))}</span>
         <span style="font-size:11.5px;color:#64748b;">${(p.lines||[]).length} line(s) · ${nb.toLocaleString()} box(es) · ${np.toLocaleString()} pcs</span>
-        <select class="so-act fi" data-pid="${esc(p.id)}" style="margin-left:auto;font-size:12px;font-weight:800;padding:4px 8px;">
+        <select class="so-act fi" data-plab="${esc(p.label)}" style="margin-left:auto;font-size:12px;font-weight:800;padding:4px 8px;">
           <option value="move">→ Move to ${esc(trStopPfx(k))} — comes off with the rest</option>
           ${hasStock ? `<option value="back">↩ Put back to ${esc(trWhOfKind(trSrcKind(_shipRoute)))} stock — you pick the bin next</option>` : ''}
           ${mine.length ? `<option value="off">✕ Take the order off this truck — it stays open</option>` : ''}
@@ -35079,29 +35087,40 @@ function trStopPlanOpen(i){
 async function trStopPlanApply(){
   const plan = window._soPlan; if(!plan) return;
   const acts = {};
-  document.querySelectorAll('#modal-soplan .so-act').forEach(sel=>{ acts[sel.getAttribute('data-pid')] = sel.value; });
-  const backIds = Object.keys(acts).filter(id=>acts[id]==='back');
-  const offIds  = Object.keys(acts).filter(id=>acts[id]==='off');
+  document.querySelectorAll('#modal-soplan .so-act').forEach(sel=>{ acts[sel.getAttribute('data-plab')] = sel.value; });
+  const backLabs = Object.keys(acts).filter(x=>acts[x]==='back');
+  const offLabs  = Object.keys(acts).filter(x=>acts[x]==='off');
   /* 되돌릴 줄은 정차지를 건드리기 **전에** 모은다 - 줄의 bin 이 진실이고 그건 안 바뀌지만,
      팔레트가 지워진 뒤에 찾으면 못 찾는다. */
-  const pbRows = backIds.length ? trPbGatherPallets(backIds) : [];
+  const pbRows = backLabs.length ? trPbGatherPallets(backLabs) : [];
+  /* SOPLANFIX-1 - 되돌리기를 골랐는데 되돌릴 줄을 하나도 못 찾았으면 **소리내서 멈춘다.**
+     조용히 넘어가면 팔레트는 사라지고 bin 은 안 물어보는, 바로 그 사고가 난다. */
+  if(backLabs.length && !pbRows.length){
+    alert('\u26D4 Nothing was changed.\n\n'
+      + 'The pallets you chose to put back could not be found any more '
+      + '(the screen was redrawn while this window was open).\n\n'
+      + '\u2192 Close this window, open the shipment again, and pick once more.');
+    return;
+  }
+  const labOf = l => String(l||'');
   /* 트럭에서 내리는 오더 */
-  if(offIds.length){
-    const labs = {};
-    offIds.forEach(id=>{ const p=_shipPallets.find(x=>x.id===id); if(p) labs[p.label]=1; });
+  if(offLabs.length){
+    const labs = {}; offLabs.forEach(l=>{ labs[labOf(l)]=1; });
     _shipMeta.orderShip = ((_shipMeta.orderShip)||[]).filter(o=>!(o && labs[o.pallet]));
   }
   /* 되돌리는 팔레트에 오더가 같이 있으면 그 오더도 내린다 - 박스가 창고로 돌아가니까 */
-  if(backIds.length){
-    const labs = {};
-    backIds.forEach(id=>{ const p=_shipPallets.find(x=>x.id===id); if(p) labs[p.label]=1; });
+  if(backLabs.length){
+    const labs = {}; backLabs.forEach(l=>{ labs[labOf(l)]=1; });
     _shipMeta.orderShip = ((_shipMeta.orderShip)||[]).filter(o=>!(o && labs[o.pallet]));
   }
   /* 「내리기」만 고른 빈 팔레트는 지운다 (줄이 없는 것만 - 재고는 절대 안 건드린다) */
-  _shipPallets = _shipPallets.filter(p=>!(offIds.indexOf(p.id) >= 0 && !(p.lines||[]).length));
+  _shipPallets = _shipPallets.filter(p=>!(offLabs.indexOf(p.label) >= 0 && !(p.lines||[]).length));
   const m = document.getElementById('modal-soplan'); if(m) m.remove();
   window._soPlan = null;
-  window._pbPalletIds = backIds.length ? backIds.slice() : null;
+  /* trStopOnly 가 읽는 값은 여전히 id 다 - 이름으로 지금 찾아서 넘긴다 */
+  window._pbPalletIds = backLabs.length
+    ? backLabs.map(l=>{ const p=_shipPallets.find(x=>x.label===l); return p?p.id:null; }).filter(Boolean)
+    : null;
   await trStopOnly(plan.i, true);
   if(pbRows.length){
     window._pbRows = pbRows;
@@ -35446,10 +35465,12 @@ function trPbGather(pid, li){
 }
 /* SOPLAN-1 - 팔레트 통째로 되돌릴 줄 모으기. `trPbGather` 와 **같은 모양**의 줄을 만든다 -
    그래야 bin 칸·인쇄·확정이 전부 그대로 쓰인다. 손으로 넣은 줄은 되돌릴 bin 이 없어 빠진다. */
-function trPbGatherPallets(pids){
+/* SOPLANFIX-1 - 이름으로 찾는다 (id 는 화면을 다시 그릴 때 바뀐다) */
+function trPbGatherPallets(labs){
   const out = [];
-  (pids||[]).forEach(pid=>{
-    const p = _shipPallets.find(x=>x.id===pid); if(!p) return;
+  (labs||[]).forEach(lab=>{
+    const p = _shipPallets.find(x=>x.label===lab); if(!p) return;
+    const pid = p.id;
     (p.lines||[]).forEach((l, li)=>{
       if(!l || l.is_manual || !(l.ids||[]).length) return;
       out.push({ pid, li, style:l.style, color:l.color, size:l.size,
