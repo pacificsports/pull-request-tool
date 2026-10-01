@@ -26408,16 +26408,18 @@ function bxVariantLabel(c, style){
    막는 방법: 아직 안 끝난 이송(LOADING/TRANSIT)에 실린 박스 id 를 들고 있다가
    오더가 박스를 고를 때 빼버린다. 재고 숫자에서 빼지는 않는다 — 아직 SC 에 있는 게 맞으니까.
    집을 수만 없게 한다. */
-let TXHOLD = new Set(), TXHOLD_REF = {}, _txHoldAt = 0;
+let TXHOLD = new Set(), TXHOLD_REF = {}, TXHOLD_TID = {}, TXHOLD_ST = {}, _txHoldAt = 0;
 async function txHoldRefresh(force){
   if(!force && Date.now() - _txHoldAt < 60000) return TXHOLD;
   try{
-    const r = await sbFetch('/rest/v1/pr_transfers?select=ref,status,lines&status=in.(LOADING,TRANSIT)&limit=200');
+    /* TXPULL-1 - 트럭 id 와 상태도 같이 들고 있는다. 「이 오더로 가져오기」 가 그걸로
+       아직 안 떠난 트럭(LOADING)인지 가리고, 그 트럭 줄을 찾아 고친다. */
+    const r = await sbFetch('/rest/v1/pr_transfers?select=id,ref,status,lines&status=in.(LOADING,TRANSIT)&limit=200');
     if(!r.ok) return TXHOLD;
-    const set = new Set(), ref = {};
+    const set = new Set(), ref = {}, tid = {}, st = {};
     (await r.json()).forEach(t=>{ (Array.isArray(t.lines)?t.lines:[]).forEach(l=>{
-      (l.ids||[]).forEach(id=>{ set.add(id); ref[id] = t.ref || '(transfer)'; }); }); });
-    TXHOLD = set; TXHOLD_REF = ref; _txHoldAt = Date.now();
+      (l.ids||[]).forEach(id=>{ set.add(id); ref[id] = t.ref || '(transfer)'; tid[id] = t.id; st[id] = String(t.status||''); }); }); });
+    TXHOLD = set; TXHOLD_REF = ref; TXHOLD_TID = tid; TXHOLD_ST = st; _txHoldAt = Date.now();
   }catch(e){}
   return TXHOLD;
 }
@@ -29753,7 +29755,32 @@ function bxOpenPicker(L, lwh, po, onDone, mode, needOverride){
     const _refs = [...new Set(_held.map(b=>TXHOLD_REF[b.id]).filter(Boolean))];
     showToast('\u{1F512} ' + _held.length + ' box(es) skipped \u2014 already on transfer ' + _refs.join(', '));
   }
-  if(!avail.length){ showToast('⚠ ['+lwh+'] '+L.style+' '+String(L.color).toUpperCase()+' '+String(L.size).toUpperCase()+' no full box stock'); if(onDone) onDone(false); return; }
+  /* ═══ TXPULL-1 - 트럭에 실린 박스는 지우지 말고 보여주고, 거기서 바로 뺄 수 있게 한다 ═══
+     [stated] 하윤: "pin 아래는 TRANSFER bin이 보이는데 막상 눌러서 모듈 뜨니까 지정을 못하잖아"
+     [stated] 하윤: "옮길려고 준비해놓았는데 그 사이 오더가 와서 그 박스들을 그 오더에 지정해서 보낼려는거야"
+     그전까지: 트럭(LOADING·TRANSIT)에 올라간 박스는 목록에서 통째로 사라졌다. 토스트 한 줄이
+     떴다 사라질 뿐이라 화면만 보면 물건이 없는 줄 안다. 그래서 「SC short」 가 뜨고,
+     SC 에 있는 물건을 CA 로 넘기거나 Back Order 로 보내게 된다.
+     집지 못하게 하는 것 자체는 맞다 - 같은 박스를 트럭에도 싣고 오더에도 주면 한쪽은 빈손이다.
+     이제는 회색 줄로 보여주고, 아직 안 떠난 트럭이면 거기서 빼서 이 오더로 가져올 수 있다. */
+  const heldRefs = [...new Set(_held.map(b=>TXHOLD_REF[b.id]).filter(Boolean))].join(', ');
+  const heldN = _held.length;
+  const heldG = [];
+  if(heldN){
+    const hm = {};
+    _held.forEach(b=>{
+      const Lc = String(b.loc||'?').toUpperCase(), col = String(b.color).toUpperCase(), gk = col+'@'+Lc;
+      if(!hm[gk]){ hm[gk] = {loc:Lc, col, ids:[], n:0, refs:{}, tids:{}, sts:{}, oldest:b.in_at}; heldG.push(hm[gk]); }
+      const G = hm[gk];
+      G.ids.push(b.id); G.n++;
+      const rf = TXHOLD_REF[b.id]; if(rf) G.refs[rf] = 1;
+      const ti = TXHOLD_TID[b.id]; if(ti) G.tids[ti] = 1;
+      G.sts[String(TXHOLD_ST[b.id]||'')] = 1;
+    });
+    heldG.forEach(G=>{ G.canPull = Object.keys(G.sts).every(x=>x==='LOADING') && !!Object.keys(G.tids).length; });
+    heldG.sort((a,b)=> (a.col===wantCol?0:1)-(b.col===wantCol?0:1) || String(a.loc).localeCompare(String(b.loc)));
+  }
+  if(!avail.length && !heldN){ showToast('⚠ ['+lwh+'] '+L.style+' '+String(L.color).toUpperCase()+' '+String(L.size).toUpperCase()+' no full box stock'); if(onDone) onDone(false); return; }
   // 🔒 reserve 보호: 이 라인이 _useReserve(dip-in) 아니면 예약 박스는 자동배정·가용에서 제외
   const _lineUseRsv = !!(L && L._useReserve);
   const _rsvN = _lineUseRsv ? 0 : ((typeof reservedBoxes==='function') ? reservedBoxes(st, bxColorFor(L), L.size, lwh) : 0);
@@ -29776,7 +29803,7 @@ function bxOpenPicker(L, lwh, po, onDone, mode, needOverride){
   // 자동 배정: 같은 변형(정확 일치) 먼저 → 같은 base 칼라의 다른 변형(US 등)까지 오래된 순 (H*/SPECIAL 3rd party는 제외) (v412) · 예약분은 자동 배정 안 함
   // 자체 bin 먼저 채우고(정렬상 앞), 남으면 LK(거래처 locker/SPECIAL*)까지 자동 배정 — locker stock 출고 허용. H*(3P·Hodge)만 회수 필요라 제외
   groups.forEach(g=>{ g.take = (bxSpecLoc(g.loc,lwh)!=='3P') ? Math.min(g.boxes.length, remaining) : 0; remaining -= g.take; });
-  bxPullCtx = {lwh, need, haveN:_haveN, groups, po, mode: mode||'deduct', onDone: onDone||null, lineIdx: (typeof poLines!=='undefined'?poLines.indexOf(L):-1), sku:{style:st, color:bxColorFor(L), size:String(L.size||'').trim().toUpperCase()}, label:'['+lwh+'] '+st+' '+bxColorFor(L)+' '+String(L.size).toUpperCase(), rsvN:_rsvN, effAvail:_effAvail, useRsv:_lineUseRsv};
+  bxPullCtx = {lwh, need, haveN:_haveN, groups, po, mode: mode||'deduct', onDone: onDone||null, lineIdx: (typeof poLines!=='undefined'?poLines.indexOf(L):-1), sku:{style:st, color:bxColorFor(L), size:String(L.size||'').trim().toUpperCase()}, label:'['+lwh+'] '+st+' '+bxColorFor(L)+' '+String(L.size).toUpperCase(), rsvN:_rsvN, effAvail:_effAvail, useRsv:_lineUseRsv, heldG:heldG};
   // 부족(가용 < 필요) 시 Assign 창 안에서 바로 배분: 있는 만큼 이 창고 + 나머지는 SC/BO로 split (v449)
   const _short = (mode||'deduct')==='reserve' && _effAvail < need;
   const _other = lwh==='CA' ? 'SC' : 'CA';
@@ -29803,11 +29830,20 @@ function bxOpenPicker(L, lwh, po, onDone, mode, needOverride){
             : bxSpecLoc(g.loc, lwh)==='LK'
             ? `<div style="display:flex;align-items:center;gap:6px;flex-wrap:wrap;justify-content:flex-end;"><input class="fi bp-take" data-gi="${gi}" type="number" min="0" max="${g.boxes.length}" value="${g.take}" style="width:56px;font-weight:800;" oninput="bxPullSum()"><span style="font-size:9px;font-weight:800;color:#7c3aed;white-space:nowrap;" title="Locker stock — the customer&#39;s own stock at the 3rd party warehouse, ships on their PO. Assigning here deducts from the locker so the move is tracked and invoiceable.">🔒 locker</span><button class="btn btn-sm" style="background:#fff;color:#b45309;border-color:#fbbf24;font-weight:800;white-space:nowrap;padding:1px 7px;font-size:10px;" onclick="bxPullRecall3P(${gi})" title="Or recall this locker stock into the ${lwh} warehouse instead (start a recall Transfer, then Post &amp; Receive).">🏭→${lwh} Recall</button></div>`
             : `<input class="fi bp-take" data-gi="${gi}" type="number" min="0" max="${g.boxes.length}" value="${g.take}" style="width:60px;font-weight:800;" oninput="bxPullSum()">`}</td>
+        </tr>`;}).join('')}${heldG.map((g,hi)=>{ const vl = bxVariantLabel(g.col, st) || bxDefaultVariant(st); const rf = Object.keys(g.refs).join(', '); return `<tr style="background:#f8fafc;">
+          <td class="tl" style="font-weight:800;color:#94a3b8;">🚚 ${esc(g.loc)}<div style="font-size:9px;font-weight:700;color:#b45309;">on ${esc(rf||'a transfer')}${g.canPull?'':' — already left'}</div></td>
+          <td class="tl"><span style="font-size:10px;font-weight:800;color:#94a3b8;background:#f1f5f9;padding:1px 7px;border-radius:10px;white-space:nowrap;">${esc(vl)}</span></td>
+          <td style="font-family:Consolas,monospace;color:#94a3b8;">${g.n}</td>
+          <td style="font-size:11px;color:#cbd5e1;">${g.oldest?String(g.oldest).slice(0,10):''}</td>
+          <td>${g.canPull
+            ? `<button class="btn btn-sm" style="background:#b45309;color:#fff;border-color:#b45309;font-weight:800;white-space:nowrap;" onclick="bxPullTakeFromTruck(${hi})" title="Take these boxes off that shipment and put them back in the bin they came from, so this order can use them. A Put Back Request prints for the warehouse.">🚚→ Take for this order</button>`
+            : `<span style="font-size:10px;font-weight:800;color:#b45309;white-space:nowrap;">🔒 already on the road</span>`}</td>
         </tr>`;}).join('')}</tbody>
       </table>
     </div>
     ${_short?`<div style="padding:9px 16px;background:#fff7ed;border-top:1px solid #fed7aa;font-size:11.5px;color:#9a3412;">
       <b>⚠ ${lwh} short</b> — needs ${need} box(es), only ${avail.length} here. Assign these and handle the rest:
+      ${heldN?`<div style="margin-top:6px;padding:7px 9px;background:#fffbeb;border:1px solid #fcd34d;border-radius:7px;color:#92400e;font-weight:700;line-height:1.5;">🚚 ${heldN} more box(es) ARE in ${lwh} — loaded on <b>${esc(heldRefs||'a transfer')}</b>. Use <b>Take for this order</b> on the grey row above before sending this to ${_other} or Back Order.</div>`:''}
       <div style="display:flex;gap:6px;flex-wrap:wrap;margin-top:7px;">
         <button class="btn btn-sm" style="background:${_otherPcs>0?'#1d4ed8':'#94a3b8'};color:#fff;border-color:transparent;font-weight:800;" onclick="bxPullAllocate('${_other}')">→ Rest to ${_other} <span style="font-weight:600;opacity:.9;">(${_other} has ${_otherPcs.toLocaleString()} pcs)</span></button>
         <button class="btn btn-sm" style="background:#dc2626;color:#fff;border-color:transparent;font-weight:800;" onclick="bxPullAllocate('BO')">⛔ Rest to Back Order</button>
@@ -29821,6 +29857,93 @@ function bxOpenPicker(L, lwh, po, onDone, mode, needOverride){
     </div></div>`;
   document.body.appendChild(div);
   bxPullSum();
+}
+/* TXPULL-1 - 트럭에서 이 박스들을 빼서 원래 bin 으로 돌려놓고, 창을 다시 열어 지정할 수 있게 한다.
+   순서가 중요하다: ① 트럭 줄에서 먼저 빼고(그래야 두 번 쓰이는 창이 없다) ② 박스를 bin 으로 되돌리고
+   ③ 종이를 뽑고 ④ 창을 다시 연다. 중간에 하나라도 실패하면 소리내서 멈춘다. */
+async function bxPullTakeFromTruck(hi){
+  const ctx = bxPullCtx; if(!ctx) return;
+  const g = (ctx.heldG || [])[hi]; if(!g || !(g.ids || []).length) return;
+  const refTxt = Object.keys(g.refs || {}).join(', ') || 'the shipment';
+  const tids = Object.keys(g.tids || {});
+  if(!g.canPull || !tids.length){
+    alert('⛔ That truck has already left (IN TRANSIT).\n\n'
+      + 'Boxes can only be taken back while the shipment is still loading.\n'
+      + 'Receive it at the other end first, or ship this order from there.');
+    return;
+  }
+  if(typeof _shipId !== 'undefined' && _shipId && tids.indexOf(_shipId) >= 0){
+    alert('⛔ ' + refTxt + ' is open on the Transfer screen right now.\n\n'
+      + 'Close it first — otherwise saving there would put these boxes straight back on the truck.');
+    return;
+  }
+  if(!confirm('Take these boxes OFF the truck and use them for this order?\n\n'
+    + '   · ' + ctx.label + '\n'
+    + '   · ' + g.ids.length + ' box(es), now loaded on ' + refTxt + '\n\n'
+    + 'They go back to the bin they came from, a Put Back Request prints for the warehouse,\n'
+    + 'and the shipment loses them.')) return;
+  const idSet = new Set(g.ids);
+  const pbRows = [];
+  try{
+    for(const tid of tids){
+      const r = await sbFetch('/rest/v1/pr_transfers?id=eq.' + tid + '&select=id,ref,status,lines');
+      if(!r || !r.ok) throw new Error('Could not read ' + refTxt);
+      const rec = (await r.json())[0];
+      if(!rec) throw new Error(refTxt + ' is gone');
+      if(String(rec.status || '') !== 'LOADING') throw new Error(refTxt + ' has already departed');
+      const keepLines = [];
+      (rec.lines || []).forEach(l=>{
+        if(!l) return;
+        const ids = Array.isArray(l.ids) ? l.ids : null;
+        if(!ids || !ids.length){ keepLines.push(l); return; }
+        const keep = [], gone = [];
+        ids.forEach(id=>{ (idSet.has(id) ? gone : keep).push(id); });
+        if(gone.length){
+          const bin = String(l.bin || '').toUpperCase();
+          pbRows.push({ style:l.style, color:l.color, size:l.size, bin,
+            ppb:Number(l.ppb) || 0, qty:gone.length, max:gone.length, dest:bin, _ids:gone });
+        }
+        if(keep.length) keepLines.push(Object.assign({}, l, { ids:keep },
+          (typeof l.boxes === 'number') ? { boxes:keep.length } : {}));
+      });
+      if(pbRows.length) await sbSaveRow('/rest/v1/pr_transfers?id=eq.' + tid, { lines:keepLines },
+        'Taking boxes off ' + (rec.ref || refTxt));
+    }
+    if(!pbRows.length) throw new Error('Those boxes are not on that shipment any more');
+  }catch(e){
+    alert('⛔ Nothing was changed.\n\n' + ((e && e.message) || e)
+      + '\n\n→ Close this window, open it again, and look at what is there now.');
+    return;
+  }
+  /* 박스를 원래 bin 으로 돌려놓는다. bin 을 모르면 TRANSFER 에 그대로 두고 알려준다. */
+  let noBin = 0;
+  for(const r0 of pbRows){
+    if(!r0.dest){ noBin += r0._ids.length; continue; }
+    try{
+      await trPatchBoxes(r0._ids, { loc:r0.dest });
+      const s2 = new Set(r0._ids);
+      bxStore.forEach(b=>{ if(s2.has(b.id)) b.loc = r0.dest; });
+    }catch(e){
+      alert('⚠ Taken off ' + refTxt + ', but ' + r0._ids.length
+        + ' box(es) could not be moved back to bin ' + r0.dest + '.\n\n'
+        + 'They are still in the TRANSFER bin — move them by hand in Box Room.');
+    }
+  }
+  try{ trPutBackPrintFrom(pbRows, refTxt, ctx.lwh); }catch(e){}
+  try{ await sbFetch('/rest/v1/pr_putback', {method:'POST', headers:{Prefer:'return=minimal'},
+    body:JSON.stringify([{ ref:refTxt, wh:ctx.lwh,
+      lines:pbRows.map(r=>({style:r.style,color:r.color,size:r.size,qty:r.qty,dest:r.dest,ppb:r.ppb})),
+      created_by:(typeof SESS!=='undefined' && SESS && SESS.email) || '' }])}); }catch(e){}
+  _txHoldAt = 0; try{ await txHoldRefresh(true); }catch(e){}
+  if(typeof _lineAvailCache !== 'undefined') _lineAvailCache = {};
+  const lwh = ctx.lwh, po = ctx.po, mode = ctx.mode, need = ctx.need, cb = ctx.onDone, li = ctx.lineIdx;
+  const m = document.getElementById('modal-bxpull'); if(m) m.remove();
+  bxPullCtx = null;
+  showToast('🚚 ' + g.ids.length + ' box(es) taken off ' + refTxt
+    + ' — back in their bin' + (noBin ? ' (' + noBin + ' left in TRANSFER)' : '') + ', ready to assign');
+  if(typeof renderTable === 'function') renderTable();
+  const L2 = (li >= 0 && typeof poLines !== 'undefined') ? poLines[li] : null;
+  if(L2) bxOpenPicker(L2, lwh, po, cb, mode, need);
 }
 function bxPullCancel(){
   const m = document.getElementById('modal-bxpull'); if(m) m.remove();
