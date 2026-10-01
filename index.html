@@ -28537,6 +28537,7 @@ async function _bxFetchStore(){
     bxStore = out; bxLoaded = true;
     window._bxRev = (window._bxRev||0)+1;
     try{ await txHoldRefresh(true); }catch(e){}      // 이송에 잡힌 박스 (v855)
+    try{ await binsRefresh(true); }catch(e){}       // BINMASTER-1 - 선반 명단 (비어 있는 선반 포함)
     // 박스 로드 완료 → 재고 캐시 무효화 + 오더 줄 SC/CA·FULL BOX 재고 숫자 즉시 갱신 (로딩 전 "0" 고착 해결) (v495)
     try{ _lineAvailCache = {}; if(typeof poLines!=='undefined' && poLines.length && typeof refreshRow==='function'){ poLines.forEach((l,i)=>{ try{ refreshRow(i); }catch(e){} }); } }catch(e){}
     // 🚢 Incoming (Haiti PENDING) 도 함께 갱신 — Full Box 표시용 (v371)
@@ -35245,11 +35246,52 @@ async function trStopPlanApply(){
    그래서 치는 대로 바로 맞춰 본다: 있는 선반이면 초록 체크, 없으면 빨간 X 와 「new bin?」.
    새 선반을 진짜 만들 때가 있으니 막지는 않는다 - 다만 **한 번 누르게** 한다.
    ⚠ 비교는 binNorm 으로 한다 (1G-11 과 1G11 은 같은 선반이다). */
-let _pbBinsCache = null, _pbBinsRef = null, _pbBinsLen = -1, _pbBinsWh = '';
+/* ═══ BINMASTER-1 - 선반 명단은 이제 표로 있다 (pr_bins) ═══
+   [stated] 하윤: "location bin에 물건이 없어도 그 location bin이 사라지는건 아니니까
+     location bin은 사라지고 그런게 없어야지"
+   그전까지 선반은 **지금 박스가 들어 있는 곳**으로만 알았다. 그래서 선반을 비우면
+   그 선반이 시스템에서 사라졌고, 도로 넣으려고 하면 「없는 선반」이라고 했다.
+   이제 pr_bins 가 명단이다 - 비어도 남는다. 새 선반은 「new bin?」 를 누를 때 등록된다. */
+let binStore = [], binLoaded = false, _binRev = 0;
+async function binsRefresh(force){
+  if(binLoaded && !force) return binStore;
+  try{
+    const r = await sbFetch('/rest/v1/pr_bins?select=wh,loc,active&limit=20000');
+    if(!r || !r.ok) return binStore;
+    const j = await r.json();
+    if(!Array.isArray(j)) return binStore;
+    binStore = j; binLoaded = true; _binRev++;
+  }catch(e){}
+  return binStore;
+}
+/* 새 선반을 명단에 넣는다. 조용히 실패하지 않는다 - 못 넣으면 false 를 돌려준다. */
+async function binRegister(wh, loc){
+  const w = String(wh || '').toUpperCase(), L = binNorm(loc);
+  if(!w || !L) return false;
+  try{
+    const r = await sbFetch('/rest/v1/pr_bins', {
+      method:'POST',
+      headers:{ Prefer:'resolution=merge-duplicates,return=representation' },
+      body: JSON.stringify([{ wh:w, loc:L, created_by:(typeof SESS!=='undefined' && SESS && SESS.email) || '' }])
+    });
+    if(!r || !r.ok) return false;
+    const j = await r.json().catch(()=>null);
+    if(!Array.isArray(j) || !j.length) return false;
+    binStore.push({ wh:w, loc:L, active:true }); _binRev++;
+    return true;
+  }catch(e){ return false; }
+}
+let _pbBinsCache = null, _pbBinsRef = null, _pbBinsLen = -1, _pbBinsWh = '', _pbBinsRev = -1;
 function trPbKnownBins(wh){
   const w = String(wh || '').toUpperCase();
-  if(_pbBinsCache && _pbBinsRef === bxStore && _pbBinsLen === bxStore.length && _pbBinsWh === w) return _pbBinsCache;
+  if(_pbBinsCache && _pbBinsRef === bxStore && _pbBinsLen === bxStore.length && _pbBinsWh === w && _pbBinsRev === _binRev) return _pbBinsCache;
   const set = new Set();
+  /* BINMASTER-1 - 명단이 먼저다. 비어 있는 선반은 여기에만 있다. */
+  (binStore || []).forEach(b=>{
+    if(!b || b.active === false) return;
+    if(w && String(b.wh || '').toUpperCase() !== w) return;
+    const n = binNorm(b.loc); if(n) set.add(n);
+  });
   (typeof bxStore !== 'undefined' ? bxStore : []).forEach(b=>{
     if(w && bxWh(b) !== w) return;
     const n = binNorm(b.loc); if(n) set.add(n);
@@ -35261,7 +35303,7 @@ function trPbKnownBins(wh){
       (p.locs || []).forEach(L=>{ const n = binNorm(L && (L.loc || L)); if(n) set.add(n); });
     });
   }catch(e){}
-  _pbBinsCache = set; _pbBinsRef = bxStore; _pbBinsLen = bxStore.length; _pbBinsWh = w;
+  _pbBinsCache = set; _pbBinsRef = bxStore; _pbBinsLen = bxStore.length; _pbBinsWh = w; _pbBinsRev = _binRev;
   return set;
 }
 /* ═══ BINCHK-2 - 방금 비운 선반도 선반이다 ═══
@@ -35305,15 +35347,26 @@ function trPbBinSync(i){
   if(el) el.innerHTML = trPbBinBadge(i);
 }
 function trPbBinSyncAll(){ (window._pbRows || []).forEach((r,i)=>trPbBinSync(i)); }
-function trPbNewBinOk(i){
+async function trPbNewBinOk(i){
   const r = (window._pbRows || [])[i]; if(!r) return;
   const d = String(r.dest || '').trim().toUpperCase();
   if(!d) return;
-  if(!confirm('Make a new bin called ' + d + '?\n\n'
-    + 'There is no bin with this name in ' + trPbWh() + ' today.\n'
-    + 'Check the spelling first - a typo here sends the boxes to a shelf nobody knows about.')) return;
+  const w = trPbWh();
+  if(!confirm('Make a new bin called ' + d + ' in ' + w + '?\n\n'
+    + 'There is no bin with this name today.\n'
+    + 'Check the spelling first - a typo here sends the boxes to a shelf nobody knows about.\n\n'
+    + 'It will be added to the bin list, so it stays even when it is empty.')) return;
+  /* BINMASTER-1 - 명단에 못 넣으면 승인도 안 한다. 조용히 넘어가지 않는다. */
+  const okd = await binRegister(w, d);
+  if(!okd){
+    alert('\u26d4 The bin was NOT added.\n\n'
+      + 'The bin list could not be written to. Nothing was changed.\n\n'
+      + '\u2192 Try again in a moment; if it keeps failing, tell Claude.');
+    return;
+  }
   r._newOk = binNorm(d);
-  trPbBinSync(i);
+  trPbBinSyncAll();
+  showToast('\ud83d\udcd0 ' + d + ' added to the ' + w + ' bin list');
 }
 function trPbRowHtml(r, i){
   return `<tr>
