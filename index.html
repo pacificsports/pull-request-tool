@@ -314,7 +314,7 @@ body.po-dragging{user-select:none;}
   </span>
   <select id="lang-sel" onchange="setLang(this.value)" style="font-size:11px;padding:3px 6px;border-radius:5px;border:none;background:#1d3f66;color:#fff;"><option value="ko">한국어</option><option value="en">English</option><option value="es">Español</option></select>
   <button id="wide-btn" class="btn btn-sm" onclick="toggleWide()" title="화면 넓게 / 좁게 — 기본은 넓게 (이 브라우저에만 저장돼)" style="padding:2px 8px;font-size:10px;background:#1d3f66;color:#cfe0f2;border-color:#2b5384;">↔ Wide</button>
-  <span id="app-ver" style="font-size:10px;color:#9fb8d4;">v1192</span>
+  <span id="app-ver" style="font-size:10px;color:#9fb8d4;">v1193</span>
 </div>
 <script>
 // ↔ 넓게 보기 — 브라우저마다 따로 저장 (v793)
@@ -18904,7 +18904,9 @@ async function scanMatesPull(){
     const r = await scanRpc('pic_scan_one', {p_kind:(_scan.mode==='TR')?'TR':'IN', p_id:String(_scan.id)});
     if(!r.ok) return;
     const rec = await r.json();
-    const m = scanMatesFrom((rec && rec.meta && rec.meta.scan) || null);
+    const _srv = (rec && rec.meta && rec.meta.scan) || null;
+    try{ if(_srv && _scan) _scan._srvScan = _srv; }catch(e){}   /* SCANMRG-1 - 신선한 사본 */
+    const m = scanMatesFrom(_srv);
     const before = JSON.stringify(_scan.mates || {});
     _scan.mates = m.others; _scan.mateNames = m.names; _scan.mateCounts = m.counts || {};
     if(JSON.stringify(m.others) !== before){
@@ -18914,13 +18916,40 @@ async function scanMatesPull(){
   }catch(e){}
 }
 /* 서버 것을 읽어 → 합쳐서 → 올린다. 자동 저장과 Send 버튼이 둘 다 이걸 쓴다. */
+/* ═══ SCANMRG-1 - 옆 사람이 찍은 것이 통째로 날아가던 길 ═══
+   [stated] 하윤: "우리가 지금 다 스캔했는데 이것도 숫자가 쫙 다 올라왔다가 다시 다 줄어들어 버렸는데"
+   🔴 실측 (3P-SC-260929-1517, 2026-10-02):
+        16:32:14  Hyun 589 + Peter 422 = 965
+        16:34:54  Hyun 590 만 남음      = 590      ← Peter 422 가 통째로 사라졌다
+      올릴 때 ① 서버 것을 읽고 ② 내 칸만 갈아끼워 ③ 통째로 다시 쓴다. ①이 **실패하면**
+      `srv = null` 이 되고, 그러면 `scanMergedPayload` 가 `people` 을 **내 칸 하나로 새로 만든다.**
+      창고 신호가 한 번 끊긴 순간 옆 사람 몇 백 박스가 지워진다. 조용히, 경고도 없이.
+   ⭐ 고침 셋:
+      ① 못 읽었으면 **마지막으로 읽어둔 서버 사본**(`_scan._srvScan`)으로 합친다
+      ② 그것도 없으면 **아예 안 쓴다** (던진다 → 자동 올리기가 다음 박스에서 다시 시도한다)
+      ③ 쓰기 직전에 **남의 칸이 사라지는지 확인**하고, 사라지면 쓰지 않는다 (마지막 빗장)
+   ⚠ 되돌아온 사본이 조금 낡았어도 괜찮다 - 그 사람 폰이 박스를 찍을 때마다 자기 칸을
+      다시 올리므로 몇 초 안에 제자리로 온다. 지우는 것보다 훨씬 낫다. */
 async function scanPush(final){
-  let srv = null;
+  let srv = null, gotRead = false;
   try{
     const r = await scanRpc('pic_scan_one', {p_kind:(_scan.mode==='TR')?'TR':'IN', p_id:String(_scan.id)});
-    if(r.ok){ const rec = await r.json(); srv = (rec && rec.meta && rec.meta.scan) || null; }
+    if(r.ok){ const rec = await r.json(); srv = (rec && rec.meta && rec.meta.scan) || null; gotRead = true; }
   }catch(e){}
+  if(gotRead){ try{ if(_scan) _scan._srvScan = srv; }catch(e){} }
+  else{
+    if(_scan && _scan._srvScan){ srv = _scan._srvScan; }
+    else throw new Error('Could not read the office copy - not overwriting');
+  }
   const payload = scanMergedPayload(srv, final);
+  /* 마지막 빗장 - 남의 칸이 하나라도 사라지면 쓰지 않는다 */
+  try{
+    const me = String((typeof _pchkWho!=='undefined' && _pchkWho) || '').trim() || 'Someone';
+    const was = Object.keys((srv && srv.people) || {}).filter(k=>k !== me);
+    const now = Object.keys((payload && payload.people) || {});
+    const lost = was.filter(k=>now.indexOf(k) < 0);
+    if(lost.length) throw new Error('Not saved - it would erase ' + lost.join(', '));
+  }catch(e){ if(/^Not saved/.test(String((e&&e.message)||''))) throw e; }
   const r2 = await scanRpc('pic_scan_save', {p_kind:(_scan.mode==='TR')?'TR':'IN', p_id:String(_scan.id), p_result:payload});
   if(!r2.ok) throw new Error('HTTP '+r2.status);
   if((await r2.json()) !== true) throw new Error('not saved');
@@ -19334,11 +19363,11 @@ function scanRender(){
           <td style="padding:6px 7px;max-width:140px;"><div style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${esc(String(r.color))}</div>${scanPalHtml(r.k)}</td>
           <td style="padding:6px 7px;text-align:center;font-weight:700;">${esc(String(r.size))}</td>
           <td style="padding:6px 7px;text-align:right;font-family:Consolas,monospace;">${r.exp||''}</td>
-          <td style="padding:6px 7px;text-align:right;font-family:Consolas,monospace;font-weight:800;">${r.got}${man?`<span style="font-size:9px;color:#0e7490;"> +${man}m</span>`:''}${pho?`<span style="font-size:9px;color:#7c3aed;"> 📸${pho}</span>`:''}</td>
+          <td style="padding:6px 7px;text-align:right;font-family:Consolas,monospace;font-weight:800;">${r.got}${man?`<span style="font-size:9px;color:${man<0?'#b45309':'#0e7490'};"> ${man>0?'+':''}${man}m</span>`:''}${pho?`<span style="font-size:9px;color:#7c3aed;"> 📸${pho}</span>`:''}</td>
           <td style="padding:6px 7px;font-weight:800;color:${s.c};white-space:nowrap;">${s.t}${r.st==='short'?' '+(-r.diff):''}${r.st==='over'?' '+r.diff:''}</td>
           <td style="padding:4px 5px;white-space:nowrap;">
             <button onclick="scanManual('${esc(r.k)}',1)" title="Label unreadable — count this box by hand" style="background:#0e7490;color:#fff;border:none;border-radius:6px;padding:4px 8px;font-size:12px;font-weight:800;">＋</button>
-            ${man?`<button onclick="scanManual('${esc(r.k)}',-1)" title="Undo one manual count" style="background:#e2e8f0;color:#334155;border:none;border-radius:6px;padding:4px 7px;font-size:12px;font-weight:800;margin-left:3px;">−</button>`:''}
+            ${(man || r.got) ? `<button onclick="scanManual('${esc(r.k)}',-1)" title="One box too many on this line — take one off" style="background:#e2e8f0;color:#334155;border:none;border-radius:6px;padding:4px 7px;font-size:12px;font-weight:800;margin-left:3px;">−</button>` : ''}
           </td></tr>`; }).join('')
         : '<tr><td colspan="7" style="padding:16px;text-align:center;color:#94a3b8;">Nothing on the expected list.</td></tr>'}
       </tbody></table></div></div>`;
@@ -20859,7 +20888,17 @@ function scanManual(key, d){
      라벨이 찢어진 박스를 1장씩 72번 누를 수는 없다 */
   const step = scanIsPcs() ? scanPpbOf(key) : 1;
   const v = (Number(_scan.manual[key])||0) + d*step;
-  if(v>0) _scan.manual[key]=v; else delete _scan.manual[key];
+  /* ═══ SCANMINUS-1 - 「한 박스 더 찍힌 것」 을 뺄 수가 없었다 ═══
+     [stated] 하윤: "8368 river green scan이 한박스 더된거로 되어있는데 13박스가 맞으니까 수정해줘"
+     예전에는 `if(v>0)` 이라 **0 아래로 못 내려갔다.** 그래서 라벨이 찢어진 박스를 더하는 것만
+     되고, 두 번 찍혔거나 남의 박스가 섞여 들어온 것을 빼는 길이 아예 없었다.
+     ⚠ 그 줄에 **실제로 찍힌 수보다 더 빼지는 못하게** 막는다 - 음수 재고가 되면 안 된다. */
+  if(v < 0){
+    let cur = 0;
+    try{ const t = scanTally(); cur = Number(t[key])||0; }catch(e){}
+    if(cur <= 0){ showToast('\u26a0 Nothing to take off this line'); return; }
+  }
+  if(v !== 0) _scan.manual[key]=v; else delete _scan.manual[key];
   scanKeepPut();                // 💾 손으로 넣은 것도 같이 남긴다 (v984)
   scanRender();
 }
