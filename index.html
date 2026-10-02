@@ -314,7 +314,7 @@ body.po-dragging{user-select:none;}
   </span>
   <select id="lang-sel" onchange="setLang(this.value)" style="font-size:11px;padding:3px 6px;border-radius:5px;border:none;background:#1d3f66;color:#fff;"><option value="ko">한국어</option><option value="en">English</option><option value="es">Español</option></select>
   <button id="wide-btn" class="btn btn-sm" onclick="toggleWide()" title="화면 넓게 / 좁게 — 기본은 넓게 (이 브라우저에만 저장돼)" style="padding:2px 8px;font-size:10px;background:#1d3f66;color:#cfe0f2;border-color:#2b5384;">↔ Wide</button>
-  <span id="app-ver" style="font-size:10px;color:#9fb8d4;">v1194</span>
+  <span id="app-ver" style="font-size:10px;color:#9fb8d4;">v1196</span>
 </div>
 <script>
 // ↔ 넓게 보기 — 브라우저마다 따로 저장 (v793)
@@ -18154,6 +18154,16 @@ function scanPoKey(po){ return 'PO|' + String(po||'').trim().toUpperCase(); }
    ⭐ 그리고 바로 밑에 **사람별 숫자**를 적는다 - 서로 얼마나 했는지 보여야 나눠 찍는다.
    ⚠ 사람별 숫자는 `mateCounts`(그 사람이 올린 총 개수)를 쓴다. `mates` 를 쓰면
       겹쳐 찍은 박스가 그 사람 몫에서 빠져 보인다. */
+/* SCANMINUS-2 - 그 줄에 **화면에 보이는** 개수 (내 것 + 옆 사람 것, 오더로 넘긴 것까지 반영) */
+function scanGotOf(key){
+  try{
+    const t = Object.assign({}, scanTally());
+    const m = (_scan && _scan.mates) || {};
+    Object.keys(m).forEach(k=>{ t[k] = (Number(t[k])||0) + (Number(m[k])||0); });
+    scanPoSpill(t);
+    return Number(t[key]) || 0;
+  }catch(e){ return 0; }
+}
 function scanTotalGot(){
   let t = 0;
   try{ const mine = scanTally(); Object.keys(mine).forEach(k=>{ t += Number(mine[k])||0; }); }catch(e){}
@@ -18788,6 +18798,32 @@ function scanMergedPayload(srv, final){
   try{ const sp = (srv && srv.people) || {};
     Object.keys(sp).forEach(k=>{ const q = sp[k]; if(q && Date.parse(q.at) > cut) people[k] = q; }); }catch(e){}
   const mineU = scanMyUnits();
+  /* ═══ SCANMRG-2 - **내 칸이 작아지는 것**도 막는다 ═══
+     [stated] 하윤: "또 이렇케 나오는데" (970 -> 567)
+     🔴 SCANMRG-1 은 **남의 칸**만 지켰다. 그런데 내 폰이 새로고침되면 `_scan.seen` 은
+        이 폰에 저장해둔 것(`psi_scan_keep2`)에서만 되살아난다. 그게 모자라면 (실측:
+        590 -> 118) 다음 자동 올리기가 **서버의 내 590 을 118 로 갈아끼운다.**
+        창고에서 새 버전으로 새로고침하는 순간 수백 박스가 사라진다.
+     ⭐ 고침: 서버에 있던 **내 칸의 카톤 번호를 내 것과 합친다**(union). 번호가 열쇠라
+        같은 박스를 두 번 세지 않고, 내 폰이 비어 있어도 서버 것이 그대로 남는다.
+     ⓘ 잘못 찍은 박스를 빼는 길은 `−`(manual) 이다 - 그건 `extra` 로 따로 간다. */
+  try{
+    const prev = (srv && srv.people && srv.people[who]) || null;
+    if(prev){
+      const pu = scanPersonUnits(prev);
+      Object.keys(pu).forEach(id=>{
+        if(mineU.u[id] !== undefined) return;            /* 내 폰에 이미 있다 */
+        const k = pu[id] && pu[id].k; if(!k) return;
+        let i = mineU.ik.indexOf(k);
+        if(i < 0){ i = mineU.ik.length; mineU.ik.push(k); }
+        mineU.u[id] = i;
+        if(Number(pu[id].n) !== 1) mineU.q[id] = Number(pu[id].n) || 0;
+      });
+      mineU.n = Object.keys(mineU.u).length;
+      const pe = scanPersonExtra(prev) || {};
+      Object.keys(pe).forEach(k=>{ if(mineU.extra[k] === undefined) mineU.extra[k] = pe[k]; });
+    }
+  }catch(e){}
   people[who] = { at:new Date().toISOString(), by:who, partial: !final,
                   ik:mineU.ik, u:mineU.u, q:mineU.q, extra:mineU.extra, n:mineU.n };
 
@@ -20894,9 +20930,11 @@ function scanManual(key, d){
      되고, 두 번 찍혔거나 남의 박스가 섞여 들어온 것을 빼는 길이 아예 없었다.
      ⚠ 그 줄에 **실제로 찍힌 수보다 더 빼지는 못하게** 막는다 - 음수 재고가 되면 안 된다. */
   if(v < 0){
-    let cur = 0;
-    try{ const t = scanTally(); cur = Number(t[key])||0; }catch(e){}
-    if(cur <= 0){ showToast('\u26a0 Nothing to take off this line'); return; }
+    /* 🔴 SCANMINUS-2 - 여기서 `scanTally()` 를 썼는데 그건 **내가 찍은 것만** 센다.
+       옆 사람이 찍은 줄에서 `−` 를 누르면 「뺄 게 없다」 고 막혀 버렸다
+       ([stated] 하윤: "저거 - 눌러도 안 줄어드네" — RIVER GREEN S 는 Peter 가 찍은 줄이었다).
+       줄에 **보이는 수**(내 것 + 옆 사람 것)로 판단해야 한다. */
+    if(scanGotOf(key) + d*step < 0){ showToast('\u26a0 Nothing to take off this line'); return; }
   }
   if(v !== 0) _scan.manual[key]=v; else delete _scan.manual[key];
   scanKeepPut();                // 💾 손으로 넣은 것도 같이 남긴다 (v984)
