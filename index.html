@@ -7517,9 +7517,30 @@ function buildOrderSummaryHtml(rec, opts){
      거래처에게는 처음부터 CA 에서 나가는 것으로 보이는 게 맞다. */
   const _itLines = (rec.lines||[]).filter(l=>(l.qty||0)>0 && String(l.wh||'')==='IT');
   const _itN = _itLines.reduce((a,l)=>a+(Number(l.qty)||0),0);
+  /* SHIPCA-CONF-1 - [stated] 하윤: "SC에서 오더를 만들어서 CA로 옮기고 거래처로 바로 나가는
+     오더들 order confirmation 보낼때 그냥 SC에서 나가는거처럼 나와서 내가 매번 memo에 적거든"
+     🔴 무슨 일이 있었나: 오더 줄에서 🚚 Ship from CA 를 눌러도 이 확인서는 줄의 wh 만 봤다.
+        그래서 CA 에서 나가는 물건이 거래처 눈에는 SC 에서 나가는 것으로 찍혔고,
+        하윤이 매번 손으로 Note 를 적어서 메웠다.
+     고친 것: Ship from CA 가 켜져 있으면 SC 몫을 **거래처 서류에서만** CA 로 접는다.
+       - IT 를 접는 것과 똑같은 뜻이다: 물건이 실제로 떠나는 곳이 CA 니까.
+       - 재고·pull request·창고 일은 하나도 안 바뀐다. 여기(확인서) 안에서만 접는다.
+       - PD(도착 대기)는 이미 SC 로 접히므로 그것도 같이 CA 가 된다 - 맞는 얘기다.
+     ⚠ 창고 몫이 아예 없으면(줄이 전부 BO·NA) 접을 것도 없다. */
+  const _scaOn = ((typeof recShipFromCA==='function') ? recShipFromCA(rec) : !!(meta && meta._shipFromCA));
+  const _scaN = _scaOn
+    ? (rec.lines||[]).filter(l=>(l.qty||0)>0 && (String(l.wh||'')==='SC' || String(l.wh||'')==='PD'))
+        .reduce((a,l)=>a+(Number(l.qty)||0),0)
+    : 0;
+  const _foldWh = function(w){
+    w = String(w||'');
+    if(w === 'PD') w = 'SC';
+    if(w === 'IT') return 'CA';
+    if(_scaOn && w === 'SC') return 'CA';
+    return w;
+  };
   const lines = (rec.lines||[]).filter(l=>(l.qty||0)>0)
-    .map(l => (String(l.wh||'')==='PD' ? Object.assign({}, l, {wh:'SC'})
-             : (String(l.wh||'')==='IT' ? Object.assign({}, l, {wh:'CA'}) : l)));
+    .map(function(l){ const w = _foldWh(l.wh); return (w === String(l.wh||'')) ? l : Object.assign({}, l, {wh:w}); });
   const sum = a => a.reduce((s,l)=>s+(l.qty||0),0);
   const scT = sum(lines.filter(l=>l.wh==='SC'));
   const caT = sum(lines.filter(l=>l.wh==='CA'));
@@ -7593,6 +7614,11 @@ function buildOrderSummaryHtml(rec, opts){
           ${_itLines.map(l=>`<li><strong>${esc(String(l.style||''))}</strong> ${esc(String(l.color||''))} ${esc(String(l.size||'').toUpperCase())} &mdash; <strong>${(Number(l.qty)||0).toLocaleString()} pcs</strong></li>`).join('')}
         </ul>
       </div>` : '';
+  /* SHIPCA-CONF-1 - 손으로 적던 문장을 자동으로. 하윤이 Note 칸에 적은 글은 그대로 따로 나간다. */
+  const scaNote = (_scaOn && _scaN) ? `<div style="background:#fff7ed;border:1.5px solid #fdba74;border-radius:6px;padding:11px 15px;margin-bottom:16px;">
+        <div style="font-size:12px;font-weight:800;color:#9a3412;margin-bottom:5px;">🚚 Consolidated at our CA warehouse</div>
+        <div style="font-size:12.5px;color:#7c2d12;line-height:1.6;">${_scaN.toLocaleString()} pcs of this order are being moved from our Sumter, SC warehouse to Eastvale, CA. Your order ships out complete from CA.</div>
+      </div>` : '';
   const bxWarn = (opts.staffWarn && bxAll.unLines) ? `<div style="background:#fef3c7;border:1.5px solid #f59e0b;border-radius:6px;padding:8px 14px;margin-bottom:16px;font-size:12px;color:#92400e;font-weight:700;">
         ⚠ 직원용 &mdash; ${bxAll.unLines} loose line(s) have <b>no P.Box#</b>, so ${bxAll.est} partial box(es) are an <b>estimate</b> from pcs/box.
         Fill in P.Box# on the order screen to make it exact. <i>(this note is not in the customer email or PDF)</i>
@@ -7630,7 +7656,7 @@ function buildOrderSummaryHtml(rec, opts){
           &nbsp;&middot;&nbsp; <strong>${bxAll.total.toLocaleString()} box${bxAll.total===1?'':'es'}</strong>${bxAll.total?`<span style="color:#8b8880;font-size:12px;"> (${bxAll.full.toLocaleString()} full + ${bxAll.partial.toLocaleString()} partial)</span>`:''}
         </div>
       </div>
-      ${pdNote}${itNote}${bxWarn}
+      ${pdNote}${itNote}${scaNote}${bxWarn}
       ${backSection}${naSection}
       ${String(meta.confNote||'').trim() ? `<div style="background:#fffbeb;border:1.5px solid #f59e0b;border-radius:6px;padding:11px 15px;margin-bottom:16px;">
         <div style="font-size:12px;font-weight:800;color:#92400e;margin-bottom:4px;">📝 Note from Pacific Sports</div>
