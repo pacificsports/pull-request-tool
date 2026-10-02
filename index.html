@@ -26530,7 +26530,7 @@ function bxVariantLabel(c, style){
    막는 방법: 아직 안 끝난 이송(LOADING/TRANSIT)에 실린 박스 id 를 들고 있다가
    오더가 박스를 고를 때 빼버린다. 재고 숫자에서 빼지는 않는다 — 아직 SC 에 있는 게 맞으니까.
    집을 수만 없게 한다. */
-let TXHOLD = new Set(), TXHOLD_REF = {}, TXHOLD_TID = {}, TXHOLD_ST = {}, TXHOLD_WH = {}, _txHoldAt = 0;
+let TXHOLD = new Set(), TXHOLD_REF = {}, TXHOLD_TID = {}, TXHOLD_ST = {}, TXHOLD_WH = {}, TXHOLD_PAL = {}, _txHoldAt = 0;   /* TXPAL-1 - PAL */
 /* ITAVAIL-1 - [stated] 하윤: "저기 IT쪽에 몇개가 IT으로 준비되어있는지 나오게 할수있나?"
    IT 로 적을 수 있는 몫 = 이 품목 중에 **이미 CA 행 트럭에 실린** 박스들이다.
    (아직 트럭에 안 실린 SC 재고는 SC 칸이 세어 준다 - 두 번 세지 않게 여기서는 뺀다.) */
@@ -26555,7 +26555,7 @@ async function txHoldRefresh(force){
        아직 안 떠난 트럭(LOADING)인지 가리고, 그 트럭 줄을 찾아 고친다. */
     const r = await sbFetch('/rest/v1/pr_transfers?select=id,ref,status,lines&status=in.(LOADING,TRANSIT)&limit=200');
     if(!r.ok) return TXHOLD;
-    const set = new Set(), ref = {}, tid = {}, st = {}, dw = {};
+    const set = new Set(), ref = {}, tid = {}, st = {}, dw = {}, pal = {};   /* TXPAL-1 - pal */
     (await r.json()).forEach(t=>{
       /* ITAVAIL-1 - 이 줄이 **어느 창고로** 가는지. multi 면 그 줄의 정차지를 본다. */
       const rt = TR_ROUTES[(t.meta && t.meta.route)] || TR_ROUTES.SC2CA;
@@ -26563,10 +26563,11 @@ async function txHoldRefresh(force){
       (Array.isArray(t.lines)?t.lines:[]).forEach(l=>{
         const dk = (rt.multi && stops) ? (stops[Number(l.stop)||0] || stops[0]) : rt.dest;
         const w = trWhOfKind(dk);
-        (l.ids||[]).forEach(id=>{ set.add(id); ref[id] = t.ref || '(transfer)'; tid[id] = t.id; st[id] = String(t.status||''); dw[id] = w; });
+        (l.ids||[]).forEach(id=>{ set.add(id); ref[id] = t.ref || '(transfer)'; tid[id] = t.id; st[id] = String(t.status||''); dw[id] = w;
+          pal[id] = String(l.pallet||'');   /* TXPAL-1 - 어느 팔레트에 실렸나 */ });
       });
     });
-    TXHOLD = set; TXHOLD_REF = ref; TXHOLD_TID = tid; TXHOLD_ST = st; TXHOLD_WH = dw; _txHoldAt = Date.now();
+    TXHOLD = set; TXHOLD_REF = ref; TXHOLD_TID = tid; TXHOLD_ST = st; TXHOLD_WH = dw; TXHOLD_PAL = pal; _txHoldAt = Date.now();
   }catch(e){}
   return TXHOLD;
 }
@@ -29984,7 +29985,7 @@ function bxOpenPicker(L, lwh, po, onDone, mode, needOverride){
           <td style="font-family:Consolas,monospace;color:#94a3b8;">${g.n}</td>
           <td style="font-size:11px;color:#cbd5e1;">${g.oldest?String(g.oldest).slice(0,10):''}</td>
           <td>${g.canPull
-            ? `<button class="btn btn-sm" style="background:#b45309;color:#fff;border-color:#b45309;font-weight:800;white-space:nowrap;" onclick="bxPullTakeFromTruck(${hi})" title="Take these boxes off that shipment so this order can use them. They stay where they are - nothing goes back on the shelf. A Take Off Truck sheet prints for the warehouse.">🚚→ Take for this order</button>`
+            ? `<button class="btn btn-sm" style="background:#b45309;color:#fff;border-color:#b45309;font-weight:800;white-space:nowrap;" onclick="bxPalPickOpen(${hi})" title="Show which pallet(s) these are on, and take them off for this order. Nothing goes back on the shelf - they move to TEMPORARY and this window fills the Take box for you.">🚚→ Use this for this order</button>`
             : `<span style="font-size:10px;font-weight:800;color:#b45309;white-space:nowrap;">🔒 already on the road</span>`}</td>
         </tr>`;}).join('')}</tbody>
       </table>
@@ -30006,15 +30007,173 @@ function bxOpenPicker(L, lwh, po, onDone, mode, needOverride){
   document.body.appendChild(div);
   bxPullSum();
 }
+/* ═══ TXPAL-1 - 오더 쪽에서 「어느 팔레트인지」 보고 고른다 ═══
+   [stated] 하윤: "따지고 보면 우리가 저거를 오더 넣는곳에서 할수있어야 하는거 아닌가?"
+   [stated] 하윤: "transfer bin에 얼마있다 뜨는곳에 use this to this order 버튼 누르면
+                   그 아이템 관련된 pallet 들이 저렇케 나오게 해서 거기서 고르는게 맞는거 아닌가??
+                   거기서 골르면 그게 자동적으로 temporary로 이동했다가 그냥 오더로 잡혀보리게"
+   그전까지 회색 줄은 「on 3P-SC-260929-1517」 만 말했다 - 트럭 이름뿐이라 **Pallet 13 인지
+   Pallet 7 인지 알 수가 없었다.** 그래서 누르면 그 줄에 걸린 박스가 전부 한꺼번에 빠졌다.
+   이제: 팔레트별로 나눠 보여주고, 팔레트마다 「이 아이템만」/「팔레트 통째로」/「안 가져옴」 을 고른다.
+   ⚠ 「팔레트 통째로」 는 이 오더가 안 쓰는 품목까지 트럭에서 뺀다 - 그건 TEMPORARY 에 재고로 남는다.
+      창에 그 숫자를 적어 둔다.
+   ⭐ 고르고 나면 박스가 TEMPORARY 로 가고 이 창이 다시 열리는데, 자동 배정이 오래된 것부터
+      채우므로 **Take 칸이 저절로 찬다** - 하윤이 말한 「그냥 오더로 잡혀버리게」가 그것이다. */
+async function bxPalPickOpen(hi){
+  const ctx = bxPullCtx; if(!ctx) return;
+  const g = (ctx.heldG || [])[hi]; if(!g || !(g.ids || []).length) return;
+  if(!g.canPull){
+    alert('⛔ That truck has already left (IN TRANSIT).\n\n'
+      + 'Boxes can only be taken back while the shipment is still loading.\n'
+      + 'Receive it at the other end first, or ship this order from there.');
+    return;
+  }
+  /* 이 줄의 박스를 트럭+팔레트로 나눈다 */
+  const gm = {}, pals = [];
+  g.ids.forEach(id=>{
+    const tid = TXHOLD_TID[id] || '';
+    const lab = String(TXHOLD_PAL[id] || '');
+    const k = tid + '|' + lab;
+    if(!gm[k]){ gm[k] = { tid, lab, ref:TXHOLD_REF[id] || 'a transfer', mine:[], other:[], otherWhat:{}, lines:[] }; pals.push(gm[k]); }
+    gm[k].mine.push(id);
+  });
+  pals.sort((a,b)=> b.mine.length - a.mine.length);
+  /* 그 팔레트에 **다른 품목**이 얼마나 더 있는지 - 짐을 읽어서 센다 */
+  const tids = [...new Set(pals.map(p=>p.tid).filter(Boolean))];
+  if(tids.length){
+    try{
+      const r = await sbFetch('/rest/v1/pr_transfers?select=id,lines&id=in.(' + tids.map(encodeURIComponent).join(',') + ')');
+      if(r && r.ok){
+        const mineSet = new Set(g.ids);
+        (await r.json()).forEach(t=>{
+          (Array.isArray(t.lines) ? t.lines : []).forEach(l=>{
+            if(!l || !Array.isArray(l.ids) || !l.ids.length) return;
+            const k = t.id + '|' + String(l.pallet || '');
+            const G = gm[k]; if(!G) return;
+            /* TXPAL-2 - [stated] 하윤: "그냥 pallet 13에 들어가 있는게 다 나오게는 못하나??
+               어떻케 보면 저게 그대로 다 나오게 하는거지 더 눈으로 잘보고 이해하기 싶게"
+               → 요약 한 줄 대신 **그 팔레트의 줄을 빌더에서 보던 그대로** 보여준다. */
+            const myN = l.ids.filter(id=>mineSet.has(id)).length;
+            G.lines.push({ style:l.style, color:l.color, size:l.size, bin:String(l.bin||'').toUpperCase(),
+              ppb:Number(l.ppb) || Number(l.pcs) || 0, n:l.ids.length, mine:myN });
+            const extra = l.ids.filter(id=>!mineSet.has(id));
+            if(!extra.length) return;
+            G.other.push(...extra);
+            const w = [l.style, bxBaseColor(l.color), String(l.size||'').toUpperCase()].filter(Boolean).join(' ');
+            G.otherWhat[w] = (G.otherWhat[w] || 0) + extra.length;
+          });
+        });
+      }
+    }catch(e){}
+  }
+  window._bxPal = { hi, pals };
+  const ex = document.getElementById('modal-bxpal'); if(ex) ex.remove();
+  const div = document.createElement('div'); div.id='modal-bxpal';
+  div.style.cssText='position:fixed;inset:0;background:rgba(15,23,42,.6);z-index:120;display:flex;align-items:center;justify-content:center;padding:14px;';
+  /* TXPAL-2 - [stated] 하윤: "그냥 pallet 13에 들어가 있는게 다 나오게는 못하나??
+     어떻케 보면 저게 그대로 다 나오게 하는거지 더 눈으로 잘보고 이해하기 싶게"
+     → 팔레트마다 **빌더에서 보던 그 표 그대로** 그린다. 이 오더가 쓰는 줄은 초록으로 칠하고
+       오른쪽에 「this order」 라고 적는다. 줄을 못 읽었으면(짐을 못 읽은 경우) 예전처럼 숫자만. */
+  const cards = pals.map((p,i)=>{
+    const tot = p.mine.length + p.other.length;
+    const ls = (p.lines || []).slice().sort((a,b)=>
+      (b.mine?1:0) - (a.mine?1:0) || String(a.style).localeCompare(String(b.style)) || bxSizeCmp(a.size, b.size));
+    const totPcs = ls.reduce((x,l)=>x + (Number(l.n)||0) * (Number(l.ppb)||0), 0);
+    const body = ls.map(l=>{
+      const pcs = (Number(l.n)||0) * (Number(l.ppb)||0);
+      return `<tr style="background:${l.mine?'#f0fdf4':'#fff'};">
+        <td style="border:1px solid #e5e7eb;padding:4px 9px;font-weight:800;">#${esc(l.style)}</td>
+        <td style="border:1px solid #e5e7eb;padding:4px 9px;">${esc(bxBaseColor(l.color))}</td>
+        <td style="border:1px solid #e5e7eb;padding:4px 9px;text-align:center;font-weight:700;">${esc(String(l.size||'').toUpperCase())}</td>
+        <td style="border:1px solid #e5e7eb;padding:4px 9px;text-align:center;"><span style="background:#e0e7ff;color:#3730a3;font-weight:800;border-radius:9px;padding:1px 8px;font-size:11px;">${esc(l.bin||'—')}</span></td>
+        <td style="border:1px solid #e5e7eb;padding:4px 9px;text-align:right;font-weight:800;">${(Number(l.n)||0).toLocaleString()}</td>
+        <td style="border:1px solid #e5e7eb;padding:4px 9px;text-align:right;">${pcs.toLocaleString()}</td>
+        <td style="border:1px solid #e5e7eb;padding:4px 9px;text-align:center;color:#94a3b8;">${Number(l.ppb)||0}</td>
+        <td style="border:1px solid #e5e7eb;padding:4px 9px;text-align:center;white-space:nowrap;">${l.mine
+          ? '<span style="background:#16a34a;color:#fff;font-size:10px;font-weight:900;border-radius:20px;padding:2px 9px;">\u2190 this order</span>'
+          : '<span style="font-size:10px;color:#94a3b8;font-weight:700;">other item</span>'}</td>
+      </tr>`;
+    }).join('');
+    return `<div style="border:1.5px solid #fdba74;border-radius:10px;overflow:hidden;margin-bottom:13px;">
+      <div style="background:#fff7ed;padding:8px 12px;display:flex;align-items:center;gap:9px;flex-wrap:wrap;">
+        <span style="font-weight:900;color:#b45309;font-size:14px;white-space:nowrap;">\u{1F4E6} ${esc(p.lab || '(no pallet)')}</span>
+        <span style="font-size:10.5px;font-weight:700;color:#94a3b8;">${esc(p.ref)}</span>
+        ${ls.length ? `<span style="font-size:11px;color:#7c2d12;">${ls.length} line(s) \u00b7 <b>${tot}</b> box(es) \u00b7 <b>${totPcs.toLocaleString()}</b> pcs</span>` : ''}
+        <span style="font-size:11px;font-weight:800;color:#166534;white-space:nowrap;">\u2714 ${p.mine.length} box(es) for this order</span>
+        <select class="fi bxpal-ch" data-i="${i}" style="margin-left:auto;width:200px;font-size:11.5px;font-weight:800;">
+          <option value="mine">take this item only (${p.mine.length} box)</option>
+          ${p.other.length ? `<option value="all">take the WHOLE pallet (${tot} box)</option>` : ''}
+          <option value="no">leave this pallet alone</option>
+        </select>
+      </div>
+      ${ls.length ? `<div style="overflow-x:auto;"><table style="width:100%;border-collapse:collapse;font-size:11.5px;">
+        <thead><tr style="background:#1e293b;color:#fff;">
+          <th style="border:1px solid #334155;padding:4px 9px;text-align:left;">STYLE</th>
+          <th style="border:1px solid #334155;padding:4px 9px;text-align:left;">COLOR</th>
+          <th style="border:1px solid #334155;padding:4px 9px;">SIZE</th>
+          <th style="border:1px solid #334155;padding:4px 9px;">FROM BIN</th>
+          <th style="border:1px solid #334155;padding:4px 9px;">BOXES</th>
+          <th style="border:1px solid #334155;padding:4px 9px;">PCS</th>
+          <th style="border:1px solid #334155;padding:4px 9px;">PCS/BOX</th>
+          <th style="border:1px solid #334155;padding:4px 9px;"></th>
+        </tr></thead><tbody>${body}</tbody></table></div>`
+      : `<div style="padding:9px 12px;font-size:11.5px;color:#92400e;">${p.mine.length} box(es) of this item are on it. <i>(the shipment could not be read, so the rest of the pallet is not shown)</i></div>`}
+    </div>`;
+  }).join('');
+  div.innerHTML = `<div style="background:#fff;border-radius:12px;max-width:940px;width:100%;max-height:88vh;display:flex;flex-direction:column;overflow:hidden;">
+    <div style="background:#b45309;color:#fff;padding:11px 17px;font-size:14.5px;font-weight:800;display:flex;align-items:center;gap:8px;flex-wrap:wrap;">\u{1F69A} Which pallet? \u00b7 ${esc(ctx.label)}
+      <button class="btn btn-sm" style="margin-left:auto;background:transparent;color:#fed7aa;border-color:#fdba74;" onclick="document.getElementById('modal-bxpal').remove()">\u2715</button></div>
+    <div style="padding:13px 17px;overflow-y:auto;">
+      <div style="font-size:12px;color:#7c2d12;background:#fff7ed;border:1.5px solid #fdba74;border-radius:8px;padding:9px 12px;margin-bottom:13px;line-height:1.6;">
+        These boxes are already picked and sitting on a pallet. Taking them for this order <b>does not move a single box</b> \u2014
+        they come off the truck, become <b>TEMPORARY</b>, and this window fills in the Take box for you.
+        A <b>TAKE OFF TRUCK</b> sheet prints so the warehouse pulls them off that pallet.</div>
+      ${cards}
+      <div class="muted" style="font-size:10.5px;margin-top:2px;line-height:1.5;">
+        <b>take the WHOLE pallet</b> also takes the grey lines off the truck \u2014 they go to TEMPORARY as plain stock, ready for whatever needs them.
+        Use it when this pallet should just become this order's pallet.</div>
+    </div>
+    <div style="padding:11px 17px;border-top:1px solid #eee;display:flex;gap:8px;justify-content:flex-end;">
+      <button class="btn" onclick="document.getElementById('modal-bxpal').remove()">Cancel</button>
+      <button class="btn btn-primary" style="background:#b45309;border-color:#b45309;font-weight:800;" onclick="bxPalPickGo()">\u{1F69A} Take off the truck</button>
+    </div></div>`;
+  document.body.appendChild(div);
+}
+async function bxPalPickGo(){
+  const X = window._bxPal; if(!X) return;
+  const pick = {};
+  document.querySelectorAll('#modal-bxpal .bxpal-ch').forEach(sel=>{ pick[sel.dataset.i] = sel.value; });
+  const ids = [];
+  X.pals.forEach((p,i)=>{
+    const v = pick[i] || 'mine';
+    if(v === 'no') return;
+    ids.push(...p.mine);
+    if(v === 'all') ids.push(...p.other);
+  });
+  if(!ids.length){ alert('⚠ Nothing is selected to take off the truck.'); return; }
+  const m = document.getElementById('modal-bxpal'); if(m) m.remove();
+  window._bxPal = null;
+  await bxPullTakeFromTruck(X.hi, ids);
+}
 /* TXPULL-1 - 트럭에서 이 박스들을 빼서 원래 bin 으로 돌려놓고, 창을 다시 열어 지정할 수 있게 한다.
    순서가 중요하다: ① 트럭 줄에서 먼저 빼고(그래야 두 번 쓰이는 창이 없다) ② 박스를 bin 으로 되돌리고
    ③ 종이를 뽑고 ④ 창을 다시 연다. 중간에 하나라도 실패하면 소리내서 멈춘다. */
-async function bxPullTakeFromTruck(hi){
+async function bxPullTakeFromTruck(hi, idsIn){
   const ctx = bxPullCtx; if(!ctx) return;
   const g = (ctx.heldG || [])[hi]; if(!g || !(g.ids || []).length) return;
-  const refTxt = Object.keys(g.refs || {}).join(', ') || 'the shipment';
-  const tids = Object.keys(g.tids || {});
-  if(!g.canPull || !tids.length){
+  /* TXPAL-1 - 팔레트를 골라서 부르면 그 박스만 뺀다. 안 주면 예전처럼 이 줄 전체. */
+  const ids0 = (idsIn && idsIn.length) ? idsIn.slice() : (g.ids || []).slice();
+  if(!ids0.length) return;
+  const _rf = {}, _td = {}, _stt = {};
+  ids0.forEach(id=>{
+    const r0 = TXHOLD_REF[id]; if(r0) _rf[r0] = 1;
+    const t0 = TXHOLD_TID[id]; if(t0) _td[t0] = 1;
+    _stt[String(TXHOLD_ST[id] || '')] = 1;
+  });
+  const refTxt = Object.keys(_rf).join(', ') || 'the shipment';
+  const tids = Object.keys(_td);
+  const canPull = Object.keys(_stt).every(x=>x === 'LOADING') && !!tids.length;
+  if(!canPull || !tids.length){
     alert('⛔ That truck has already left (IN TRANSIT).\n\n'
       + 'Boxes can only be taken back while the shipment is still loading.\n'
       + 'Receive it at the other end first, or ship this order from there.');
@@ -30035,10 +30194,10 @@ async function bxPullTakeFromTruck(hi){
         「팔레트에서 빼서 그대로 둬라」로 바뀐다. */
   if(!confirm('Take these boxes OFF the truck and use them for this order?\n\n'
     + '   · ' + ctx.label + '\n'
-    + '   · ' + g.ids.length + ' box(es), now loaded on ' + refTxt + '\n\n'
+    + '   · ' + ids0.length + ' box(es), now loaded on ' + refTxt + '\n\n'
     + 'They stay right where they are (' + (g.loc || 'the staging area') + ') — nothing goes back on the shelf.\n'
     + 'The shipment loses them, a Take Off Truck sheet prints, and you can assign them here.')) return;
-  const idSet = new Set(g.ids);
+  const idSet = new Set(ids0);
   const pbRows = [];
   try{
     for(const tid of tids){
@@ -30097,7 +30256,7 @@ async function bxPullTakeFromTruck(hi){
   const lwh = ctx.lwh, po = ctx.po, mode = ctx.mode, need = ctx.need, cb = ctx.onDone, li = ctx.lineIdx;
   const m = document.getElementById('modal-bxpull'); if(m) m.remove();
   bxPullCtx = null;
-  showToast('🚚 ' + g.ids.length + ' box(es) taken off ' + refTxt
+  showToast('🚚 ' + ids0.length + ' box(es) taken off ' + refTxt
     + ' — still at ' + (g.loc || 'the staging area') + ', ready to assign');
   if(typeof renderTable === 'function') renderTable();
   const L2 = (li >= 0 && typeof poLines !== 'undefined') ? poLines[li] : null;
