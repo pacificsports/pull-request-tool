@@ -29984,7 +29984,7 @@ function bxOpenPicker(L, lwh, po, onDone, mode, needOverride){
           <td style="font-family:Consolas,monospace;color:#94a3b8;">${g.n}</td>
           <td style="font-size:11px;color:#cbd5e1;">${g.oldest?String(g.oldest).slice(0,10):''}</td>
           <td>${g.canPull
-            ? `<button class="btn btn-sm" style="background:#b45309;color:#fff;border-color:#b45309;font-weight:800;white-space:nowrap;" onclick="bxPullTakeFromTruck(${hi})" title="Take these boxes off that shipment and put them back in the bin they came from, so this order can use them. A Put Back Request prints for the warehouse.">🚚→ Take for this order</button>`
+            ? `<button class="btn btn-sm" style="background:#b45309;color:#fff;border-color:#b45309;font-weight:800;white-space:nowrap;" onclick="bxPullTakeFromTruck(${hi})" title="Take these boxes off that shipment so this order can use them. They stay where they are - nothing goes back on the shelf. A Take Off Truck sheet prints for the warehouse.">🚚→ Take for this order</button>`
             : `<span style="font-size:10px;font-weight:800;color:#b45309;white-space:nowrap;">🔒 already on the road</span>`}</td>
         </tr>`;}).join('')}</tbody>
       </table>
@@ -30025,11 +30025,19 @@ async function bxPullTakeFromTruck(hi){
       + 'Close it first — otherwise saving there would put these boxes straight back on the truck.');
     return;
   }
+  /* TXPULL-2 - [stated] 하윤: "이게 이미 우리 transfer빈으로 나와있는건데 이게 원래 빈으로
+     돌아가는걸로 나오면 헷갈리잖아"
+     🔴 TXPULL-1 은 박스를 **원래 선반으로 되돌렸다**. 그런데 그 박스들은 이미 선반에서 빠져나와
+        TRANSFER 스테이징에 쌓여 있다. 그걸 다시 선반에 넣으라고 종이를 뽑고, 곧바로 이 오더의
+        Pull Request 가 같은 선반에서 꺼내라고 또 뽑는다 - 창고가 같은 선반을 두 번 간다.
+     고친 것: **박스를 움직이지 않는다.** 트럭 줄에서만 뺀다. 박스는 있던 자리(TRANSFER)에 그대로
+        있고, 바로 이 오더에 지정된다. 종이도 「선반에 넣어라」가 아니라
+        「팔레트에서 빼서 그대로 둬라」로 바뀐다. */
   if(!confirm('Take these boxes OFF the truck and use them for this order?\n\n'
     + '   · ' + ctx.label + '\n'
     + '   · ' + g.ids.length + ' box(es), now loaded on ' + refTxt + '\n\n'
-    + 'They go back to the bin they came from, a Put Back Request prints for the warehouse,\n'
-    + 'and the shipment loses them.')) return;
+    + 'They stay right where they are (' + (g.loc || 'the staging area') + ') — nothing goes back on the shelf.\n'
+    + 'The shipment loses them, a Take Off Truck sheet prints, and you can assign them here.')) return;
   const idSet = new Set(g.ids);
   const pbRows = [];
   try{
@@ -30063,32 +30071,34 @@ async function bxPullTakeFromTruck(hi){
       + '\n\n→ Close this window, open it again, and look at what is there now.');
     return;
   }
-  /* 박스를 원래 bin 으로 돌려놓는다. bin 을 모르면 TRANSFER 에 그대로 두고 알려준다. */
-  let noBin = 0;
-  for(const r0 of pbRows){
-    if(!r0.dest){ noBin += r0._ids.length; continue; }
+  /* TXPULL-2 - 박스는 **원래 선반으로 안 보낸다.** TEMPORARY 로 간다.
+     [stated] 하윤: "pallet 13에 있는 물건들은 다 temporary로 돌려 버리고 거기서 저것들을 오더로
+     다시 선택해야하나??" - 그 쪽이 맞다. 물건은 팔레트 위에 그대로 있고, 선반 자리는 아니니까
+     TEMPORARY 가 진짜 모습이다. TRANSFER 에 그냥 두면 「트럭에 실린 물건」 으로 읽혀서 더 헷갈리고,
+     Box Room 의 TEMPORARY 알림 줄이 안 떠서 잊히면 아무도 모른다.
+     ⚠ 원래 선반(l.bin)으로는 안 보낸다 - 창고가 선반에 넣었다가 곧바로 다시 꺼내는 헛걸음이 된다. */
+  const TMP = (typeof bxStageLocFor === 'function') ? bxStageLocFor(ctx.lwh) : 'TEMPORARY';
+  const allIds = pbRows.reduce((a,r)=>a.concat(r._ids || []), []);
+  if(allIds.length){
     try{
-      await trPatchBoxes(r0._ids, { loc:r0.dest });
-      const s2 = new Set(r0._ids);
-      bxStore.forEach(b=>{ if(s2.has(b.id)) b.loc = r0.dest; });
+      await trPatchBoxes(allIds, { loc:TMP });
+      const s2 = new Set(allIds);
+      bxStore.forEach(b=>{ if(s2.has(b.id)) b.loc = TMP; });
     }catch(e){
-      alert('⚠ Taken off ' + refTxt + ', but ' + r0._ids.length
-        + ' box(es) could not be moved back to bin ' + r0.dest + '.\n\n'
+      alert('⚠ Taken off ' + refTxt + ', but ' + allIds.length
+        + ' box(es) could not be moved to ' + TMP + '.\n\n'
         + 'They are still in the TRANSFER bin — move them by hand in Box Room.');
     }
   }
-  try{ trPutBackPrintFrom(pbRows, refTxt, ctx.lwh); }catch(e){}
-  try{ await sbFetch('/rest/v1/pr_putback', {method:'POST', headers:{Prefer:'return=minimal'},
-    body:JSON.stringify([{ ref:refTxt, wh:ctx.lwh,
-      lines:pbRows.map(r=>({style:r.style,color:r.color,size:r.size,qty:r.qty,dest:r.dest,ppb:r.ppb})),
-      created_by:(typeof SESS!=='undefined' && SESS && SESS.email) || '' }])}); }catch(e){}
+  pbRows.forEach(r=>{ r.dest = TMP; });
+  try{ bxTakeOffPrint(pbRows, refTxt, ctx.lwh, ctx.po, TMP); }catch(e){}
   _txHoldAt = 0; try{ await txHoldRefresh(true); }catch(e){}
   if(typeof _lineAvailCache !== 'undefined') _lineAvailCache = {};
   const lwh = ctx.lwh, po = ctx.po, mode = ctx.mode, need = ctx.need, cb = ctx.onDone, li = ctx.lineIdx;
   const m = document.getElementById('modal-bxpull'); if(m) m.remove();
   bxPullCtx = null;
   showToast('🚚 ' + g.ids.length + ' box(es) taken off ' + refTxt
-    + ' — back in their bin' + (noBin ? ' (' + noBin + ' left in TRANSFER)' : '') + ', ready to assign');
+    + ' — still at ' + (g.loc || 'the staging area') + ', ready to assign');
   if(typeof renderTable === 'function') renderTable();
   const L2 = (li >= 0 && typeof poLines !== 'undefined') ? poLines[li] : null;
   if(L2) bxOpenPicker(L2, lwh, po, cb, mode, need);
@@ -36104,6 +36114,51 @@ function trPbEdit(i, field, val){
   }
 }
 function trPutBackPrint(){ trPutBackPrintFrom(window._pbRows||[], _shipNo, trWhOfKind(trSrcKind(_shipRoute))); }
+/* ═══ TXPULL-2 - 「트럭에서 빼라」 종이 ═══
+   Put Back Request 와 다르다. 저쪽은 「선반에 도로 넣어라」, 이쪽은 「팔레트에서 빼서
+   있던 자리에 그대로 둬라, 이건 이 오더 것이다」 이다.
+   ⚠ `trPutBackPrintFrom` 은 다른 곳에서도 쓰므로 건드리지 않고 따로 만든다. */
+function bxTakeOffPrint(rows, shipNo, srcWh, po, whereNow){
+  if(!rows || !rows.length){ showToast('⚠ Nothing to print'); return; }
+  srcWh = srcWh || 'SC';
+  const spot = String(whereNow || 'TRANSFER').toUpperCase();
+  const totB = rows.reduce((s,r)=>s+(Number(r.qty)||0), 0);
+  const totP = rows.reduce((s,r)=>s+(Number(r.qty)||0)*(Number(r.ppb)||0), 0);
+  const ls = rows.slice().sort((a,b)=>String(a.style).localeCompare(String(b.style)) || bxSizeCmp(a.size, b.size));
+  const body = ls.map(r=>'<tr><td style="border:1px solid #333;padding:5px 8px;text-align:center;font-size:16px;">☐</td>'
+    +'<td style="border:1px solid #333;padding:5px 8px;font-weight:700;">'+esc(r.style)+'</td>'
+    +'<td style="border:1px solid #333;padding:5px 8px;">'+esc(bxBaseColor(r.color))+'</td>'
+    +'<td style="border:1px solid #333;padding:5px 8px;text-align:center;">'+esc(r.size)+'</td>'
+    +'<td style="border:1px solid #333;padding:5px 8px;text-align:right;font-weight:800;font-size:15px;">'+(Number(r.qty)||0)+'</td>'
+    +'<td style="border:1px solid #333;padding:5px 8px;text-align:center;font-family:Consolas,monospace;font-weight:800;">'+esc(spot)+'</td></tr>').join('');
+  const today = new Date().toLocaleDateString();
+  const html = '<div style="background:#fff;padding:30px;font-family:Arial,sans-serif;max-width:8.5in;margin:0 auto;color:#000;">'
+    +'<div style="display:flex;justify-content:space-between;align-items:baseline;border-bottom:3px solid #b45309;padding-bottom:6px;margin-bottom:6px;">'
+    +'<div style="font-size:24px;font-weight:800;color:#b45309;">🚚 TAKE OFF TRUCK</div>'
+    +'<div style="text-align:right;font-size:12px;">'+esc(shipNo||'')+'<br>'+today+'</div></div>'
+    +'<div style="background:#fff7ed;border:2px solid #b45309;border-radius:6px;padding:10px 14px;margin-bottom:12px;font-size:13px;color:#7c2d12;font-weight:700;line-height:1.6;">'
+    +'Pull these boxes <b>off the pallet</b> for '+esc(shipNo||'that shipment')+'.<br>'
+    +'<span style="font-size:15px;font-weight:900;">⛔ Do NOT put them back on the shelf.</span><br>'
+    +'Leave them in <b>'+esc(spot)+'</b> ['+esc(srcWh)+'] — they are now for '
+    +(po ? ('PO <b>'+esc(po)+'</b>') : 'a customer order')+' and will be pulled from there.</div>'
+    +'<table style="width:100%;border-collapse:collapse;font-size:12px;">'
+    +'<thead><tr style="background:#b45309;color:#fff;"><th style="border:1px solid #333;padding:5px 8px;width:34px;">&#10003;</th>'
+    +'<th style="border:1px solid #333;padding:5px 8px;text-align:left;">Style</th>'
+    +'<th style="border:1px solid #333;padding:5px 8px;text-align:left;">Color</th>'
+    +'<th style="border:1px solid #333;padding:5px 8px;">Size</th>'
+    +'<th style="border:1px solid #333;padding:5px 8px;">Boxes</th>'
+    +'<th style="border:1px solid #333;padding:5px 8px;">Leave At</th></tr></thead>'
+    +'<tbody>'+body+'</tbody>'
+    +'<tfoot><tr style="background:#fff7ed;font-weight:800;"><td colspan="4" style="border:1px solid #333;padding:6px 8px;text-align:right;">TOTAL</td>'
+    +'<td style="border:1px solid #333;padding:6px 8px;text-align:right;">'+totB+'</td>'
+    +'<td style="border:1px solid #333;padding:6px 8px;text-align:center;">'+totP.toLocaleString()+' pcs</td></tr></tfoot>'
+    +'</table>'
+    +'<div style="margin-top:26px;font-size:12px;">Taken off by: ______________________  Date: ____________</div>'
+    +'</div>';
+  const w = window.open('', '_blank'); if(!w){ showToast('⚠ Popup blocked — allow popups to print'); return; }
+  w.document.write('<html><head><title>Take Off Truck</title></head><body onload="window.print()">'+html+'</body></html>');
+  w.document.close();
+}
 function trPutBackPrintFrom(rows, shipNo, srcWh){
   if(!rows||!rows.length){ showToast('⚠ Nothing to print'); return; }
   const _shipNo = shipNo;
