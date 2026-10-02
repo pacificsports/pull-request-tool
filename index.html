@@ -35683,6 +35683,216 @@ function trPbSetAllBins(){
 /* PBPAL-1 - 팔레트 머리의 한 버튼으로 그 팔레트를 통째로 bin 에 되돌린다.
    [stated] 하윤: "전체 팔렛을 location bin 지정해서 뺄수있게 못만드나?"
    ⚠ 팔레트는 **이름(label)** 으로 찾는다 - id 는 화면을 다시 그릴 때마다 새로 뽑힌다. */
+/* ═══ PAL2ORD-1 - 팔레트 하나를 통째로 오더에 넘긴다 ═══
+   [stated] 하윤: "pallet 13전체를 새로운 오더에 다 쓰면 되는데"
+   [stated] 하윤: "저 pallet은 안건드리고 저게 오더 pallet으로 만들어지고 우리는 그냥 스티커만 교체 하면 되는건가?"
+   [stated] 하윤: "모자라는거 나머지들은 우리 bin에서 새로 뽑아서 pallet 하나더 만들고?"
+   그림: 박스는 한 개도 안 움직인다. 팔레트가 그대로 그 오더의 팔레트가 되고 태그만 바꾼다.
+
+   ⚠⚠ 왜 여기서 오더에 바로 지정하지 않는가:
+     박스 지정은 오더 줄의 `pickLocs` 에 저장된다 (bxPullSave 의 reserve 모드는 DB 를 안 건드린다).
+     빌더에서 저장된 오더(pr_orders)에 몰래 쓰면, 그 오더를 다른 창에 열어 둔 사람이 그걸 덮어쓴다.
+     `pr_orders` 에는 TRLOCK 같은 잠금이 없다. [stated] 하윤: "그래 안전하게 가자"
+   그래서 이 버튼은 **몰래 쓰는 데가 한 곳도 없다**:
+     ① 팔레트를 트럭에서 뺀다 (짐 저장 - trPatchRec 가 TRLOCK 으로 지켜준다)
+     ② 그 박스를 TEMPORARY 로 (물리적으로는 안 움직인다)
+     ③ TAKE OFF TRUCK 종이
+     ④ 그 오더를 열어 준다 - 지정은 거기서 평소처럼 */
+function trP2oKey(st, co, sz){
+  return String(st||'').trim().toUpperCase() + '|' + bxBaseColor(co) + '|' + String(sz||'').trim().toUpperCase();
+}
+/* 그 오더가 이 창고에서 아직 받을 몫 (pcs). BO·NA·PD·IT 는 이 트럭 물건이 아니다. */
+function trP2oNeedMap(rec, wh){
+  const m = {};
+  ((rec && rec.lines) || []).forEach(l=>{
+    if(!l || !(Number(l.qty) > 0)) return;
+    if(String(l.wh||'').toUpperCase() !== String(wh||'').toUpperCase()) return;
+    const k = trP2oKey(l.style, l.color, l.size);
+    m[k] = (m[k] || 0) + (Number(l.qty) || 0);
+  });
+  return m;
+}
+/* 이 팔레트와 겹치는 오더를 많이 겹치는 순으로. 못 찾으면 빈 배열 - 그때는 창이 그렇게 말한다. */
+function trP2oCandidates(rows, wh){
+  const want = {};
+  rows.forEach(r=>{ const k = trP2oKey(r.style, r.color, r.size); want[k] = (want[k]||0) + (Number(r.max)||0) * (Number(r.ppb)||0); });
+  const out = [];
+  ((typeof savedCache !== 'undefined' && savedCache) || []).forEach(rec=>{
+    if(!rec || !rec.base) return;
+    if(rec.meta && rec.meta._cancelled) return;
+    const need = trP2oNeedMap(rec, wh);
+    let hit = 0, lines = 0;
+    Object.keys(need).forEach(k=>{ if(want[k]){ hit += Math.min(need[k], want[k]); lines++; } });
+    if(hit > 0) out.push({ base:rec.base, po:String((rec.meta&&rec.meta.po)||''), cust:String((rec.meta&&rec.meta.cust)||''), hit, lines });
+  });
+  out.sort((a,b)=> b.hit - a.hit || String(a.cust).localeCompare(String(b.cust)));
+  return out.slice(0, 60);
+}
+function trPalToOrder(lab){
+  const p = _shipPallets.find(x=>x.label === lab);
+  if(!p){ showToast('⚠ That pallet is not on the screen any more — reopen the shipment'); return; }
+  const rows = trPbGatherPallets([lab]);
+  if(!rows.length){ showToast('⚠ This pallet has no stock lines to give to an order'); return; }
+  let wh = 'SC';
+  try{ wh = String(trWhOfKind(trSrcKind(_shipRoute)) || 'SC').toUpperCase(); }catch(e){}
+  const cands = trP2oCandidates(rows, wh);
+  window._p2o = { lab, rows, wh, cands };
+  const ex = document.getElementById('modal-p2o'); if(ex) ex.remove();
+  const div = document.createElement('div'); div.id='modal-p2o';
+  div.style.cssText='position:fixed;inset:0;background:rgba(15,23,42,.6);z-index:140;display:flex;align-items:center;justify-content:center;padding:12px;';
+  const disp = trPalDisp({meta:_shipMeta, pallets:_shipPallets}, lab);
+  const opts = cands.map((c,i)=>`<option value="${i}">${esc(c.cust||'(no name)')} · PO ${esc(c.po||'—')} — ${c.lines} line(s) match</option>`).join('');
+  div.innerHTML = `<div style="background:#fff;border-radius:12px;max-width:820px;width:100%;max-height:90vh;display:flex;flex-direction:column;overflow:hidden;">
+    <div style="background:#0f766e;color:#fff;padding:12px 18px;font-size:15px;font-weight:800;display:flex;align-items:center;gap:8px;flex-wrap:wrap;">\u{1F4E6} ${esc(disp)} → an order
+      <span style="font-size:11px;font-weight:400;color:#99f6e4;">— the boxes do not move; this pallet becomes that order's pallet</span>
+      <button class="btn btn-sm" style="margin-left:auto;background:transparent;color:#99f6e4;border-color:#5eead4;" onclick="document.getElementById('modal-p2o').remove()">✕</button></div>
+    <div style="padding:14px 18px;overflow-y:auto;">
+      ${cands.length ? `<div style="display:flex;gap:9px;align-items:center;flex-wrap:wrap;margin-bottom:11px;">
+        <span style="font-size:12px;font-weight:800;color:#0f766e;">Give this pallet to</span>
+        <select class="fi" id="p2o-sel" onchange="trP2oRender()" style="flex:1;min-width:300px;font-weight:700;">${opts}</select>
+      </div>` : `<div style="background:#fef2f2;border:1.5px solid #fecaca;border-radius:9px;padding:11px 14px;font-size:12.5px;color:#b91c1c;font-weight:700;line-height:1.6;">
+        ⛔ No open ${esc(wh)} order needs anything on this pallet.<br>
+        <span style="font-weight:400;">Nothing was changed. Use <b>↩ Put back</b> if you just want these boxes back in stock.</span></div>`}
+      <div id="p2o-body"></div>
+    </div>
+    <div style="padding:12px 18px;border-top:1px solid #eee;display:flex;gap:8px;justify-content:flex-end;flex-wrap:wrap;">
+      <button class="btn" onclick="document.getElementById('modal-p2o').remove()">Cancel</button>
+      ${cands.length ? `<button class="btn btn-primary" style="background:#0f766e;border-color:#0f766e;font-weight:800;" onclick="trP2oGo()">→ Take off the truck &amp; open the order</button>` : ''}
+    </div></div>`;
+  document.body.appendChild(div);
+  if(cands.length) trP2oRender();
+}
+function trP2oPick(){
+  const X = window._p2o; if(!X || !X.cands.length) return null;
+  const i = parseInt((document.getElementById('p2o-sel')||{}).value) || 0;
+  return X.cands[i] || X.cands[0];
+}
+function trP2oRender(){
+  const X = window._p2o, el = document.getElementById('p2o-body'); if(!X || !el) return;
+  const c = trP2oPick(); if(!c){ el.innerHTML=''; return; }
+  const rec = savedCache.find(r=>r.base === c.base);
+  const need = rec ? trP2oNeedMap(rec, X.wh) : {};
+  /* ⚠ 같은 SKU 가 bin 때문에 줄 여럿으로 쪼개져 있다. 그래서 그 오더가 받을 몫을 줄마다
+     통째로 비교하면 안 되고 **위에서부터 깎아 내려가며** 봐야 한다. 안 그러면 똑같은
+     「1,728 pcs 필요」가 세 줄에 그대로 세 번 찍히고, 남는 수량 계산도 틀린다. */
+  const left = Object.assign({}, need);
+  let covered = 0;
+  const body = X.rows.map((r,i)=>{
+    const k = trP2oKey(r.style, r.color, r.size);
+    const want = Number(need[k]) || 0;
+    const boxes = Number(r.max) || 0, ppb = Number(r.ppb) || 0, pcs = boxes * ppb;
+    const hit = want > 0;
+    let over = 0;
+    if(hit){
+      const use = Math.min(pcs, Math.max(0, Number(left[k]) || 0));
+      over = pcs - use; left[k] = (Number(left[k]) || 0) - use; covered += use;
+    }
+    const what = hit
+      ? `<span style="font-weight:800;color:#0f766e;">✓ goes to this order</span>`
+        + (over > 0 ? `<div style="font-size:10px;color:#92400e;font-weight:700;">${over.toLocaleString()} pcs extra — stays in TEMPORARY as stock</div>` : '')
+      : `<select class="fi p2o-no" data-i="${i}" style="width:160px;font-size:11px;font-weight:700;">
+           <option value="stay">leave on the truck</option>
+           <option value="pull">take off → TEMPORARY</option>
+         </select>`;
+    return `<tr${hit?' style="background:#f0fdfa;"':''}>
+      <td style="border:1px solid #e5e7eb;padding:4px 8px;font-weight:700;">${esc(r.style)}</td>
+      <td style="border:1px solid #e5e7eb;padding:4px 8px;">${esc(bxBaseColor(r.color))}</td>
+      <td style="border:1px solid #e5e7eb;padding:4px 8px;text-align:center;">${esc(r.size)}</td>
+      <td style="border:1px solid #e5e7eb;padding:4px 8px;text-align:center;font-family:Consolas,monospace;">${esc(r.bin||'—')}</td>
+      <td style="border:1px solid #e5e7eb;padding:4px 8px;text-align:right;font-weight:800;">${boxes}</td>
+      <td style="border:1px solid #e5e7eb;padding:4px 8px;text-align:right;">${pcs.toLocaleString()}</td>
+      <td style="border:1px solid #e5e7eb;padding:4px 8px;font-size:11.5px;">${what}</td>
+    </tr>`;
+  }).join('');
+  const nHit = X.rows.filter(r=>(Number(need[trP2oKey(r.style,r.color,r.size)])||0) > 0).length;
+  const needTot = Object.keys(need).reduce((a,k)=>a + (Number(need[k]) || 0), 0);
+  el.innerHTML = `<table style="width:100%;border-collapse:collapse;font-size:12px;">
+      <thead><tr style="background:#f1f5f9;">
+        <th style="border:1px solid #e5e7eb;padding:4px 8px;text-align:left;">Style</th>
+        <th style="border:1px solid #e5e7eb;padding:4px 8px;text-align:left;">Color</th>
+        <th style="border:1px solid #e5e7eb;padding:4px 8px;">Size</th>
+        <th style="border:1px solid #e5e7eb;padding:4px 8px;">Bin</th>
+        <th style="border:1px solid #e5e7eb;padding:4px 8px;">Boxes</th>
+        <th style="border:1px solid #e5e7eb;padding:4px 8px;">Pcs</th>
+        <th style="border:1px solid #e5e7eb;padding:4px 8px;text-align:left;">What happens</th>
+      </tr></thead><tbody>${body}</tbody></table>
+    <div class="muted" style="font-size:11px;margin-top:9px;line-height:1.6;">
+      ${nHit} of ${X.rows.length} line(s) on this pallet are for this order — ${covered.toLocaleString()} of the ${needTot.toLocaleString()} pcs it needs from ${esc(X.wh)}.
+      They come off the truck and sit in <b>TEMPORARY</b> — <b>nobody carries a box anywhere</b>, the pallet just stops being truck freight.
+      Then this order opens and you assign them there. Whatever is still short, pull from the bins as usual and build one more pallet.</div>`;
+}
+async function trP2oGo(){
+  const X = window._p2o; if(!X) return;
+  const c = trP2oPick(); if(!c) return;
+  const rec = savedCache.find(r=>r.base === c.base);
+  if(!rec){ alert('⛔ That order is not loaded any more. Close this and try again.'); return; }
+  const need = trP2oNeedMap(rec, X.wh);
+  const extra = {};
+  document.querySelectorAll('#modal-p2o .p2o-no').forEach(sel=>{ if(sel.value === 'pull') extra[sel.dataset.i] = 1; });
+  const take = X.rows.filter((r,i)=> ((Number(need[trP2oKey(r.style,r.color,r.size)])||0) > 0) || extra[i]);
+  if(!take.length){ alert('⚠ Nothing is selected to take off the truck.'); return; }
+  const nB = take.reduce((a,r)=>a+(Number(r.max)||0), 0);
+  const stay = X.rows.length - take.length;
+  if(!confirm('Give ' + take.length + ' line(s) / ' + nB + ' box(es) to ' + (c.cust||'') + ' PO ' + (c.po||'') + '?\n\n'
+    + '   · they come off this truck\n'
+    + '   · they stay exactly where they are, as TEMPORARY — nothing is carried anywhere\n'
+    + (stay ? ('   · ' + stay + ' line(s) stay on the truck\n') : '')
+    + '   · a TAKE OFF TRUCK sheet prints\n'
+    + '   · then the order opens so you can assign them')) return;
+
+  /* ① 먼저 짐에서 뺀다. 실패하면 화면을 원래대로 돌리고 아무것도 안 건드린다. */
+  const snapshot = _shipPallets.map(p=>({ p, lines:(p.lines||[]).slice() }));
+  const kill = {};
+  take.forEach(r=>{ (kill[r.pid] = kill[r.pid] || {})[r.li] = 1; });
+  _shipPallets.forEach(p=>{
+    const km = kill[p.id]; if(!km) return;
+    p.lines = (p.lines||[]).filter((l, li)=> !km[li]);
+  });
+  const emptied = _shipPallets.filter(p=>!(p.lines||[]).length
+    && !((( _shipMeta && _shipMeta.orderShip) || []).some(o=>o && o.pallet === p.label)));
+  if(emptied.length) _shipPallets = _shipPallets.filter(p=>emptied.indexOf(p) < 0);
+  let ok = true;
+  if(_shipId){
+    try{ trCaptureInfo(); ok = await trPatchRec(_shipId, { meta:_shipMeta, lines:trLinesFlat() }); }
+    catch(e){ ok = false; }
+  }
+  if(!ok){
+    _shipPallets = snapshot.map(x=>x.p);
+    snapshot.forEach(x=>{ x.p.lines = x.lines; });
+    try{ trRenderPallets(); }catch(e){}
+    alert('⛔ Nothing was changed.\n\nThe shipment could not be saved, so the pallet is still on the truck.\n\n→ Reload with Ctrl+Shift+R, open the shipment again, and try once more.');
+    return;
+  }
+  /* ② 박스를 TEMPORARY 로 (물리적으로는 그대로 있다) */
+  const TMP = (typeof bxStageLocFor === 'function') ? bxStageLocFor(X.wh) : 'TEMPORARY';
+  const ids = [];
+  take.forEach(r=>{
+    const src = snapshot.find(x=>x.p.id === r.pid);
+    const l = src ? src.lines[r.li] : null;
+    if(l && Array.isArray(l.ids)) ids.push(...l.ids);
+  });
+  if(ids.length){
+    try{
+      await trPatchBoxes(ids, { loc:TMP });
+      const s2 = new Set(ids);
+      bxStore.forEach(b=>{ if(s2.has(b.id)) b.loc = TMP; });
+    }catch(e){
+      alert('⚠ The pallet is off the truck, but ' + ids.length + ' box(es) could not be moved to ' + TMP
+        + '.\n\nThey are still in the TRANSFER bin — move them by hand in Box Room.');
+    }
+  }
+  /* ③ 종이 */
+  try{ bxTakeOffPrint(take.map(r=>Object.assign({}, r, {qty:r.max, dest:TMP})),
+    (_shipNo || 'this shipment'), X.wh, (c.po || ''), TMP); }catch(e){}
+  _txHoldAt = 0; try{ await txHoldRefresh(true); }catch(e){}
+  if(typeof _lineAvailCache !== 'undefined') _lineAvailCache = {};
+  const m = document.getElementById('modal-p2o'); if(m) m.remove();
+  window._p2o = null;
+  /* ④ 짐을 닫고 그 오더를 연다 - 지정은 거기서 평소처럼 (몰래 쓰는 데가 없다) */
+  try{ await trBuilderClose(); }catch(e){}
+  showToast('\u{1F4E6} ' + nB + ' box(es) are in ' + TMP + ' — assign them to PO ' + (c.po||'') + ' here');
+  try{ await loadSaved(c.base); }catch(e){}
+}
 function trPalPutBack(lab){
   const p = _shipPallets.find(x=>x.label === lab);
   if(!p){ showToast('\u26a0 That pallet is not on the screen any more \u2014 reopen the shipment'); return; }
@@ -36955,6 +37165,7 @@ function trRenderPallets(){
         <button class="btn btn-sm" style="background:#0f766e;color:#fff;border-color:#0f766e;font-weight:800;" onclick="trPalTagPrint('${p.id}')" title="Print a 4 x 6 tag for this pallet - big name and the box count, nothing else">🏷 Tag</button>
         ${_noPR?'':`<button class="btn btn-sm" style="background:#6d28d9;color:#fff;border-color:#6d28d9;" onclick="trQrPallet('${p.id}')" title="Print a 2&quot; x 2&quot; box QR sticker for every box on this pallet. New carton numbers — only for boxes that have no QR yet.">⬛ Box QR</button>`}
         <button class="btn btn-sm" onclick="trManualLine('${p.id}')">+ Manual</button>
+        ${(p.lines||[]).some(l=>l && !l.is_manual && (l.ids||[]).length) ? `<button class="btn btn-sm" style="background:#0f766e;color:#fff;border-color:#0f766e;font-weight:800;" onclick="trPalToOrder('${esc(p.label)}')" title="Give this whole pallet to a customer order. The boxes do not move - they come off the truck, sit in TEMPORARY, and this pallet becomes that order's pallet. You just swap the tag.">\u2192 To an order</button>` : ''}
         ${(p.lines||[]).some(l=>l && !l.is_manual && (l.ids||[]).length) ? `<button class="btn btn-sm" style="background:#c2410c;color:#fff;border-color:#c2410c;font-weight:800;" onclick="trPalPutBack('${esc(p.label)}')" title="Take this whole pallet off the truck and put every box back into a location bin \u2014 you pick the bin">\u21a9 Put back</button>` : ''}
         ${_shipPallets.length>1 ? `<button class="btn btn-sm" style="background:#fff7ed;color:#c2410c;border-color:#fdba74;font-weight:800;" onclick="trSplitPallet('${p.id}')" title="Move this pallet into its own shipment — stock does not move, the boxes on it just travel to the new shipment">\u2702</button>` : ''}
         <button class="btn btn-sm" style="background:#fee2e2;color:#c62828;border-color:#fecaca;padding:0 9px;" onclick="trDelPallet('${p.id}')" title="${_spSrc?'Remove this bin from the shipment':'Delete this pallet'}">✕</button>
