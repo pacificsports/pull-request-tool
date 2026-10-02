@@ -18134,6 +18134,26 @@ function scanPoKey(po){ return 'PO|' + String(po||'').trim().toUpperCase(); }
      · 출발이 3자 창고면      → 우리는 받기만 한다 (IN)
      · 도착이 3자 창고면      → 우리가 싣는다 (OUT)
      · 우리 창고끼리(SC↔CA)면 → 내가 출발 창고에 있으면 OUT, 도착 창고에 있으면 IN */
+/* ═══ SCANRT-1 - 정차지를 하나로 접은 트럭은 그 이름으로 보여준다 ═══
+   [stated] 하윤: "저기 보면 아직 multi SC로 나옴  이거 우리가 multi에서 CA로만가는걸로 바꿨으니까
+                   저기도 그렇케 바껴야함"
+   🔴 카드는 `TR_ROUTES[route].short` 만 읽었다. 길 이름은 `MULTI_SC` 로 남아 있고
+      어디에 서는지는 `meta.stops` 에 들어 있어서, MSONE-1 로 「전부 CA」 로 접어도
+      딱지는 계속 `MULTI·SC` 였다. 창고 직원이 보는 유일한 한 줄이 틀린 말을 한다.
+   ⭐ 저장값은 한 글자도 안 바꾼다 - **보여줄 때만** `meta.stops` 를 읽어 이름을 만든다
+      (MSDOC-v1 의 `trPalDisp` 와 같은 원칙).
+   ⚠ `stops` 가 없거나 multi 가 아닌 길은 예전 글자 그대로. */
+function scanTrShort(rec){
+  const rt = (typeof TR_ROUTES!=='undefined' && TR_ROUTES[((rec&&rec.meta)||{}).route]) || null;
+  if(!rt) return '';
+  try{
+    if(rt.multi && typeof trStopPfx==='function'){
+      const st = (rec.meta && Array.isArray(rec.meta.stops)) ? rec.meta.stops.filter(Boolean) : [];
+      if(st.length) return trStopPfx(rt.from) + '\u2192' + st.map(trStopPfx).join('\u2192');
+    }
+  }catch(e){}
+  return rt.short;
+}
 function scanTrDir(rec){
   const rt = (typeof TR_ROUTES!=='undefined' && TR_ROUTES[((rec&&rec.meta)||{}).route]) || null;
   if(!rt) return 'OUT';
@@ -18213,7 +18233,63 @@ function scanTally(){
   try{ (_scan.pbox||new Map()).forEach(b=>{ const k = scanPoKey(b && b.po); t[k] = (t[k]||0) + 1; }); }catch(e){}
   Object.keys(_scan.manual||{}).forEach(k=>{ t[k] = (t[k]||0) + (Number(_scan.manual[k])||0); });
   Object.keys(_scan.photo||{}).forEach(k=>{ t[k] = (t[k]||0) + (Number(_scan.photo[k])||0); });
+  return scanPoSpill(t);   /* SCANPO-1 */
+}
+/* ═══ SCANPO-1 - 「우리 재고에도 있고 거래처 오더에도 있는」 품목 ═══
+   [stated] 하윤: "내가 저 2210 XL 거래처 LAT 오더라고 찍은거야. 저거 찍으면 LAT 오더로 들어가서
+            수량이 올라가야 맞는거지. 근데 지금은 그냥 우리트럭리스트에 없던 아이템이
+            추가된걸로 인식해버리는거지"
+   🔴 v1015 는 **오더에만 있는** 품목만 PO 로 넘겼다 (`poItems`). 양쪽에 다 있으면
+      「라벨로 구분이 안 되니 손대지 않는다」 였다. 그 결과 2210 BLACK(SIDE SEAM) XL 처럼
+      트럭 재고에 1박스, LAT 오더에 80박스가 같이 있는 품목을 찍으면 **전부 재고 줄에 얹혀**
+      재고가 `over` 로 빨개지고 오더 줄은 0 으로 남았다.
+   ⭐ 고침: 라벨로 못 가르는 것은 맞다. 그래서 **개수로 가른다.**
+      재고 줄이 요구하는 만큼은 재고로 세고, **그 위로 더 찍힌 것**은 같은 품목을 달라는
+      오더 쪽으로 넘긴다 (그 오더가 아직 덜 찼을 때만, 덜 찬 만큼만).
+   ⭐ 이 판단은 **셀 때만** 한다 - 찍은 기록(`seen`)은 라벨 그대로 남는다. 나중에 되짚을 수 있다.
+   ⚠ 몇 번을 돌려도 결과가 같다 (요구량을 넘는 몫만 옮기므로) - 내 것에 한 번, 옆 사람 것까지
+      합친 뒤에 한 번 더 부른다.
+   ⓘ 재고도 오더도 다 찬 뒤에 더 찍히면 그건 진짜 남는 박스다 - 예전처럼 `over` 로 빨개진다. */
+function scanPoSpill(t){
+  try{
+    const share = (_scan && _scan.poShare) || null;
+    if(!share || !t){ if(_scan) _scan._spill = null; return t; }
+    const note = {};                 /* 부를 때마다 새로 만든다 - 쌓이면 안 지워진다 */
+    const exp = {};
+    ((_scan.exp)||[]).forEach(e=>{ try{ exp[e.k || scanKeyOf(e.style,e.color,e.size)] = Number(e.qty)||0; }catch(err){} });
+    Object.keys(share).forEach(k=>{
+      let over = (Number(t[k])||0) - (Number(exp[k])||0);
+      if(over <= 0) return;
+      (share[k]||[]).forEach(po=>{
+        if(over <= 0) return;
+        const pk = scanPoKey(po);
+        const room = (Number(exp[pk])||0) - (Number(t[pk])||0);
+        if(room <= 0) return;
+        const mv = Math.min(over, room);
+        t[pk] = (Number(t[pk])||0) + mv;
+        t[k]  = (Number(t[k])||0) - mv;
+        over -= mv;
+        const sk = k + '>' + pk;
+        note[sk] = { key:k, po:po, n:(Number((note[sk]||{}).n)||0) + mv };
+      });
+    });
+    _scan._spill = note;
+  }catch(e){}
   return t;
+}
+/* 넘긴 것을 한 줄로 알려 준다 - 말없이 숫자만 옮기면 직원이 믿을 수가 없다 */
+function scanSpillNoteHtml(){
+  try{
+    const sp = (_scan && _scan._spill) || null;
+    const ks = sp ? Object.keys(sp) : [];
+    if(!ks.length) return '';
+    const txt = ks.map(x=>{ const v = sp[x]; const p = String(v.key||'').split('|');
+      return esc((p[0]||'') + ' ' + (p[1]||'') + ' ' + (p[2]||'')) + ' \u00d7' + (Number(v.n)||0)
+           + ' \u2192 PO ' + esc(v.po); }).join(' \u00b7 ');
+    return '<div style="padding:7px 12px;background:#faf5ff;border-bottom:1px solid #e9d5ff;font-size:11px;color:#6d28d9;">'
+      + '\u24d8 Both our stock and a customer order want this item. Our stock is complete, so the rest counts toward the order: '
+      + '<b>' + txt + '</b></div>';
+  }catch(e){ return ''; }
 }
 function scanReconcile(){
   const mine = scanTally(), rows = [], used = {};
@@ -18221,6 +18297,7 @@ function scanReconcile(){
   const mates = (_scan && _scan.mates) || {};
   const tally = Object.assign({}, mine);
   Object.keys(mates).forEach(k=>{ tally[k] = (tally[k]||0) + (Number(mates[k])||0); });
+  scanPoSpill(tally);   /* SCANPO-1 - 옆 사람 것까지 합친 뒤 한 번 더 (여러 번 돌려도 결과는 같다) */
   (_scan.exp||[]).forEach(e=>{
     const k = e.k || scanKeyOf(e.style,e.color,e.size); used[k] = 1;
     const got = Number(tally[k])||0;
@@ -18477,7 +18554,7 @@ async function scanPick(mode){
     return `<button onclick="scanStart('${M}','${esc(String(rec.id))}')" style="display:block;width:100%;text-align:left;background:#fff;border:1px solid #cbd5e1;border-radius:12px;padding:14px;margin-bottom:9px;">
       <div style="display:flex;align-items:center;gap:7px;flex-wrap:wrap;">
         ${dt?`<span style="font-size:13px;font-weight:800;color:#0f2a4a;font-family:Consolas,monospace;">${esc(dt)}</span>`:''}
-        ${rt?`<span style="background:${rt.bg};color:#fff;font-weight:800;font-size:12px;border-radius:6px;padding:2px 9px;font-family:Consolas,monospace;">${esc(rt.short)}</span>`:''}
+        ${rt?`<span style="background:${rt.bg};color:#fff;font-weight:800;font-size:12px;border-radius:6px;padding:2px 9px;font-family:Consolas,monospace;">${esc(scanTrShort(rec)||rt.short)}</span>`:''}
         <span style="font-size:10.5px;font-weight:800;color:${col};background:${out?'#fffbeb':'#ecfeff'};border-radius:20px;padding:2px 8px;">${esc(tag)}</span>
       </div>
       <div style="font-size:13px;font-weight:800;color:#334155;margin-top:4px;font-family:Consolas,monospace;">${esc(rec.ref||String(rec.id).slice(0,8))}</div>
@@ -18838,17 +18915,23 @@ async function scanLoadPoItems(rec){
     /* 트럭 자체 재고 줄의 품목 — 여기 있는 건 오더로 넘기지 않는다 */
     const stock = new Set();
     ((rec.lines)||[]).forEach(l=>{ try{ stock.add(scanKeyOf(l.style,l.color,l.size)); }catch(e){} });
-    const map = {};
+    const map = {}, share = {};
     os.forEach(o=>{
       const po = String((o&&o.po)||'').trim().toUpperCase(); if(!po) return;
       (byBase[String(o.base)]||[]).forEach(l=>{
         if(!(Number(l.qty)||0)) return;
         let k; try{ k = scanKeyOf(l.style,l.color,l.size); }catch(e){ return; }
-        if(stock.has(k)) return;
+        /* SCANPO-1 - 재고 줄에도 있는 품목은 라벨로 못 가른다. 버리지 말고 **따로 적어 둔다** -
+           재고가 다 찬 뒤에 더 찍히는 것은 그 오더 몫으로 본다 (scanPoSpill). */
+        if(stock.has(k)){ share[k] = share[k] || []; if(share[k].indexOf(po) < 0) share[k].push(po); return; }
         map[k] = po;
       });
     });
-    if(_scan && Object.keys(map).length){ _scan.poItems = map; scanRender(); }
+    if(_scan && (Object.keys(map).length || Object.keys(share).length)){
+      if(Object.keys(map).length) _scan.poItems = map;
+      if(Object.keys(share).length) _scan.poShare = share;
+      scanRender();
+    }
   }catch(e){}
 }
 function scanStartOrder(base, wh, label){
@@ -19126,6 +19209,7 @@ function scanRender(){
   const perPoHtml = scanPerPoHtml();
   el.innerHTML = spBannerHtml() + perPoHtml + (perPoHtml ? '' : pboxPanelHtml()) + `<div style="background:#fff;border-radius:12px;overflow:hidden;border:1px solid #e5e7eb;">
     <div style="padding:9px 12px;background:${bad?'#fef2f2':(phoUnread?'#fffbeb':'#f0fdf4')};border-bottom:1px solid #e5e7eb;font-size:12.5px;font-weight:800;color:${bad?'#b91c1c':(phoUnread?'#b45309':'#166534')};">${bad? bad+' line(s) do not match' : (phoUnread ? '⚠ Lines match, but '+phoUnread+' box in the photos could not be identified' : '✓ Everything matches')}</div>
+    ${scanSpillNoteHtml()}
     <div style="max-height:52vh;overflow-y:auto;">
     <table style="width:100%;border-collapse:collapse;font-size:12px;">
       <thead><tr style="background:#f1f5f9;color:#475569;">
