@@ -314,7 +314,7 @@ body.po-dragging{user-select:none;}
   </span>
   <select id="lang-sel" onchange="setLang(this.value)" style="font-size:11px;padding:3px 6px;border-radius:5px;border:none;background:#1d3f66;color:#fff;"><option value="ko">한국어</option><option value="en">English</option><option value="es">Español</option></select>
   <button id="wide-btn" class="btn btn-sm" onclick="toggleWide()" title="화면 넓게 / 좁게 — 기본은 넓게 (이 브라우저에만 저장돼)" style="padding:2px 8px;font-size:10px;background:#1d3f66;color:#cfe0f2;border-color:#2b5384;">↔ Wide</button>
-  <span id="app-ver" style="font-size:10px;color:#9fb8d4;">v1191</span>
+  <span id="app-ver" style="font-size:10px;color:#9fb8d4;">v1192</span>
 </div>
 <script>
 // ↔ 넓게 보기 — 브라우저마다 따로 저장 (v793)
@@ -18174,6 +18174,56 @@ function scanWhoHtml(){
       + '\u{1F465} ' + [one(me, mine)].concat(ks.map(k=>one(k, Number(cts[k])||0))).join(' ') + '</div>';
   }catch(e){ return ''; }
 }
+/* ═══ SCANPAL-1 - 줄마다 「어느 팔레트에 몇 박스」 ═══
+   [stated] 하윤: "저기 보이는 리스트 pallet 별로 구분해서 보이게 할수있나??? 그럼 우리가 만약
+            숫자가 안맞으면 trace하기가 훨씬 편할꺼같아서"
+   ⚠⚠ **박스 QR 에는 팔레트가 안 들어 있다** (스타일·색·사이즈·장수뿐). 그래서 「찍은 박스가
+      몇 번 팔레트 것이다」 는 앱이 알 수가 없다. 표를 팔레트별로 쪼개면 찍힌 수를 앞
+      팔레트부터 **추측해서** 채워야 하고, 모자란 수가 엉뚱한 팔레트에 몰려 보인다.
+   ⭐ 그래서 쪼개지 않고 **실려야 할 자리**만 적는다 - 이건 100% 아는 사실이다.
+      줄이 모자라면 그 꼬리표에 적힌 팔레트만 뒤지면 된다. 추측이 한 글자도 안 들어간다.
+   ⓘ 거래처 오더 줄(PO)도 `meta.orderShip[].pallet` 로 같은 꼬리표가 붙는다.
+   ⚠ 팔레트 이름표가 `Pallet N` 이 아니면(3자 창고 길은 팔레트가 곧 bin) 그 이름을 그대로 쓴다. */
+function scanPalMapOf(rec){
+  const m = {};
+  const add = (k, lab, n) => {
+    if(!k || !n) return;
+    const p = String(lab||'').trim(); if(!p) return;
+    m[k] = m[k] || {};
+    m[k][p] = (m[k][p] || 0) + n;
+  };
+  try{
+    ((rec && rec.lines) || []).forEach(l=>{
+      const n = Array.isArray(l.ids) ? l.ids.length : (Number(l.boxes)||0);
+      try{ add(scanKeyOf(l.style, l.color, l.size), l.pallet, n); }catch(e){}
+    });
+  }catch(e){}
+  try{
+    ((((rec||{}).meta)||{}).orderShip || []).forEach(x=>{
+      if(!x) return;
+      try{ add(scanPoKey(x.po), x.pallet, Number(x.boxes)||0); }catch(e){}
+    });
+  }catch(e){}
+  return m;
+}
+function scanPalShort(lab){
+  const mm = /^Pallet\s+(\d+)$/i.exec(String(lab||'').trim());
+  return mm ? ('P' + mm[1]) : String(lab||'').trim();
+}
+function scanPalHtml(k){
+  try{
+    const g = ((_scan && _scan.palMap) || {})[k];
+    if(!g) return '';
+    const ks = Object.keys(g).sort((a,b)=>{
+      const na = parseInt((String(a).match(/\d+/)||[0])[0], 10), nb = parseInt((String(b).match(/\d+/)||[0])[0], 10);
+      if(!isNaN(na) && !isNaN(nb) && na !== nb) return na - nb;
+      return String(a).localeCompare(String(b), undefined, {numeric:true});
+    });
+    if(!ks.length) return '';
+    return '<div style="font-size:9.5px;font-weight:800;color:#7c3aed;white-space:normal;line-height:1.35;margin-top:1px;">'
+      + ks.map(p=>esc(scanPalShort(p)) + '\u00d7' + g[p]).join(' \u00b7 ') + '</div>';
+  }catch(e){ return ''; }
+}
 function scanTrShort(rec){
   const rt = (typeof TR_ROUTES!=='undefined' && TR_ROUTES[((rec&&rec.meta)||{}).route]) || null;
   if(!rt) return '';
@@ -18930,6 +18980,7 @@ async function scanStart(mode, id){
   _scan = { mode, id, ref: rec.ref||'', title: ttl, phase, poSet,
     prevScan: (rec.meta && rec.meta.scan) || null,
     exp: (mode==='TR') ? scanExpTransfer(rec) : scanExpInbound(rec),
+    palMap: (mode==='TR') ? scanPalMapOf(rec) : null,          /* SCANPAL-1 */
     seen: new Map(), pbox: new Map(), manual: {} };
   const _again = scanKeep2Take();   /* 💾 아까 찍다 만 게 있으면 그대로 이어붙인다 (v1044) */
   try{ window._scanCloudN = 0; window._scanCloudAt = 0; window._scanCloudErr = ''; }catch(e){}   /* SCANEXIT-1 */
@@ -19271,7 +19322,7 @@ function scanRender(){
     <div style="max-height:52vh;overflow-y:auto;">
     <table style="width:100%;border-collapse:collapse;font-size:12px;">
       <thead><tr style="background:#f1f5f9;color:#475569;">
-        <th style="padding:6px 7px;text-align:left;">Style</th><th style="padding:6px 7px;text-align:left;">Color</th>
+        <th style="padding:6px 7px;text-align:left;">Style</th><th style="padding:6px 7px;text-align:left;">Color<span style="font-weight:600;color:#7c3aed;"> · pallet</span></th>
         <th style="padding:6px 7px;">Size</th><th style="padding:6px 7px;text-align:right;">Exp</th>
         <th style="padding:6px 7px;text-align:right;">Scan</th><th style="padding:6px 7px;text-align:left;">Status</th>
         <th style="padding:6px 5px;"></th></tr></thead>
@@ -19280,7 +19331,7 @@ function scanRender(){
         const pho = Number((_scan.photo||{})[r.k])||0;
         return `<tr style="background:${s.bg};border-top:1px solid #e5e7eb;">
           <td style="padding:6px 7px;font-weight:800;">${esc(String(r.style))}</td>
-          <td style="padding:6px 7px;max-width:130px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${esc(String(r.color))}</td>
+          <td style="padding:6px 7px;max-width:140px;"><div style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${esc(String(r.color))}</div>${scanPalHtml(r.k)}</td>
           <td style="padding:6px 7px;text-align:center;font-weight:700;">${esc(String(r.size))}</td>
           <td style="padding:6px 7px;text-align:right;font-family:Consolas,monospace;">${r.exp||''}</td>
           <td style="padding:6px 7px;text-align:right;font-family:Consolas,monospace;font-weight:800;">${r.got}${man?`<span style="font-size:9px;color:#0e7490;"> +${man}m</span>`:''}${pho?`<span style="font-size:9px;color:#7c3aed;"> 📸${pho}</span>`:''}</td>
@@ -46785,19 +46836,39 @@ function newsBigChart(ser){
    그래서 앱이 스스로 확인한다: 5분마다 서버의 index.html 을 캐시 무시하고 받아서
    거기 박힌 버전 숫자를 지금 띄워둔 것과 비교하고, 다르면 띠를 하나 띄운다.
    자동으로 새로고침하지는 않는다 — 오더를 쓰다가 화면이 날아가면 그게 더 나쁘다. */
-let _verSeen = '';
+let _verSeen = '', _verTag = '', _verPend = '';
 function verNow(){
   try{ const e = document.getElementById('app-ver'); return e ? String(e.textContent||'').trim() : ''; }catch(e){ return ''; }
 }
+function verTagOf(r){
+  try{ return String(r.headers.get('etag')||'') + '|' + String(r.headers.get('last-modified')||''); }catch(e){ return ''; }
+}
+/* VERBAR-1 - 두 가지로 가른다:
+   ① 서버 파일이 **내가 켠 뒤로 바뀌었나** (ETag / Last-Modified) - 번호를 깜빡해도 잡힌다
+   ② 바뀌었으면 앞 60KB 만 받아 `app-ver` 번호를 읽어 띠에 적는다 (3.6MB 를 다 받지 않는다)
+   ⚠ 가장자리 서버마다 ETag 가 달라 한 번쯤 다르게 올 수 있다 → **두 번 연속 같은 값**일 때만 띄운다.
+   ⚠ `/pic` 에서도 같은 파일이므로 주소는 늘 `/index.html` 로 본다. */
 async function verCheck(){
-  const mine = verNow(); if(!mine) return;
+  const mine = verNow();
   try{
-    const r = await fetch('index.html?_=' + Date.now(), { cache:'no-store' });
-    if(!r.ok) return;
-    const t = await r.text();
-    const m = t.match(/id="app-ver"[^>]*>([^<]+)</);
-    const live = m ? String(m[1]).trim() : '';
-    if(live && live !== mine && live !== _verSeen){ _verSeen = live; verBanner(mine, live); }
+    const head = await fetch('/index.html?_=' + Date.now(), { method:'HEAD', cache:'no-store' });
+    if(!head.ok) return;
+    const tag = verTagOf(head);
+    if(!_verTag){ _verTag = tag; return; }              /* 처음 본 것이 지금 쓰는 판 */
+    if(!tag || tag === _verTag){ _verPend = ''; return; }
+    if(tag !== _verPend){ _verPend = tag; return; }     /* 한 번 더 같은 값이 나와야 믿는다 */
+    _verTag = tag; _verPend = '';
+    let live = '';
+    try{
+      const g = await fetch('/index.html?_=' + Date.now(), { cache:'no-store', headers:{ Range:'bytes=0-60000' } });
+      const t = await g.text();
+      const m = t.match(/id="app-ver"[^>]*>([^<]+)</);
+      live = m ? String(m[1]).trim() : '';
+    }catch(e){}
+    const show = live || 'new';
+    if(show === _verSeen) return;
+    _verSeen = show;
+    verBanner(mine || '-', show);
   }catch(e){}
 }
 function verBanner(mine, live){
@@ -46821,7 +46892,9 @@ function verReload(){
     location.replace(u.toString());
   }catch(e){ location.reload(); }
 }
-try{ setTimeout(verCheck, 45000); setInterval(verCheck, 300000); }catch(e){}
+/* VERBAR-1 - 20초 뒤 첫 확인(지금 판을 기억), 그 뒤 90초마다. 창고 폰이 옛 화면을
+   들고 있는 시간이 짧아야 한다. HEAD 한 번이라 데이터는 거의 안 쓴다. */
+try{ setTimeout(verCheck, 20000); setInterval(verCheck, 90000); }catch(e){}
 function renderSaved(){
   renderKpi();
   if(typeof icRenderDraftBtn==='function') icRenderDraftBtn();
@@ -47507,27 +47580,19 @@ function safeToAutoRefresh(){
 setInterval(()=>{ if(safeToAutoRefresh()) loadSavedList(); }, 30000);
 window.addEventListener('focus', ()=>{ if(safeToAutoRefresh()) loadSavedList(); });
 
-// ── 새 버전 자동 감지 → 새로고침 배너 (CDN/브라우저 캐시로 옛 버전 계속 보는 문제 방지) ──
-const APP_VER = (function(){ try{ const s=document.getElementById('app-ver'); const m=s&&s.textContent.match(/v(\d+)/); return m?parseInt(m[1],10):0; }catch(e){ return 0; } })();
-let _verDismissed=false;
-async function checkAppVersion(){
-  try{
-    const r=await fetch('/index.html?vck='+Date.now(), {cache:'no-store', headers:{'Range':'bytes=0-20000'}});
-    const t=await r.text(); const m=t.match(/v(\d+)\s*↩/);
-    if(!m) return; const live=parseInt(m[1],10);
-    if(live>APP_VER && !_verDismissed && !document.getElementById('ver-update-banner')) showVerBanner(live);
-  }catch(e){}
-}
-function showVerBanner(live){
-  const d=document.createElement('div'); d.id='ver-update-banner';
-  d.style.cssText='position:fixed;left:0;right:0;bottom:0;z-index:100000;background:#0e7490;color:#fff;padding:12px 16px;display:flex;align-items:center;gap:14px;justify-content:center;flex-wrap:wrap;font-weight:800;font-size:14px;box-shadow:0 -4px 16px rgba(0,0,0,.25);';
-  d.innerHTML='🔄 A newer version (v'+live+') is available — refresh to load the latest. <button id="ver-reload-btn" style="background:#fff;color:#0e7490;border:none;border-radius:8px;padding:8px 18px;font-weight:900;cursor:pointer;font-size:14px;">Refresh now</button> <button id="ver-dismiss-btn" style="background:transparent;color:#bae6fd;border:1px solid #67e8f9;border-radius:8px;padding:7px 12px;cursor:pointer;font-size:12px;">Later</button>';
-  document.body.appendChild(d);
-  document.getElementById('ver-reload-btn').onclick=function(){ location.href=location.pathname+'?v='+live; };
-  document.getElementById('ver-dismiss-btn').onclick=function(){ _verDismissed=true; d.remove(); };
-}
-setTimeout(checkAppVersion, 6000);
-setInterval(checkAppVersion, 180000);   // 3분마다 새 버전 확인
+/* ═══ VERBAR-1 - 「새 버전 나왔어요」 띠가 안 뜨던 두 가지 이유 ═══
+   [stated] 하윤: "예전에는 우리가 새로운 버전이 있으면 직원들이 알수있게 아래 줄에 update하세요
+            하면 udpate button이 나왔었는데 psflowx랑 psflowx.com/pic에 근데 그게 어는 순간 안나오더라고"
+   🔴 ① **검사기가 두 개**였고 그중 이것은 `/v(\d+)\s*↩/` 를 찾았다. 머리줄 모양이 바뀌면서
+         버전 숫자 뒤의 그 글자가 없어졌다 → 한 번도 안 맞아서 `return` 만 하고 끝났다.
+      ② 더 큰 이유: **배포할 때 `app-ver` 숫자를 안 올렸다.** 숫자가 그대로면 남은 검사기도
+         「같은 판이네」 하고 지나간다. 오늘 하루 종일 그래서 하윤 폰이 옛 화면을 들고 있었다.
+   ⭐ 고침: 이 죽은 검사기는 **뺀다**(배너가 둘 뜰 수도 있었다). 남은 `verCheck` 는
+      숫자뿐 아니라 **서버 파일이 바뀌었는지(ETag · Last-Modified)** 도 본다 - 숫자를 깜빡해도 뜬다.
+   ⚠ 배포할 때 `app-ver` 를 올리는 것은 그대로 지킨다. 숫자가 있어야 띠에 「v1191 -> v1192」 로
+      사람이 읽을 수 있는 말이 찍힌다. */
+
+/* VERBAR-1 - 이 검사기는 없앴다. 위의 verCheck 하나만 돈다. */
 </script>
 </body>
 </html>
