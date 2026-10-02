@@ -3144,7 +3144,52 @@ function buildDocHtml(wh, opts){
   const moveDone   = lines.filter(l=>l.pcMove && l.pcMove.length && _mvDone(l) > 0);
   const looseRows = looseLines.map(l=>{const b=boxCalc(l);return `<tr><td style="font-weight:700;">${esc(l.style||'')}</td><td class="tl">${esc(l.desc||'')}</td><td class="tl">${esc(l.color)}</td><td>${esc(l.size)}</td><td class="c-part" style="font-weight:800;">${b.loose}</td><td class="c-pbox">${l.pbox?'Box '+esc(l.pbox):''}</td></tr>`;}).join('');
   const totLoose = looseLines.reduce((a,l)=>a+boxCalc(l).loose,0);
-  const fullRows = fullLines.map(l=>{const b=boxCalc(l);const locs=(l.pickLocs&&l.pickLocs.length)?[...new Set(l.pickLocs.map(g=>esc(g.loc)))].join(', '):'';return `<tr><td style="font-weight:700;">${esc(l.style||'')}</td><td class="tl">${esc(l.desc||'')}</td><td class="tl">${esc(l.color)}</td><td>${esc(l.size)}</td><td class="c-full" style="font-weight:800;">${b.full}</td><td class="tl">${locs||'<span style="color:#9ca3af;">—</span>'}</td></tr>`;}).join('');
+  /* ═══ FULLBIN-1 - 「어느 선반에서 몇 박스」 를 종이에 찍는다 ═══
+     [stated] 하윤: "보통 pull from location이 다르면 거기서 몇박스 또 다른 자리에서 몇박스
+                     이렇케 나오지 않았었나??"
+     🔴 이 칸은 `[...new Set(pickLocs.map(g=>g.loc))].join(', ')` 였다 - **선반 이름만 남기고
+        개수를 버렸다.** 그래서 `K3A3, TEMPORARY, 1V38` 처럼 찍혀서, 40박스를 어디서 몇 개씩
+        꺼내야 하는지 종이만 보고는 알 수가 없었다. 숫자는 `pickLocs[].n` 에 이미 있었다.
+     ⓘ 바로 아래 ③ MOVE TO PC ROOM 은 처음부터 `g.loc + ' ×' + g.n` 으로 찍고 있었다 -
+        같은 종이 안에서 두 칸이 서로 다른 말을 하고 있었던 셈이다. 이제 같은 모양으로 맞춘다.
+     [stated] 하윤: "우리가 pallet 이미 만들어 져있는거에서 꺼내 쓰는거면 TEMPORARY 옆에
+                     PALLET#13 이렇케 표시해서 이미 만들어 져있는거라는거 표시해줘야할거같은데"
+     → 트럭에서 빼온 박스는 `l._palFrom[bin]` 에 팔레트 이름이 남는다 (TXPAL/TXPULL 이 적는다).
+       그 선반에 팔레트가 붙어 있으면 `TEMPORARY ×24 (PALLET 13)` 로 찍는다 - 창고가
+       「낱개로 주워 담아라」 가 아니라 「이미 쌓여 있는 그 팔레트다」 로 읽는다. */
+  /* ═══ FULLBIN-1 - 선반이 다르면 **줄을 따로** 찍는다 ═══
+     [stated] 하윤: "보통 pull from location이 다르면 거기서 몇박스 또 다른 자리에서 몇박스
+                     이렇케 나오지 않았었나??"
+     [stated] 하윤: "같은 사이즈라도 location bin이 다르면 다 따로 나오는걸로 아는데"
+     🔴 이 칸은 `[...new Set(pickLocs.map(g=>g.loc))].join(', ')` 였다 - 선반 이름만 남기고
+        **개수를 버리고 한 줄로 뭉쳤다.** 그래서 `K3A3, TEMPORARY, 1V38` 로 찍혀서 40박스를
+        어디서 몇 개씩 꺼내야 하는지 종이만 보고는 알 수가 없었다. 숫자는 `pickLocs[].n` 에 이미 있었다.
+     이제 선반 하나가 줄 하나다. 창고가 한 줄씩 지워 가며 꺼낸다.
+     [stated] 하윤: "TEMPORARY (PALLET #13) 이렇케 나오고"
+     → 트럭에서 빼온 박스는 `l._palFrom[bin]` 에 팔레트 이름이 남는다 (TXPAL/TXPULL 이 적는다).
+       낱개로 주워 담는 게 아니라 이미 쌓여 있는 그 팔레트라는 뜻이다.
+     ⚠ 지정이 아예 없는 줄은 예전처럼 한 줄로 찍고 선반 칸에 — 를 둔다. */
+  const _fullBinRows = l=>{
+    const gs = (l && l.pickLocs) || [];
+    const sum = {}, order = [];
+    gs.forEach(g=>{
+      const k = String((g && g.loc) || '?').toUpperCase();
+      if(!(k in sum)){ sum[k] = 0; order.push(k); }
+      sum[k] += (Number(g && g.n) || 0);
+    });
+    const pf = (l && l._palFrom) || {};
+    return order.map(k=>({ loc:k, n:sum[k], pal:String(pf[k] || '').trim() }));
+  };
+  const fullRows = fullLines.map(l=>{
+    const b = boxCalc(l);
+    const bins = _fullBinRows(l);
+    const cells = (nBox, locHtml) => `<td style="font-weight:700;">${esc(l.style||'')}</td>`
+      + `<td class="tl">${esc(l.desc||'')}</td><td class="tl">${esc(l.color)}</td><td>${esc(l.size)}</td>`
+      + `<td class="c-full" style="font-weight:800;">${nBox}</td><td class="tl">${locHtml}</td>`;
+    if(!bins.length) return `<tr>${cells(b.full, '<span style="color:#9ca3af;">—</span>')}</tr>`;
+    return bins.map(g=>`<tr>${cells(g.n || '', '<b>' + esc(g.loc) + '</b>'
+      + (g.pal ? ' <span style="font-size:10.5px;font-weight:900;color:#b45309;white-space:nowrap;">(' + esc(g.pal.toUpperCase()) + ')</span>' : ''))}</tr>`).join('');
+  }).join('');
   const totFull = fullLines.reduce((a,l)=>a+boxCalc(l).full,0);
   const carryLines = moveLines.filter(l=>_mvCarry(l).length);
   const pinLines   = moveLines.filter(l=>_mvPin(l).length);
@@ -30254,6 +30299,21 @@ async function bxPullTakeFromTruck(hi, idsIn){
   _txHoldAt = 0; try{ await txHoldRefresh(true); }catch(e){}
   if(typeof _lineAvailCache !== 'undefined') _lineAvailCache = {};
   const lwh = ctx.lwh, po = ctx.po, mode = ctx.mode, need = ctx.need, cb = ctx.onDone, li = ctx.lineIdx;
+  /* FULLBIN-1 - 이 박스들이 **어느 팔레트에서** 나왔는지 그 오더 줄에 적어 둔다.
+     Pull Request 2페이지가 이걸 읽어 `TEMPORARY \u00d724 (PALLET 13)` 로 찍는다.
+     ⚠ 오더와 같이 저장되는 값이라 종이를 나중에 다시 뽑아도 남는다. */
+  try{
+    const _L = (li >= 0 && typeof poLines !== 'undefined') ? poLines[li] : null;
+    if(_L){
+      const _labs = [...new Set(ids0.map(id=>String(TXHOLD_PAL[id] || '').trim()).filter(Boolean))];
+      if(_labs.length){
+        _L._palFrom = Object.assign({}, _L._palFrom || {});
+        /* [stated] 하윤: "TEMPORARY (PALLET #13) 이렇케 나오고" - 저장된 이름표는 `Pallet 13` 이다 */
+        _L._palFrom[String(TMP).toUpperCase()] =
+          _labs.map(x=>x.replace(/^pallet\s*#?\s*/i, 'PALLET #')).join(' + ');
+      }
+    }
+  }catch(e){}
   const m = document.getElementById('modal-bxpull'); if(m) m.remove();
   bxPullCtx = null;
   showToast('🚚 ' + ids0.length + ' box(es) taken off ' + refTxt
