@@ -22294,7 +22294,7 @@ async function careqLoadPallet(boxes, existingId){
     }
     if(!_tp){
       _tp = { id:'p_'+Math.random().toString(36).slice(2,9),
-              label:'Pallet '+(_shipPallets.length+1), lines:[], stop:_ci };
+              label:'Pallet '+trNextPalNo(), lines:[], stop:_ci };
       _shipPallets.push(_tp);
     }else if(!(_tp.stop >= 0)){
       _tp.stop = _ci;   /* 묵심히 있던 팔레트를 이 참에 CA 로 확정해 둔다 */
@@ -35075,7 +35075,9 @@ async function trBuilderOpen(existingId, route){
         _shipPallets.sort((a,b)=>_palNo(a.label) - _palNo(b.label));
       }
     }catch(e){}
-    if(!trSrcAutoPallet(_shipRoute)) _shipPallets.forEach((p,i)=>p.label='Pallet '+(i+1));
+    /* OSPAL-2 - 번호를 다시 매기면서 `orderShip[].pallet` 도 같이 옮긴다.
+       그냥 이름표만 밀면 오더가 엉뚱한 팔레트에 붙거나 미아가 된다. */
+    trPalRenumber();
     /* 저장해둔 정차지를 팔레트에 되살린다 — 줄의 `stop` 이 1순위 (v1076) */
     if(trIsMultiRoute(_shipRoute)){
       const _st = trStopsOf({meta:_shipMeta});
@@ -36258,6 +36260,72 @@ function trPalletStopSet(pid, v){
    ⓘ 인자 없이 부르는 두 자리(재고 고르기·줄 옮기기에서 새 팔레트)는 예전처럼 마지막 정차지.
       그 팔레트도 화면에 바로 `MC 4` 로 보이고 카드의 DROP 칸으로 고칠 수 있다. */
 /* MSADD-v1 - 정차지가 둘 이상이면 정차지마다 단추 하나. 하나뿐이면 예전 그대로 한 개. */
+/* ═══ OSPAL-2 - 팔레트 번호가 두 번 나가던 것 ═══
+   [stated] 하윤: "pallet 22번에 오더랑 우리 재고가 저렇케 같이 나올수가 없지. 거희 80박스인데"
+            "이거 빨리 고치고 이런일이 일어나는거 방지하는 방법이 절실히 필요할듯"
+   🔴 번호가 두 번 나간 길이 셋이었다:
+      ① `trAddPallet` 이 `_shipPallets.length+1` 로 번호를 줬다. 오더만 실린 팔레트는
+         줄이 없어서 (OSPAL-1 전에는) 목록에 아예 없었다 → 재고 21장 + 오더 22~27 인 트럭에서
+         「+ Add Pallet」 를 누르면 **Pallet 22** 가 또 나왔다. 그래서 한 번호에 재고와 오더가
+         같이 실려 보인다 (실측: 22·23·27 세 번호가 겹쳐 있었다).
+      ② 팔레트를 지우면(`trDelPallet`) 뒤 번호를 당겨 다시 매기면서 **오더의 번호표는 그대로**
+         뒀다 → 오더가 엉뚱한 팔레트에 붙거나 미아가 됐다.
+      ③ 열 때 번호를 다시 매기는 자리도 ② 와 같았다.
+   ⭐ 고침: 번호는 **쓰이는 번호 전부**(줄·오더·지정·bin 지도) 중 가장 큰 것 +1 로만 나간다.
+      다시 매기는 자리는 전부 `trPalRenumber()` 를 쓴다 - 옛→새 지도를 만들어
+      `orderShip[].pallet` 과 `designatedByPallet` 까지 같이 옮겨 주는 **검증된 함수**다.
+   ⚠ `p.label` 은 신원 열쇠다. 번호를 바꾸는 곳은 반드시 지도를 같이 고쳐야 한다. */
+function trPalNosInUse(){
+  const s = new Set();
+  const add = x=>{ const m = /^Pallet\s+(\d+)$/i.exec(String(x||'').trim()); if(m) s.add(Number(m[1])); };
+  try{ (_shipPallets||[]).forEach(p=>add(p && p.label)); }catch(e){}
+  try{ ((_shipMeta && _shipMeta.orderShip) || []).forEach(x=>add(x && x.pallet)); }catch(e){}
+  try{ Object.keys((_shipMeta && _shipMeta.designatedByPallet) || {}).forEach(add); }catch(e){}
+  try{ Object.keys(trHbinMap() || {}).forEach(add); }catch(e){}
+  return s;
+}
+function trNextPalNo(){
+  let n = 1; trPalNosInUse().forEach(v=>{ if(v >= n) n = v + 1; });
+  return n;
+}
+/* ═══ OSPAL-2 - 한 번호에 재고와 오더가 같이 실렸으면 **빨간 줄로 알린다** ═══
+   번호가 두 번 나가는 길은 위에서 막았지만, 이미 그렇게 저장된 트럭이 있다.
+   조용히 고치면 안 된다 - 어느 쪽이 따로 쌓여 있는지는 창고 바닥을 본 사람만 안다.
+   그래서 **보여주고**, 「→ own pallet」 한 번으로 오더만 새 번호로 빼 준다.
+   ⓘ 1박스짜리 오더를 일부러 재고 팔레트에 얹은 것일 수도 있다 - 그건 그냥 두면 된다. */
+function trPalDupBarHtml(){
+  try{
+    const dups = [];
+    (_shipPallets||[]).forEach(p=>{
+      if(!p || !(p.lines||[]).length) return;
+      const os = ((_shipMeta && _shipMeta.orderShip) || []).filter(x=>x && x.pallet === p.label);
+      if(!os.length) return;
+      dups.push({ lab:p.label, sb:(p.lines||[]).reduce((t,l)=>t+trLineBoxes(l),0), os:os });
+    });
+    if(!dups.length) return '';
+    return '<div style="border:2px solid #dc2626;border-radius:8px;background:#fff1f2;padding:9px 12px;">'
+      + '<div style="font-weight:900;color:#b91c1c;font-size:12px;">⚠ '
+        + dups.length + ' pallet number' + (dups.length>1 ? 's are' : ' is')
+        + ' used twice — CA stock and customer order boxes share it</div>'
+      + '<div style="font-size:10.5px;color:#7f1d1d;margin:2px 0 7px;">One number cannot mean two pallets on the floor. '
+        + 'Give the order boxes their own number — unless those boxes really ride on this pallet.</div>'
+      + dups.map(d=>'<div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;padding:4px 0;border-top:1px dashed #fecaca;">'
+          + '<b style="color:#0f2a4a;font-size:12px;">' + esc(d.lab) + '</b>'
+          + '<span style="font-size:11px;color:#475569;">CA stock ' + d.sb + ' box</span>'
+          + d.os.map(x=>'<span style="display:inline-flex;align-items:center;gap:6px;font-size:11px;background:#fdf4ff;border:1px solid #f0abfc;border-radius:14px;padding:2px 4px 2px 9px;">'
+              + '<b style="color:#a21caf;">' + esc(x.cust||'—') + '</b> ' + (Number(x.boxes)||0) + ' box'
+              + '<button onclick="trOsSplitOut(\'' + esc(osRid(x)) + '\')" '
+              + 'style="border:none;background:#a21caf;color:#fff;font-weight:800;font-size:10px;border-radius:12px;padding:3px 8px;cursor:pointer;" '
+              + 'title="Move these order boxes onto a pallet number of their own">→ own pallet</button></span>').join('')
+        + '</div>').join('')
+      + '</div>';
+  }catch(e){ return ''; }
+}
+async function trOsSplitOut(rid){
+  const o = osFindRid(rid); if(!o) return;
+  await trOsMoveTo(rid, '');          /* pid 가 비면 새 번호로 팔레트를 만든다 */
+  showToast('🚚 ' + (o.cust || 'Order') + ' moved to ' + (o.pallet||'a new pallet'));
+}
 function trAddPalletBtns(){
   const st = trIsMultiRoute(_shipRoute) ? trStopsOf({meta:_shipMeta}) : [];
   if(st.length < 2) return '<button class="btn" onclick="trAddPallet()">📍 + Add Pallet</button>';
@@ -36269,7 +36337,7 @@ function trAddPalletBtns(){
       + `📍 + Add ${esc(trStopPfx(k))} pallet</button>`; }).join(' ');
 }
 async function trAddPallet(stopIdx){
-  const p = { id:'p_'+Math.random().toString(36).slice(2,9), label:'Pallet '+(_shipPallets.length+1), lines:[] };
+  const p = { id:'p_'+Math.random().toString(36).slice(2,9), label:'Pallet '+trNextPalNo(), lines:[] };
   const _st = trIsMultiRoute(_shipRoute) ? trStopsOf({meta:_shipMeta}) : [];
   if(_st.length){
     const i = Number(stopIdx);
@@ -36289,7 +36357,7 @@ async function trDelPallet(pid){
   for(let li=p.lines.length-1;li>=0;li--) await _trRemoveLine(pid, li, true);
   _shipPallets = _shipPallets.filter(x=>x.id!==pid);
   if(p.hbin){ await hbVoid(p.hbin, _shipNo || '', p.label); try{ delete trHbinMap()[p.label]; }catch(e){} }   // 번호는 폐기 — 재사용 안 함 (v833)
-  if(!trSrcAutoPallet(_shipRoute)) _shipPallets.forEach((x,i)=>x.label='Pallet '+(i+1));
+  trPalRenumber();   /* OSPAL-2 - 지우고 당길 때도 오더 번호표를 같이 옮긴다 */
   await trSaveDraftLines();
   trRenderPallets();
 }
@@ -37067,7 +37135,7 @@ async function trOsMoveTo(rid, pid){
   if(!o) return;
   let tgt;
   if(!pid){
-    let n=_shipPallets.length+1; while(_shipPallets.some(x=>x.label==='Pallet '+n)) n++;
+    const n = trNextPalNo();   /* OSPAL-2 - 오더가 쥔 번호까지 본다 */
     tgt = { id:'p_'+Math.random().toString(36).slice(2,9), label:'Pallet '+n, lines:[] };
     /* 정차지가 여럿이면 새 팔레트도 정차지를 가져야 한다. 안 정하면 앱 기본값이
        마지막 정차지이므로 그 값을 **명시적으로** 박아 둔다 (카드에서 바꿀 수 있다). */
@@ -37207,7 +37275,7 @@ async function trLnDrop(ev, pid, el){
   const line=src.lines[d.li]; if(!line) return;
   let tgt;
   if(!pid){
-    let n=_shipPallets.length+1; while(_shipPallets.some(x=>x.label==='Pallet '+n)) n++;
+    const n = trNextPalNo();   /* OSPAL-2 - 오더가 쥔 번호까지 본다 */
     tgt={ id:'p_'+Math.random().toString(36).slice(2,9), label:'Pallet '+n, lines:[] };
     _shipPallets.push(tgt);
   } else { tgt=_shipPallets.find(x=>x.id===pid); if(!tgt) return; }
@@ -37331,7 +37399,7 @@ function trRenderPallets(){
   const _rMulti = _rStops.length >= 2;
   const _rD = { meta:_shipMeta, pallets:_shipPallets };
   const _rDragOK = trPalDragOK();                      /* MSDRAG-v1 */
-  el.innerHTML = trPbBarHtml() + trPalRenderOrder().map(p=>{
+  el.innerHTML = trPbBarHtml() + trPalDupBarHtml() + trPalRenderOrder().map(p=>{
     const _mth = _rMulti ? trStopTheme(_rStops[trPalStopIdxDisp(_rD, p)]) : null;
     const _pdOK = _rDragOK && _shipPallets.length > 1;   /* MSDRAG-v1 */
     const _pOrders = ((_shipMeta&&_shipMeta.orderShip)||[]).filter(o=>o.pallet===p.label);
@@ -39108,7 +39176,7 @@ function osSplitN(total, n){
 /* 이름표가 겹치지 않는 새 팔레트. `trAddPallet` 과 같은 규칙이지만 화면을 다시 그리거나
    토스트를 띄우지 않는다 - 여러 장을 한 번에 만들 때 화면이 번쩍이지 않게. */
 function osNewPallet(sIdx){
-  let n=_shipPallets.length+1; while(_shipPallets.some(x=>x.label==='Pallet '+n)) n++;
+  const n = trNextPalNo();   /* OSPAL-2 - 오더가 쥔 번호까지 본다 */
   const p={ id:'p_'+Math.random().toString(36).slice(2,9), label:'Pallet '+n, lines:[] };
   const st = trIsMultiRoute(_shipRoute) ? trStopsOf({meta:_shipMeta}) : [];
   if(st.length){ const i=Number(sIdx); p.stop = (i>=0 && i<st.length) ? i : (st.length-1); }
