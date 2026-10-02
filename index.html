@@ -35200,6 +35200,9 @@ function trCaptureInfo(){
   if(_stops && _stops.length){ _palStop = {};
     _shipPallets.forEach(p=>{ if(p.stop >= 0 && p.stop < _stops.length) _palStop[p.label] = Number(p.stop); }); }
   _shipMeta = { route:_shipRoute, ship_date:v('ship-date'), eta:v('ship-eta'), seal:v('ship-seal'), carrier:v('ship-carrier'), driver:v('ship-driver'), phone:v('ship-phone'), truck:v('ship-truck'), pro:v('ship-pro'), notes:v('ship-notes'), bolFiles:(_shipMeta&&_shipMeta.bolFiles)||[], ...(_palBins.length ? { _palBins:_palBins } : {}), orderShip:(_shipMeta&&_shipMeta.orderShip)||[], designatedByPallet:(_shipMeta&&_shipMeta.designatedByPallet)||undefined,
+    /* MIXOK-1 - 「일부러 섞음」 표시. ⚠ 이 함수는 `_shipMeta` 를 **통째로 새로 만든다** -
+       여기 안 적은 키는 저장할 때마다 사라진다 (stops·palletStop 과 같은 이유로 여기 싣는다). */
+    ...(((_shipMeta&&_shipMeta._palMixOK)||[]).length ? { _palMixOK:_shipMeta._palMixOK } : {}),
     ...(_stops && _stops.length ? { stops:_stops, palletStop:_palStop } : {}) };
 }
 async function _trEnsureRow(){
@@ -36293,22 +36296,60 @@ function trNextPalNo(){
    조용히 고치면 안 된다 - 어느 쪽이 따로 쌓여 있는지는 창고 바닥을 본 사람만 안다.
    그래서 **보여주고**, 「→ own pallet」 한 번으로 오더만 새 번호로 빼 준다.
    ⓘ 1박스짜리 오더를 일부러 재고 팔레트에 얹은 것일 수도 있다 - 그건 그냥 두면 된다. */
+/* ═══ MIXOK-1 - 「이건 일부러 섞은 거다」 ═══
+   [stated] 하윤: "pallet 9에는 일부러 오더도 같이 넣은거야" / "pallet 27번은 오더랑 우리 재고
+            섞어서 내보내는거고" / "이거 두개는 왜 이런거야 저거는 다 맞게 들어가있는건데"
+   빨간 줄은 「한 번호에 우리 재고 + 거래처 오더」 를 전부 띄운다. 그게 사고일 때도 있고
+   일부러일 때도 있는데 앱은 구분할 길이 없다 → 사람이 한 번 찍어주면 그 뒤로는 안 띄운다.
+   ⭐⭐ 표시는 **오더(`osRid`)에 붙인다 - 팔레트 번호에 붙이면 안 된다.**
+      번호는 팔레트를 더하거나 지울 때마다 다시 매겨진다(`trPalRenumber`). 번호에 붙여두면
+      다음에 열었을 때 **엉뚱한 팔레트가 「일부러」 표시를 물려받는다** = v1148 사고의 그 메커니즘.
+      `osRid` = `base|part` 라 번호가 바뀌어도 그 오더를 그대로 따라간다.
+   ⚠ `_palMixOK` 를 `trCaptureInfo` 에도 실었다 - 거기 안 적으면 저장할 때마다 사라진다. */
+function trPalMixOKSet(){
+  try{ return new Set(((((_shipMeta)||{})._palMixOK)||[]).map(String)); }catch(e){ return new Set(); }
+}
+async function trPalMixOKSave(rid, on){
+  _shipMeta = _shipMeta || {};
+  const set = trPalMixOKSet();
+  if(on) set.add(String(rid)); else set.delete(String(rid));
+  _shipMeta._palMixOK = Array.from(set);
+  if(_shipId){ try{ await trPatchRec(_shipId, {meta:_shipMeta}); }catch(e){} }
+  trRenderPallets();
+  showToast(on ? '✓ Marked as on purpose' : '↩ Back on the check list');
+}
+function trPalMixOK(rid){ return trPalMixOKSave(rid, true); }
+function trPalMixUndo(rid){ return trPalMixOKSave(rid, false); }
 function trPalDupBarHtml(){
   try{
-    const dups = [];
+    const okSet = trPalMixOKSet();
+    const dups = [], done = [];
     (_shipPallets||[]).forEach(p=>{
       if(!p || !(p.lines||[]).length) return;
       const os = ((_shipMeta && _shipMeta.orderShip) || []).filter(x=>x && x.pallet === p.label);
       if(!os.length) return;
-      dups.push({ lab:p.label, sb:(p.lines||[]).reduce((t,l)=>t+trLineBoxes(l),0), os:os });
+      const sb = (p.lines||[]).reduce((t,l)=>t+trLineBoxes(l),0);
+      const pend = os.filter(x=>!okSet.has(String(osRid(x))));
+      os.forEach(x=>{ if(okSet.has(String(osRid(x)))) done.push({ lab:p.label, o:x }); });
+      if(pend.length) dups.push({ lab:p.label, sb:sb, os:pend });
     });
-    if(!dups.length) return '';
+    const doneBar = !done.length ? '' :
+      '<div style="display:flex;align-items:center;gap:7px;flex-wrap:wrap;font-size:10.5px;color:#64748b;'
+      + (dups.length ? 'margin-top:7px;padding-top:6px;border-top:1px dashed #fecaca;' : 'padding:5px 2px;') + '">'
+      + '<span style="font-weight:800;">✓ Mixed on purpose</span>'
+      + done.map(d=>'<span style="display:inline-flex;align-items:center;gap:5px;background:#f1f5f9;border:1px solid #e2e8f0;border-radius:12px;padding:1px 4px 1px 8px;">'
+          + esc(d.lab) + ' · ' + esc(d.o.cust||'—') + ' ' + (Number(d.o.boxes)||0) + ' box'
+          + '<button onclick="trPalMixUndo(\'' + esc(osRid(d.o)) + '\')" '
+          + 'style="border:none;background:none;color:#94a3b8;font-weight:900;font-size:11px;cursor:pointer;padding:0 3px;" '
+          + 'title="Put it back on the check list">✕</button></span>').join('')
+      + '</div>';
+    if(!dups.length) return doneBar;
     return '<div style="border:2px solid #dc2626;border-radius:8px;background:#fff1f2;padding:9px 12px;">'
       + '<div style="font-weight:900;color:#b91c1c;font-size:12px;">⚠ '
         + dups.length + ' pallet number' + (dups.length>1 ? 's are' : ' is')
         + ' used twice — CA stock and customer order boxes share it</div>'
       + '<div style="font-size:10.5px;color:#7f1d1d;margin:2px 0 7px;">One number cannot mean two pallets on the floor. '
-        + 'Give the order boxes their own number — unless those boxes really ride on this pallet.</div>'
+        + 'Give the order boxes their own number — or mark it as on purpose if those boxes really ride on this pallet.</div>'
       + dups.map(d=>'<div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;padding:4px 0;border-top:1px dashed #fecaca;">'
           + '<b style="color:#0f2a4a;font-size:12px;">' + esc(d.lab) + '</b>'
           + '<span style="font-size:11px;color:#475569;">CA stock ' + d.sb + ' box</span>'
@@ -36316,8 +36357,12 @@ function trPalDupBarHtml(){
               + '<b style="color:#a21caf;">' + esc(x.cust||'—') + '</b> ' + (Number(x.boxes)||0) + ' box'
               + '<button onclick="trOsSplitOut(\'' + esc(osRid(x)) + '\')" '
               + 'style="border:none;background:#a21caf;color:#fff;font-weight:800;font-size:10px;border-radius:12px;padding:3px 8px;cursor:pointer;" '
-              + 'title="Move these order boxes onto a pallet number of their own">→ own pallet</button></span>').join('')
+              + 'title="Move these order boxes onto a pallet number of their own">→ own pallet</button>'
+              + '<button onclick="trPalMixOK(\'' + esc(osRid(x)) + '\')" '
+              + 'style="border:1px solid #cbd5e1;background:#fff;color:#475569;font-weight:800;font-size:10px;border-radius:12px;padding:3px 8px;cursor:pointer;" '
+              + 'title="These boxes really ride on this pallet - stop asking">✓ on purpose</button></span>').join('')
         + '</div>').join('')
+      + doneBar
       + '</div>';
   }catch(e){ return ''; }
 }
