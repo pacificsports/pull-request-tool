@@ -18143,6 +18143,37 @@ function scanPoKey(po){ return 'PO|' + String(po||'').trim().toUpperCase(); }
    ⭐ 저장값은 한 글자도 안 바꾼다 - **보여줄 때만** `meta.stops` 를 읽어 이름을 만든다
       (MSDOC-v1 의 `trPalDisp` 와 같은 원칙).
    ⚠ `stops` 가 없거나 multi 가 아닌 길은 예전 글자 그대로. */
+/* ═══ SCANLIVE-1 - 맨 위 큰 숫자가 **내 것만** 세고 있었다 ═══
+   [stated] 하윤: "근데 왜 내 폰에는 업대이트가 안되고 내가 찍은것만 나온는거야?"
+   🔴 옆 사람 것은 v1049 부터 **줄별 표**에는 들어왔는데, 맨 위 `SCANNED 3 / 1,004` 는
+      `scanTally()`(내 것만) 를 더해서 썼다. 창고에서 제일 먼저 보는 숫자가 그것이라
+      「공유가 안 된다」 로 보인다. 실제로는 서버에 둘 다 올라가 있었다
+      (실측 2026-10-02: Hyun 123 + Peter 14 = 136).
+   ⭐ 고침: 큰 숫자는 **내 것 + 옆 사람 것**. `mates` 는 이미 내 카톤 번호를 뺀 값이라
+      같은 박스를 둘이 찍어도 두 번 안 더해진다.
+   ⭐ 그리고 바로 밑에 **사람별 숫자**를 적는다 - 서로 얼마나 했는지 보여야 나눠 찍는다.
+   ⚠ 사람별 숫자는 `mateCounts`(그 사람이 올린 총 개수)를 쓴다. `mates` 를 쓰면
+      겹쳐 찍은 박스가 그 사람 몫에서 빠져 보인다. */
+function scanTotalGot(){
+  let t = 0;
+  try{ const mine = scanTally(); Object.keys(mine).forEach(k=>{ t += Number(mine[k])||0; }); }catch(e){}
+  try{ const m = (_scan && _scan.mates) || {}; Object.keys(m).forEach(k=>{ t += Number(m[k])||0; }); }catch(e){}
+  return t;
+}
+function scanWhoHtml(){
+  try{
+    const cts = (_scan && _scan.mateCounts) || {};
+    const ks = Object.keys(cts).filter(k=>Number(cts[k]) > 0);
+    if(!ks.length) return '';
+    let mine = 0;
+    try{ mine = (_scan.seen ? _scan.seen.size : 0) + ((_scan.pbox && _scan.pbox.size) || 0); }catch(e){}
+    const me = String((typeof _pchkWho!=='undefined' && _pchkWho) || '').trim() || 'Me';
+    const one = (nm, v) => '<span style="background:rgba(255,255,255,.14);border-radius:20px;padding:1px 8px;">'
+      + esc(nm) + ' <b style="font-family:Consolas,monospace;">' + v + '</b></span>';
+    return '<div style="display:flex;align-items:center;gap:6px;flex-wrap:wrap;font-size:11px;color:#cbd5e1;margin-top:5px;">'
+      + '\u{1F465} ' + [one(me, mine)].concat(ks.map(k=>one(k, Number(cts[k])||0))).join(' ') + '</div>';
+  }catch(e){ return ''; }
+}
 function scanTrShort(rec){
   const rt = (typeof TR_ROUTES!=='undefined' && TR_ROUTES[((rec&&rec.meta)||{}).route]) || null;
   if(!rt) return '';
@@ -18793,19 +18824,22 @@ function scanMatesFrom(srv){
   const who = String(_pchkWho||'').trim() || 'Someone';
   const myIds = {};
   try{ Object.keys(scanMyUnits().u).forEach(id=>{ myIds[id] = 1; }); }catch(e){}
-  const others = {}, names = [];
+  const others = {}, names = [], counts = {};
   const sp = (srv && srv.people) || {};
   Object.keys(sp).forEach(k=>{
     if(k === who) return;
     const q = sp[k]; if(!q) return;
     names.push(k);
     const pu = scanPersonUnits(q);
+    /* SCANLIVE-1 - 그 사람이 **전부 몇 개** 찍었는지. `others` 는 내 카톤을 뺀 값이라
+       사람별 숫자로는 못 쓴다 (겹쳐 찍은 박스가 그 사람 몫에서도 빠져 보인다). */
+    counts[k] = Number(q.n) || Object.keys(pu).length;
     Object.keys(pu).forEach(id=>{ if(myIds[id]) return; const v = pu[id];
       others[v.k] = (others[v.k]||0) + (Number(v.n)||0); });
     const e = scanPersonExtra(q);
     Object.keys(e).forEach(x=>{ others[x] = (others[x]||0) + (Number(e[x])||0); });
   });
-  return { others, names };
+  return { others, names, counts };
 }
 /* 내가 안 찍고 있어도 10초마다 받아온다 — 옆 사람이 찍는 게 내 화면에서 바로 차오르게 (v1050) */
 let _scanMateT = null;
@@ -18822,7 +18856,7 @@ async function scanMatesPull(){
     const rec = await r.json();
     const m = scanMatesFrom((rec && rec.meta && rec.meta.scan) || null);
     const before = JSON.stringify(_scan.mates || {});
-    _scan.mates = m.others; _scan.mateNames = m.names;
+    _scan.mates = m.others; _scan.mateNames = m.names; _scan.mateCounts = m.counts || {};
     if(JSON.stringify(m.others) !== before){
       try{ scanRender(); }catch(e){}
       try{ scanCamListSoon(); }catch(e){}
@@ -18856,10 +18890,14 @@ async function scanAutoPush(){
   _scanAutoBusy = true;
   try{
     const payload = await scanPush(!!window._scanSent);
+    /* SCANEXIT-1 - 사무실에 **진짜로 들어갔다**는 사실을 적어 둔다. 나갈 때 뜨는 말이 이걸 본다. */
+    window._scanCloudN = Number(payload.boxN) || (_scan.seen ? _scan.seen.size : 0);
+    window._scanCloudAt = Date.now(); window._scanCloudErr = '';
     scanAutoBadge(payload.boxN || _scan.seen.size, payload.people);
     /* 남이 찍은 게 새로 들어왔으면 줄 색·개수를 다시 그린다 (v1049) */
     try{ if(_scan && _scan.mateNames && _scan.mateNames.length) scanRender(); }catch(e){}
-  }catch(e){ scanAutoBadge(0, null, String((e && e.message) || e)); }
+  }catch(e){ window._scanCloudErr = String((e && e.message) || e);
+             scanAutoBadge(0, null, window._scanCloudErr); }
   _scanAutoBusy = false;
 }
 function scanAutoBadge(n, people, why){
@@ -18894,6 +18932,7 @@ async function scanStart(mode, id){
     exp: (mode==='TR') ? scanExpTransfer(rec) : scanExpInbound(rec),
     seen: new Map(), pbox: new Map(), manual: {} };
   const _again = scanKeep2Take();   /* 💾 아까 찍다 만 게 있으면 그대로 이어붙인다 (v1044) */
+  try{ window._scanCloudN = 0; window._scanCloudAt = 0; window._scanCloudErr = ''; }catch(e){}   /* SCANEXIT-1 */
   try{ scanMatesWatch(true); scanMatesPull(); }catch(e){}   /* 👥 옆 사람 것 실시간으로 (v1050) */
   if(mode === 'TR' && poSet.size) scanLoadPoItems(rec);
   scanSession();
@@ -19136,7 +19175,8 @@ function scanSession(){
       ${_rsHtml}
       <div style="background:#0f2a4a;color:#fff;border-radius:12px;padding:14px 16px;display:flex;align-items:center;gap:10px;margin-bottom:12px;">
         <div><div style="font-size:11px;color:#cbd5e1;font-weight:800;letter-spacing:.08em;">SCANNED</div>
-          <div style="font-size:30px;font-weight:900;line-height:1;"><span id="scan-n">0</span><span style="font-size:19px;font-weight:900;color:#e2e8f0;"> / ${expTot.toLocaleString()}</span></div></div>
+          <div style="font-size:30px;font-weight:900;line-height:1;"><span id="scan-n">0</span><span style="font-size:19px;font-weight:900;color:#e2e8f0;"> / ${expTot.toLocaleString()}</span></div>
+          <div id="scan-who"></div></div>
         <div style="margin-left:auto;">
           <button onclick="scanCam()" style="background:#22c55e;color:#fff;border:none;border-radius:11px;padding:14px 22px;font-size:16px;font-weight:800;">📷 Scan ▸</button>
         </div>
@@ -19152,11 +19192,29 @@ function scanExit(){
   /* 📥 입고 · 🚚 이송을 아직 사무실에 안 보냈으면 나가기 전에 한 번 물어본다 (v1045).
      세어놓은 건 이 기계에 남아 이어할 수 있지만, "다 날아간 줄 알았다" 가 되지 않게 말해준다. */
   try{
+    /* ═══ SCANEXIT-1 - 「사무실이 아직 못 받았다」 는 **사실이 아니었다** ═══
+       [stated] 하윤: "내가 내 폰에서 백누르니까 저게 뜨는데 이게 맞아?"
+       🔴 이 말은 v1045 것이다. 그 다음 v1046 에서 **찍을 때마다 자동으로 올라가게** 바뀌었는데
+          이 글은 안 고쳤다. 실측(2026-10-02): 하윤 123박스가 이미 서버에 올라가 있는데도
+          나갈 때 「the office has NOT got them yet」 이 떴다. 창고에서 제일 무서운 거짓말이다.
+       ⭐ 이제 **올리기가 실제로 성공했는지**(`window._scanCloudN`) 를 보고 말을 고른다.
+          · 올라갔다 → 사무실에 있다고 말하고, Send 는 「다 셌다」 도장이라고 알려 준다
+          · 못 올라갔다 → 예전 경고 그대로 (그때는 진짜다) */
     if(_scan && (_scan.mode==='IN' || _scan.mode==='TR') && _scan.seen && _scan.seen.size && !window._scanSent){
-      if(!confirm('Leave without sending?\n\n'
-        + _scan.seen.size + ' box(es) counted — the office has NOT got them yet.\n\n'
-        + 'They stay on this phone, so you can open the same shipment and keep going.\n'
-        + 'OK = leave · Cancel = stay and press Send')) return;
+      const nBox = _scan.seen.size;
+      const up = Number(window._scanCloudN) || 0;
+      const err = String(window._scanCloudErr || '');
+      const safe = !err && up >= nBox;
+      const msg = safe
+        ? ('Leave without pressing Send?\n\n'
+           + up + ' box(es) are already with the office — nothing is lost.\n\n'
+           + 'Send only marks the count finished. Until then the office sees it as still counting.\n'
+           + 'OK = leave · Cancel = stay and press Send')
+        : ('Leave without sending?\n\n'
+           + nBox + ' box(es) counted' + (up ? (', only ' + up + ' reached the office') : ' — the office has NOT got them yet') + '.\n\n'
+           + 'They stay on this phone, so you can open the same shipment and keep going.\n'
+           + 'OK = leave · Cancel = stay and press Send');
+      if(!confirm(msg)) return;
     }
   }catch(e){}
   scanStop();
@@ -19200,9 +19258,9 @@ function scanConfirmBack(){
 function scanRender(){
   const el = document.getElementById('scan-report'); if(!el || !_scan) return;
   const rows = scanReconcile();
-  const tally = scanTally();
-  const got = Object.keys(tally).reduce((a,k)=>a+tally[k],0);
+  const got = scanTotalGot();                       /* SCANLIVE-1 - 옆 사람 것까지 합쳐서 */
   const n = document.getElementById('scan-n'); if(n) n.textContent = got.toLocaleString();
+  const w = document.getElementById('scan-who'); if(w) w.innerHTML = scanWhoHtml();
   const bad = rows.filter(r=>r.st!=='match').length;
   const phoUnread = (_spInfo && Number(_spInfo.unread)) || 0;   // 📸 안 읽힌 박스가 있으면 '다 맞음' 이라고 못 한다 (v796)
   /* 오더별 표 안에 박스 내용이 다 들어갔으면, 아래 긴 PC Room 목록은 또 보여주지 않는다 (v928) */
