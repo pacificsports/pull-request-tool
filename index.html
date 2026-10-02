@@ -35046,6 +35046,35 @@ async function trBuilderOpen(existingId, route){
         });
       }
     }catch(e){ console.warn('palBins 복원 실패(무시):', e); }
+    /* ═══ OSPAL-1 - 오더만 실린 팔레트가 사라지고 번호가 통째로 밀리던 것 ═══
+       [stated] 하윤: "저 1290 10박스씩은 pallet 27번에 넣어야해서 옮기고 save하고 닫았는데
+                       또 다시 pallet 23번으로 가버리고" / "pallet 22번은 또 오더 팔렛하고 우리 그냥
+                       CA보내는 팔렛 만들어 놓은거랑 합쳐져서 나와서 총 팔렛이 28이 아닌 27 로 나와"
+       🔴 순서가 뒤집혀 있었다. 열 때 이렇게 돌았다:
+          ① 줄에서 팔레트를 만든다 (오더만 실린 팔레트는 **줄이 없어서 안 만들어진다**)
+          ② `p.label='Pallet '+(i+1)` 로 **번호를 다시 매긴다**  ← 여기서 뒤 팔레트가 한 칸씩 당겨진다
+          ③ 그 다음에야 `meta.orderShip[].pallet` 로 오더 팔레트를 되살리려 한다
+          ③ 이 `label===o.pallet` 로 찾는데, ② 가 이미 **다른 팔레트에 그 번호를 줘 버렸다**
+          → 「이미 있네」 하고 안 만든다. 오더만 실린 팔레트는 영영 사라지고, 그 오더는
+            그 번호를 물려받은 **엉뚱한 팔레트에 붙어 보인다**. 팔레트 수도 하나 모자란다.
+       ⭐ 고침: ③ 을 ② **앞**으로 옮기고, 그 다음 **저장된 번호대로 줄을 세운 뒤** 번호를 매긴다.
+          번호표가 아직 저장된 값일 때 맞춰야 짝이 맞는다.
+       ⚠ `Pallet N` 모양이 아닌 이름표가 하나라도 있으면 줄 세우기를 건너뛴다
+          (3자 창고 길은 팔레트가 곧 bin 이라 번호가 아니다 - 건드리면 안 된다).
+       ⚠ `_palBins`(H 번호) 복원 **뒤**에 있어야 한다는 OSCASTOP-1 규칙은 그대로 지킨다. */
+    try{
+      ((_shipMeta.orderShip) || []).forEach(o=>{
+        if(o && o.pallet && !_shipPallets.some(p=>p.label === o.pallet))
+          _shipPallets.push({ id:'p_'+Math.random().toString(36).slice(2,9), label:o.pallet, lines:[] });
+      });
+    }catch(e){}
+    try{
+      const _palNo = x=>{ const m = /^Pallet\s+(\d+)$/i.exec(String(x||'').trim()); return m ? Number(m[1]) : NaN; };
+      if(!trSrcAutoPallet(_shipRoute) && _shipPallets.length > 1
+         && _shipPallets.every(p=>!isNaN(_palNo(p && p.label)))){
+        _shipPallets.sort((a,b)=>_palNo(a.label) - _palNo(b.label));
+      }
+    }catch(e){}
     if(!trSrcAutoPallet(_shipRoute)) _shipPallets.forEach((p,i)=>p.label='Pallet '+(i+1));
     /* 저장해둔 정차지를 팔레트에 되살린다 — 줄의 `stop` 이 1순위 (v1076) */
     if(trIsMultiRoute(_shipRoute)){
@@ -35053,8 +35082,8 @@ async function trBuilderOpen(existingId, route){
       _shipPallets.forEach(p=>{ const i = trStopIdxOfPallet({meta:_shipMeta}, p); if(_st.length && i>=0) p.stop = i; });
     }
   }
-  // 🚚 오더 박스만 실린 팔레트도 유지 (라인이 없어도 사라지지 않게)
-  try{ ((_shipMeta.orderShip)||[]).forEach(o=>{ if(o.pallet && !_shipPallets.some(p=>p.label===o.pallet)) _shipPallets.push({ id:'p_'+Math.random().toString(36).slice(2,9), label:o.pallet, lines:[] }); }); }catch(e){}
+  /* OSPAL-1 - 오더만 실린 팔레트 복원은 **번호를 매기기 전**(위)으로 옮겼다.
+     여기 있으면 이미 번호가 다시 매겨진 뒤라 「이미 있네」 로 읽혀 복원이 안 된다. */
   /* ⚠⚠ OSCASTOP-1 (고침 2) - 이 줄은 **반드시 위 복원 루프 뒤에** 있어야 한다.
      오더만 실린 팔레트는 줄이 하나도 없어서 `trLinesFlat()` 로 안 돌아온다. 바로 위 루프가
      `meta.orderShip[].pallet` 를 보고 **그때** 다시 만드는데, 정차지 없이 만든다.
