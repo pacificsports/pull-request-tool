@@ -314,7 +314,7 @@ body.po-dragging{user-select:none;}
   </span>
   <select id="lang-sel" onchange="setLang(this.value)" style="font-size:11px;padding:3px 6px;border-radius:5px;border:none;background:#1d3f66;color:#fff;"><option value="ko">한국어</option><option value="en">English</option><option value="es">Español</option></select>
   <button id="wide-btn" class="btn btn-sm" onclick="toggleWide()" title="화면 넓게 / 좁게 — 기본은 넓게 (이 브라우저에만 저장돼)" style="padding:2px 8px;font-size:10px;background:#1d3f66;color:#cfe0f2;border-color:#2b5384;">↔ Wide</button>
-  <span id="app-ver" style="font-size:10px;color:#9fb8d4;">v1199</span>
+  <span id="app-ver" style="font-size:10px;color:#9fb8d4;">v1200</span>
 </div>
 <script>
 // ↔ 넓게 보기 — 브라우저마다 따로 저장 (v793)
@@ -11903,6 +11903,16 @@ function csFactored(cs){
   if(cs.factored === undefined || cs.factored === null) return !cs.webCust;
   return !!cs.factored;
 }
+/* INHOUSE-1 - 이 거래처 결정이 사람 손으로 정해진 것인가, 짐작인가 (2026-10-03)
+   [stated] 하윤: "우리 여기에 In-House 옵션도 factor옆에 하나 만들자" (두 번 말했다)
+   [stated] 뜻: 팩터(HANA) 에 안 넘기고 **우리가 직접 수금**하는 거래처.
+   ⚠⚠ csFactored 는 칸이 비면 「웹 거래처의 반대」 로 짐작한다 - 짐작은 안전한 쪽으로
+      틀리도록 팩터 쪽으로 기운다. 즉 **직접 수금하는 PO 거래처는 아무도 체크를 안 건드리면
+      종이에 HANA 송금처가 찍힌다.** 그러니 「정해졌나」 를 화면에서 보여 줘야 한다.
+   이 함수는 판단을 바꾸지 않는다 - 판단이 어디서 왔는지만 알려 준다. */
+function csFactoredSet(cs){ return !!(cs && cs.factored !== undefined && cs.factored !== null); }
+/* 팩터가 아닌 거래처 인보이스에 찍는 우리 송금처. 회사 머리글과 **같은 값**에서 나온다. */
+function invOursRemit(){ return [INV_HQ.name, INV_HQ.dba, INV_HQ.addr]; }
 function invFactored(meta){
   let cs = {};
   try{
@@ -11983,7 +11993,17 @@ function buildInvoiceDoc(rec, wh, d, meta, lines, num, dateStr){
         잔액은 여전히 HANA 것이다. invFactored 가 모를 때 넣는 것과 같은 방향(안전한 쪽)이다.
      ⓘ COD 는 건드리지 않았다 — 아직 못 걷은 채권이라 팩터 대상일 수 있다. */
   const ccTerms   = invTermTypeOf(d, meta) === 'cc';
-  const showRemit = factored && !ccTerms && !nothingDue;
+  /* INHOUSE-1 - 송금처 칸을 세 갈래로 나눈다 (2026-10-03)
+       'FACTOR' 팩터 거래처 -> HANA 주소 + 아래 양도 문구 (예전과 글자 하나까지 같다)
+       'OURS'   직접 수금   -> 우리 주소. 양도 문구는 **안 붙인다**
+       ''       안 붙인다  -> 카드 조건이거나 받을 돈이 없을 때 (예전과 같다)
+     ⚠ 예전에는 팩터가 아니면 칸 자체가 없어서 종이에 「어디로 보내라」 가 한 줄도 없었다.
+        머리글 주소로 보내면 맞기는 하지만 종이가 말을 안 하는 쪽이다.
+     ⚠ 양도 문구(ASSIGNMENT & PAYMENT NOTICE)는 팩터일 때만 - 우리 주소 아래에 그 글이
+        붙으면 「우리에게 보내라」 와 「HANA 것이다」 가 한 종이에서 싸운다. */
+  const remitKind  = (ccTerms || nothingDue) ? '' : (factored ? 'FACTOR' : 'OURS');
+  const showRemit  = remitKind !== '';
+  const showAssign = remitKind === 'FACTOR';
   /* SHIPFROM-v2 — 출고 창고 이름. 칸은 **항상** 나온다.
      ⚠ wh 는 'SC'/'CA' 만 오지 않는다 — 수정 출고는 REV 키('SC-R1')로 온다 (plWhList -> revSepKeys).
         그래서 부모 창고로 먼저 되돌린다. 안 그러면 REV 인보이스에만 칸이 사라진다.
@@ -12037,7 +12057,7 @@ function buildInvoiceDoc(rec, wh, d, meta, lines, num, dateStr){
       + '<div><div class="ix-lbl">SHIP TO</div>' + invxAddrBlock(meta, 'ship') + '</div>'
       /* 돈 보낼 곳 — 팩터 거래처만. 긴 법적 문장은 종이 아래에 그대로 있다. */
       + (showRemit ? ('<div class="ix-remit"><div class="ix-lbl">REMIT PAYMENT TO</div>'
-          + invxRemitAddr(cfg.remit).map(function(s,i){
+          + (showAssign ? invxRemitAddr(cfg.remit) : invOursRemit()).map(function(s,i){
               return '<div class="ix-val' + (i ? ' sub' : '') + '">' + esc(s) + '</div>'; }).join('')
           /* ⚠⚠ 여기에 경고 한 줄을 넣었다가 물렜다 (2026-09-24).
              [stated] 하윤: "저기 do not send payment to the address above는 들어가면 안되는거 아니야??"
@@ -12070,11 +12090,11 @@ function buildInvoiceDoc(rec, wh, d, meta, lines, num, dateStr){
       + '</tbody><tfoot>' + tfootHtml + '</tfoot></table>'
     + '<div class="ix-tail">'
       + (d.note ? '<div class="ix-note wide"><b>Note</b> — ' + esc(d.note) + '</div>' : '')
-      + '<div class="ix-box' + (showRemit ? '' : ' wide') + '"><div class="ix-lbl">RETURN POLICY</div>'
+      + '<div class="ix-box' + (showAssign ? '' : ' wide') + '"><div class="ix-lbl">RETURN POLICY</div>'
         + '<div class="ix-small">' + invxLines(cfg.ret) + '</div></div>'
       /* 아래는 **양도 문구 전체** — 위 칸은 주소만 짧게, 여기는 법적 문장 그대로.
          ⚠ 이름표를 위 칸과 다르게 둔다 — 같은 말이 두 번 있는 것처럼 보이지 않게. */
-      + (showRemit ? ('<div class="ix-box hot"><div class="ix-lbl">ASSIGNMENT &amp; PAYMENT NOTICE</div>'
+      + (showAssign ? ('<div class="ix-box hot"><div class="ix-lbl">ASSIGNMENT &amp; PAYMENT NOTICE</div>'
         + '<div class="ix-small">' + invxLines(cfg.remit) + '</div></div>') : '')
       + '<div class="ix-thanks wide">THANK YOU FOR YOUR BUSINESS</div>'
     + '</div>'
@@ -42607,13 +42627,37 @@ function cmTypeChips(name, cs, isCC){
      조건은 오른쪽 TERMS 칸에서 따로 고른다 (Net 30 + 카드 등록이 같이 되게). */
   return chip(csPaysCard(cs), '#065f46', '💳 Card on File', "cmSet('"+k+"','payCard',this.checked)", 'Card on file — this customer pays by card. Payment terms are the separate TERMS box, so Net 30 + card on file is fine.')
     + ' ' + chip(!!cs.webCust, '#0e7490', '🌐 Website', "cmSet('"+k+"','webCust',this.checked)", 'Website customer — new orders auto-tick 🌐 Website Customer')
-    /* INVDOC-v1 - 인보이스에 팩터 remit-to 문구를 넣을 거래처인가.
-       [stated] 하윤: "거래처 마다 체크 할수도 있게하고 기존으로 website 체크로 자동으로 구분되게"
-       ⚠ 체크를 한 번도 안 건드린 거래처는 🌐 Website 의 반대로 읽는다 (csFactored). */
-    + ' ' + chip(csFactored(cs), '#7c2d12', '🏦 Factored', "cmSet('"+k+"','factored',this.checked)", 'Factored — the invoice prints the factor remit-to block (HANA). Untick for customers who pay us directly, such as website customers.')
+    /* INHOUSE-1 - 돈을 누가 걷는가. 체크 두 개가 아니라 **둘 중 하나**다 (2026-10-03)
+       [stated] 하윤: "우리 여기에 In-House 옵션도 factor옆에 하나 만들자"
+       ⚠⚠ 예전에는 🏦 Factored 체크 하나뿐이어서 **꺼진 상태가 두 가지 뜻**이었다 -
+          「직접 수금으로 정했다」 와 「아무도 안 건드렸다(= 짐작)」. 짐작은 팩터 쪽으로
+          기울어서, 직접 수금하는 거래처 인보이스에 HANA 가 찍힐 수 있었다.
+          이제 두 단추 중 하나가 늘 켜져 있고, 정해지지 않았으면 **점선 + AUTO** 로 보인다.
+       ⚠ 저장되는 칸은 그대로 `factored` 하나다 - 새 칸을 만들지 않았다. 그래서
+          인보이스·Factor File·목록 딱지가 전부 예전 함수(csFactored) 를 그대로 쓴다. */
+    + ' ' + cmMoneyPathHtml(k, cs)
     /* SAVECARD-1 - 거래처가 결제 링크에서 카드를 저장해 두면 여기에 뜬다.
        카드번호는 Authorize.Net 이 갖고 있고 우리는 지갑 번호와 뒷 4자리만 안다. */
     + savedCardPill(k, cs);
+}
+/* INHOUSE-1 - 🏦 Factored | 🏠 In-House 두 단추. 하나만 켜진다.
+   누르면 바로 저장된다 (cmSet 이 서버 응답을 보고 Saved / NOT saved 를 띄운다). */
+function cmMoneyPathHtml(k, cs){
+  const fac = csFactored(cs);
+  const set = csFactoredSet(cs);
+  const btn = (on, color, label, val, title) =>
+    '<button type="button" title="' + title + '" onclick="cmSet(\'' + k + '\',\'factored\',' + val + ')" '
+    + 'style="display:inline-flex;align-items:center;gap:4px;font-size:11px;font-weight:800;cursor:pointer;'
+    + 'border:1px ' + ((on && !set) ? 'dashed' : 'solid') + ' ' + (on ? color : '#cbd5e1') + ';'
+    + 'background:' + (on ? color + '14' : '#fff') + ';color:' + (on ? color : '#64748b') + ';'
+    + 'border-radius:7px;padding:3px 9px;vertical-align:middle;">' + label
+    + ((on && !set) ? ' <span style="font-size:8.5px;font-weight:900;opacity:.75;">AUTO</span>' : '')
+    + '</button>';
+  return btn(fac, '#7c2d12', '\u{1F3E6} Factored', 'true',
+             'Factored - the invoice prints the HANA remit-to block and the assignment notice. This customer goes on the daily factor file.')
+       + ' ' + btn(!fac, '#5b21b6', '\u{1F3E0} In-House', 'false',
+             'In-House - we collect from this customer ourselves. The invoice prints OUR remit-to address, no HANA block, and the customer is left off the factor file.')
+       + (set ? '' : ' <span title="Nobody has chosen yet, so the app is reading it from the \u{1F310} Website tick. Press one of the two to lock it in." style="font-size:9px;font-weight:800;color:#b45309;background:#fef3c7;border:1px solid #fcd34d;border-radius:6px;padding:2px 6px;vertical-align:middle;">not set</span>');
 }
 /* SAVECARD-1 - 결제 요청 창에 「이 거래처는 카드가 저장돼 있다」를 알려 준다.
    직원이 링크를 보낼 때 거래처가 한 번에 낼 수 있다는 것을 알 수 있게. */
@@ -42917,6 +42961,12 @@ function cmFlagHtml(name, onDark){
   const out = [];
   if(fac) out.push(pill({s:'\u{1F3E6} HANA', t:'Factored - the invoice is payable to HANA'},
     onDark ? '#312e81' : '#e0e7ff', onDark ? '#c7d2fe' : '#3730a3'));
+  /* INHOUSE-1 - 팩터가 아니면 **그렇다고 말한다.** 딱지가 없는 줄은 「아직 안 정한 것」 과
+     구분이 안 돼서, 직접 수금 거래처가 목록에서 조용히 사라져 보였다.
+     ⚠ 🌐 WEB 줄에는 안 붙인다 - 웹 거래처는 팩터에 안 넘기니 WEB 이 이미 그 말을 한다.
+        💳 CARD 를 WEB 줄에서 빼는 것과 같은 규칙이다 (좁은 목록에 같은 말을 두 번 쓰지 않는다). */
+  if(!fac && !web) out.push(pill({s:'\u{1F3E0} IN-HOUSE', t:'We collect from this customer ourselves - no HANA block on the invoice'},
+    onDark ? '#4c1d95' : '#ede9fe', onDark ? '#ddd6fe' : '#5b21b6'));
   if(web) out.push(pill({s:'\u{1F310} WEB', t:'Website customer - pays by card at checkout'},
     onDark ? '#064e3b' : '#d1fae5', onDark ? '#6ee7b7' : '#065f46'));
   else if(pays) out.push(pill({s:'\u{1F4B3} CARD', t:'Not a website customer, but we take payment by card'},
