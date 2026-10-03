@@ -314,7 +314,7 @@ body.po-dragging{user-select:none;}
   </span>
   <select id="lang-sel" onchange="setLang(this.value)" style="font-size:11px;padding:3px 6px;border-radius:5px;border:none;background:#1d3f66;color:#fff;"><option value="ko">한국어</option><option value="en">English</option><option value="es">Español</option></select>
   <button id="wide-btn" class="btn btn-sm" onclick="toggleWide()" title="화면 넓게 / 좁게 — 기본은 넓게 (이 브라우저에만 저장돼)" style="padding:2px 8px;font-size:10px;background:#1d3f66;color:#cfe0f2;border-color:#2b5384;">↔ Wide</button>
-  <span id="app-ver" style="font-size:10px;color:#9fb8d4;">v1197</span>
+  <span id="app-ver" style="font-size:10px;color:#9fb8d4;">v1199</span>
 </div>
 <script>
 // ↔ 넓게 보기 — 브라우저마다 따로 저장 (v793)
@@ -18177,6 +18177,102 @@ function scanGotOf(key){
    ⚠ 포장(PO) 화면은 **안 건드린다** — 거긴 장수로 세고 흐름이 다르다. 이송(TR)·입고(IN) 만.
    ⚠ `meta.scan` 은 이제 **Send 를 누를 때 요약 한 번**만 쓴다 (사무실 배너·목록이 그걸 본다).
       찍을 때마다 쓰지 않으므로 빌더가 meta 를 다시 써도 세던 것이 안 날아간다. */
+/* ═══════════ PALPICK-1 — 「지금 찍는 팔레트」 를 고른다 (2026-10-03) ═══════════
+   [stated] 하윤: "peter가 aquasea 오더 스캔을 다 했는데 왜 short라고 나오는지" →
+            실측 결과 Aquasea 가 달라는 8368 색·사이즈 10가지가 **트럭 재고 줄에도 똑같이** 있어서
+            라벨만으로는 못 가른다. SCANPO-1 은 재고가 다 찬 뒤에야 넘겨주므로 중간엔 늘 모자라 보였다.
+   ⭐ 박스 QR 에는 팔레트가 없지만, **사람은 지금 어느 팔레트를 찍는지 안다.**
+      그 한 가지만 받으면 추측이 전부 사라진다:
+        · 고른 팔레트에 그 품목이 재고로 실려 있으면 → 재고
+        · 아니고 그 팔레트에 오더가 **딱 하나** 있으면 → 그 오더 몫 (확실하다)
+        · 오더가 둘 이상이면 손대지 않는다 (찍어 맞히지 않는다 - SCANPO-1 이 개수로 가른다)
+   ⭐ 찍은 줄에 팔레트도 같이 쌓으므로 **팔레트별 진도**가 나온다 (P24 · 12/34).
+   ⚠ `All` 이 기본값 - 안 고르면 예전과 글자까지 똑같다. */
+function scanPalInfoOf(rec){
+  const m = {};
+  const of = lab => { const k = String(lab||'').trim(); if(!k) return null;
+    if(!m[k]) m[k] = { stock:{}, pos:[], exp:0 }; return m[k]; };
+  try{
+    ((rec && rec.lines) || []).forEach(l=>{
+      const g = of(l && l.pallet); if(!g) return;
+      const n = Array.isArray(l.ids) ? l.ids.length : (Number(l.boxes)||0);
+      let k; try{ k = scanKeyOf(l.style, l.color, l.size); }catch(e){ return; }
+      g.stock[k] = (g.stock[k] || 0) + n; g.exp += n;
+    });
+  }catch(e){}
+  try{
+    ((((rec||{}).meta)||{}).orderShip || []).forEach(x=>{
+      if(!x) return; const g = of(x.pallet); if(!g) return;
+      const po = String(x.po||'').trim().toUpperCase();
+      if(po && g.pos.indexOf(po) < 0) g.pos.push(po);
+      g.exp += Number(x.boxes) || 0;
+    });
+  }catch(e){}
+  return m;
+}
+/* 이 카톤을 어느 줄로 셀 것인가 — 고른 팔레트가 있으면 그것이 답을 준다 */
+function scanEvItemFor(b){
+  let base = '';
+  try{ base = (b && b.kind === 'pbox') ? scanPoKey(b.po) : scanKeyOf(b.style, b.color, b.size); }catch(e){ return ''; }
+  try{
+    const sel = (_scan && _scan.palSel) || '';
+    if(!sel || (b && b.kind === 'pbox')) return base;      /* PC Room 박스는 라벨에 PO 가 있다 */
+    const info = ((_scan && _scan.palInfo) || {})[sel];
+    if(!info) return base;
+    if(info.stock && info.stock[base] != null) return base; /* 그 팔레트의 재고 품목이면 재고 */
+    if(info.pos && info.pos.length === 1) return scanPoKey(info.pos[0]);
+  }catch(e){}
+  return base;
+}
+function scanPalNo(lab){ const mm = /^Pallet\s+(\d+)$/i.exec(String(lab||'').trim()); return mm ? Number(mm[1]) : NaN; }
+function scanPalPick(lab){
+  if(!_scan) return;
+  _scan.palSel = String(lab || '');
+  try{ scanPalChips(); }catch(e){}
+  if(_scan.palSel) showToast('\u{1F4E6} Scanning ' + _scan.palSel + ' \u2014 boxes count toward what is on it');
+  else showToast('\u{1F4E6} All pallets');
+}
+function scanPalChipsHtml(){
+  try{
+    const info = (_scan && _scan.palInfo) || {};
+    const labs = Object.keys(info);
+    if(labs.length < 2) return '';
+    labs.sort((a,b)=>{ const na = scanPalNo(a), nb = scanPalNo(b);
+      if(!isNaN(na) && !isNaN(nb)) return na - nb;
+      return String(a).localeCompare(String(b), undefined, {numeric:true}); });
+    const done = (_scan && _scan.srv && _scan.srv.pallets) || {};
+    const sel = (_scan && _scan.palSel) || '';
+    /* 색으로 한눈에: 고른 것 = 청록 · 다 센 것 = 초록 · 거래처 오더가 실린 것 = 보라 */
+    const chip = (lab, txt, on, kind) => {
+      let bd = '#cbd5e1', bg = '#fff', fg = '#334155';
+      if(kind === 'done'){ bd = '#86efac'; bg = '#f0fdf4'; fg = '#15803d'; }
+      else if(kind === 'order'){ bd = '#d8b4fe'; bg = '#faf5ff'; fg = '#7b1fa2'; }
+      if(on){ bd = '#0e7490'; bg = '#0e7490'; fg = '#fff'; }
+      return '<button data-palchip="' + (on ? '1' : '') + '" onclick="scanPalPick(\'' + esc(String(lab).replace(/'/g, "")) + '\')" '
+        + 'style="flex:none;border:1.5px solid ' + bd + ';background:' + bg + ';color:' + fg
+        + ';border-radius:999px;padding:6px 13px;font-size:12.5px;font-weight:800;white-space:nowrap;cursor:pointer;">'
+        + txt + '</button>';
+    };
+    const short = l => { const n = scanPalNo(l); return n ? ('P' + n) : esc(l); };
+    return '<div style="margin:0 0 10px;">'
+      + '<div style="font-size:11px;font-weight:800;color:#475569;margin-bottom:5px;">Which pallet are you scanning?'
+      + ' <span style="font-weight:600;color:#7b1fa2;">\u2022 purple = a customer order rides on it</span></div>'
+      + '<div style="display:flex;gap:6px;overflow-x:auto;padding-bottom:4px;">'
+      + chip('', 'All', !sel, '')
+      + labs.map(l=>{ const g = info[l]; const d = Number(done[l]) || 0;
+          const kind = (g.exp > 0 && d >= g.exp) ? 'done' : ((g.pos && g.pos.length) ? 'order' : '');
+          return chip(l, (((g.pos && g.pos.length) ? '\u{1F69A} ' : '') + short(l))
+            + ' <span style="font-weight:600;opacity:.85;">' + d + '/' + (g.exp||0) + '</span>', sel === l, kind); }).join('')
+      + '</div></div>';
+  }catch(e){ return ''; }
+}
+function scanPalChips(){
+  const el = document.getElementById('scan-pal'); if(!el) return;
+  el.innerHTML = scanPalChipsHtml();
+  /* PALPICK-1 - 고른 칩을 보이게 끌어온다 (팔레트가 28개면 손으로 한참 밀어야 한다) */
+  try{ const on = el.querySelector('button[data-palchip="1"]');
+       if(on && on.scrollIntoView) on.scrollIntoView({block:'nearest', inline:'center'}); }catch(e){}
+}
 function scanEvOn(){
   try{ return !!(_scan && (_scan.mode === 'TR' || _scan.mode === 'IN')); }catch(e){ return false; }
 }
@@ -18206,7 +18302,8 @@ async function scanEvFlush(){
   try{
     const r = await scanRpc('pic_scan_add', { p_kind:scanEvKind(), p_id:String(_scan.id),
       p_phase:scanEvPhase(), p_by:scanEvWho(),
-      p_rows: batch.map(x=>({ ctn:String(x.ctn), item:String(x.item||''), qty:Number(x.qty)||1 })) });
+      p_rows: batch.map(x=>({ ctn:String(x.ctn), item:String(x.item||''), qty:Number(x.qty)||1,
+                              pallet:String(x.pallet||'') })) });
     if(!r.ok) throw new Error('HTTP ' + r.status);
     await r.json();
     /* 들어갔다 — 큐에서 빼고 「보냈음」 으로 옮긴다 */
@@ -18234,7 +18331,8 @@ async function scanEvPull(){
     const before = JSON.stringify(_scan.srv || {});
     _scan.srv = { n:Number(j.n)||0, boxes:Number(j.boxes)||0, at:j.at,
                   items:(j.items && typeof j.items==='object') ? j.items : {},
-                  people:(j.people && typeof j.people==='object') ? j.people : {} };
+                  people:(j.people && typeof j.people==='object') ? j.people : {},
+                  pallets:(j.pallets && typeof j.pallets==='object') ? j.pallets : {} };   /* PALPICK-1 */
     if(JSON.stringify(_scan.srv) !== before){
       try{ scanRender(); }catch(e){}
       try{ scanCamListSoon(); }catch(e){}
@@ -19168,6 +19266,8 @@ async function scanStart(mode, id){
     prevScan: (rec.meta && rec.meta.scan) || null,
     exp: (mode==='TR') ? scanExpTransfer(rec) : scanExpInbound(rec),
     palMap: (mode==='TR') ? scanPalMapOf(rec) : null,          /* SCANPAL-1 */
+    palInfo: (mode==='TR') ? scanPalInfoOf(rec) : null,        /* PALPICK-1 */
+    palSel: '',
     seen: new Map(), pbox: new Map(), manual: {} };
   const _again = scanKeep2Take();   /* 💾 아까 찍다 만 게 있으면 그대로 이어붙인다 (v1044) */
   try{ window._scanCloudN = 0; window._scanCloudAt = 0; window._scanCloudErr = ''; }catch(e){}   /* SCANEXIT-1 */
@@ -19430,6 +19530,7 @@ function scanSession(){
         </div>
       </div>
       <div style="font-size:11px;color:#64748b;margin-bottom:8px;line-height:1.5;">Hold the phone close enough that <b>4–6 boxes</b> fill the screen, then sweep across the pallet. Each box beeps once — scanning the same box again does not double-count. If a label is torn or unreadable, use <b>＋</b> on that row.</div>
+      <div id="scan-pal"></div>
       <div id="scan-report"></div>
       <div id="scan-done"></div>
     </div>
@@ -19511,6 +19612,7 @@ function scanRender(){
   const got = scanTotalGot();                       /* SCANLIVE-1 - 옆 사람 것까지 합쳐서 */
   const n = document.getElementById('scan-n'); if(n) n.textContent = got.toLocaleString();
   const w = document.getElementById('scan-who'); if(w) w.innerHTML = scanWhoHtml();
+  try{ scanPalChips(); }catch(e){}   /* PALPICK-1 */
   const bad = rows.filter(r=>r.st!=='match').length;
   const phoUnread = (_spInfo && Number(_spInfo.unread)) || 0;   // 📸 안 읽힌 박스가 있으면 '다 맞음' 이라고 못 한다 (v796)
   /* 오더별 표 안에 박스 내용이 다 들어갔으면, 아래 긴 PC Room 목록은 또 보여주지 않는다 (v928) */
@@ -21073,7 +21175,7 @@ function scanManual(key, d){
   /* SCANEV-1 - 이송·입고에서는 손으로 넣은 수도 **줄 하나**로 쌓는다 (ADJ). 그래야 모든 폰에 보인다. */
   if(scanEvOn()){
     scanEvQueue([{ ctn:'ADJ:' + scanEvWho() + ':' + key + ':' + Date.now() + ':' + Math.random().toString(36).slice(2,7),
-                   item:key, qty:d*step }]);
+                   item:key, qty:d*step, pallet:String((_scan && _scan.palSel) || '') }]);
     scanRender();
     return;
   }
@@ -21521,9 +21623,8 @@ function scanAccept(hits){
         if(state[t2] !== 'new') return;
         const b2 = scanParseQr(t2); if(!b2 || !b2.sscc) return;
         scanFixColors(b2);
-        rows.push({ ctn:String(b2.sscc),
-                    item: (b2.kind === 'pbox') ? scanPoKey(b2.po) : scanKeyOf(b2.style, b2.color, b2.size),
-                    qty: 1 });
+        rows.push({ ctn:String(b2.sscc), item: scanEvItemFor(b2), qty: 1,
+                    pallet: String((_scan && _scan.palSel) || '') });   /* PALPICK-1 */
       });
       scanEvQueue(rows);
     }catch(e){}
