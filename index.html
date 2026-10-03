@@ -314,7 +314,7 @@ body.po-dragging{user-select:none;}
   </span>
   <select id="lang-sel" onchange="setLang(this.value)" style="font-size:11px;padding:3px 6px;border-radius:5px;border:none;background:#1d3f66;color:#fff;"><option value="ko">한국어</option><option value="en">English</option><option value="es">Español</option></select>
   <button id="wide-btn" class="btn btn-sm" onclick="toggleWide()" title="화면 넓게 / 좁게 — 기본은 넓게 (이 브라우저에만 저장돼)" style="padding:2px 8px;font-size:10px;background:#1d3f66;color:#cfe0f2;border-color:#2b5384;">↔ Wide</button>
-  <span id="app-ver" style="font-size:10px;color:#9fb8d4;">v1196</span>
+  <span id="app-ver" style="font-size:10px;color:#9fb8d4;">v1197</span>
 </div>
 <script>
 // ↔ 넓게 보기 — 브라우저마다 따로 저장 (v793)
@@ -18164,6 +18164,109 @@ function scanGotOf(key){
     return Number(t[key]) || 0;
   }catch(e){ return 0; }
 }
+/* ═══════════ SCANEV-1 — 스캔을 「쌓기」 로 바꾼다 (2026-10-02) ═══════════
+   [stated] 하윤: "나랑 피터가 동시에 스캔을 하고 또 상대방이 스캔한거를 다른 사람이 또 스캔해도
+            상관이 없이 시스템이 알아서해야하는거고 스캔이 되면서 스캔한 숫자들이 착착착
+            바로바로 업대이트가 모든 폰에 되야 이 시스템을 사용할수있는거지"
+   🔴 옛 방식: 폰이 **전체 기록을 들고 있다가 통째로 덮어쓴다**(`meta.scan`). 그래서 하루에
+      세 가지로 터졌다 — 서버를 못 읽으면 남의 것이 지워지고, 폰이 새로고침돼 자기 것이 줄면
+      줄어든 채로 덮어쓰고, 빌더가 저장하면 스캔 칸째로 날아갔다.
+   ⭐ 새 방식: **박스 하나 = 줄 하나.** `pic_scan_add` 로 쌓기만 한다. 아무도 덮어쓰지 않는다.
+      같은 박스를 둘이 찍어도 (트럭·방향·카톤번호) 가 unique 라 한 줄로 눌린다.
+      숫자는 `pic_scan_rows` 가 **서버에서 합산해서** 준다 → 모든 폰이 같은 수를 본다.
+   ⚠ 포장(PO) 화면은 **안 건드린다** — 거긴 장수로 세고 흐름이 다르다. 이송(TR)·입고(IN) 만.
+   ⚠ `meta.scan` 은 이제 **Send 를 누를 때 요약 한 번**만 쓴다 (사무실 배너·목록이 그걸 본다).
+      찍을 때마다 쓰지 않으므로 빌더가 meta 를 다시 써도 세던 것이 안 날아간다. */
+function scanEvOn(){
+  try{ return !!(_scan && (_scan.mode === 'TR' || _scan.mode === 'IN')); }catch(e){ return false; }
+}
+function scanEvKind(){ return (_scan && _scan.mode === 'TR') ? 'TR' : 'IN'; }
+function scanEvPhase(){ return String((_scan && _scan.phase) || 'IN'); }
+function scanEvWho(){ return String((typeof _pchkWho!=='undefined' && _pchkWho) || '').trim() || 'Someone'; }
+
+/* 아직 서버에 못 보낸 줄. 보낼 때까지 폰에 남아 있고, 보내지면 `sent` 로 옮겨간다. */
+function scanEvQueue(rows){
+  if(!scanEvOn() || !rows || !rows.length) return;
+  _scan.q = _scan.q || [];
+  _scan.sent = _scan.sent || {};
+  rows.forEach(r=>{ if(r && r.ctn && !_scan.sent[r.ctn]) _scan.q.push(r); });
+  scanEvFlushSoon();
+}
+let _scanEvT = null, _scanEvBusy = false;
+function scanEvFlushSoon(){
+  if(_scanEvT) clearTimeout(_scanEvT);
+  _scanEvT = setTimeout(scanEvFlush, 400);     /* 찍고 0.4초 - 여러 개를 한 번에 보낸다 */
+}
+async function scanEvFlush(){
+  if(!scanEvOn() || _scanEvBusy) return;
+  const q = (_scan.q || []);
+  if(!q.length) return;
+  _scanEvBusy = true;
+  const batch = q.slice(0, 200);
+  try{
+    const r = await scanRpc('pic_scan_add', { p_kind:scanEvKind(), p_id:String(_scan.id),
+      p_phase:scanEvPhase(), p_by:scanEvWho(),
+      p_rows: batch.map(x=>({ ctn:String(x.ctn), item:String(x.item||''), qty:Number(x.qty)||1 })) });
+    if(!r.ok) throw new Error('HTTP ' + r.status);
+    await r.json();
+    /* 들어갔다 — 큐에서 빼고 「보냈음」 으로 옮긴다 */
+    _scan.sent = _scan.sent || {};
+    batch.forEach(x=>{ _scan.sent[x.ctn] = 1; });
+    _scan.q = q.slice(batch.length);
+    _scan._evErr = '';
+    _scan._evAt = Date.now();
+    await scanEvPull();                         /* 바로 합계를 다시 받아 숫자를 맞춘다 */
+  }catch(e){
+    _scan._evErr = String((e && e.message) || e);   /* 큐에 그대로 둔다 - 다음에 다시 보낸다 */
+    try{ scanEvBadge(); }catch(err){}
+  }
+  _scanEvBusy = false;
+  if((_scan.q || []).length) scanEvFlushSoon();
+}
+/* 서버가 합산해 준 숫자를 받아온다 — 모든 폰이 이걸 본다 */
+async function scanEvPull(){
+  if(!scanEvOn()) return;
+  try{
+    const r = await scanRpc('pic_scan_rows', { p_kind:scanEvKind(), p_id:String(_scan.id), p_phase:scanEvPhase() });
+    if(!r.ok) return;
+    const j = await r.json();
+    if(!j || typeof j !== 'object') return;
+    const before = JSON.stringify(_scan.srv || {});
+    _scan.srv = { n:Number(j.n)||0, boxes:Number(j.boxes)||0, at:j.at,
+                  items:(j.items && typeof j.items==='object') ? j.items : {},
+                  people:(j.people && typeof j.people==='object') ? j.people : {} };
+    if(JSON.stringify(_scan.srv) !== before){
+      try{ scanRender(); }catch(e){}
+      try{ scanCamListSoon(); }catch(e){}
+    }
+    try{ scanEvBadge(); }catch(e){}
+  }catch(e){}
+}
+let _scanEvPullT = null;
+function scanEvWatch(on){
+  if(_scanEvPullT){ clearInterval(_scanEvPullT); _scanEvPullT = null; }
+  if(on) _scanEvPullT = setInterval(scanEvPull, 2000);
+}
+/* 서버 합계 + 아직 못 보낸 내 줄 = 화면에 보이는 수 */
+function scanEvItems(){
+  const t = {};
+  try{ const it = (_scan && _scan.srv && _scan.srv.items) || {};
+       Object.keys(it).forEach(k=>{ t[k] = Number(it[k]) || 0; }); }catch(e){}
+  try{ ((_scan && _scan.q) || []).forEach(x=>{ if(!x || !x.item) return;
+       t[x.item] = (Number(t[x.item]) || 0) + (Number(x.qty) || 1); }); }catch(e){}
+  return t;
+}
+function scanEvBadge(){
+  const el = document.getElementById('scan-auto'); if(!el || !scanEvOn()) return;
+  const q = ((_scan && _scan.q) || []).length;
+  const n = (_scan && _scan.srv && _scan.srv.boxes) || 0;
+  const err = (_scan && _scan._evErr) || '';
+  const t = (_scan && _scan._evAt) ? new Date(_scan._evAt).toLocaleTimeString([], {hour:'numeric', minute:'2-digit'}) : '';
+  if(err && q) el.innerHTML = '<span style="color:#b45309;font-weight:800;">\u26a0 ' + q
+    + ' box(es) still on this phone - no signal. They go up by themselves when it comes back.</span>';
+  else el.innerHTML = '\u2601 ' + n + ' box(es) with the office' + (t ? (' \u00b7 ' + t) : '')
+    + (q ? (' \u00b7 ' + q + ' sending\u2026') : '');
+}
 function scanTotalGot(){
   let t = 0;
   try{ const mine = scanTally(); Object.keys(mine).forEach(k=>{ t += Number(mine[k])||0; }); }catch(e){}
@@ -18172,6 +18275,16 @@ function scanTotalGot(){
 }
 function scanWhoHtml(){
   try{
+    /* SCANEV-1 - 서버가 사람별로 합산해 준다. 내 것/남의 것을 폰에서 가를 필요가 없다. */
+    if(scanEvOn()){
+      const pp = (_scan && _scan.srv && _scan.srv.people) || {};
+      const ks = Object.keys(pp).filter(k=>k && Number(pp[k]) !== 0);
+      if(ks.length < 2) return '';
+      const one2 = (nm, v) => '<span style="background:rgba(255,255,255,.14);border-radius:20px;padding:1px 8px;">'
+        + esc(nm) + ' <b style="font-family:Consolas,monospace;">' + v + '</b></span>';
+      return '<div style="display:flex;align-items:center;gap:6px;flex-wrap:wrap;font-size:11px;color:#cbd5e1;margin-top:5px;">'
+        + '\u{1F465} ' + ks.map(k=>one2(k, Number(pp[k])||0)).join(' ') + '</div>';
+    }
     const cts = (_scan && _scan.mateCounts) || {};
     const ks = Object.keys(cts).filter(k=>Number(cts[k]) > 0);
     if(!ks.length) return '';
@@ -18312,6 +18425,12 @@ function scanTally(){
      풀박스 카톤은 QR 에 PO 가 같이 찍혀 있어서 겉보기엔 재고 카톤과 똑같다. 그래서 v1011 은
      그걸 이송 재고 줄(1362 BLACK PEARL …)에 얹거나 'not on the list' 로 튕겼다.
      이제 **그 트럭이 싣기로 한 PO** 목록(_scan.poSet)에 있는 카톤이면 PO 쪽으로 보낸다. */
+  /* SCANEV-1 - 이송·입고는 **서버가 합산해 준 수**를 쓴다. 내 폰만의 숫자가 아니다. */
+  if(scanEvOn()){
+    const t2 = scanEvItems();
+    Object.keys(_scan.photo||{}).forEach(k=>{ t2[k] = (t2[k]||0) + (Number(_scan.photo[k])||0); });
+    return scanPoSpill(t2);
+  }
   const _poSet = (_scan && _scan.poSet) || null;
   const _poItems = (_scan && _scan.poItems) || null;      /* style|color|size → PO (그 오더에만 있는 품목) */
   _scan.seen.forEach(v=>{
@@ -18994,6 +19113,9 @@ async function scanPush(final){
 
 let _scanAutoT = null, _scanAutoBusy = false;
 function scanAutoSave(){
+  /* SCANEV-1 - 이송·입고는 이제 `pr_scan_events` 에 줄로 쌓는다. `meta.scan` 은 Send 때
+     요약 한 번만 쓴다 - 찍을 때마다 meta 를 덮어쓰지 않으므로 서로 지울 일이 없다. */
+  if(scanEvOn()) return;
   if(!_scan || (_scan.mode !== 'IN' && _scan.mode !== 'TR')) return;
   if(_scanAutoT) clearTimeout(_scanAutoT);
   _scanAutoT = setTimeout(scanAutoPush, 1200);   /* 찍고 1.2초면 사무실·다른 폰에 올라간다 (v1051) */
@@ -19049,7 +19171,17 @@ async function scanStart(mode, id){
     seen: new Map(), pbox: new Map(), manual: {} };
   const _again = scanKeep2Take();   /* 💾 아까 찍다 만 게 있으면 그대로 이어붙인다 (v1044) */
   try{ window._scanCloudN = 0; window._scanCloudAt = 0; window._scanCloudErr = ''; }catch(e){}   /* SCANEXIT-1 */
-  try{ scanMatesWatch(true); scanMatesPull(); }catch(e){}   /* 👥 옆 사람 것 실시간으로 (v1050) */
+  /* SCANEV-1 - 이송·입고는 줄을 쌓는 새 길로. 포장(PO)은 예전 그대로. */
+  if(mode === 'TR' || mode === 'IN'){
+    _scan.q = _scan.q || []; _scan.sent = _scan.sent || {}; _scan.srv = null;
+    /* 폰에 남아 있던 것(새로고침 전에 찍은 것)을 먼저 올린다 - 서버가 겹치는 건 알아서 거른다 */
+    try{ const back = [];
+         _scan.seen.forEach((v, ctn)=>{ back.push({ ctn:String(ctn), item:String((v&&v.key)||''), qty:1 }); });
+         if(back.length) scanEvQueue(back); }catch(e){}
+    try{ scanEvWatch(true); scanEvPull(); scanEvFlush(); }catch(e){}
+  }else{
+    try{ scanMatesWatch(true); scanMatesPull(); }catch(e){}   /* 👥 옆 사람 것 실시간으로 (v1050) */
+  }
   if(mode === 'TR' && poSet.size) scanLoadPoItems(rec);
   scanSession();
   if(_again) showToast('\uD83D\uDCBE Picked up where you left off — ' + _again + ' box(es) already scanned');
@@ -19318,9 +19450,10 @@ function scanExit(){
           · 못 올라갔다 → 예전 경고 그대로 (그때는 진짜다) */
     if(_scan && (_scan.mode==='IN' || _scan.mode==='TR') && _scan.seen && _scan.seen.size && !window._scanSent){
       const nBox = _scan.seen.size;
-      const up = Number(window._scanCloudN) || 0;
-      const err = String(window._scanCloudErr || '');
-      const safe = !err && up >= nBox;
+      /* SCANEV-1 - 새 길에서는 「폰에 남은 줄이 없으면」 이 곧 「다 올라갔다」 이다 */
+      const up  = scanEvOn() ? ((_scan.srv && _scan.srv.boxes) || 0) : (Number(window._scanCloudN) || 0);
+      const err = scanEvOn() ? String((_scan && _scan._evErr) || '') : String(window._scanCloudErr || '');
+      const safe = scanEvOn() ? (((_scan.q || []).length === 0)) : (!err && up >= nBox);
       const msg = safe
         ? ('Leave without pressing Send?\n\n'
            + up + ' box(es) are already with the office — nothing is lost.\n\n'
@@ -19335,6 +19468,7 @@ function scanExit(){
   }catch(e){}
   scanStop();
   try{ scanMatesWatch(false); }catch(e){}
+  try{ scanEvWatch(false); }catch(e){}   /* SCANEV-1 */
   try{ scanKeepPut(); }catch(e){}   // 💾 나가기 전에 한 번 더 — 되돌아오면 그대로 이어진다 (v984)
   /* 스캔 결과를 Pack 화면으로 들고 나간다 (v864).
      전에는 여기서 _scan 을 그냥 버려서, 포장 화면으로 돌아오면 무엇이 맞고 틀렸는지
@@ -20936,6 +21070,13 @@ function scanManual(key, d){
        줄에 **보이는 수**(내 것 + 옆 사람 것)로 판단해야 한다. */
     if(scanGotOf(key) + d*step < 0){ showToast('\u26a0 Nothing to take off this line'); return; }
   }
+  /* SCANEV-1 - 이송·입고에서는 손으로 넣은 수도 **줄 하나**로 쌓는다 (ADJ). 그래야 모든 폰에 보인다. */
+  if(scanEvOn()){
+    scanEvQueue([{ ctn:'ADJ:' + scanEvWho() + ':' + key + ':' + Date.now() + ':' + Math.random().toString(36).slice(2,7),
+                   item:key, qty:d*step }]);
+    scanRender();
+    return;
+  }
   if(v !== 0) _scan.manual[key]=v; else delete _scan.manual[key];
   scanKeepPut();                // 💾 손으로 넣은 것도 같이 남긴다 (v984)
   scanRender();
@@ -21371,6 +21512,22 @@ function scanAccept(hits){
     _scan.seen.set(b.sscc, b);
     added++; state[t]='new';
   });
+  /* SCANEV-1 - 찍은 것을 **한 줄씩** 서버로. 큐에 넣고 0.4초 뒤에 묶어서 보낸다. */
+  if(added && scanEvOn()){
+    try{
+      const rows = [];
+      (hits||[]).forEach(hit=>{
+        const t2 = (typeof hit === 'string') ? hit : hit.text;
+        if(state[t2] !== 'new') return;
+        const b2 = scanParseQr(t2); if(!b2 || !b2.sscc) return;
+        scanFixColors(b2);
+        rows.push({ ctn:String(b2.sscc),
+                    item: (b2.kind === 'pbox') ? scanPoKey(b2.po) : scanKeyOf(b2.style, b2.color, b2.size),
+                    qty: 1 });
+      });
+      scanEvQueue(rows);
+    }catch(e){}
+  }
   if(added){ scanBeep(true); scanCamListSoon(); scanKeepPut();   // 💾 찍는 즉시 남긴다 (v984)
     // 카메라가 켜져 있는 동안엔 뒤쪽 대조 리포트를 다시 그리지 않는다.
     // 박스가 쌓일수록 그 DOM 재생성이 프레임을 잡아먹어 스캔이 버벅였다. 닫을 때 한 번만 그린다.
