@@ -314,7 +314,7 @@ body.po-dragging{user-select:none;}
   </span>
   <select id="lang-sel" onchange="setLang(this.value)" style="font-size:11px;padding:3px 6px;border-radius:5px;border:none;background:#1d3f66;color:#fff;"><option value="ko">한국어</option><option value="en">English</option><option value="es">Español</option></select>
   <button id="wide-btn" class="btn btn-sm" onclick="toggleWide()" title="화면 넓게 / 좁게 — 기본은 넓게 (이 브라우저에만 저장돼)" style="padding:2px 8px;font-size:10px;background:#1d3f66;color:#cfe0f2;border-color:#2b5384;">↔ Wide</button>
-  <span id="app-ver" style="font-size:10px;color:#9fb8d4;">v1202</span>
+  <span id="app-ver" style="font-size:10px;color:#9fb8d4;">v1203</span>
 </div>
 <script>
 // ↔ 넓게 보기 — 브라우저마다 따로 저장 (v793)
@@ -47275,6 +47275,48 @@ let _verSeen = '', _verTag = '', _verPend = '';
 function verNow(){
   try{ const e = document.getElementById('app-ver'); return e ? String(e.textContent||'').trim() : ''; }catch(e){ return ''; }
 }
+/* VERBAR-2 (2026-10-04) - 번호만 숫자로 꺼낸다. 'v1202' -> 1202 */
+function verNumOf(v){
+  const m = /v?(\d+)/.exec(String(v||''));
+  return m ? Number(m[1]) : NaN;
+}
+/* ⭐⭐ VERBAR-2 - 서버에 올라가 있는 판 번호를 **머리만 읽어서** 가져온다.
+   [stated] 하윤: "업대이트할꺼 있으면 아래 줄하나생겨서 업대이트 하세요 안돼?"
+               "이게 됐었는데 어는 순간부터 사라졌어"
+   🔴🔴 왜 안 떴나 (2026-10-04 하윤 브라우저에서 실측):
+      **Cloudflare 가 이 파일에 `ETag` 도 `Last-Modified` 도 안 준다.**
+      응답 헤더에 둘 다 없어서 `verTagOf()` 가 늘 `"|"` 라는 **같은 값**을 돌려줬고,
+      검사기는 매번 「안 바뀌었다」 로 읽고 그냥 돌아갔다. 띠가 뜰 길이 아예 없었다.
+      하윤 탭은 그래서 v1197 로 다섯 판이나 뒤처진 채였다.
+   ⭐ 고침: 헤더를 **안 쓴다.** 파일을 받되 `app-ver` 를 찾는 즉시 **받기를 끊는다**.
+      실측: 첫 덩이 65,536 바이트 · 300ms 에 번호가 나온다 (파일은 3.4MB).
+      `app-ver` 는 파일 앞쪽 2.6만 바이트쯤에 있다.
+   ⚠ Range 헤더는 안 쓴다 - gzip 으로 내려오면 서버가 무시할 수 있다. 끊어 읽기가 확실하다.
+   ⚠ 흘려 읽기를 못 하는 옛 브라우저면 Range 로, 그것도 안 되면 통째로 (마지막 수단). */
+async function verLive(){
+  const url = '/index.html?_=' + Date.now();
+  const find = t => { const m = String(t||'').match(/id="app-ver"[^>]*>([^<]+)</); return m ? String(m[1]).trim() : ''; };
+  try{
+    const r = await fetch(url, { cache:'no-store' });
+    if(!r.ok) return '';
+    if(r.body && r.body.getReader){
+      const rd = r.body.getReader(), dec = new TextDecoder();
+      let buf = '', got = 0;
+      try{
+        while(got < 400000){
+          const st = await rd.read();
+          if(st.done) break;
+          got += st.value.length;
+          buf += dec.decode(st.value, { stream:true });
+          const v = find(buf);
+          if(v){ try{ rd.cancel(); }catch(e){} return v; }
+        }
+      } finally { try{ rd.cancel(); }catch(e){} }
+      return find(buf);
+    }
+    return find(await r.text());
+  }catch(e){ return ''; }
+}
 function verTagOf(r){
   try{ return String(r.headers.get('etag')||'') + '|' + String(r.headers.get('last-modified')||''); }catch(e){ return ''; }
 }
@@ -47285,26 +47327,16 @@ function verTagOf(r){
    ⚠ `/pic` 에서도 같은 파일이므로 주소는 늘 `/index.html` 로 본다. */
 async function verCheck(){
   const mine = verNow();
-  try{
-    const head = await fetch('/index.html?_=' + Date.now(), { method:'HEAD', cache:'no-store' });
-    if(!head.ok) return;
-    const tag = verTagOf(head);
-    if(!_verTag){ _verTag = tag; return; }              /* 처음 본 것이 지금 쓰는 판 */
-    if(!tag || tag === _verTag){ _verPend = ''; return; }
-    if(tag !== _verPend){ _verPend = tag; return; }     /* 한 번 더 같은 값이 나와야 믿는다 */
-    _verTag = tag; _verPend = '';
-    let live = '';
-    try{
-      const g = await fetch('/index.html?_=' + Date.now(), { cache:'no-store', headers:{ Range:'bytes=0-60000' } });
-      const t = await g.text();
-      const m = t.match(/id="app-ver"[^>]*>([^<]+)</);
-      live = m ? String(m[1]).trim() : '';
-    }catch(e){}
-    const show = live || 'new';
-    if(show === _verSeen) return;
-    _verSeen = show;
-    verBanner(mine || '-', show);
-  }catch(e){}
+  const live = await verLive();
+  if(!live || live === mine) return;
+  /* ⚠ **더 높은 번호일 때만** 띄운다. 가장자리 서버가 잠깐 옛 판을 줄 수 있는데,
+       그때 「새 버전 v1201 - 당신은 v1202」 라고 뜨면 직원이 안 믿게 된다.
+       번호를 못 읽으면(글자가 바뀌었다거나) 다르기만 해도 띄운다 - 조용한 쪽이 더 나쁘다. */
+  const a = verNumOf(mine), b = verNumOf(live);
+  if(!isNaN(a) && !isNaN(b) && b <= a) return;
+  if(live === _verSeen) return;                        /* 같은 판으로 두 번 띄우지 않는다 */
+  _verSeen = live;
+  verBanner(mine || '-', live);
 }
 function verBanner(mine, live){
   if(document.getElementById('ver-bar')) return;
@@ -47327,9 +47359,14 @@ function verReload(){
     location.replace(u.toString());
   }catch(e){ location.reload(); }
 }
-/* VERBAR-1 - 20초 뒤 첫 확인(지금 판을 기억), 그 뒤 90초마다. 창고 폰이 옛 화면을
-   들고 있는 시간이 짧아야 한다. HEAD 한 번이라 데이터는 거의 안 쓴다. */
-try{ setTimeout(verCheck, 20000); setInterval(verCheck, 90000); }catch(e){}
+/* VERBAR-2 - 25초 뒤 첫 확인, 그 뒤 90초마다. 창고 폰이 옛 화면을 들고 있는 시간이
+   짧아야 한다. 한 번에 65KB 쯤만 받고 끊으므로 데이터도 거의 안 쓴다.
+   ⚠ 첫 확인에서 바로 띄운다 - 예전처럼 「첫 번은 기억만」 하면 폰을 켜 둔 채
+      배포된 경우를 90초나 더 놓친다. */
+try{ setTimeout(verCheck, 25000); setInterval(verCheck, 90000); }catch(e){}
+/* ⚠ 폰을 주머니에 넣었다 다시 꺼내면 타이머가 밀려 있다 - 화면이 돌아오면 바로 한 번 본다. */
+try{ document.addEventListener('visibilitychange', function(){
+  if(document.visibilityState === 'visible') setTimeout(verCheck, 1200); }); }catch(e){}
 function renderSaved(){
   renderKpi();
   if(typeof icRenderDraftBtn==='function') icRenderDraftBtn();
