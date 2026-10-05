@@ -314,7 +314,7 @@ body.po-dragging{user-select:none;}
   </span>
   <select id="lang-sel" onchange="setLang(this.value)" style="font-size:11px;padding:3px 6px;border-radius:5px;border:none;background:#1d3f66;color:#fff;"><option value="ko">한국어</option><option value="en">English</option><option value="es">Español</option></select>
   <button id="wide-btn" class="btn btn-sm" onclick="toggleWide()" title="화면 넓게 / 좁게 — 기본은 넓게 (이 브라우저에만 저장돼)" style="padding:2px 8px;font-size:10px;background:#1d3f66;color:#cfe0f2;border-color:#2b5384;">↔ Wide</button>
-  <span id="app-ver" style="font-size:10px;color:#9fb8d4;">v1212</span>
+  <span id="app-ver" style="font-size:10px;color:#9fb8d4;">v1213</span>
 </div>
 <script>
 // ↔ 넓게 보기 — 브라우저마다 따로 저장 (v793)
@@ -6551,7 +6551,17 @@ function rrNcBadge(i){
     ? '<div onclick="rrNcToggle(' + i + ')" title="Click if this is NOT an overship — the line gets its invoiced price back and is credited" style="display:inline-block;margin-top:2px;font-size:9px;font-weight:900;color:#0369a1;background:#e0f2fe;border:1px solid #7dd3fc;border-radius:5px;padding:1px 5px;white-space:nowrap;cursor:pointer;">OVERSHIP · NO CREDIT ✕</div>'
     : '<div onclick="rrNcToggle(' + i + ')" title="Put the overship mark back — the line goes to $0 again" style="display:inline-block;margin-top:2px;font-size:9px;font-weight:800;color:#92400e;background:#fef3c7;border:1px solid #fcd34d;border-radius:5px;padding:1px 5px;white-space:nowrap;cursor:pointer;">↩ overship mark removed</div>';
 }
-function rrNcToggle(i){
+/* ⭐⭐⭐ RAUNLOCK-2 - 끄고 켜는 순간 **RA 에 바로 저장**한다 (2026-10-05)
+   [stated] 하윤: "저기 XL저렇케 나오면 안되는거아니야??" (크레딧 메모 미리보기가 $0.00 · 합계 $3,092.80)
+   🔴 실측한 뿌리: `buildCreditMemoDoc` 은 `rc.lines && rc.lines.length ? rc.lines : ret.lines` 를 읽는다.
+      확정 **전**에는 `ret.lines`(저장된 RA)라서 화면에서 끈 것이 안 보였다. 받는 화면은 $3,997.37,
+      미리보기는 $3,092.80 - **같은 것을 두 화면이 다르게 말하는 상태.**
+      (확정 뒤 종이는 맞았다. 그래도 사람이 그 전에 보는 숫자가 틀리면 안 된다.)
+   ⭐ 고침: 판정을 화면 안에만 들고 있지 않고 **누르는 즉시 RA 에 적는다.**
+      그러면 받는 화면·미리보기·발행된 종이가 전부 한 값을 읽는다.
+   ⭐ 덤: [stated] 하윤이 물었던 「누가 켰는지」 - 이제 줄에 `ncBy`/`ncAt` 가 남는다.
+   ⚠ 저장이 실패하면 화면도 **되돌린다** - 저장 안 된 값을 「바뀐 것」처럼 들고 있으면 안 된다. */
+async function rrNcToggle(i){
   const div=document.getElementById('modal-rareceive'); if(!div) return;
   if(!rrNcWas(i)) return;
   const ret=window._rrRet||{}, l=(ret.lines||[])[i]||{}, base=window._rrBase||'';
@@ -6571,6 +6581,44 @@ function rrNcToggle(i){
   const cell=div.querySelector('.rr-nc[data-i="'+i+'"]'); if(cell) cell.innerHTML=rrNcBadge(i);
   const tr=pi?pi.closest('tr'):null; if(tr) tr.style.background = on ? '#f0f9ff' : '#fffdf5';
   try{ rrRecalc(base, ret.ra); }catch(e){}
+  /* ⭐ RA 에 적는다. ⚠ 확정된 건은 건드리지 않는다 (종이가 이미 나갔다) */
+  if(cmIssued(ret)) return;
+  const rec=(savedCache||[]).find(x=>x.base===base); if(!rec) return;
+  const keepNc = !!l.noCredit, keepPr = Number(l.price)||0;
+  l.noCredit = on;
+  l.price    = on ? 0 : (Number(l.listPrice)||rrOrigPrice(base, l)||keepPr||0);
+  l.ncEver   = true;                       /* 한 번이라도 찍혔으면 되돌릴 길을 계속 연다 */
+  l.ncBy     = (SESS&&SESS.email)||'';
+  l.ncAt     = new Date().toISOString();
+  rec.meta = rec.meta||{};
+  rec.meta._returns = recReturns(rec).map(x=>x.ra===ret.ra?ret:x);
+  try{
+    await sbSaveRow('/rest/v1/pr_orders?base=eq.'+encodeURIComponent(base),
+      {meta:rec.meta, updated_at:new Date().toISOString()}, 'Overship mark ' + ret.ra);
+    try{ logHist(base, (on?'\u26a0 Overship mark PUT BACK':'\u21a9 Overship mark REMOVED')
+      + ' \u2014 '+ret.ra+' '+String(l.style||'')+' '+String(l.size||'')); }catch(e){}
+  }catch(e){
+    /* 되돌린다 - 화면과 저장이 어긋난 채로 두는 것이 제일 나쁘다 */
+    l.noCredit = keepNc; l.price = keepPr;
+    window._rrNc[i] = keepNc;
+    try{ rrNcPaint(i); rrRecalc(base, ret.ra); }catch(_e){}
+    alert('\u26a0 NOT SAVED\n\n' + ((e&&e.message)||e)
+      + '\n\nThe line was put back the way it was. Log out and back in, then try again.');
+  }
+}
+/* 한 줄의 겉모습만 다시 칠한다 (되돌릴 때 쓴다) */
+function rrNcPaint(i){
+  const div=document.getElementById('modal-rareceive'); if(!div) return;
+  const ret=window._rrRet||{}, l=(ret.lines||[])[i]||{}, base=window._rrBase||'';
+  const on=rrNcOf(i);
+  const pi=div.querySelector('.rr-price[data-i="'+i+'"]');
+  if(pi){
+    if(on){ pi.value='0.00'; pi.readOnly=true; pi.style.background='#e0f2fe'; pi.style.color='#0369a1'; pi.style.fontWeight='800'; }
+    else { const p=Number(l.price)||rrOrigPrice(base, l)||0;
+           pi.value=p.toFixed(2); pi.readOnly=false; pi.style.background='#fffbeb'; pi.style.color='#92400e'; pi.style.fontWeight='800'; }
+  }
+  const cell=div.querySelector('.rr-nc[data-i="'+i+'"]'); if(cell) cell.innerHTML=rrNcBadge(i);
+  const tr=pi?pi.closest('tr'):null; if(tr) tr.style.background = on ? '#f0f9ff' : '#fffdf5';
 }
 function openReturnReceive(base, ra){
   const rec = savedCache.find(s=>s.base===base); if(!rec) return;
@@ -6581,7 +6629,9 @@ function openReturnReceive(base, ra){
      세 곳이 각자 `l.noCredit` 를 읽던 것을 이 한 벌로 바꿨다 */
   window._rrBase = base;
   window._rrNc = {}; window._rrNc0 = {};
-  (ret.lines||[]).forEach(function(l,i){ window._rrNc[i]=!!l.noCredit; window._rrNc0[i]=!!l.noCredit; });
+  /* ⚠ RAUNLOCK-2 - `_rrNc0` 는 「한 번이라도 오출고로 찍힌 줄인가」 다.
+     `noCredit` 만 보면 끄고 저장한 뒤 다시 열었을 때 **되돌릴 단추가 사라진다** - `ncEver` 가 그걸 막는다 */
+  (ret.lines||[]).forEach(function(l,i){ window._rrNc[i]=!!l.noCredit; window._rrNc0[i]=!!(l.noCredit||l.ncEver); });
   const ex=document.getElementById('modal-rareceive'); if(ex) ex.remove();
   const rows=(ret.lines||[]).map((l,i)=>{ const rq=Number(l.qty)||0, toWh=(l.toWh||l.wh)==='CA'?'CA':'SC';
     /* 오출고로 돌아오는 줄은 청구한 적이 없다 — 단가를 0 으로 잠근다 (v885).
