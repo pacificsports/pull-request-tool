@@ -314,7 +314,7 @@ body.po-dragging{user-select:none;}
   </span>
   <select id="lang-sel" onchange="setLang(this.value)" style="font-size:11px;padding:3px 6px;border-radius:5px;border:none;background:#1d3f66;color:#fff;"><option value="ko">한국어</option><option value="en">English</option><option value="es">Español</option></select>
   <button id="wide-btn" class="btn btn-sm" onclick="toggleWide()" title="화면 넓게 / 좁게 — 기본은 넓게 (이 브라우저에만 저장돼)" style="padding:2px 8px;font-size:10px;background:#1d3f66;color:#cfe0f2;border-color:#2b5384;">↔ Wide</button>
-  <span id="app-ver" style="font-size:10px;color:#9fb8d4;">v1211</span>
+  <span id="app-ver" style="font-size:10px;color:#9fb8d4;">v1212</span>
 </div>
 <script>
 // ↔ 넓게 보기 — 브라우저마다 따로 저장 (v793)
@@ -6691,7 +6691,10 @@ async function returnReceiveConfirm(base, ra){
     /* RAUNLOCK-1 - 표시를 **뗀** 줄은 돈이 늘어난다. 누르기 전에 반드시 보여준다 */
     + (function(){ const c=(ret.lines||[]).filter(function(x,i){ return rrNcWas(i) && !rrNcOf(i); }).length;
         return c ? ('⚠ Overship mark REMOVED on '+c+' line(s) — they ARE credited on this memo\n') : ''; })()
-    + '• A Grade: '+totA.toLocaleString()+' → stock · B Grade: '+totB.toLocaleString()+' → B-grade · Failed: '+totF.toLocaleString()+' → scrap\n\nThis cannot be edited afterward.')) return;
+    /* RASPLIT-1 - 「재고에 들어간다」 고 말하면 안 된다. 여기서는 안 들어간다 */
+    + '• A Grade: '+totA.toLocaleString()+' · B Grade: '+totB.toLocaleString()+' · Failed: '+totF.toLocaleString()+' → scrap\n'
+    + '• Stock is NOT put back here — it goes to 📦 Return Stock, where you pick the bin for full boxes.\n'
+    + '\nThis cannot be edited afterward.')) return;
   /* CMSEQ-v1 - 인보이스와 **같은** 공용 카운터에서 7자 번호를 뽑는다 (MAS 칸 모양).
      [stated] 하윤: "credit memo#도 인보이스 넘버처럼 해야하는거 아니야"
      ⚠ 여기서 딱 한 번 뽑고 아래 ret.received.cm 에 저장한다. 종이를 다시 찍을 때는
@@ -6720,6 +6723,8 @@ async function returnReceiveConfirm(base, ra){
      버튼을 쪼개는 것은 다음 판이다 - 그때 이 두 줄이 갈라진다. */
   ret.cm=cm; ret.cmStatus='sent'; ret.invStatus='done';
   ret.received={ at:new Date().toISOString(), by:(SESS&&SESS.email)||'', lines:recvLines, creditAmount:creditAmt, restockTotal:restockTot, restockA:restockA, restockB:restockB, failedTotal:totF, cm:cm };
+  /* RASPLIT-1 - 재고는 아직 안 들어갔다. 이 줄이 📦 Return Stock 큐에 뜨게 한다 */
+  ret.invStatus = 'pending';
   rec.meta=rec.meta||{};
   rec.meta._returns=recReturns(rec).map(r=>r.ra===ra?ret:r);
   /* ⚠⚠ CMSAVE-1 - 여기서 멈추지 않으면 기록 없는 크레딧 메모가 거래처에 나간다 (2026-09-30 사고). */
@@ -6735,25 +6740,246 @@ async function returnReceiveConfirm(base, ra){
       + '\n\u2192 Log out and log back in, then press Confirm again.');
     return;
   }
-  /* ═══ RETORD-1 - 재고는 **저장이 끝난 뒤에만** 움직인다 ═══
-     🔴 2026-09-30 실제 사고: 예전에는 재고 복구가 저장보다 **먼저** 돌았다. 저장이 거절당해도
-        재고는 이미 들어갔고 되돌려지지 않았다. 그래서 하윤이 다시 눌렀더니
-        같은 반품 102 pcs 가 **두 번** 들어갔다 (1368 NATURAL CA · 9/30 10:49 와 19:29).
-     ⭐ 이제 저장이 성공한 뒤에만 재고를 넣는다. 저장이 막히면 재고는 한 톨도 안 움직이므로
-        다시 눌러도 두 번 들어갈 일이 없다 (맨 위 `status==='received'` 가 또 막아준다). */
-  for(const l of recvLines){
-    const toWh=(l.toWh||l.wh)==='CA'?'CA':'SC';
-    const k=pcKey(l.style, l.color, toWh), sz=String(l.size).toUpperCase();
-    if(l.gradeA>0){ try{ await pcCellChange(k, sz, '+'+l.gradeA, null, '↩ Return '+ra+' received (A grade)'); }catch(e){} }
-    if(l.gradeB>0){ try{ await pcAddB(k, sz, l.gradeB, '↩ Return '+ra+' received (B grade)'); }catch(e){} }
-  }
-  logHist(base, '↩ Return received — '+ra+' · '+cm+' $'+creditAmt.toFixed(2)+' · restock A '+restockA+' / B '+restockB+' pcs');
+  /* ═══ RASPLIT-1 - 여기서는 **재고를 한 톨도 안 움직인다** (2026-10-05) ═══
+     [stated] 하윤: "저렇케 313장을 받으면 우리가 full 박스도 돌려받았다는건데 재고를
+       돌려 넣을려면 location bin을 정해야하는거아닌가?"
+     🔴 맞다. 예전에는 받은 장수를 전부 `pcCellChange` 로 **PC Room 낱장**에 넣었다.
+        1368 ARTICHOKE 반품 1,253장 = 풀박스 17개 + 낱장 101장인데, 풀박스 17개가
+        「낱장」으로 둔갑하고 **bin 도 안 잡혔다.** 창고에는 박스가 서 있는데 시스템은
+        어디 있는지 모르는 상태가 된다. Full Box Inventory 숫자도 안 변한다.
+     ⭐ 그래서 [stated] 하윤이 9/24 에 정한 대로 **버튼을 쪼갰다**:
+        여기(사무실) = 크레딧 메모만 · 📦 Put stock back(창고) = 박스·bin·낱장.
+     ⚠⚠ 이 함수의 숫자(Good/B/Failed)는 **크레딧 금액**을 정한다. 재고는 다음 단계가
+        그 숫자를 받아서 「풀박스 몇 개 + 낱장 몇 장」 으로 나눠 넣는다 - 합은 늘 같다. */
+  logHist(base, '↩ Return received — '+ra+' · '+cm+' $'+creditAmt.toFixed(2)
+    + ' · \u26a0 stock NOT put back yet (A '+restockA+' / B '+restockB+' pcs waiting)');
   div.remove();
   const dd=document.getElementById('modal-radetail'); if(dd) dd.remove();
   renderSaved();
   showToast('✅ '+ra+' received — credit memo '+cm+' $'+creditAmt.toFixed(2));
+  if(restockA + restockB > 0) showToast('\u{1F4E6} ' + (restockA+restockB).toLocaleString() + ' pcs are waiting \u2014 press \u{1F4E6} Return Stock to put them away');
   openCreditMemo(base, ra);
 }
+/* ═══════════ 📦 RASPLIT-1 - 돌아온 물건을 선반에 넣는다 (2026-10-05) ═══════════
+   [stated] 하윤: "full 박스도 돌려받았다는건데 재고를 돌려 넣을려면 location bin을 정해야하는거아닌가?"
+   크레딧 메모는 사무실이 이미 냈다. 여기는 **창고 매니저** 일이다.
+   ⭐ 한 줄을 「풀박스 N개(bin) + 낱장 M장(PC Room)」 으로 나눈다. 합은 받은 장수와 **반드시** 같다.
+   ⚠⚠ 상태가 셋이다: pending(아직) · working(넣는 중에 끊김) · done(끝).
+      working 은 「박스는 들어갔는데 끝 표시를 못 했다」 를 뜻한다 - 그냥 다시 누르면
+      같은 박스가 두 번 들어간다. 그래서 그 줄은 빨갛게 세우고 사람이 보게 한다. */
+function raStockLines(ret){
+  const rl = (ret && ret.received && ret.received.lines) || [];
+  return rl.filter(l => (Number(l.gradeA)||0) > 0).map(function(l, i){
+    const ppb = Math.max(1, Number(l.ppb)||DEFAULT_PPB);
+    const good = Number(l.gradeA)||0;
+    return { i:i, style:String(l.style||''), color:String(l.color||''), size:String(l.size||'').toUpperCase(),
+             wh:((l.toWh||l.wh)==='CA'?'CA':'SC'), ppb:ppb, good:good, boxes:Math.floor(good/ppb) };
+  });
+}
+function raStockBTotal(ret){
+  return ((ret && ret.received && ret.received.lines) || []).reduce((a,l)=>a+(Number(l.gradeB)||0), 0);
+}
+/* 한 줄이 지금 화면에서 어떻게 나뉘어 있나 (박스 수와 bin 은 사람이 고친다) */
+function raStockRead(i){
+  const div = document.getElementById('modal-rastock'); if(!div) return null;
+  const g = sel => (div.querySelector(sel+'[data-i="'+i+'"]')||{}).value;
+  const L = (window._raStock||{lines:[]}).lines[i] || null; if(!L) return null;
+  const boxes = Math.max(0, parseInt(g('.rs-box'),10)||0);
+  const loose = L.good - boxes * L.ppb;
+  return { L:L, boxes:boxes, loose:loose, bin:binNorm(g('.rs-bin')||'') };
+}
+function raStockRecalc(){
+  const div = document.getElementById('modal-rastock'); if(!div) return;
+  const st = window._raStock||{lines:[]};
+  let bad = 0, totBox = 0, totLoose = 0;
+  st.lines.forEach(function(L, i){
+    const r = raStockRead(i); if(!r) return;
+    const cell = div.querySelector('.rs-loose[data-i="'+i+'"]');
+    const warn = div.querySelector('.rs-warn[data-i="'+i+'"]');
+    let msg = '';
+    if(r.loose < 0) msg = 'too many boxes';
+    else if(r.boxes > 0 && !r.bin) msg = 'bin?';
+    if(cell){ cell.textContent = (r.loose<0 ? '—' : r.loose.toLocaleString()); cell.style.color = r.loose<0 ? '#b91c1c' : '#374151'; }
+    if(warn){ warn.textContent = msg; warn.style.display = msg ? '' : 'none'; }
+    if(msg) bad++; else { totBox += r.boxes; totLoose += r.loose; }
+  });
+  const sum = div.querySelector('#rs-sum');
+  if(sum) sum.innerHTML = bad
+    ? '<span style="color:#b91c1c;font-weight:900;">' + bad + ' line(s) need fixing</span>'
+    : ('<b>' + totBox.toLocaleString() + '</b> full box(es) to bins · <b>' + totLoose.toLocaleString() + '</b> pcs to PC Room');
+  const btn = div.querySelector('#rs-go'); if(btn){ btn.disabled = !!bad; btn.style.opacity = bad ? '.45' : '1'; btn.style.cursor = bad ? 'not-allowed' : 'pointer'; }
+}
+function returnStockOpen(base, ra){
+  const rec = (savedCache||[]).find(s=>s.base===base); if(!rec){ showToast('⚠ Order not found'); return; }
+  const ret = recReturns(rec).find(r=>r.ra===ra); if(!ret){ showToast('⚠ Return not found'); return; }
+  if(!cmIssued(ret)){ showToast('⚠ Issue the credit memo first'); return; }
+  const st = retInvStatus(ret);
+  if(st === 'done'){ showToast('✓ This return is already back in stock'); return; }
+  const lines = raStockLines(ret), bTot = raStockBTotal(ret);
+  if(!lines.length && !bTot){ showToast('✓ Nothing to put back on this return'); return; }
+  window._raStock = { base:base, ra:ra, lines:lines };
+  const ex = document.getElementById('modal-rastock'); if(ex) ex.remove();
+  const rows = lines.map(function(L, i){
+    return '<tr>'
+      + '<td style="border:1px solid #e5e7eb;padding:5px 8px;font-weight:700;">' + esc(L.style) + '</td>'
+      + '<td style="border:1px solid #e5e7eb;padding:5px 8px;">' + esc(L.color.toUpperCase()) + '</td>'
+      + '<td style="border:1px solid #e5e7eb;padding:5px 8px;text-align:center;">' + esc(L.size) + '</td>'
+      + '<td style="border:1px solid #e5e7eb;padding:5px 8px;text-align:center;"><span class="chip chip-' + esc(L.wh) + '" style="font-size:9px;padding:1px 6px;">' + esc(L.wh) + '</span></td>'
+      + '<td style="border:1px solid #e5e7eb;padding:5px 8px;text-align:right;font-weight:800;">' + L.good.toLocaleString() + '</td>'
+      + '<td style="border:1px solid #e5e7eb;padding:5px 8px;text-align:right;color:#64748b;">' + L.ppb + '</td>'
+      + '<td style="border:1px solid #e5e7eb;padding:4px 6px;text-align:right;background:#eff6ff;"><input class="fi num rs-box" data-i="' + i + '" type="number" min="0" value="' + L.boxes + '" oninput="raStockRecalc()" style="width:66px;font-weight:800;text-align:right;color:#1d4ed8;"></td>'
+      + '<td style="border:1px solid #e5e7eb;padding:4px 6px;background:#eff6ff;"><input class="fi rs-bin" data-i="' + i + '" placeholder="bin" oninput="raStockRecalc()" style="width:84px;font-weight:800;text-transform:uppercase;"> <span class="rs-warn" data-i="' + i + '" style="display:none;font-size:10px;font-weight:900;color:#b91c1c;"></span></td>'
+      + '<td class="rs-loose" data-i="' + i + '" style="border:1px solid #e5e7eb;padding:5px 8px;text-align:right;font-weight:700;background:#fffbeb;">' + (L.good - L.boxes*L.ppb).toLocaleString() + '</td>'
+      + '</tr>';
+  }).join('');
+  const warnWorking = (st === 'working')
+    ? '<div style="margin:10px 16px 0;background:#fef2f2;border:1px solid #fecaca;border-radius:8px;padding:9px 12px;font-size:12px;color:#7f1d1d;">'
+      + '<b>⚠ This return was started earlier and did not finish.</b> Some boxes may already be in a bin.'
+      + ' Check the bin on the shelf and in 📦 Full Box before pressing again — otherwise the same boxes go in twice.</div>'
+    : '';
+  const div = document.createElement('div'); div.id='modal-rastock';
+  div.style.cssText='position:fixed;inset:0;background:rgba(15,23,42,.55);z-index:101;display:flex;align-items:center;justify-content:center;padding:20px;';
+  div.onclick=e=>{ if(e.target===div) div.remove(); };
+  div.innerHTML = '<div style="background:#fff;border-radius:12px;max-width:1040px;width:100%;max-height:90vh;display:flex;flex-direction:column;overflow:hidden;">'
+    + '<div style="background:#1d4ed8;color:#fff;padding:10px 16px;font-weight:800;">📦 Put returned stock back — ' + esc(ra) + ' · ' + esc((rec.meta&&rec.meta.cust)||'')
+    +   '<div style="font-weight:400;font-size:11px;color:#dbeafe;margin-top:2px;">Full boxes go to a <b>bin</b> and get counted in Full Box Inventory. Whatever is left over goes to <b>PC Room</b> as loose pieces.</div></div>'
+    + warnWorking
+    + '<div style="overflow-y:auto;overflow-x:auto;padding:12px 16px;">'
+    +   '<table style="border-collapse:collapse;font-size:12px;width:100%;min-width:900px;"><thead><tr style="background:#f3f4f6;">'
+    +     ['Style','Color','Size','WH','Good pcs','Pcs/box','Full boxes','Bin','Loose → PC Room']
+            .map(h=>'<th style="border:1px solid #e5e7eb;padding:6px 8px;font-size:11.5px;">'+h+'</th>').join('')
+    +   '</tr></thead><tbody>' + rows + '</tbody></table>'
+    +   (bTot ? '<div style="margin-top:10px;background:#fffbeb;border:1px solid #fde68a;border-radius:8px;padding:8px 12px;font-size:11.5px;color:#92400e;">'
+        + '🟡 <b>' + bTot.toLocaleString() + ' pcs B grade</b> go to B-grade stock as loose pieces — B grade is never a full box, so it takes no bin.</div>' : '')
+    + '</div>'
+    + '<div style="padding:10px 16px;border-top:1px solid var(--border);display:flex;gap:8px;align-items:center;">'
+    +   '<span id="rs-sum" style="font-size:12px;color:#475569;"></span>'
+    +   '<button class="btn" style="margin-left:auto;" onclick="document.getElementById(\'modal-rastock\').remove()">Cancel</button>'
+    +   '<button class="btn btn-primary" id="rs-go" style="background:#1d4ed8;border-color:#1d4ed8;font-weight:800;" onclick="returnStockDo()">📦 Put it away</button>'
+    + '</div></div>';
+  document.body.appendChild(div);
+  raStockRecalc();
+}
+/* ⚠⚠ 순서가 전부다:
+   ① 먼저 「넣는 중(working)」 을 저장한다 - 중간에 끊기면 그 흔적이 남아야 한다
+   ② 박스를 넣는다 (여기서 터지면 working 인 채로 멈춘다 - 사람이 보고 판단)
+   ③ 낱장·B 등급
+   ④ done 으로 저장
+   ⭐ RETORD-1 의 교훈(저장 먼저)을 지키되, 「끝났다」 는 **진짜 끝난 뒤에** 적는다. */
+async function returnStockDo(){
+  const st0 = window._raStock; if(!st0) return;
+  const { base, ra, lines } = st0;
+  const rec = (savedCache||[]).find(s=>s.base===base); if(!rec) return;
+  const ret = recReturns(rec).find(r=>r.ra===ra); if(!ret) return;
+  if(retInvStatus(ret) === 'done'){ showToast('✓ Already back in stock'); return; }
+  const plan = [];
+  for(let i=0;i<lines.length;i++){
+    const r = raStockRead(i);
+    if(!r){ alert('⚠ Could not read line ' + (i+1)); return; }
+    if(r.loose < 0){ alert('⚠ Line ' + (i+1) + ': ' + r.boxes + ' boxes × ' + r.L.ppb + ' is more than the ' + r.L.good + ' pcs received.'); return; }
+    if(r.boxes > 0 && !r.bin){ alert('⚠ Line ' + (i+1) + ': type the bin the ' + r.boxes + ' full box(es) go into.'); return; }
+    plan.push(r);
+  }
+  const bTot = raStockBTotal(ret);
+  const nBox = plan.reduce((a,r)=>a+r.boxes,0), nLoose = plan.reduce((a,r)=>a+r.loose,0);
+  if(!confirm('📦 Put ' + ra + ' back into stock?\n\n'
+    + '• ' + nBox.toLocaleString() + ' full box(es) → ' + [...new Set(plan.filter(r=>r.boxes>0).map(r=>r.bin))].join(', ') + '\n'
+    + '• ' + nLoose.toLocaleString() + ' loose pcs → PC Room\n'
+    + (bTot ? ('• ' + bTot.toLocaleString() + ' pcs → B-grade stock\n') : '')
+    + '\nThis cannot be undone from here.')) return;
+  const by = (SESS&&SESS.email)||'';
+  /* ① 흔적 먼저 */
+  ret.invStatus = 'working';
+  ret.stock = { startedAt:new Date().toISOString(), by:by, boxes:nBox, loose:nLoose, b:bTot,
+                bins:[...new Set(plan.filter(r=>r.boxes>0).map(r=>r.bin))] };
+  rec.meta = rec.meta||{}; rec.meta._returns = recReturns(rec).map(x=>x.ra===ra?ret:x);
+  try{
+    await sbSaveRow('/rest/v1/pr_orders?base=eq.'+encodeURIComponent(base), {meta:rec.meta, updated_at:new Date().toISOString()}, 'Return stock ' + ra);
+  }catch(e){
+    try{ ret.invStatus='pending'; delete ret.stock; }catch(_e){}
+    alert('⛔ NOTHING WAS MOVED\n\n' + ((e&&e.message)||e) + '\n\nLog out and back in, then press it again.');
+    return;
+  }
+  showToast('📦 Putting it away...');
+  /* ② 박스 */
+  const boxRows = [];
+  const nowIso = new Date().toISOString();
+  plan.forEach(function(r){
+    for(let b=0;b<r.boxes;b++){
+      boxRows.push({ style:r.L.style, color:r.L.color, size:r.L.size, pcs:r.L.ppb, loc:r.bin,
+                     status:'IN', wh:r.L.wh, note:'return '+ra, in_at:nowIso, in_by:by, us:false, lot:'' });
+    }
+  });
+  if(boxRows.length){
+    try{ await bxInsert(boxRows); }
+    catch(e){
+      alert('⛔ The boxes did NOT go in\n\n' + ((e&&e.message)||e)
+        + '\n\nNothing else was touched. This return now shows as "started" —\ncheck the bin before pressing it again.');
+      return;
+    }
+  }
+  /* ③ 낱장 · B 등급 */
+  let looseFail = 0;
+  for(const r of plan){
+    if(r.loose > 0){
+      const k = pcKey(r.L.style, r.L.color, r.L.wh);
+      try{ await pcCellChange(k, r.L.size, '+'+r.loose, null, '↩ Return '+ra+' (loose)'); }catch(e){ looseFail += r.loose; }
+    }
+  }
+  for(const l of ((ret.received&&ret.received.lines)||[])){
+    const gb = Number(l.gradeB)||0; if(gb <= 0) continue;
+    const toWh=(l.toWh||l.wh)==='CA'?'CA':'SC';
+    try{ await pcAddB(pcKey(l.style, l.color, toWh), String(l.size).toUpperCase(), gb, '↩ Return '+ra+' (B grade)'); }catch(e){}
+  }
+  /* ④ 끝 */
+  ret.invStatus = 'done';
+  ret.stock = Object.assign({}, ret.stock, { doneAt:new Date().toISOString() });
+  rec.meta._returns = recReturns(rec).map(x=>x.ra===ra?ret:x);
+  try{ await sbSaveRow('/rest/v1/pr_orders?base=eq.'+encodeURIComponent(base), {meta:rec.meta, updated_at:new Date().toISOString()}, 'Return stock done ' + ra); }
+  catch(e){ alert('⚠ The stock went in, but the "done" mark did not save.\n\nDo NOT press it again — tell the office.'); }
+  logHist(base, '📦 Return stock put away — '+ra+' · '+nBox+' box(es) to '+(ret.stock.bins.join(', ')||'-')+' · '+nLoose+' loose pcs'+(bTot?(' · B '+bTot):''));
+  const d=document.getElementById('modal-rastock'); if(d) d.remove();
+  try{ if(typeof bxLoad==='function') await bxLoad(); }catch(e){}
+  renderSaved();
+  showToast('✅ '+ra+' is back in stock'+(looseFail?(' — ⚠ '+looseFail+' loose pcs did not save, check PC Room'):''));
+}
+/* 📦 큐 — 크레딧은 나갔는데 물건이 아직 선반에 안 올라간 것 */
+function raStockQueue(){
+  const out = [];
+  (savedCache||[]).forEach(function(s){
+    (typeof recReturns==='function' ? recReturns(s) : []).forEach(function(r){
+      if(!r || !cmIssued(r)) return;
+      const st = retInvStatus(r);
+      if(st !== 'pending' && st !== 'working') return;
+      out.push({ base:s.base, ra:r.ra, po:(s.meta&&s.meta.po)||'', cust:(s.meta&&s.meta.cust)||'',
+                 at:(r.received&&r.received.at)||r.createdAt||'', working:(st==='working'),
+                 pcs:Number((r.received&&r.received.restockTotal)||0) });
+    });
+  });
+  out.sort((a,b)=> (a.working===b.working) ? (String(a.at) < String(b.at) ? -1 : 1) : (a.working ? -1 : 1));
+  return out;
+}
+function kpiReturnStock(){
+  const list = raStockQueue();
+  const rows = list.map(function(r){
+    const d = r.at ? Math.round((Date.now() - new Date(r.at).getTime())/86400000) : -1;
+    const hot = d >= 5;
+    return '<div style="display:flex;align-items:center;gap:10px;padding:10px 14px;border-bottom:1px solid #f1f5f9;cursor:pointer;"'
+      + ' onclick="document.getElementById(\'modal-rastockq\').remove();returnStockOpen(\'' + esc(r.base) + '\',\'' + esc(r.ra) + '\')"'
+      + ' onmouseover="this.style.background=\'#eff6ff\'" onmouseout="this.style.background=\'\'">'
+      + '<div style="flex:1;min-width:0;"><div style="font-size:13px;font-weight:800;color:#0f2a4a;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">'
+      +   esc(r.cust||'(no name)') + ' <span style="color:#64748b;font-weight:600;">· PO ' + esc(r.po||'—') + '</span></div>'
+      + '<div style="font-size:11px;color:#94a3b8;margin-top:3px;">RA <b style="font-family:Consolas,monospace;color:#1d4ed8;">' + esc(r.ra) + '</b>'
+      +   (r.at ? (' · ' + esc(String(r.at).slice(0,10))) : '') + '</div></div>'
+      + (r.working ? '<span style="font-size:10px;font-weight:900;color:#b91c1c;background:#fee2e2;border-radius:20px;padding:3px 9px;white-space:nowrap;">⚠ started</span>' : '')
+      + '<span style="font-size:12px;font-weight:900;color:#1d4ed8;white-space:nowrap;">' + r.pcs.toLocaleString() + ' pcs</span>'
+      + (d >= 0 ? ('<span style="font-size:10px;font-weight:800;color:' + (hot?'#b91c1c':'#64748b') + ';background:' + (hot?'#fee2e2':'#f1f5f9') + ';border-radius:20px;padding:3px 9px;white-space:nowrap;">' + d + 'd</span>') : '')
+      + '</div>';
+  }).join('') || '<div style="padding:24px;text-align:center;color:#94a3b8;font-size:13px;">Nothing waiting 🎉</div>';
+  kpiShell('modal-rastockq', '📦 Returned stock not put away', '#1d4ed8', rows,
+    list.length + ' return(s) · ' + list.reduce((a,r)=>a+r.pcs,0).toLocaleString() + ' pcs waiting for a bin');
+}
+function returnReceiveConfirm_RASPLIT_MARK(){ return true; }
 function buildCreditMemoHtml(rec, ret){
   /* CMDOC-v1 - 그림은 buildCreditMemoDoc 이 그린다 (invx 옷). 부르는 곳들은 그대로 둔다. */
   return buildCreditMemoDoc(rec, ret);
@@ -47195,12 +47421,19 @@ function renderKpi(){
   const actTile=(icon,label,color,bg,click,title)=>`<div onclick="${click}" title="${title||''}" style="${CELL}background:${bg};border:1px solid ${color}44;border-left:5px solid ${color};cursor:pointer;" onmouseover="this.style.filter='brightness(.97)'" onmouseout="this.style.filter=''">
     <div style="font-size:23px;font-weight:900;color:${color};line-height:1;">${icon}</div>
     <div style="font-size:10px;font-weight:800;color:${color};letter-spacing:.3px;margin-top:4px;text-transform:uppercase;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">${label}</div></div>`;
+  /* RASPLIT-1 - 📦 Return Stock 타일 숫자. **목록(kpiReturnStock)과 같은 함수**를 쓴다 -
+     locker 사고(타일이 조건을 복사해서 목록과 어긋남)를 되풀이하지 않는다. */
+  let rstock = 0; try{ rstock = raStockQueue().length; }catch(e){ rstock = 0; }
   const _kpiHtml = newsBarHtml() + `<div style="display:grid;grid-template-columns:repeat(6,minmax(0,1fr));gap:8px;margin-bottom:8px;align-items:stretch;">
     ${openTile(open, _oW, _pW, _oAmt, _oWAmt)}
     ${numTile('🔥 Rush', rush.toLocaleString(), '#dc2626', '#fef2f2', "kpiOpenOrders(true)", '', '', _rushAmt, 'Value still to be pulled on rush orders')}
     ${numTile('🧾 Invoice To Do', uninv.toLocaleString(), '#c2410c', '#fff7ed', "invNpOpen()", '', '', uninvAmt, 'Invoices still waiting to be printed or emailed to the customer')}
     ${numTile('📝 CM Not Sent', pret.toLocaleString(), '#ea580c', '#fff7ed', "kpiPendingReturns()", '', '', 0, 'Returns whose credit memo is prepared but not sent to the customer yet')}
-    ${numTile('💳 Refund Pending', refund.toLocaleString(), '#7c2d12', '#faf5ff')}
+    ${`<div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;align-items:stretch;">`
+      + numTile('💳 Refund Pending', refund.toLocaleString(), '#7c2d12', '#faf5ff')
+      /* RASPLIT-1 - 크레딧은 나갔는데 물건이 아직 선반에 안 올라간 것 (창고 매니저 일) */
+      + numTile('📦 Return Stock', rstock.toLocaleString(), '#1d4ed8', '#eff6ff', "kpiReturnStock()", '', '', 0, 'Returns whose goods are not back in a bin yet')
+      + `</div>`}
     ${`<div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;align-items:stretch;">`
       + numTile('🌐 Web Orders', '<span id="kpi-web-n">'+woCount()+'</span>', '#0d9488', '#f0fdfa', "webOrdersOpen()", 'id="web-kpi"', woCount()>0?'breq-blink':'')
       + numTile('📝 Web Signups', '<span id="kpi-webapp-n">'+((typeof waCount==='function')?waCount():0)+'</span>', '#7c3aed', '#faf5ff', "webAppsOpen()")
