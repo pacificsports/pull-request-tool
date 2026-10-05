@@ -314,7 +314,7 @@ body.po-dragging{user-select:none;}
   </span>
   <select id="lang-sel" onchange="setLang(this.value)" style="font-size:11px;padding:3px 6px;border-radius:5px;border:none;background:#1d3f66;color:#fff;"><option value="ko">한국어</option><option value="en">English</option><option value="es">Español</option></select>
   <button id="wide-btn" class="btn btn-sm" onclick="toggleWide()" title="화면 넓게 / 좁게 — 기본은 넓게 (이 브라우저에만 저장돼)" style="padding:2px 8px;font-size:10px;background:#1d3f66;color:#cfe0f2;border-color:#2b5384;">↔ Wide</button>
-  <span id="app-ver" style="font-size:10px;color:#9fb8d4;">v1209</span>
+  <span id="app-ver" style="font-size:10px;color:#9fb8d4;">v1210</span>
 </div>
 <script>
 // ↔ 넓게 보기 — 브라우저마다 따로 저장 (v793)
@@ -6509,19 +6509,87 @@ function buildReturnInspectionHtml(rec, ret){
     </div>
   </div>`;
 }
+/* RAUNLOCK-1 - 「Overship - no credit」 표시를 **받을 때 되돌릴 수 있게** (2026-10-05)
+   [stated] 하윤: "아니 근데 왜 size XL만 overship이 뜨는거야?? 저게 어떻케 된거냐면 우리가
+     1368 artichoke을 다 보냈는데 거래처에서 8368로 다 교체해주세요해서 우리가 8368 보내주고
+     1368 리턴 받은거야"
+   실측: RA-0910TTY80054084 의 XL 줄만 noCredit=true 로 저장돼 있었다. 그런데 그 XL 은
+     오더에도 313장 2.89, 패킹리스트 SC287 에도 313장, **인보이스 26-5480 에도 313장 2.89**
+     로 청구돼 있었다. 오출고가 아니라 교환이라 크레딧을 줘야 하는 줄이다 ($904.57).
+   🔴 그런데 저장된 뒤에는 끌 길이 아예 없었다 - RA 수정 화면은 물건이 도착하면 잠기고,
+      이 화면은 단가를 0 으로 잠그기만 했다. 체크 한 번이 영구히 돈을 날리는 구조였다.
+   ⭐⭐⭐ 판정을 **한 군데(`rrNcOf`)로** 모았다. 전에는 줄 그리기·`rrRecalc`·`returnReceiveConfirm`
+      세 곳이 각각 `l.noCredit` 를 다시 읽어서, 화면에서 바꿔도 확정에서 되돌아갔다.
+   ⚠ 되돌리기는 **원래 표시가 있던 줄에서만** 된다. 여기서 새로 「오출고」 를 찍는 것은
+      RA 를 만들 때 할 판단이라 일부러 막았다. */
+function rrNcOf(i){ try{ return !!(window._rrNc||{})[i]; }catch(e){ return false; } }
+function rrNcWas(i){ try{ return !!(window._rrNc0||{})[i]; }catch(e){ return false; } }
+/* 오출고로 찍힌 줄은 `price` 가 0 으로 저장돼 있다. 되돌릴 때 쓸 **원래 단가**를
+   줄에 적힌 `listPrice` → 인보이스 → 그 창고 오더 줄 → 아무 오더 줄 순서로 찾는다.
+   ⭐ `listPrice` 는 RA 를 만들 때 이미 남겨 둔 값이라 제일 정확하다 (`returnDo` 가 넣는다)
+   ⚠ 이것은 값 찾기일 뿐, 크레딧을 줄지 말지의 판정이 아니다 (판정은 `rrNcOf` 하나뿐) */
+function rrOrigPrice(base, l){
+  try{
+    if(Number(l && l.listPrice)) return Number(l.listPrice);
+    const rec=(savedCache||[]).find(s=>s.base===base); if(!rec) return 0;
+    const wh=String(l.wh||l.toWh||'').toUpperCase();
+    const same=x=> String(x.style||'')===String(l.style||'')
+      && String(x.color||'').toUpperCase()===String(l.color||'').toUpperCase()
+      && String(x.size||'').toUpperCase()===String(l.size||'').toUpperCase();
+    const iv=(rec.inv&&rec.inv[wh])||{};
+    let hit=(iv.lines||[]).find(same);
+    if(hit && Number(hit.price)) return Number(hit.price);
+    hit=(rec.lines||[]).filter(x=>String(x.wh||'').toUpperCase()===wh).find(same);
+    if(hit && Number(hit.price)) return Number(hit.price);
+    hit=(rec.lines||[]).find(same);
+    return (hit && Number(hit.price))||0;
+  }catch(e){ return 0; }
+}
+function rrNcBadge(i){
+  if(!rrNcWas(i)) return '';
+  return rrNcOf(i)
+    ? '<div onclick="rrNcToggle(' + i + ')" title="Click if this is NOT an overship — the line gets its invoiced price back and is credited" style="display:inline-block;margin-top:2px;font-size:9px;font-weight:900;color:#0369a1;background:#e0f2fe;border:1px solid #7dd3fc;border-radius:5px;padding:1px 5px;white-space:nowrap;cursor:pointer;">OVERSHIP · NO CREDIT ✕</div>'
+    : '<div onclick="rrNcToggle(' + i + ')" title="Put the overship mark back — the line goes to $0 again" style="display:inline-block;margin-top:2px;font-size:9px;font-weight:800;color:#92400e;background:#fef3c7;border:1px solid #fcd34d;border-radius:5px;padding:1px 5px;white-space:nowrap;cursor:pointer;">↩ overship mark removed</div>';
+}
+function rrNcToggle(i){
+  const div=document.getElementById('modal-rareceive'); if(!div) return;
+  if(!rrNcWas(i)) return;
+  const ret=window._rrRet||{}, l=(ret.lines||[])[i]||{}, base=window._rrBase||'';
+  window._rrNc = window._rrNc || {};
+  const on = !rrNcOf(i);
+  window._rrNc[i] = on;
+  const pi=div.querySelector('.rr-price[data-i="'+i+'"]');
+  if(pi){
+    if(on){ pi.value='0.00'; pi.readOnly=true;
+            pi.title='Overship — never billed, so no credit is due';
+            pi.style.background='#e0f2fe'; pi.style.color='#0369a1'; pi.style.fontWeight='800'; }
+    else { const p=Number(l.price)||rrOrigPrice(base, l)||0;
+            pi.value=p.toFixed(2); pi.readOnly=false;
+            pi.title='Invoiced price — edit it if the credit should be different';
+            pi.style.background='#fffbeb'; pi.style.color='#92400e'; pi.style.fontWeight='800'; }
+  }
+  const cell=div.querySelector('.rr-nc[data-i="'+i+'"]'); if(cell) cell.innerHTML=rrNcBadge(i);
+  const tr=pi?pi.closest('tr'):null; if(tr) tr.style.background = on ? '#f0f9ff' : '#fffdf5';
+  try{ rrRecalc(base, ret.ra); }catch(e){}
+}
 function openReturnReceive(base, ra){
   const rec = savedCache.find(s=>s.base===base); if(!rec) return;
   const ret = recReturns(rec).find(r=>r.ra===ra); if(!ret){ showToast('⚠ Return not found'); return; }
   if(ret.status==='received'){ openCreditMemo(base, ra); return; }
   window._rrRet = ret;   // rrRecalc 이 줄별 noCredit 을 봐야 한다 (v885)
+  /* RAUNLOCK-1 - `_rrNc` 가 **지금 판정**, `_rrNc0` 는 **RA 에 저장된 원래 표시**.
+     세 곳이 각자 `l.noCredit` 를 읽던 것을 이 한 벌로 바꿨다 */
+  window._rrBase = base;
+  window._rrNc = {}; window._rrNc0 = {};
+  (ret.lines||[]).forEach(function(l,i){ window._rrNc[i]=!!l.noCredit; window._rrNc0[i]=!!l.noCredit; });
   const ex=document.getElementById('modal-rareceive'); if(ex) ex.remove();
   const rows=(ret.lines||[]).map((l,i)=>{ const rq=Number(l.qty)||0, toWh=(l.toWh||l.wh)==='CA'?'CA':'SC';
     /* 오출고로 돌아오는 줄은 청구한 적이 없다 — 단가를 0 으로 잠근다 (v885).
        열어두면 습관적으로 원래 단가가 들어가서, 안 받은 돈을 돌려주는 크레딧이 만들어진다. */
-    const nc = !!l.noCredit;
-    const price = nc ? 0 : (Number(l.price)||0);
+    const nc = rrNcOf(i);
+    const price = nc ? 0 : (Number(l.price)||rrOrigPrice(base, l)||0);
     return `<tr${nc?' style="background:#f0f9ff;"':''}>
-      <td style="border:1px solid #e5e7eb;padding:5px 8px;font-weight:700;">${esc(l.style)}${nc?'<div style="font-size:9px;font-weight:900;color:#0369a1;white-space:nowrap;">OVERSHIP · NO CREDIT</div>':''}</td>
+      <td style="border:1px solid #e5e7eb;padding:5px 8px;font-weight:700;">${esc(l.style)}<div class="rr-nc" data-i="${i}">${rrNcBadge(i)}</div></td>
       <td style="border:1px solid #e5e7eb;padding:5px 8px;">${esc(String(l.color).toUpperCase())}</td>
       <td style="border:1px solid #e5e7eb;padding:5px 8px;text-align:center;">${esc(l.size)}</td>
       <td style="border:1px solid #e5e7eb;padding:5px 8px;font-size:10.5px;color:#9a3412;">${esc(l.reason||ret.reason||'')}</td>
@@ -6583,8 +6651,8 @@ function rrRecalc(base, ra){
     const b=Math.max(0, parseInt((div.querySelector('.rr-b[data-i="'+i+'"]')||{}).value)||0);
     const f=Math.max(0, parseInt((div.querySelector('.rr-f[data-i="'+i+'"]')||{}).value)||0);
     const recv=a+b+f;
-    const _l=((window._rrRet&&window._rrRet.lines)||[])[i]||{};
-    const price=_l.noCredit ? 0 : (Number((div.querySelector('.rr-price[data-i="'+i+'"]')||{}).value)||0);
+    /* RAUNLOCK-1 - 화면에서 되돌린 것을 그대로 따른다 (예전엔 저장된 값을 다시 읽어 되돌아갔다) */
+    const price=rrNcOf(i) ? 0 : (Number((div.querySelector('.rr-price[data-i="'+i+'"]')||{}).value)||0);
     const amt=recv*price; total+=amt;
     const rc=div.querySelector('.rr-recv[data-i="'+i+'"]'); if(rc) rc.textContent=recv.toLocaleString();
     const cell=div.querySelector('.rr-amt[data-i="'+i+'"]'); if(cell) cell.textContent='$'+amt.toFixed(2);
@@ -6601,10 +6669,12 @@ async function returnReceiveConfirm(base, ra){
     const b=Math.max(0, parseInt((div.querySelector('.rr-b[data-i="'+i+'"]')||{}).value)||0);
     const f=Math.max(0, parseInt((div.querySelector('.rr-f[data-i="'+i+'"]')||{}).value)||0);
     const recv=a+b+f;
-    /* 오출고 줄은 무슨 일이 있어도 0 — 화면에서 누가 고쳤더라도 여기서 다시 잠근다 (v885) */
-    const price = l.noCredit ? 0 : (Number((div.querySelector('.rr-price[data-i="'+i+'"]')||{}).value)||Number(l.price)||0);
+    /* RAUNLOCK-1 - 오출고 줄은 0 으로 잠근다. 단 **지금 화면의 판정**(`rrNcOf`)을 본다.
+       ⚠ 예전엔 저장된 `l.noCredit` 를 다시 읽어서, 화면에서 되돌려도 확정에서 0 으로 돌아갔다 */
+    const _nc = rrNcOf(i);
+    const price = _nc ? 0 : (Number((div.querySelector('.rr-price[data-i="'+i+'"]')||{}).value)||Number(l.price)||rrOrigPrice(base, l)||0);
     creditAmt+=recv*price; totA+=a; totB+=b; totF+=f;
-    recvLines.push(Object.assign({}, l, {receivedQty:recv, gradeA:a, gradeB:b, failed:f, restockA:a, restockB:b, restockQty:a+b, price:price, noCredit:!!l.noCredit}));
+    recvLines.push(Object.assign({}, l, {receivedQty:recv, gradeA:a, gradeB:b, failed:f, restockA:a, restockB:b, restockQty:a+b, price:price, noCredit:_nc}));
   });
   creditAmt=Math.round(creditAmt*100)/100;
   const restockA=totA, restockB=totB, restockTot=totA+totB;
@@ -6618,6 +6688,9 @@ async function returnReceiveConfirm(base, ra){
               : (retCmNo(ret) ? ('• Credit memo #: '+retCmNo(ret)+'\n') : '• Credit memo #: the next number from the counter\n'))
     + '• Credit memo:  $'+creditAmt.toFixed(2)+' ('+(totA+totB+totF).toLocaleString()+' pcs)\n'
     + (ncPcs?('• Overship (never billed): '+ncPcs.toLocaleString()+' pcs → back to stock, NO credit\n'):'')
+    /* RAUNLOCK-1 - 표시를 **뗀** 줄은 돈이 늘어난다. 누르기 전에 반드시 보여준다 */
+    + (function(){ const c=(ret.lines||[]).filter(function(x,i){ return rrNcWas(i) && !rrNcOf(i); }).length;
+        return c ? ('⚠ Overship mark REMOVED on '+c+' line(s) — they ARE credited on this memo\n') : ''; })()
     + '• A Grade: '+totA.toLocaleString()+' → stock · B Grade: '+totB.toLocaleString()+' → B-grade · Failed: '+totF.toLocaleString()+' → scrap\n\nThis cannot be edited afterward.')) return;
   /* CMSEQ-v1 - 인보이스와 **같은** 공용 카운터에서 7자 번호를 뽑는다 (MAS 칸 모양).
      [stated] 하윤: "credit memo#도 인보이스 넘버처럼 해야하는거 아니야"
