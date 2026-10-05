@@ -314,7 +314,7 @@ body.po-dragging{user-select:none;}
   </span>
   <select id="lang-sel" onchange="setLang(this.value)" style="font-size:11px;padding:3px 6px;border-radius:5px;border:none;background:#1d3f66;color:#fff;"><option value="ko">한국어</option><option value="en">English</option><option value="es">Español</option></select>
   <button id="wide-btn" class="btn btn-sm" onclick="toggleWide()" title="화면 넓게 / 좁게 — 기본은 넓게 (이 브라우저에만 저장돼)" style="padding:2px 8px;font-size:10px;background:#1d3f66;color:#cfe0f2;border-color:#2b5384;">↔ Wide</button>
-  <span id="app-ver" style="font-size:10px;color:#9fb8d4;">v1203</span>
+  <span id="app-ver" style="font-size:10px;color:#9fb8d4;">v1204</span>
 </div>
 <script>
 // ↔ 넓게 보기 — 브라우저마다 따로 저장 (v793)
@@ -43624,7 +43624,28 @@ async function cmDelete(name){
    화면이 다시 그려지면 낡은 값이 다시 칠해져 「안 들어갔나」 싶어 한 번 더 치게 된다.
    고친 것: 쓰기 전에 서버의 지금 값을 읽어 거기에 이 한 칸만 엹고,
    저장이 끝나면 그 칸을 저장된 값으로 다시 칠한다 (초록으로 한 번 깜빡). */
-async function cmSetQuiet(k, field, val, el){
+/* ═══ HANASAVE-2 - 한 거래처 카드에 **한 번에 하나씩만** 쓴다 (2026-10-05) ═══
+   [stated] 하윤: "아직도 hana code가 사라져서 다시 한번 넣어야 save가 되는거 같은데"
+   🔴🔴 재현했다 (`/tmp/t_hanarace.js`): 🏦 HANA CODE 를 치고 **바로** 🏦 HANA APPROVAL # 로
+      넘어가면, 먼저 친 CODE 가 통째로 사라진다.
+      · 두 칸 다 `cmSetQuiet` 를 부르고, 그 함수는 ① 서버를 읽고 ② 한 칸 얹고 ③ **통째로** 쓴다
+      · ②번 칸의 ①읽기가 ①번 칸의 ③쓰기보다 **먼저** 끝나면, 읽어온 옛 값에 approval 만 얹혀
+        덮어쓰이고 code 는 없던 일이 된다 (`pr_customers.data` 는 통짜 JSON 이라 한 칸씩 못 쓴다)
+   ⚠⚠ HANASAVE-1 이 고친 것은 「낡은 사본을 덮어쓰는 것」 이었다 — **두 칸이 겹치는 것**은
+      그때 안 보였다. 칸 하나만 고치면 멀쩡해 보이기 때문이다
+   ⭐ 고침: 같은 거래처(k)에 대한 쓰기를 **줄 세운다.** 앞 쓰기가 끝나야 다음 읽기가 시작되므로
+      두 번째는 첫 번째가 넣은 값을 보고 그 위에 얹는다
+   ⚠ `cmSet`(칩·조건·한도)도 **같은 줄**에 세운다 - 같은 한 줄을 쓰는 함수라 섞이면 똑같이 깨진다 */
+const _cmWriteQ = {};
+function cmWriteQueue(k, fn){
+  const key = String(k||'');
+  const prev = _cmWriteQ[key] || Promise.resolve();
+  const next = prev.then(fn, fn);
+  _cmWriteQ[key] = next.then(function(){}, function(){});   /* 한 번 터져도 줄은 계속 돈다 */
+  return next;
+}
+async function cmSetQuiet(k, field, val, el){ return cmWriteQueue(k, function(){ return _cmSetQuietDo(k, field, val, el); }); }
+async function _cmSetQuietDo(k, field, val, el){
   let cur = custStore[k] || {};
   try{
     const _r = await sbFetch('/rest/v1/pr_customers?k=eq.' + encodeURIComponent(k) + '&select=data');
@@ -43641,7 +43662,8 @@ async function cmSetQuiet(k, field, val, el){
     setTimeout(function(){ try{ el.style.background = ''; }catch(e){} }, 900); }catch(e){} }
   showToast(ok ? '💾 Saved' : '\u26d4 NOT saved - the server refused it. Try again.');
 }
-async function cmSet(k, field, val){
+async function cmSet(k, field, val){ return cmWriteQueue(k, function(){ return _cmSetDo(k, field, val); }); }
+async function _cmSetDo(k, field, val){
   const cur = custStore[k] || {};
   if(field === 'creditLimit') cur.creditLimit = parseFloat(String(val).replace(/,/g,'')) || 0;
   else if(field === 'webCust'){
@@ -47841,11 +47863,21 @@ function factorAmt(rec, wh){
   return Math.round(t*100)/100;
 }
 /* 인보이스 하나의 조건 - 인보이스에 박힌 것이 먼저, 없으면 거래처 카드 */
+/* FACTTERM-1 - 조건을 **화면과 같은 차례**로 찾는다 (2026-10-05)
+   [stated] 하윤: "rein 하고 viatran customer에 net term 이 다 들어가있는데 왜 여기는 적용이 안되있지"
+   🔴 실측: Rein Designs · Viatran 의 거래처 카드에는 `termType` 이 **아예 없다.**
+      그런데 화면의 TERMS 칸은 `cs.termType || custLastTermType(name).termType` 로 그려서
+      **최근 인보이스에서 가져온 Net 30 이 보이고 있었다.** 카드에는 안 적힌 값이다.
+      여기서는 그 폴백을 안 봐서 `⚠ none` 이 떴다 - 화면과 파일이 어긋난 것
+   ⭐ 이제 세 단계: ① 이 인보이스에 적힌 조건 → ② 거래처 카드 → ③ **최근 인보이스**(custLastTermType)
+      cmFlagHtml·카드 TERMS 칸이 쓰는 바로 그 폴백이다. 같은 함수를 봐야 어긋나지 않는다
+   ⚠ 브랜드(Concept 360 → Lone Rock)는 `factorCustCard` 가 모회사 카드를 준다 - 그대로 둔다 */
 function factorTermOf(rec, wh){
   const iv = (rec.inv && rec.inv[wh]) || {};
   let ti = null;
   try{ ti = termInfo({termType:iv.termType, termDays:iv.termDays}); }catch(e){}
   if(!ti){ try{ ti = termInfo(factorCustCard(rec.meta && rec.meta.cust)); }catch(e){} }
+  if(!ti){ try{ ti = termInfo(custLastTermType(rec.meta && rec.meta.cust)); }catch(e){} }
   return ti;
 }
 /* 아직 HANA 로 안 보낸 서류를 모은다. days 안쪽만 본다 (오래된 것까지 들추지 않는다). */
