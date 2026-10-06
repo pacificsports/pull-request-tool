@@ -314,7 +314,7 @@ body.po-dragging{user-select:none;}
   </span>
   <select id="lang-sel" onchange="setLang(this.value)" style="font-size:11px;padding:3px 6px;border-radius:5px;border:none;background:#1d3f66;color:#fff;"><option value="ko">한국어</option><option value="en">English</option><option value="es">Español</option></select>
   <button id="wide-btn" class="btn btn-sm" onclick="toggleWide()" title="화면 넓게 / 좁게 — 기본은 넓게 (이 브라우저에만 저장돼)" style="padding:2px 8px;font-size:10px;background:#1d3f66;color:#cfe0f2;border-color:#2b5384;">↔ Wide</button>
-  <span id="app-ver" style="font-size:10px;color:#9fb8d4;">v1216</span>
+  <span id="app-ver" style="font-size:10px;color:#9fb8d4;">v1217</span>
 </div>
 <script>
 // ↔ 넓게 보기 — 브라우저마다 따로 저장 (v793)
@@ -6817,6 +6817,59 @@ async function returnReceiveConfirm(base, ra){
    ⚠⚠ 상태가 셋이다: pending(아직) · working(넣는 중에 끊김) · done(끝).
       working 은 「박스는 들어갔는데 끝 표시를 못 했다」 를 뜻한다 - 그냥 다시 누르면
       같은 박스가 두 번 들어간다. 그래서 그 줄은 빨갛게 세우고 사람이 보게 한다. */
+/* ═══ RABINCHK-1 - 없는 bin 을 조용히 만들지 않는다 (2026-10-06) ═══
+   [stated] 하윤: "여기도 bin을 일부러 spelling틀려서 넣어 봤는데 이거를 안막네??
+     이런 bin은 없다고 알려주고 new bin인지 confirm하게 해야하는거 아니야?"
+   🔴 `TAMPORA` (TEMPORARY 오타) 가 그대로 저장됐다. 2026-09-10 에 `1G-13`/`1G13` 로
+      선반이 둘로 갈라졌던 것과 같은 사고 - 재고가 두 줄이 되고, 물건 찾으러 가면 한쪽만 보인다.
+   ⭐ **막지는 않는다** - 진짜 새 선반도 있다. 대신 ① 줄에 호박색으로 알리고
+      ② 누를 때 그 bin 들을 따로 확인받는다 ③ 비슷한 이름이 있으면 같이 보여준다.
+   ⚠ 아는 bin 은 **그 창고의 재고에서** 센다 (SC 선반을 CA 에 넣으면 그것도 새 bin 이다). */
+function raBinKnown(wh){
+  const W = String(wh||'').toUpperCase();
+  try{
+    if(!window._raBinSet) window._raBinSet = {};
+    if(window._raBinSet[W]) return window._raBinSet[W];
+    const set = new Set();
+    (bxStore||[]).forEach(function(b){
+      if(String(b.status||'IN').toUpperCase() !== 'IN') return;
+      if(String(bxWh(b)||'').toUpperCase() !== W) return;
+      const L = binNorm(b.loc||''); if(L) set.add(L);
+    });
+    window._raBinSet[W] = set;
+    return set;
+  }catch(e){ return new Set(); }
+}
+/* 오타를 잡는 것이 목적이다.
+   ⚠ 2 까지만 보면 `TAMPORA` → `TEMPORARY` (거리 3) 를 놓친다 - 실제로 하윤이 친 오타다.
+     그래서 **긴 이름(7자 이상)은 3 까지** 본다. 짧은 bin(1J15 같은)은 2 그대로 -
+     느슨하게 하면 1J15 와 2L22 처럼 전혀 다른 선반을 엉뚱하게 집어준다. */
+function raBinDist(a, b){
+  a = String(a||''); b = String(b||'');
+  if(Math.abs(a.length - b.length) > 3) return 9;
+  const m = a.length, n = b.length;
+  let prev = Array.from({length:n+1}, (_,j)=>j), cur = new Array(n+1);
+  for(let i=1;i<=m;i++){
+    cur[0] = i;
+    for(let j=1;j<=n;j++){
+      cur[j] = Math.min(prev[j]+1, cur[j-1]+1, prev[j-1] + (a[i-1]===b[j-1] ? 0 : 1));
+    }
+    const t = prev; prev = cur; cur = t;
+  }
+  return prev[n];
+}
+function raBinNear(bin, wh){
+  const B = binNorm(bin||''); if(!B) return '';
+  let best = '', bd = 99;
+  try{
+    raBinKnown(wh).forEach(function(k){
+      const lim = Math.max(B.length, k.length) >= 7 ? 3 : 1;   /* 짧은 선반 코드는 글자 하나만 달라야 오타다. 1G13 과 1J15 는 두 글자가 달라서 서로 다른 선반이다 */
+      const d = raBinDist(B, k);
+      if(d > 0 && d <= lim && d < bd){ bd = d; best = k; }
+    });
+  }catch(e){}
+  return best;
+}
 function raStockLines(ret){
   const rl = (ret && ret.received && ret.received.lines) || [];
   return rl.filter(l => (Number(l.gradeA)||0) > 0).map(function(l, i){
@@ -6841,22 +6894,35 @@ function raStockRead(i){
 function raStockRecalc(){
   const div = document.getElementById('modal-rastock'); if(!div) return;
   const st = window._raStock||{lines:[]};
-  let bad = 0, totBox = 0, totLoose = 0;
+  let bad = 0, totBox = 0, totLoose = 0, nNew = 0;
   st.lines.forEach(function(L, i){
     const r = raStockRead(i); if(!r) return;
     const cell = div.querySelector('.rs-loose[data-i="'+i+'"]');
     const warn = div.querySelector('.rs-warn[data-i="'+i+'"]');
-    let msg = '';
+    let msg = '', newBin = false;
     if(r.loose < 0) msg = 'too many boxes';
     else if(r.boxes > 0 && !r.bin) msg = 'bin?';
+    /* RABINCHK-1 - 막지 않는다. 호박색으로 「처음 보는 선반」 이라고만 말한다 */
+    else if(r.boxes > 0 && !raBinKnown(r.L.wh).has(r.bin)){
+      const near = raBinNear(r.bin, r.L.wh);
+      msg = near ? ('new bin — did you mean ' + near + '?') : 'new bin';
+      newBin = true;
+    }
     if(cell){ cell.textContent = (r.loose<0 ? '—' : r.loose.toLocaleString()); cell.style.color = r.loose<0 ? '#b91c1c' : '#374151'; }
-    if(warn){ warn.textContent = msg; warn.style.display = msg ? '' : 'none'; }
-    if(msg) bad++; else { totBox += r.boxes; totLoose += r.loose; }
+    if(warn){
+      warn.textContent = msg;
+      warn.style.display = msg ? '' : 'none';
+      /* 새 bin 은 **경고**(호박색), 못 넘어가는 잘못은 **빨강** */
+      warn.style.color = newBin ? '#b45309' : '#b91c1c';
+    }
+    if(msg && !newBin) bad++; else { totBox += r.boxes; totLoose += r.loose; }
+    if(newBin) nNew++;
   });
   const sum = div.querySelector('#rs-sum');
   if(sum) sum.innerHTML = bad
     ? '<span style="color:#b91c1c;font-weight:900;">' + bad + ' line(s) need fixing</span>'
-    : ('<b>' + totBox.toLocaleString() + '</b> full box(es) to bins · <b>' + totLoose.toLocaleString() + '</b> pcs to PC Room');
+    : ('<b>' + totBox.toLocaleString() + '</b> full box(es) to bins · <b>' + totLoose.toLocaleString() + '</b> pcs to PC Room'
+       + (nNew ? ('<span style="color:#b45309;font-weight:900;"> · ⚠ ' + nNew + ' new bin' + (nNew>1?'s':'') + '</span>') : ''));
   const btn = div.querySelector('#rs-go'); if(btn){ btn.disabled = !!bad; btn.style.opacity = bad ? '.45' : '1'; btn.style.cursor = bad ? 'not-allowed' : 'pointer'; }
 }
 function returnStockOpen(base, ra){
@@ -6868,6 +6934,7 @@ function returnStockOpen(base, ra){
   const lines = raStockLines(ret), bTot = raStockBTotal(ret);
   if(!lines.length && !bTot){ showToast('✓ Nothing to put back on this return'); return; }
   window._raStock = { base:base, ra:ra, lines:lines };
+  window._raBinSet = null;   /* RABINCHK-1 - 열 때마다 아는 bin 을 새로 센다 (방금 넣은 것도 반영) */
   const ex = document.getElementById('modal-rastock'); if(ex) ex.remove();
   const rows = lines.map(function(L, i){
     return '<tr>'
@@ -6929,6 +6996,22 @@ async function returnStockDo(){
     if(r.loose < 0){ alert('⚠ Line ' + (i+1) + ': ' + r.boxes + ' boxes × ' + r.L.ppb + ' is more than the ' + r.L.good + ' pcs received.'); return; }
     if(r.boxes > 0 && !r.bin){ alert('⚠ Line ' + (i+1) + ': type the bin the ' + r.boxes + ' full box(es) go into.'); return; }
     plan.push(r);
+  }
+  /* ⭐⭐ RABINCHK-1 - 처음 보는 선반은 **따로** 확인받는다. 아래 큰 확인창에 섞어 넣으면
+     사람이 숫자만 보고 지나친다 - 오타 하나가 선반을 둘로 가르는 사고라 한 번 더 묻는다. */
+  const newBins = [];
+  plan.forEach(function(r){
+    if(r.boxes > 0 && r.bin && !raBinKnown(r.L.wh).has(r.bin) && newBins.indexOf(r.L.wh+' '+r.bin) < 0)
+      newBins.push(r.L.wh + ' ' + r.bin);
+  });
+  if(newBins.length){
+    const hint = newBins.map(function(x){
+      const p = x.split(' '), near = raBinNear(p[1], p[0]);
+      return '  • ' + x + (near ? ('   ← did you mean ' + p[0] + ' ' + near + ' ?') : '');
+    }).join('\n');
+    if(!confirm('⚠ THESE BINS DO NOT EXIST YET\n\n' + hint
+      + '\n\nNothing is stored in them today. If this is a typo, the boxes go to a shelf\n'
+      + 'nobody can find and the stock splits in two.\n\nCreate them and put the boxes there?')) return;
   }
   const bTot = raStockBTotal(ret);
   const nBox = plan.reduce((a,r)=>a+r.boxes,0), nLoose = plan.reduce((a,r)=>a+r.loose,0);
