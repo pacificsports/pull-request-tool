@@ -314,7 +314,7 @@ body.po-dragging{user-select:none;}
   </span>
   <select id="lang-sel" onchange="setLang(this.value)" style="font-size:11px;padding:3px 6px;border-radius:5px;border:none;background:#1d3f66;color:#fff;"><option value="ko">한국어</option><option value="en">English</option><option value="es">Español</option></select>
   <button id="wide-btn" class="btn btn-sm" onclick="toggleWide()" title="화면 넓게 / 좁게 — 기본은 넓게 (이 브라우저에만 저장돼)" style="padding:2px 8px;font-size:10px;background:#1d3f66;color:#cfe0f2;border-color:#2b5384;">↔ Wide</button>
-  <span id="app-ver" style="font-size:10px;color:#9fb8d4;">v1217</span>
+  <span id="app-ver" style="font-size:10px;color:#9fb8d4;">v1218</span>
 </div>
 <script>
 // ↔ 넓게 보기 — 브라우저마다 따로 저장 (v793)
@@ -6870,6 +6870,18 @@ function raBinNear(bin, wh){
   }catch(e){}
   return best;
 }
+function raBinOkKey(wh, bin){ return String(wh||'').toUpperCase() + '|' + binNorm(bin||''); }
+/* RABINNEW-1 - 하윤이 "+ Create" 를 눌러 **일부러** 만들기로 한 선반.
+   이 창을 여는 동안만 산다. bin 글자를 다시 고치면 열쇠가 안 맞아서 경고가 되돌아온다. */
+function raBinOkd(wh, bin){
+  try{ return !!(window._raBinOk||{})[raBinOkKey(wh, bin)]; }catch(e){ return false; }
+}
+function raBinCreate(i){
+  const r = raStockRead(i); if(!r || !r.bin) return;
+  if(!window._raBinOk) window._raBinOk = {};
+  window._raBinOk[raBinOkKey(r.L.wh, r.bin)] = true;
+  raStockRecalc();
+}
 function raStockLines(ret){
   const rl = (ret && ret.received && ret.received.lines) || [];
   return rl.filter(l => (Number(l.gradeA)||0) > 0).map(function(l, i){
@@ -6894,35 +6906,49 @@ function raStockRead(i){
 function raStockRecalc(){
   const div = document.getElementById('modal-rastock'); if(!div) return;
   const st = window._raStock||{lines:[]};
-  let bad = 0, totBox = 0, totLoose = 0, nNew = 0;
+  let bad = 0, totBox = 0, totLoose = 0, nNew = 0, nOk = 0;
   st.lines.forEach(function(L, i){
     const r = raStockRead(i); if(!r) return;
     const cell = div.querySelector('.rs-loose[data-i="'+i+'"]');
     const warn = div.querySelector('.rs-warn[data-i="'+i+'"]');
-    let msg = '', newBin = false;
+    let msg = '', newBin = false, okd = false;
     if(r.loose < 0) msg = 'too many boxes';
     else if(r.boxes > 0 && !r.bin) msg = 'bin?';
     /* RABINCHK-1 - 막지 않는다. 호박색으로 「처음 보는 선반」 이라고만 말한다 */
     else if(r.boxes > 0 && !raBinKnown(r.L.wh).has(r.bin)){
-      const near = raBinNear(r.bin, r.L.wh);
-      msg = near ? ('new bin — did you mean ' + near + '?') : 'new bin';
       newBin = true;
+      okd = raBinOkd(r.L.wh, r.bin);
+      if(okd) msg = 'new bin — will be created';
+      else {
+        const near = raBinNear(r.bin, r.L.wh);
+        msg = near ? ('new bin — did you mean ' + near + '?') : 'new bin';
+      }
     }
     if(cell){ cell.textContent = (r.loose<0 ? '—' : r.loose.toLocaleString()); cell.style.color = r.loose<0 ? '#b91c1c' : '#374151'; }
     if(warn){
       warn.textContent = msg;
       warn.style.display = msg ? '' : 'none';
-      /* 새 bin 은 **경고**(호박색), 못 넘어가는 잘못은 **빨강** */
-      warn.style.color = newBin ? '#b45309' : '#b91c1c';
+      /* 새 bin 은 **경고**(호박색), 하윤이 만들기로 한 것은 **초록**, 못 넘어가는 잘못은 **빨강** */
+      warn.style.color = okd ? '#166534' : (newBin ? '#b45309' : '#b91c1c');
+    }
+    /* RABINNEW-1 - 경고 옆에서 바로 만들 수 있게 한다. 창을 닫고 다시 올 필요가 없다 */
+    const mk = div.querySelector('.rs-new[data-i="' + i + '"]');
+    if(mk){
+      if(newBin && !okd){
+        mk.style.display = '';
+        mk.innerHTML = '<button type="button" class="btn" style="font-size:10px;padding:1px 7px;margin-left:6px;'
+          + 'border-color:#b45309;color:#b45309;font-weight:900;" onclick="raBinCreate(' + i + ')">+ Create ' + esc(r.bin) + '</button>';
+      } else { mk.style.display = 'none'; mk.innerHTML = ''; }
     }
     if(msg && !newBin) bad++; else { totBox += r.boxes; totLoose += r.loose; }
-    if(newBin) nNew++;
+    if(newBin){ nNew++; if(okd) nOk++; }
   });
   const sum = div.querySelector('#rs-sum');
   if(sum) sum.innerHTML = bad
     ? '<span style="color:#b91c1c;font-weight:900;">' + bad + ' line(s) need fixing</span>'
     : ('<b>' + totBox.toLocaleString() + '</b> full box(es) to bins · <b>' + totLoose.toLocaleString() + '</b> pcs to PC Room'
-       + (nNew ? ('<span style="color:#b45309;font-weight:900;"> · ⚠ ' + nNew + ' new bin' + (nNew>1?'s':'') + '</span>') : ''));
+       + ((nNew - nOk) ? ('<span style="color:#b45309;font-weight:900;"> · ⚠ ' + (nNew-nOk) + ' new bin' + ((nNew-nOk)>1?'s':'') + '</span>') : '')
+       + (nOk ? ('<span style="color:#166534;font-weight:900;"> · ✓ ' + nOk + ' new bin' + (nOk>1?'s':'') + ' to create</span>') : ''));
   const btn = div.querySelector('#rs-go'); if(btn){ btn.disabled = !!bad; btn.style.opacity = bad ? '.45' : '1'; btn.style.cursor = bad ? 'not-allowed' : 'pointer'; }
 }
 function returnStockOpen(base, ra){
@@ -6935,6 +6961,7 @@ function returnStockOpen(base, ra){
   if(!lines.length && !bTot){ showToast('✓ Nothing to put back on this return'); return; }
   window._raStock = { base:base, ra:ra, lines:lines };
   window._raBinSet = null;   /* RABINCHK-1 - 열 때마다 아는 bin 을 새로 센다 (방금 넣은 것도 반영) */
+  window._raBinOk  = {};     /* RABINNEW-1 - 「만들기로 했다」 는 이 창 안에서만 산다 */
   const ex = document.getElementById('modal-rastock'); if(ex) ex.remove();
   const rows = lines.map(function(L, i){
     return '<tr>'
@@ -6945,7 +6972,7 @@ function returnStockOpen(base, ra){
       + '<td style="border:1px solid #e5e7eb;padding:5px 8px;text-align:right;font-weight:800;">' + L.good.toLocaleString() + '</td>'
       + '<td style="border:1px solid #e5e7eb;padding:5px 8px;text-align:right;color:#64748b;">' + L.ppb + '</td>'
       + '<td style="border:1px solid #e5e7eb;padding:4px 6px;text-align:right;background:#eff6ff;"><input class="fi num rs-box" data-i="' + i + '" type="number" min="0" value="' + L.boxes + '" oninput="raStockRecalc()" style="width:66px;font-weight:800;text-align:right;color:#1d4ed8;"></td>'
-      + '<td style="border:1px solid #e5e7eb;padding:4px 6px;background:#eff6ff;"><input class="fi rs-bin" data-i="' + i + '" placeholder="bin" oninput="raStockRecalc()" style="width:84px;font-weight:800;text-transform:uppercase;"> <span class="rs-warn" data-i="' + i + '" style="display:none;font-size:10px;font-weight:900;color:#b91c1c;"></span></td>'
+      + '<td style="border:1px solid #e5e7eb;padding:4px 6px;background:#eff6ff;"><input class="fi rs-bin" data-i="' + i + '" placeholder="bin" oninput="raStockRecalc()" style="width:84px;font-weight:800;text-transform:uppercase;"> <span class="rs-warn" data-i="' + i + '" style="display:none;font-size:10px;font-weight:900;color:#b91c1c;"></span><span class="rs-new" data-i="' + i + '" style="display:none;"></span></td>'
       + '<td class="rs-loose" data-i="' + i + '" style="border:1px solid #e5e7eb;padding:5px 8px;text-align:right;font-weight:700;background:#fffbeb;">' + (L.good - L.boxes*L.ppb).toLocaleString() + '</td>'
       + '</tr>';
   }).join('');
@@ -6999,10 +7026,15 @@ async function returnStockDo(){
   }
   /* ⭐⭐ RABINCHK-1 - 처음 보는 선반은 **따로** 확인받는다. 아래 큰 확인창에 섞어 넣으면
      사람이 숫자만 보고 지나친다 - 오타 하나가 선반을 둘로 가르는 사고라 한 번 더 묻는다. */
-  const newBins = [];
+  const newBins = [], okBins = [];
   plan.forEach(function(r){
-    if(r.boxes > 0 && r.bin && !raBinKnown(r.L.wh).has(r.bin) && newBins.indexOf(r.L.wh+' '+r.bin) < 0)
-      newBins.push(r.L.wh + ' ' + r.bin);
+    if(!(r.boxes > 0 && r.bin)) return;
+    if(raBinKnown(r.L.wh).has(r.bin)) return;
+    const tag = r.L.wh + ' ' + r.bin;
+    /* RABINNEW-1 - 줄에서 "+ Create" 를 이미 누른 선반은 다시 묻지 않는다.
+       대신 아래 큰 확인창에 **만들어진다고 적어 둔다** - 조용히 생기면 안 된다. */
+    if(raBinOkd(r.L.wh, r.bin)){ if(okBins.indexOf(tag) < 0) okBins.push(tag); return; }
+    if(newBins.indexOf(tag) < 0) newBins.push(tag);
   });
   if(newBins.length){
     const hint = newBins.map(function(x){
@@ -7017,6 +7049,7 @@ async function returnStockDo(){
   const nBox = plan.reduce((a,r)=>a+r.boxes,0), nLoose = plan.reduce((a,r)=>a+r.loose,0);
   if(!confirm('📦 Put ' + ra + ' back into stock?\n\n'
     + '• ' + nBox.toLocaleString() + ' full box(es) → ' + [...new Set(plan.filter(r=>r.boxes>0).map(r=>r.bin))].join(', ') + '\n'
+    + (okBins.concat(newBins).length ? ('• NEW bin(s) created: ' + okBins.concat(newBins).join(', ') + '\n') : '')
     + '• ' + nLoose.toLocaleString() + ' loose pcs → PC Room\n'
     + (bTot ? ('• ' + bTot.toLocaleString() + ' pcs → B-grade stock\n') : '')
     + '\nThis cannot be undone from here.')) return;
