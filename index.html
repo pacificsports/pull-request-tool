@@ -314,7 +314,7 @@ body.po-dragging{user-select:none;}
   </span>
   <select id="lang-sel" onchange="setLang(this.value)" style="font-size:11px;padding:3px 6px;border-radius:5px;border:none;background:#1d3f66;color:#fff;"><option value="ko">한국어</option><option value="en">English</option><option value="es">Español</option></select>
   <button id="wide-btn" class="btn btn-sm" onclick="toggleWide()" title="화면 넓게 / 좁게 — 기본은 넓게 (이 브라우저에만 저장돼)" style="padding:2px 8px;font-size:10px;background:#1d3f66;color:#cfe0f2;border-color:#2b5384;">↔ Wide</button>
-  <span id="app-ver" style="font-size:10px;color:#9fb8d4;">v1218</span>
+  <span id="app-ver" style="font-size:10px;color:#9fb8d4;">v1219</span>
 </div>
 <script>
 // ↔ 넓게 보기 — 브라우저마다 따로 저장 (v793)
@@ -3077,6 +3077,25 @@ function prLooseBinsHtml(l){
     + p.map(x=>'\u{1F4CD} '+esc(x.loc)+' — '+x.pcs).join('<br>') + `</div>`;
 }
 
+/* REVBIN-1 - 「어느 선반에서 몇 박스」 한 벌.
+   ⭐⭐ 같은 판정을 두 군데 적으면 반드시 어긋난다 - 본 Pull Request 와 REV Pull Request 가
+       이 함수 하나만 쓴다. 같은 선반이 여러 번 지정돼 있으면 합쳐서 한 줄로 만든다. */
+function prFullBinRows(l){
+  const gs = (l && l.pickLocs) || [];
+  const sum = {}, order = [];
+  gs.forEach(g=>{
+    const k = String((g && g.loc) || '?').toUpperCase();
+    if(!(k in sum)){ sum[k] = 0; order.push(k); }
+    sum[k] += (Number(g && g.n) || 0);
+  });
+  const pf = (l && l._palFrom) || {};
+  return order.map(k=>({ loc:k, n:sum[k], pal:String(pf[k] || '').trim() }));
+}
+/* REVBIN-1 - 선반 이름 한 칸 (팔레트에서 꺼내는 것이면 팔레트 이름까지) */
+function prBinCellHtml(g){
+  return '<b>' + esc(String((g && g.loc) || '')) + '</b>'
+    + ((g && g.pal) ? ' <span style="font-size:10.5px;font-weight:900;color:#b45309;white-space:nowrap;">(' + esc(String(g.pal).toUpperCase()) + ')</span>' : '');
+}
 function buildDocHtml(wh, opts){
   const _page1Only = !!(opts && opts.page1Only);
   const num = docNumber(wh);
@@ -3168,17 +3187,7 @@ function buildDocHtml(wh, opts){
      → 트럭에서 빼온 박스는 `l._palFrom[bin]` 에 팔레트 이름이 남는다 (TXPAL/TXPULL 이 적는다).
        낱개로 주워 담는 게 아니라 이미 쌓여 있는 그 팔레트라는 뜻이다.
      ⚠ 지정이 아예 없는 줄은 예전처럼 한 줄로 찍고 선반 칸에 — 를 둔다. */
-  const _fullBinRows = l=>{
-    const gs = (l && l.pickLocs) || [];
-    const sum = {}, order = [];
-    gs.forEach(g=>{
-      const k = String((g && g.loc) || '?').toUpperCase();
-      if(!(k in sum)){ sum[k] = 0; order.push(k); }
-      sum[k] += (Number(g && g.n) || 0);
-    });
-    const pf = (l && l._palFrom) || {};
-    return order.map(k=>({ loc:k, n:sum[k], pal:String(pf[k] || '').trim() }));
-  };
+  const _fullBinRows = prFullBinRows;   /* REVBIN-1 - 본체는 최상위로 올렸다. REV 종이도 같은 함수를 쓴다 */
   const fullRows = fullLines.map(l=>{
     const b = boxCalc(l);
     const bins = _fullBinRows(l);
@@ -3192,7 +3201,11 @@ function buildDocHtml(wh, opts){
   const totFull = fullLines.reduce((a,l)=>a+boxCalc(l).full,0);
   const carryLines = moveLines.filter(l=>_mvCarry(l).length);
   const pinLines   = moveLines.filter(l=>_mvPin(l).length);
-  const moveRows = carryLines.map(l=>{const gs=_mvCarry(l);const locs=gs.map(g=>esc(g.loc)+(g.n>1?' ×'+g.n:'')).join(', ');const n=gs.reduce((a,g)=>a+(g.n||1),0);return `<tr><td style="font-weight:700;">${esc(l.style||'')}</td><td class="tl">${esc(l.color)}</td><td>${esc(l.size)}</td><td style="text-align:center;font-weight:800;">${n}</td><td class="tl">${esc(locs)}</td></tr>`;}).join('');
+  /* REVBIN-1 - 선반이 다르면 **줄을 따로** 찍는다. 전에는 `L12D, 1M8` 로 뭉쳐서
+     어느 선반에서 몇 박스를 빼야 하는지 종이만 보고는 알 수가 없었다.
+     바로 아래 pinRows 와 위 fullRows 는 이미 선반 하나당 줄 하나다 - 이제 세 표가 같은 모양이다. */
+  const _mvRow = (l, g, grey)=>`<tr${grey?' style="color:#6b7280;"':''}><td style="font-weight:700;">${esc(l.style||'')}</td><td class="tl">${esc(l.color)}</td><td>${esc(l.size)}</td><td style="text-align:center;font-weight:800;">${g.n||1}</td><td class="tl" style="font-weight:800;font-family:Consolas,monospace;">${prBinCellHtml(g)}</td></tr>`;
+  const moveRows = carryLines.map(l=>_mvCarry(l).map(g=>_mvRow(l, g, false)).join('')).join('');
   /* ④ 핀: 박스를 그 자리에서 까고 남는 장수는 그 자리에 그대로 둔다 —
      오더가 가져가는 장수와 남길 장수를 둘 다 찍어 준다 */
   /* 📍 "그 자리에 남는 장수" — 핀을 그대로 믿고 찍으면 안 된다 (v986).
@@ -3224,8 +3237,7 @@ function buildDocHtml(wh, opts){
   const _sig = labels=>`<div style="margin-top:24px;display:grid;grid-template-columns:repeat(${labels.length},1fr);gap:26px;page-break-inside:avoid;">${labels.map(lbl=>`<div><div style="border-bottom:1.5px solid #111;height:36px;"></div><div style="display:flex;justify-content:space-between;align-items:baseline;margin-top:5px;"><span style="font-size:11px;font-weight:700;color:#111;">${lbl}</span><span style="font-size:10px;color:#666;">Date: ____________</span></div></div>`).join('')}</div>`;
   const _sigC = lbl=>`<div style="margin-top:10px;max-width:360px;page-break-inside:avoid;"><div style="border-bottom:1.5px solid #111;height:30px;"></div><div style="display:flex;justify-content:space-between;align-items:baseline;margin-top:4px;"><span style="font-size:11px;font-weight:700;color:#111;">${lbl}</span><span style="font-size:10px;color:#666;">Date: ____________</span></div></div>`;
   // ── 2페이지: ② FULL BOX / ③ MOVE TO PC ROOM — 있는 것만, 둘 다 없으면 2페이지 자체를 안 만듦 (v499) ──
-  const doneRows = moveDone.map(l=>{const gs=_mvSplit(l,true);const locs=gs.map(g=>esc(g.loc)+(g.n>1?' ×'+g.n:'')).join(', ');const n=gs.reduce((a,g)=>a+(g.n||1),0);
-    return `<tr style="color:#6b7280;"><td style="font-weight:700;">${esc(l.style||'')}</td><td class="tl">${esc(l.color)}</td><td>${esc(l.size)}</td><td style="text-align:center;font-weight:800;">${n}</td><td class="tl">${esc(locs)}</td></tr>`;}).join('');
+  const doneRows = moveDone.map(l=>_mvSplit(l,true).map(g=>_mvRow(l, g, true)).join('')).join('');
   const hasFull = fullLines.length > 0, hasMove = carryLines.length > 0, hasPin = pinLines.length > 0, hasDone = moveDone.length > 0;
   const p2Full = hasFull ? `<div style="background:#1d4ed8;color:#fff;padding:7px 20px;font-weight:800;letter-spacing:1px;font-size:14px;margin-bottom:6px;">② FULL BOX — pull whole boxes from bins</div>
     <table class="inv-tbl">
@@ -3974,16 +3986,33 @@ function buildRevDocHtml(rec, wh, n){
       <td style="font-size:10px;color:#94a3b8;white-space:nowrap;">${r.qtyFrom.toLocaleString()} → ${r.qtyTo.toLocaleString()}</td>
     </tr>`;
   }).join('');
+  /* REVBIN-1 - REV 종이의 FULL BOX 도 선반 하나당 줄 하나 (본 PR 의 FULLBIN-1 과 같은 함수).
+     ⚠⚠ 안전장치: 지정한 박스 합계가 **이번 리비전의 박스 수와 같을 때만** 쪼갠다.
+         오더를 여러 번 고치면 pickLocs 는 그 줄의 **전체** 지정이라 리비전 차액보다 클 수 있다.
+         그때 쪼개면 종이가 더 뽑으라고 말한다 - 숫자가 안 맞으면 쪼개지 않고 선반 이름만 적는다. */
+  const _revNote = r => r.moveNote ? `<div style="margin-top:2px;display:inline-block;background:#7c2d12;color:#fff;font-weight:900;font-size:10px;letter-spacing:.4px;border-radius:4px;padding:1px 6px;">⇄ ${esc(r.moveNote)}</div>` : '';
   const fullRows = w.full.slice().sort(itemSortCmp).map(r=>{
-    const locs = (r.dF>0 && r.line && r.line.pickLocs && r.line.pickLocs.length)
-      ? [...new Set(r.line.pickLocs.map(g=>String(g.loc)))].join(', ') : '';
-    return `<tr>
+    const row = (chipN, howMany, whereHtml, qtyHtml) => `<tr>
       <td style="font-weight:700;">${esc(r.style)}</td><td class="tl">${esc(r.color)}</td><td>${esc(r.size)}</td>
-      <td>${revDirChip(r.dF)}</td>
-      ${cell(Math.abs(r.dF))}
-      <td class="tl" style="font-size:10.5px;color:#475569;">${r.dF>0 ? (esc(locs) || 'pull from the bin') : 'return to its bin'}${r.moveNote?`<div style="margin-top:2px;display:inline-block;background:#7c2d12;color:#fff;font-weight:900;font-size:10px;letter-spacing:.4px;border-radius:4px;padding:1px 6px;">⇄ ${esc(r.moveNote)}</div>`:''}</td>
-      <td style="font-size:10px;color:#94a3b8;white-space:nowrap;">${r.qtyFrom.toLocaleString()} → ${r.qtyTo.toLocaleString()}</td>
+      <td>${revDirChip(chipN)}</td>
+      ${cell(howMany)}
+      <td class="tl" style="font-size:10.5px;color:#475569;">${whereHtml}</td>
+      <td style="font-size:10px;color:#94a3b8;white-space:nowrap;">${qtyHtml}</td>
     </tr>`;
+    const qtyTxt = r.qtyFrom.toLocaleString() + ' → ' + r.qtyTo.toLocaleString();
+    const bins = (r.dF > 0 && r.line) ? prFullBinRows(r.line) : [];
+    const tot = bins.reduce((a,g)=>a + (Number(g.n)||0), 0);
+    const ok = bins.length > 0 && tot === r.dF;
+    if(ok && bins.length > 1){
+      return bins.map(function(g, i){
+        return row(g.n, g.n, prBinCellHtml(g) + (i===0 ? _revNote(r) : ''),
+          i===0 ? qtyTxt : '<span style="color:#cbd5e1;">↳</span>');
+      }).join('');
+    }
+    if(ok) return row(r.dF, r.dF, prBinCellHtml(bins[0]) + _revNote(r), qtyTxt);
+    const names = bins.length ? bins.map(g=>esc(g.loc)).join(', ') : '';
+    return row(r.dF, Math.abs(r.dF),
+      (r.dF > 0 ? (names || 'pull from the bin') : 'return to its bin') + _revNote(r), qtyTxt);
   }).join('');
   const _sigC = lbl=>`<div style="margin-top:10px;max-width:360px;page-break-inside:avoid;"><div style="border-bottom:1.5px solid #111;height:30px;"></div><div style="display:flex;justify-content:space-between;align-items:baseline;margin-top:4px;"><span style="font-size:11px;font-weight:700;color:#111;">${lbl}</span><span style="font-size:10px;color:#666;">Date: ____________</span></div></div>`;
   const head = `<tr><th>Style#</th><th class="tl">Color</th><th>Size</th><th style="min-width:96px;">Do what</th><th>How many</th><th class="tl">Where</th><th>Order qty</th></tr>`;
