@@ -314,7 +314,7 @@ body.po-dragging{user-select:none;}
   </span>
   <select id="lang-sel" onchange="setLang(this.value)" style="font-size:11px;padding:3px 6px;border-radius:5px;border:none;background:#1d3f66;color:#fff;"><option value="ko">한국어</option><option value="en">English</option><option value="es">Español</option></select>
   <button id="wide-btn" class="btn btn-sm" onclick="toggleWide()" title="화면 넓게 / 좁게 — 기본은 넓게 (이 브라우저에만 저장돼)" style="padding:2px 8px;font-size:10px;background:#1d3f66;color:#cfe0f2;border-color:#2b5384;">↔ Wide</button>
-  <span id="app-ver" style="font-size:10px;color:#9fb8d4;">v1227</span>
+  <span id="app-ver" style="font-size:10px;color:#9fb8d4;">v1228</span>
 </div>
 <script>
 // ↔ 넓게 보기 — 브라우저마다 따로 저장 (v793)
@@ -30803,9 +30803,11 @@ function bxLocModal(style, color, size, wh, loc){
         <button class="btn btn-sm" ${_dis}style="background:#7c3aed;color:#fff;border-color:#7c3aed;font-weight:800;white-space:nowrap;flex:none;${_disCss}" onclick="bxLocToPc()"${_locked?` title="${esc(_lockTtl)}"`:''}>🧺 Open → PC Room</button>
         <span class="muted" style="font-size:10.5px;">Opens the box: −boxes here, +${pcs} pcs each into PC Room · prints a work order for staff</span>
       </div>
-      <div style="display:flex;align-items:center;gap:8px;font-size:12px;">
+      <div style="display:flex;align-items:center;gap:8px;font-size:12px;flex-wrap:wrap;">
         <span style="font-weight:800;min-width:60px;">Ship out</span>
         <input id="blm-outn" class="fi num" type="number" min="1" max="${list.length}" value="1" style="width:60px;" ${_dis}> box(es)
+        <!-- SHIPNOTE-1 - 왜 나갔는지. 📜 Bin history 에 그대로 남는다 -->
+        <input id="blm-outwhy" class="fi" maxlength="80" placeholder="why? e.g. sample to Riot Society" title="Why these boxes left — it is saved on the record and shows in 📜 Bin history" style="flex:1;min-width:150px;max-width:250px;font-size:11.5px;padding:4px 8px;" ${_dis}>
         <button class="btn btn-sm" ${_dis}style="background:#dc2626;color:#fff;border-color:#dc2626;white-space:nowrap;flex:none;${_disCss}" onclick="bxLocOutDo()" title="${_locked?esc(_lockTtl):'Takes boxes out of stock without a PO — for samples, returns, or anything that left the building outside an order'}">− Ship</button>
         <span class="muted" style="font-size:10.5px;">Removes boxes from stock without a PO (samples / returns) · oldest first · restorable from 📜</span>
       </div>
@@ -30882,7 +30884,11 @@ async function bxBinHist(style, color, size, wh, loc){
       if(/PC\s*ROOM|BREAK\s*DOWN/i.test(lab)){ icon='🧺'; what='Opened → PC Room'; tone='#6d28d9'; }
       else if(/DAMAGE|DMG/i.test(lab)){ icon='🗑'; what='Damaged / written off'; tone='#b91c1c'; }
       else if(/STOCK\s*COUNT|ADJUST/i.test(lab)){ icon='✏️'; what='Count adjustment'; tone='#a16207'; }
-      else if(/SHIP\s*OUT|MANUAL\s*SHIP/i.test(lab)){ icon='🚚'; what='Shipped out (no PO)'; tone='#b45309'; }
+      else if(/SHIP\s*OUT|MANUAL\s*SHIP/i.test(lab)){
+        /* SHIPNOTE-1 - 적어 둔 이유를 그 자리에 보여준다. 안 보여주면 적을 이유가 없다 */
+        const _why = String(lab).replace(/^.*?(?:manual\s*ship|ship\s*out)\s*[\u2014-]?\s*/i, '').trim();
+        icon='🚚'; tone='#b45309';
+        what = 'Shipped out (no PO)' + (_why ? (' \u00b7 <b>' + esc(_why) + '</b>') : ''); }
       else{
         const mPo = lab.match(/PO\s*#?\s*([A-Za-z0-9\-]+)/i);
         let rec = (savedCache||[]).find(r=>lab===r.base || (r.base && lab.indexOf(r.base)===0));
@@ -31011,6 +31017,16 @@ async function bxLocMoveDo(){
   renderBoxRoom();
   bxLocModal(c.style, c.color, c.size, c.wh, c.loc);
 }
+/* SHIPNOTE-1 - Ship out 의 이유를 `out_po` 에 붙인다 (파손 처리와 같은 길).
+   ⚠⚠ 머리말 `Manual ship` 을 **바꾸지 말 것** - 📜 Bin history 가
+      `/SHIP\s*OUT|MANUAL\s*SHIP/i` 로 「PO 없이 나간 것」을 가른다. 바꾸면 그 줄이
+      「어느 거래처 PO 인가」 칸으로 떨어져서 엉뚱하게 보인다.
+   ⚠ 파손 집계(`out_po like 'DAMAGE*'`)와는 섞이지 않는다 - 머리말이 다르다. */
+function bxShipWhy(id){
+  const el = document.getElementById(id || 'blm-outwhy');
+  const t = String((el && el.value) || '').trim().replace(/\s+/g, ' ').slice(0, 80);
+  return t ? ('Manual ship \u2014 ' + t) : 'Manual ship';
+}
 async function bxLocOutDo(){
   const c = window._blmCtx; if(!c) return;
   const list = bxLocList(c.style, c.color, c.size, c.wh, c.loc);
@@ -31018,7 +31034,8 @@ async function bxLocOutDo(){
   if(!n){ showToast('⚠ Enter a quantity'); return; }
   const _rblk = reserveBlock(c.style,c.color,c.size,c.wh,n); if(_rblk){ alert(_rblk); return; }
   const take = list.slice(0, n);
-  try{ await bxPatch(take.map(b=>b.id), {status:'OUT', out_at:new Date().toISOString(), out_by:(SESS&&SESS.email)||'', out_po:'Manual ship'}); }
+  const _po = bxShipWhy('blm-outwhy');   /* SHIPNOTE-1 */
+  try{ await bxPatch(take.map(b=>b.id), {status:'OUT', out_at:new Date().toISOString(), out_by:(SESS&&SESS.email)||'', out_po:_po}); }
   catch(e){ showToast('⚠ Failed'); return; }
   const ids = new Set(take.map(b=>b.id));
   bxStore = bxStore.filter(b=>!ids.has(b.id));
