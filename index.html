@@ -314,7 +314,7 @@ body.po-dragging{user-select:none;}
   </span>
   <select id="lang-sel" onchange="setLang(this.value)" style="font-size:11px;padding:3px 6px;border-radius:5px;border:none;background:#1d3f66;color:#fff;"><option value="ko">한국어</option><option value="en">English</option><option value="es">Español</option></select>
   <button id="wide-btn" class="btn btn-sm" onclick="toggleWide()" title="화면 넓게 / 좁게 — 기본은 넓게 (이 브라우저에만 저장돼)" style="padding:2px 8px;font-size:10px;background:#1d3f66;color:#cfe0f2;border-color:#2b5384;">↔ Wide</button>
-  <span id="app-ver" style="font-size:10px;color:#9fb8d4;">v1226</span>
+  <span id="app-ver" style="font-size:10px;color:#9fb8d4;">v1227</span>
 </div>
 <script>
 // ↔ 넓게 보기 — 브라우저마다 따로 저장 (v793)
@@ -10602,6 +10602,28 @@ function payLinkPrior(rec, whs){
       if(iv && iv.payLinkAt && (!best || iv.payLinkAt > best.payLinkAt)) best = iv;
     });
     return best;
+  }catch(e){ return null; }
+}
+/* ═══ PAYRECV-1 - 이 인보이스는 **돈이 다 들어왔나** ═══
+   [stated] 하윤: "저 resend가 우리가 payment를 받으면 received로 바뀔수있나?"
+   ⭐ 돈 세는 법을 새로 적지 않는다 - `invPaidSum`(환불·중복결제 뺀 실수령) 과
+      `invBalance`(크레딧 메모·반품 크레딧까지 뺀 잔액) 를 그대로 본다
+   ⚠ 크레딧 메모로 잔액이 0 이 된 것은 **받은 것이 아니다** -> 실제 결제액도 같이 본다
+   ⚠ 일부만 받았으면 null (아직 받을 돈이 있다)
+   돌려주는 것: {amt, at} 또는 null */
+function payRecv(rec, wh){
+  try{
+    const iv = ((rec && rec.inv) || {})[wh];
+    if(!iv || !iv.savedAt) return null;
+    const paid = (typeof invPaidSum === 'function') ? invPaidSum(iv) : 0;
+    if(!(paid > 0.005)) return null;
+    const bal = (typeof invBalance === 'function') ? invBalance(rec, wh) : 0;
+    if(bal > 0.005) return null;
+    let at = '';
+    [iv.paid].concat(iv.payments || [], iv.dupPays || []).filter(Boolean).forEach(function(p){
+      const t = String((p && p.at) || ''); if(t && t > at) at = t;
+    });
+    return { amt: Math.round(paid * 100) / 100, at: at };
   }catch(e){ return null; }
 }
 /* PAYSENT-2 - 창 안의 단추 글자·색. 전에 보낸 건이면 Resend 로 보인다 */
@@ -46256,6 +46278,8 @@ function invNpList(){
                  payCust: (typeof payDoCardCust==='function' ? payDoCardCust(s) : false),
                  /* PAYSENT-1 - 결제 링크를 보낸 도장 (보냈으면 단추가 Resend 로 바뀐다) */
                  payLinkAt: iv.payLinkAt || '', payLinkTo: iv.payLinkTo || '',
+                 /* PAYRECV-1 - 다 받았으면 {amt, at}, 아니면 null */
+                 recv: (typeof payRecv==='function' ? payRecv(s, w) : null),
                  locker:_locker,
                  printed:!!iv.printed, printedAt:iv.printedAt||'', sentAt:_sent,
                  sentBy:_si.by, sentTo:_si.to,
@@ -46627,7 +46651,14 @@ function invNpRowsHtml(){
       /* PAYSENT-1 - 보낸 뒤에는 **Resend** 로 바뀐다 (💳 Reprint 와 같은 「이미 했다」 색).
          [stated] 하윤: "그래야 아 보내졌구나 알고 다시 안보내지"
          ⚠ 도장(`payLinkAt`)은 레코드에 있다 - 새로 고쳐도, 다른 사람 화면에서도 보인다 */
-      + (r.printed
+      /* PAYRECV-1 - 다 받았으면 **단추가 아니라 알약**이다. 요청할 것이 없다.
+         ⚠ 인쇄 여부와 상관없이 뜬다 - 돈이 들어온 사실이 더 중요하다 */
+      + (r.recv
+          ? '<span style="display:inline-flex;align-items:center;gap:5px;background:#047857;border:1px solid #047857;border-radius:7px;padding:3px 9px;font-size:10px;font-weight:800;color:#fff;white-space:nowrap;" title="Paid in full \u2014 '
+            + invNpMoney(r.recv.amt) + ' received'
+            + (r.recv.at ? (' on ' + esc(String(r.recv.at).slice(0,10))) : '')
+            + '">\u2713 Received</span>'
+          : (r.printed
           ? (r.payLinkAt
               ? '<button class="btn btn-sm" style="padding:3px 10px;font-size:10.5px;white-space:nowrap;font-weight:800;background:#f0fdf4;color:#15803d;border-color:#86efac;" onclick="payReqOrder(\'' + eb + '\')" title="Payment link sent '
                 + esc(String(r.payLinkAt).slice(0,10)) + (r.payLinkTo ? (' to ' + esc(r.payLinkTo)) : '')
@@ -46639,7 +46670,7 @@ function invNpRowsHtml(){
                 + (r.payCust ? 'Email this customer a card payment link for this order'
                              : 'This customer is not set up to pay by card. You can still send a link - press to open it.')
                 + '">\ud83d\udcb3 Payment</button>')
-          : '')
+          : ''))
       + prBtn + mailBtn
       + '</div>';
   }).join('');
