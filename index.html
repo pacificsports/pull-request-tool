@@ -314,7 +314,7 @@ body.po-dragging{user-select:none;}
   </span>
   <select id="lang-sel" onchange="setLang(this.value)" style="font-size:11px;padding:3px 6px;border-radius:5px;border:none;background:#1d3f66;color:#fff;"><option value="ko">한국어</option><option value="en">English</option><option value="es">Español</option></select>
   <button id="wide-btn" class="btn btn-sm" onclick="toggleWide()" title="화면 넓게 / 좁게 — 기본은 넓게 (이 브라우저에만 저장돼)" style="padding:2px 8px;font-size:10px;background:#1d3f66;color:#cfe0f2;border-color:#2b5384;">↔ Wide</button>
-  <span id="app-ver" style="font-size:10px;color:#9fb8d4;">v1219</span>
+  <span id="app-ver" style="font-size:10px;color:#9fb8d4;">v1220</span>
 </div>
 <script>
 // ↔ 넓게 보기 — 브라우저마다 따로 저장 (v793)
@@ -6029,6 +6029,13 @@ function retInvStatus(ret){
 }
 function recHasPendingReturn(s){ return recReturns(s).some(r=>r && r.status==='pending'); }
 function raGen(base, rec){ const n = recReturns(rec).length + 1; return 'RA-' + base + (n>1?('-'+n):''); }
+/* ALLOW-1 - 가격 조정 건은 반품이 아니다. 번호도 따로 센다 (AL-).
+   ⚠ 종이에 찍히는 것은 크레딧 메모 번호다. 이 AL- 은 우리끼리 쓰는 참조다. */
+function raIsAdj(r){ return !!(r && String(r.kind || '') === 'allowance'); }
+function alGen(base, rec){
+  const n = recReturns(rec).filter(raIsAdj).length + 1;
+  return 'AL-' + base + (n>1?('-'+n):'');
+}
 function openReturnModal(base){
   const rec = savedCache.find(s=>s.base===base); if(!rec) return;
   window._rrSel.rt = new Set();
@@ -7311,6 +7318,9 @@ function openCreditMemo(base, ra){
 // 거래처에 예쁜 이메일 본문(표 기반) + Credit Memo PDF 첨부해서 발송 (v530)
 function buildCreditMemoEmailBody(rec, ret, cm){
   const meta=rec.meta||{}; const rc=ret.received||{};
+  /* ALLOW-1 - 반품이 아니라 단가를 깎아 준 건이면 「your return」 이라고 말해선 안 된다 */
+  const isAdj = (typeof raIsAdj === 'function') ? raIsAdj(ret) : (String(ret.kind || '') === 'allowance');
+  const refLbl = isAdj ? 'Ref #' : 'RA #';
   const src=(rc.lines&&rc.lines.length)?rc.lines:(ret.lines||[]);
   const total=Number(rc.creditAmount!=null?rc.creditAmount:src.reduce((a,l)=>a+(Number(l.receivedQty!=null?l.receivedQty:l.qty)||0)*(Number(l.price)||0),0));
   const _wh=(ret.lines&&ret.lines[0]&&(ret.lines[0].toWh||ret.lines[0].wh))||'SC';
@@ -7322,7 +7332,9 @@ function buildCreditMemoEmailBody(rec, ret, cm){
   /* 집 스타일로 다시 그렸다 (v1126) — 첨부되는 Credit Memo 서류(PDF)는 그대로 */
   const lineRows=src.map((l,_n)=>{ const q=Number(l.receivedQty!=null?l.receivedQty:l.qty)||0; const price=Number(l.price)||0;
     return `<tr style="background:${_n % 2 ? '#faf9f5' : '#fdfdfb'};">`
-      + psmTd('<b>'+esc(l.style)+'</b>')
+      + psmTd('<b>'+esc(l.style)+'</b>'
+          + ((isAdj && Number(l.listPrice)>0 && l.newPrice!=null)
+              ? ('<div style="font-size:10px;color:#6b6b60;font-weight:600;">$'+Number(l.listPrice).toFixed(2)+' &rarr; $'+Number(l.newPrice).toFixed(2)+'</div>') : ''))
       + psmTd(esc(String(l.color).toUpperCase()))
       + psmTd(esc(l.size), 'center')
       + psmTd('<b>'+q.toLocaleString()+'</b>', 'right')
@@ -7331,15 +7343,17 @@ function buildCreditMemoEmailBody(rec, ret, cm){
       + '</tr>'; }).join('');
   const _totStr = '$'+total.toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2});
   return psmWrap('Credit Memo',
-      psmHead('Credit memo ' + esc(cm), 'RA # ' + esc(ret.ra) + (meta.po ? (' &middot; PO # ' + esc(meta.po)) : ''))
-    + psmP('A credit memo has been issued for your return. The full credit memo is attached as a PDF for your records.')
+      psmHead('Credit memo ' + esc(cm), refLbl + ' ' + esc(ret.ra) + (meta.po ? (' &middot; PO # ' + esc(meta.po)) : ''))
+    + psmP(isAdj
+        ? 'A credit memo has been issued for the agreed price adjustment on this order. The full credit memo is attached as a PDF for your records.'
+        : 'A credit memo has been issued for your return. The full credit memo is attached as a PDF for your records.')
     + psmTable(
         psmRow('Credit memo #', esc(cm))
-      + psmRow('RA #', esc(ret.ra))
+      + psmRow(refLbl, esc(ret.ra))
       + psmRow('PO #', esc(meta.po||''))
       + psmRow('Date', new Date((rc.at||Date.now())).toLocaleDateString('en-US'))
       + psmRow('Total credit', _totStr))
-    + psmList(psmTh('Style #') + psmTh('Color') + psmTh('Size', 'center') + psmTh('Credit qty', 'right') + psmTh('Unit price', 'right') + psmTh('Amount', 'right'), lineRows)
+    + psmList(psmTh('Style #') + psmTh('Color') + psmTh('Size', 'center') + psmTh(isAdj ? 'Qty' : 'Credit qty', 'right') + psmTh(isAdj ? 'Credit / pc' : 'Unit price', 'right') + psmTh('Amount', 'right'), lineRows)
     + psmNote(_showCard
         ? ('&#128179; &nbsp;<b>' + (_refDone?'Refunded to':'Refund to be issued to') + ' credit card' + (_cardLast4?(' ending '+_cardLast4):'') + ': ' + _totStr + '</b>')
         : ('&#128179; &nbsp;This credit of <b>' + _totStr + '</b> has been applied to your account.'))
@@ -12058,7 +12072,7 @@ function openMemoModal(){
   // 이 인보이스(창고)로 배송한 품목 = credit memo 후보
   const src = (rec.pl && rec.pl[plWh] && Array.isArray(rec.pl[plWh].lines) && rec.pl[plWh].lines.length)
     ? rec.pl[plWh].lines : (rec.lines||[]).filter(l=>String(l.wh||'').toUpperCase()===plWh);
-  const items = src.filter(l=>(Number(l.qty)||0)>0).map(l=>({style:l.style||'', color:l.color||'', size:l.size||'', qty:Number(l.qty)||0, price:Number(l.price)||0}));
+  const items = src.filter(l=>(Number(l.qty)||0)>0).map(l=>({style:l.style||'', desc:l.desc||'', color:l.color||'', size:l.size||'', qty:Number(l.qty)||0, price:Number(l.price)||0, wh:plWh}));
   window._memoItems = items;
   const rowsHtml = items.length ? items.map((x,i)=>`<tr>
       <td style="padding:4px 6px;font-weight:700;">${esc(String(x.style))}</td>
@@ -12072,9 +12086,65 @@ function openMemoModal(){
   const div = document.createElement('div');
   div.id = 'modal-memo';
   div.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,.55);z-index:130;display:flex;overflow-y:auto;padding:16px;';
-  div.innerHTML = `<div style="background:#fff;border-radius:12px;width:680px;max-width:96vw;margin:auto;box-shadow:0 20px 60px rgba(0,0,0,.35);overflow:hidden;">
-    <div style="background:#7c2d12;color:#fff;padding:11px 16px;font-weight:800;">📝 Credit Memo — Invoice ${esc(iv.invNo||'')} <span style="font-weight:400;font-size:11px;color:#fed7aa;">· pick the items being credited</span></div>
-    <div style="padding:14px 16px;max-height:64vh;overflow-y:auto;">
+  /* ALLOW-1 - 가격 조정 줄. 새 단가를 적으면 차액 x 장수를 시스템이 계산한다 */
+  const adjRows = items.length ? items.map((x,i)=>`<tr>
+      <td style="padding:4px 6px;font-weight:700;">${esc(String(x.style))}</td>
+      <td style="padding:4px 6px;">${esc(String(x.color).toUpperCase())}</td>
+      <td style="padding:4px 6px;font-weight:700;text-align:center;">${esc(String(x.size).toUpperCase())}</td>
+      <td style="padding:4px 6px;font-family:Consolas,monospace;text-align:right;">${x.qty.toLocaleString()}</td>
+      <td style="padding:4px 6px;font-family:Consolas,monospace;text-align:right;font-weight:700;">$${x.price.toFixed(2)}</td>
+      <td style="padding:4px 6px;"><input class="fi num adj-p" data-i="${i}" type="number" step="0.01" min="0" placeholder="—" oninput="adjCalc()" style="width:88px;font-weight:800;text-align:center;"></td>
+      <td style="padding:4px 6px;font-family:Consolas,monospace;text-align:right;font-weight:800;color:#7c2d12;" id="adj-lt-${i}">—</td>
+    </tr>`).join('') : `<tr><td colspan="7" style="padding:10px;color:#94a3b8;font-size:12px;">No shipped lines found on this invoice.</td></tr>`;
+  div.innerHTML = `<div style="background:#fff;border-radius:12px;width:760px;max-width:96vw;margin:auto;box-shadow:0 20px 60px rgba(0,0,0,.35);overflow:hidden;">
+    <div style="background:#7c2d12;color:#fff;padding:11px 16px;font-weight:800;">📝 Credit Memo — Invoice ${esc(iv.invNo||'')}</div>
+    <div style="padding:9px 16px 0;display:flex;gap:7px;flex-wrap:wrap;">
+      <span id="memo-tab-adj" onclick="memoTab('adj')" style="cursor:pointer;font-size:11.5px;font-weight:800;border-radius:7px;padding:5px 13px;background:#7c2d12;color:#fff;border:1px solid #7c2d12;">💲 Price adjustment</span>
+      <span id="memo-tab-mas" onclick="memoTab('mas')" style="cursor:pointer;font-size:11.5px;font-weight:800;border-radius:7px;padding:5px 13px;background:#fff;color:#64748b;border:1px solid #cbd5e1;">📎 Record a MAS 200 memo</span>
+    </div>
+
+    <!-- ══ ALLOW-1 · 가격 조정 (번호·종이·메일이 다 나간다) ══ -->
+    <div id="memo-adj" style="padding:12px 16px;max-height:64vh;overflow-y:auto;">
+      <div style="background:#fff7ed;border:1px solid #fed7aa;border-radius:8px;padding:9px 12px;margin-bottom:11px;font-size:11.5px;color:#7c2d12;line-height:1.55;">
+        Type the <b>agreed new price</b> on the lines you are adjusting. We credit the difference &times; the shipped quantity.
+        A credit memo number is taken, the memo can be printed, and it is emailed to the customer &mdash;
+        <b>no goods come back and stock is not changed.</b>
+      </div>
+      <div style="display:flex;align-items:center;gap:8px;margin-bottom:9px;flex-wrap:wrap;">
+        <span style="font-size:11px;font-weight:800;color:#9a3412;">Set the same new price on every line:</span>
+        <input class="fi num" id="adj-all" type="number" step="0.01" min="0" placeholder="2.95" style="width:92px;text-align:center;font-weight:800;">
+        <button class="btn btn-sm" style="background:#ea580c;color:#fff;border-color:#ea580c;font-weight:800;" onclick="adjApplyAll()">Apply to all ↓</button>
+      </div>
+      <div style="border:1px solid #e5e7eb;border-radius:8px;overflow:hidden;margin-bottom:11px;">
+        <table style="width:100%;border-collapse:collapse;font-size:12px;">
+          <thead><tr style="background:#f8fafc;">
+            <th style="padding:5px 6px;text-align:left;font-size:10.5px;color:#64748b;">STYLE</th>
+            <th style="padding:5px 6px;text-align:left;font-size:10.5px;color:#64748b;">COLOR</th>
+            <th style="padding:5px 6px;text-align:center;font-size:10.5px;color:#64748b;">SIZE</th>
+            <th style="padding:5px 6px;text-align:right;font-size:10.5px;color:#64748b;">SHIPPED</th>
+            <th style="padding:5px 6px;text-align:right;font-size:10.5px;color:#64748b;">OLD PRICE</th>
+            <th style="padding:5px 6px;text-align:left;font-size:10.5px;color:#9a3412;font-weight:800;">NEW PRICE</th>
+            <th style="padding:5px 6px;text-align:right;font-size:10.5px;color:#64748b;">CREDIT $</th>
+          </tr></thead>
+          <tbody>${adjRows}</tbody>
+        </table>
+      </div>
+      <div class="ff" style="margin-bottom:9px;"><label>Reason (printed on the credit memo)</label>
+        <input class="fi" id="adj-note" value="Price adjustment" placeholder="Price adjustment"></div>
+      <div id="adj-msg" style="font-size:11.5px;font-weight:800;color:#b91c1c;min-height:16px;"></div>
+      <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;border-top:1px solid #e5e7eb;padding-top:10px;margin-top:4px;">
+        <span style="font-size:14px;font-weight:900;color:#7c2d12;">Total credit: <span id="adj-total" style="font-family:Consolas,monospace;">$0.00</span></span>
+        <button class="btn btn-sm" id="adj-issue" disabled style="margin-left:auto;background:#7c2d12;color:#fff;border-color:#7c2d12;font-weight:800;" onclick="adjIssue('${esc(plBase)}','${esc(plWh)}')">💲 Issue Credit Memo</button>
+      </div>
+      <div id="adj-hist">${memoHistHtml(plBase)}</div>
+    </div>
+
+    <!-- ══ 옛것 · MAS 200 이 발행한 것을 받아 적기 (번호·종이·메일 없음) ══ -->
+    <div id="memo-mas" style="display:none;padding:14px 16px;max-height:64vh;overflow-y:auto;">
+      <div style="background:#f8fafc;border:1px solid #cbd5e1;border-radius:8px;padding:9px 12px;margin-bottom:11px;font-size:11.5px;color:#334155;line-height:1.55;">
+        This only <b>writes down</b> a credit memo that MAS 200 already issued. It takes no number,
+        prints nothing and emails nothing. For a credit memo that goes out from here, use <b>💲 Price adjustment</b>.
+      </div>
       <div style="border:1px solid #e5e7eb;border-radius:8px;overflow:hidden;margin-bottom:12px;">
         <table style="width:100%;border-collapse:collapse;font-size:12px;">
           <thead><tr style="background:#f8fafc;">
@@ -12101,17 +12171,147 @@ function openMemoModal(){
         <input type="file" id="memo-file" accept="application/pdf,image/*" onchange="memoFilePicked(this)" style="font-size:11px;">
       </div>
       <div id="memo-lines-info" style="font-size:11px;color:#166534;font-weight:700;margin-top:6px;"></div>
+      <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;border-top:1px solid #e5e7eb;padding-top:10px;margin-top:10px;">
+        <span id="memo-grandtotal" style="font-size:13px;font-weight:800;color:#7c2d12;">Total: $0.00</span>
+        <button class="btn btn-sm" style="margin-left:auto;background:#7c2d12;color:#fff;border-color:#7c2d12;font-weight:800;" onclick="submitMemo()">📝 Record</button>
+      </div>
       <div id="memo-hist">${memoHistHtml(plBase)}</div>
     </div>
     <div style="padding:12px 16px;border-top:1px solid var(--border);display:flex;gap:8px;justify-content:flex-end;align-items:center;">
-      <span id="memo-grandtotal" style="margin-right:auto;font-size:13px;font-weight:800;color:#7c2d12;">Total: $0.00</span>
-      <button class="btn btn-sm" onclick="document.getElementById('modal-memo').remove()">Cancel</button>
-      <button class="btn btn-sm" style="background:#7c2d12;color:#fff;border-color:#7c2d12;font-weight:800;" onclick="submitMemo()">📝 Record</button>
+      <button class="btn btn-sm" onclick="document.getElementById('modal-memo').remove()">Close</button>
     </div>
   </div>`;
   document.body.appendChild(div);
   window._memoAmtManual = false;
   if(typeof initModalDrag==='function') initModalDrag(div);
+}
+/* ═══════════════════════════════════════════════════════════════════════
+   ALLOW-1 (2026-10-08) - 가격 조정 크레딧 메모
+   [stated] 하윤: "원래 8368가격이 3.15인데 거래처가 complain해서 2.95에 해주겠다고 해서"
+   [stated] 하윤이 고른 방식: **새 단가를 적는다.** 차액은 시스템이 계산한다
+     (거래처와 합의한 숫자를 그대로 적으니 사람이 곱하기를 틀릴 일이 없다)
+   ⚠ 새 단가가 옛 단가보다 낮아야 한다. 같거나 높으면 크레딧이 아니다 - 그 줄을 빨갛게 막는다
+   ⚠ 재고는 한 톨도 안 움직인다. 물건이 돌아온 게 아니다
+   ═══════════════════════════════════════════════════════════════════════ */
+function memoTab(which){
+  const on = {background:'#7c2d12',color:'#fff',border:'1px solid #7c2d12'};
+  const off= {background:'#fff',color:'#64748b',border:'1px solid #cbd5e1'};
+  [['adj','memo-adj'],['mas','memo-mas']].forEach(function(p){
+    const tab = document.getElementById('memo-tab-'+p[0]);
+    const pan = document.getElementById(p[1]);
+    const sel = (p[0] === which);
+    if(pan) pan.style.display = sel ? '' : 'none';
+    if(tab){ const st = sel ? on : off; tab.style.background = st.background; tab.style.color = st.color; tab.style.border = st.border; }
+  });
+}
+function adjApplyAll(){
+  const v = String((document.getElementById('adj-all')||{}).value||'').trim();
+  document.querySelectorAll('#modal-memo .adj-p').forEach(function(inp){ inp.value = v; });
+  adjCalc();
+}
+/* 줄마다 차액을 계산하고 window._adjLines / _adjTotal / _adjWarn 을 채운다.
+   ⭐⭐⭐ 발행(adjIssue)도 이 함수를 다시 돌려서 그 값을 쓴다 - 화면과 발행이
+      따로 계산하면 반드시 어긋난다 (RAUNLOCK-2 와 같은 뿌리). */
+function adjCalc(){
+  const items = window._memoItems || [];
+  const lines = []; let total = 0; let warn = '';
+  document.querySelectorAll('#modal-memo .adj-p').forEach(function(inp){
+    const i = parseInt(inp.getAttribute('data-i'), 10);
+    const x = items[i]; if(!x) return;
+    const cell = document.getElementById('adj-lt-' + i);
+    const raw  = String(inp.value == null ? '' : inp.value).trim();
+    inp.style.borderColor = ''; inp.style.background = '';
+    if(!raw){ if(cell) cell.textContent = '—'; return; }
+    const np  = Number(raw);
+    const old = Number(x.price) || 0;
+    const bad = function(msg){
+      inp.style.borderColor = '#dc2626'; inp.style.background = '#fef2f2';
+      if(cell) cell.innerHTML = '<span style="color:#dc2626;font-weight:800;font-size:10.5px;">' + msg + '</span>';
+      warn = warn || msg;
+    };
+    if(!isFinite(np) || np < 0){ bad('not a price'); return; }
+    if(!(old > 0)){ bad('no old price on this line'); return; }
+    const diff = Math.round((old - np) * 10000) / 10000;
+    if(!(diff > 0)){ bad('new price must be LOWER than ' + old.toFixed(2)); return; }
+    const amt = Math.round((Number(x.qty) || 0) * diff * 100) / 100;
+    if(!(amt > 0)){ bad('credit is $0.00'); return; }
+    if(cell) cell.textContent = '$' + amt.toFixed(2);
+    lines.push({ style:x.style||'', desc:x.desc||'', color:x.color||'', size:x.size||'',
+                 qty:Number(x.qty)||0, price:diff, listPrice:old, newPrice:np,
+                 wh:x.wh||'', toWh:x.wh||'' });
+    total = Math.round((total + amt) * 100) / 100;
+  });
+  window._adjLines = lines.length ? lines : null;
+  window._adjTotal = total;
+  window._adjWarn  = warn;
+  const tt = document.getElementById('adj-total'); if(tt) tt.textContent = '$' + total.toFixed(2);
+  const ms = document.getElementById('adj-msg');
+  if(ms) ms.textContent = warn ? ('⚠ ' + warn) : '';
+  const bt = document.getElementById('adj-issue');
+  if(bt) bt.disabled = !!warn || !lines.length || !(total > 0);
+  return { lines: lines, total: total, warn: warn };
+}
+/* 발행 - 번호를 뽑고, 저장하고, 바로 크레딧 메모 창을 연다 (인쇄/메일은 거기서) */
+async function adjIssue(base, wh){
+  const rec = savedCache.find(function(x){ return x.base === base; }); if(!rec) return;
+  const r = adjCalc();
+  if(r.warn){ alert('⚠ ' + r.warn); return; }
+  if(!r.lines.length){ alert('⚠ Type the agreed new price on at least one line.'); return; }
+  if(!(r.total > 0)){ alert('⚠ The credit comes to $0.00 - nothing to issue.'); return; }
+  const note = String(((document.getElementById('adj-note')||{}).value) || '').trim() || 'Price adjustment';
+  /* 돈이 나가는 일이다 - 숫자를 글자로 다시 보여주고 확인받는다 */
+  const list = r.lines.map(function(l){
+    return '  ' + l.style + '  ' + String(l.color).toUpperCase() + '  ' + String(l.size).toUpperCase()
+      + '   ' + l.qty.toLocaleString() + ' pcs   $' + l.listPrice.toFixed(2) + ' -> $' + l.newPrice.toFixed(2)
+      + '   = $' + (Math.round(l.qty * l.price * 100) / 100).toFixed(2);
+  }).join('\n');
+  if(!confirm('Issue a credit memo for this price adjustment?\n\n' + list
+    + '\n\nTOTAL CREDIT   $' + r.total.toFixed(2)
+    + '\n\nA credit memo number will be taken and written to our books.\n'
+    + 'No goods are returned - stock is NOT changed.')) return;
+  const bt = document.getElementById('adj-issue');
+  if(bt){ bt.disabled = true; bt.textContent = 'Issuing...'; }
+  const undo = function(){ if(bt){ bt.disabled = false; bt.textContent = '💲 Issue Credit Memo'; } };
+  /* ⚠ 번호가 없으면 아무것도 만들지 않는다. 지어낸 번호가 나가는 사고(CMGUARD-1)의 뿌리였다 */
+  let cmNo = '';
+  try{ cmNo = await nextInvNo(); }catch(e){ console.warn('[ALLOW-1] number failed', e); }
+  if(!cmNo){ undo(); alert('⚠ Could not take a credit memo number - nothing was issued. Try again.'); return; }
+  const by  = (SESS && SESS.email) || '';
+  const now = new Date().toISOString();
+  const em  = (rec.meta && rec.meta.custEmail) || custEmailFor(rec.meta && rec.meta.cust) || '';
+  /* ⭐⭐⭐ 반품과 같은 통에 넣는다 - 번호/종이/메일/목록이 전부 그대로 돈다.
+     status:'received' -> 「반품 대기」 목록에 안 들어간다
+     cmStatus:'sent'   -> 「발행 안 됨」 목록에 안 들어간다
+     invStatus:'done'  -> 📦 Return Stock 큐에 **절대** 안 들어간다 (돌아온 물건이 없다) */
+  const ret = {
+    ra: alGen(base, rec), kind: 'allowance',
+    status: 'received', cmStatus: 'sent', invStatus: 'done',
+    cm: cmNo, reason: note, reasons: [],
+    custEmail: em, cc: !!(rec.meta && rec.meta.cc),
+    lines: r.lines,
+    received: { at: now, by: by, cm: cmNo, creditAmount: r.total, lines: r.lines,
+                restockA: 0, restockB: 0, failedTotal: 0, restockTotal: 0, cmEmailedAt: '' },
+    createdAt: now, createdBy: by, emailedAt: null
+  };
+  const before = recReturns(rec).slice();
+  rec.meta = rec.meta || {};
+  rec.meta._returns = before.concat([ret]);
+  try{
+    await sbFetch('/rest/v1/pr_orders?base=eq.' + encodeURIComponent(base),
+      { method:'PATCH', headers:{ Prefer:'return=minimal' },
+        body: JSON.stringify({ meta: rec.meta, updated_at: now }) });
+  }catch(e){
+    rec.meta._returns = before;          /* 저장이 안 됐으면 화면에도 남기지 않는다 */
+    undo();
+    alert('⚠ Failed to save - NOTHING was issued: ' + (e.message || e));
+    return;
+  }
+  logHist(base, '💲 Price adjustment credit memo ' + cmNo + ' issued — $' + r.total.toFixed(2)
+    + ' (' + r.lines.length + (r.lines.length === 1 ? ' line' : ' lines') + ', ' + note + ')');
+  const m = document.getElementById('modal-memo'); if(m) m.remove();
+  renderSaved();
+  showToast('✅ Credit memo ' + cmNo + ' issued — $' + r.total.toFixed(2));
+  try{ openCreditMemo(base, ret.ra); }catch(e){}
 }
 // 품목별 credit qty 입력 → 라인 합계·총액 자동 계산, window._memoLines 구성
 function memoCalc(){
@@ -12647,6 +12847,9 @@ function buildCreditMemoDoc(rec, ret){
 
   const qOf = l => Number(l.receivedQty != null ? l.receivedQty : l.qty) || 0;
   const aOf = l => l.noCredit ? 0 : qOf(l) * (Number(l.price) || 0);
+  /* ALLOW-1 - 가격 조정 건. 물건이 돌아온 게 아니라 단가를 깎아 준 것이다.
+     `price` 에는 **차액**이 들어 있으므로 위 두 함수는 그대로 맞는다. */
+  const isAdj = (typeof raIsAdj === 'function') ? raIsAdj(ret) : (String(ret.kind || '') === 'allowance');
 
   /* 사유 — 줄마다 다 같으면 표에 칸을 만들지 않고 표 위에 한 번만 적는다.
      ⚠ 예전 종이는 같은 문장을 다섯 줄에 다섯 번 찍었다. RA 메일도 같은 병이 있다(아직). */
@@ -12694,7 +12897,8 @@ function buildCreditMemoDoc(rec, ret){
 
   const theadHtml = '<tr><th class="tl">STYLE #</th><th class="tl">DESCRIPTION</th><th class="tl">COLOR</th>'
     + '<th>SIZE</th>' + (perLineReason ? '<th class="tl">REASON</th>' : '')
-    + '<th class="n">CREDIT QTY</th><th class="n">UNIT PRICE</th><th class="n">AMOUNT</th></tr>';
+    + '<th class="n">' + (isAdj ? 'QTY' : 'CREDIT QTY') + '</th>'
+    + '<th class="n">' + (isAdj ? 'CREDIT / PC' : 'UNIT PRICE') + '</th><th class="n">AMOUNT</th></tr>';
   const NCOL = perLineReason ? 8 : 7;
 
   const rowsHtml = src.map(function(l){
@@ -12707,13 +12911,18 @@ function buildCreditMemoDoc(rec, ret){
       + (perLineReason ? ('<td class="tl" style="font-size:10.5px;">' + esc(l.reason || ret.reason || '—') + '</td>') : '')
       + '<td class="n">' + q.toLocaleString() + '</td>'
       /* 오출고로 돌아온 줄은 왜 $0 인지 종이에 적어준다 — 안 적으면 우리 실수로 보인다 (v885 부터) */
-      + '<td class="n">' + (nc ? '—' : money(l.price || 0)) + '</td>'
+      + '<td class="n">' + (nc ? '—' : money(l.price || 0))
+        /* ALLOW-1 - 차액만 적으면 거래처가 어디서 나온 숫자인지 모른다. 옛 단가 -> 새 단가를 같이 적는다 */
+        + ((isAdj && Number(l.listPrice) > 0 && l.newPrice != null)
+            ? ('<div class="ix-nc">' + money(l.listPrice) + ' &rarr; ' + money(l.newPrice) + '</div>') : '')
+        + '</td>'
       + '<td class="n" style="font-weight:800;">' + money(aOf(l))
         + (nc ? '<div class="ix-nc">Shipped in error &middot; not invoiced</div>' : '')
       + '</td></tr>';
   }).join('');
 
-  let tfootHtml = '<tr class="ix-sum"><td class="tl" colspan="' + (NCOL - 3) + '">Returned &middot; '
+  let tfootHtml = '<tr class="ix-sum"><td class="tl" colspan="' + (NCOL - 3) + '">'
+      + (isAdj ? 'Price adjustment &middot; ' : 'Returned &middot; ')
       + src.length + (src.length === 1 ? ' line' : ' lines') + '</td>'
     + '<td class="n">' + totQ.toLocaleString() + '</td><td></td>'
     + '<td class="n">' + money(total) + '</td></tr>'
@@ -12747,7 +12956,7 @@ function buildCreditMemoDoc(rec, ret){
     + '<div class="ix-addr' + (showRemit ? ' c3' : '') + '">'
       + '<div><div class="ix-lbl">BILL TO</div>' + invxAddrBlock(meta, 'bill') + '</div>'
       /* 물건이 돌아온 우리 창고 — 이 종이에서 실제로 쓸모있는 주소다 (추가 반품·문의) */
-      + '<div><div class="ix-lbl">RETURNED TO</div>'
+      + '<div><div class="ix-lbl">' + (isAdj ? 'SHIPPED FROM' : 'RETURNED TO') + '</div>'
         + '<div class="ix-val">' + esc(WH_LABEL[revParentWh(wh)] || String(wh || '')) + '</div>'
         + '<div class="ix-val sub">' + esc(WH_ADDR[revParentWh(wh)] || '') + '</div></div>'
       /* CMWORD-v1 - 이름표를 바꿨다. 이 종이로 돈을 보내는 게 아니라
@@ -12760,7 +12969,7 @@ function buildCreditMemoDoc(rec, ret){
     /* INVPO-v2 - CUSTOMER PO 는 오른쪽 위 칸으로 올라갔다. 여기선 뺀다.
        ⚠ 세 칸이 항상 나온다 - RA 번호·원래 오더·거래처는 이 종이에 늘 있다. */
     + '<div class="ix-bar c3">'
-      + '<div><div class="ix-lbl">RA NO.</div><div class="ix-val">' + esc(ret.ra || '—') + '</div></div>'
+      + '<div><div class="ix-lbl">' + (isAdj ? 'ADJUSTMENT' : 'RA NO.') + '</div><div class="ix-val">' + esc(ret.ra || '—') + '</div></div>'
       + '<div><div class="ix-lbl">REF ORDER</div><div class="ix-val">' + esc(rec.base || '—') + '</div></div>'
       + '<div><div class="ix-lbl">CUSTOMER</div><div class="ix-val">' + esc(meta.cust || '—') + '</div></div>'
     + '</div>'
@@ -48220,7 +48429,11 @@ function renderSaved(){
       <button class="btn btn-sm" style="color:#7c3aed;" onclick="splitOrderOpen('${esc(s.base)}')" title="Split some items into a separate order (-S) — run urgent items separately (stock deductions transfer too)">✂ Split</button>
       ${!recIsReplace(s) && (s.whs||[]).some(w=>s.pl && s.pl[w] && s.pl[w].savedAt) ? `<button class="btn btn-sm" style="color:#be123c;border-color:#fda4af;" onclick="replaceOrderOpen('${esc(s.base)}')" title="Replace defective shipped items — creates a free PO#R order (no invoice)">🔁 Replace</button>` : ''}
       ${!recIsReplace(s) && (s.whs||[]).some(w=>s.pl && s.pl[w] && s.pl[w].savedAt) ? `<button class="btn btn-sm" style="color:#ea580c;border-color:#fdba74;" onclick="openReturnModal('${esc(s.base)}')" title="Customer return — create RA#, choose return warehouse & qty, email the customer">↩ Return</button>` : ''}
-      ${recReturns(s).map(r=>`<button class="btn btn-sm" style="background:${r.status==='received'?'#166534':'#ea580c'};color:#fff;border-color:${r.status==='received'?'#166534':'#ea580c'};font-weight:800;" onclick="openReturnDetail('${esc(s.base)}','${esc(r.ra)}')" title="View return details / email customer / cancel">↩ ${esc(r.ra)}${r.status==='received'?' ✓':''}</button>`).join('')}
+      ${recReturns(s).map(r=> raIsAdj(r)
+        /* ALLOW-1 - 가격 조정 건은 반품 상세 화면으로 보내면 안 된다 (돌아온 물건이 없다).
+           누르면 바로 크레딧 메모 창 - 인쇄와 메일이 거기 있다. 딱지에는 **CM 번호**를 적는다. */
+        ? `<button class="btn btn-sm" style="background:#7c2d12;color:#fff;border-color:#7c2d12;font-weight:800;" onclick="openCreditMemo('${esc(s.base)}','${esc(r.ra)}')" title="Price adjustment credit memo — print / email">💲 ${esc(retCmNo(r)||r.ra)}${(r.received&&r.received.cmEmailedAt)?' ✉':''}</button>`
+        : `<button class="btn btn-sm" style="background:${r.status==='received'?'#166534':'#ea580c'};color:#fff;border-color:${r.status==='received'?'#166534':'#ea580c'};font-weight:800;" onclick="openReturnDetail('${esc(s.base)}','${esc(r.ra)}')" title="View return details / email customer / cancel">↩ ${esc(r.ra)}${r.status==='received'?' ✓':''}</button>`).join('')}
       <button class="btn btn-sm" onclick="loadSaved('${esc(s.base)}')">${t('open_edit')}</button>
       ${recCancelled(s)
         ? `<button class="btn btn-sm" style="background:#0f2a4a;color:#fff;border-color:#0f2a4a;font-weight:800;" onclick="printPutBack('${esc(s.base)}')" title="Reprint the sheet the staff walk around with">\u{1F5A8} Put Back Request</button>
