@@ -314,7 +314,7 @@ body.po-dragging{user-select:none;}
   </span>
   <select id="lang-sel" onchange="setLang(this.value)" style="font-size:11px;padding:3px 6px;border-radius:5px;border:none;background:#1d3f66;color:#fff;"><option value="ko">한국어</option><option value="en">English</option><option value="es">Español</option></select>
   <button id="wide-btn" class="btn btn-sm" onclick="toggleWide()" title="화면 넓게 / 좁게 — 기본은 넓게 (이 브라우저에만 저장돼)" style="padding:2px 8px;font-size:10px;background:#1d3f66;color:#cfe0f2;border-color:#2b5384;">↔ Wide</button>
-  <span id="app-ver" style="font-size:10px;color:#9fb8d4;">v1232</span>
+  <span id="app-ver" style="font-size:10px;color:#9fb8d4;">v1233</span>
 </div>
 <script>
 // ↔ 넓게 보기 — 브라우저마다 따로 저장 (v793)
@@ -9894,7 +9894,13 @@ async function _saveInvStageInner(rec){
   plFieldsToDraft();
   rec.inv = rec.inv || {};
   const iv = invDrafts[plWh] || {};
-  if(!iv.invNo) iv.invNo = await nextInvNo();   /* INVSEQ-v1 */
+  if(!iv.invNo){                                /* INVSEQ-1 */
+    let _cl;
+    try{ _cl = await invNoClaim(plBase, plWh); }
+    catch(e){ invNoFail(e, 'the invoice was not saved'); return; }
+    iv.invNo = _cl.no;
+    if(invDrafts[plWh]) invDrafts[plWh].invNo = _cl.no;
+  }
   /* 결제 기록을 지키면서 저장한다 (v836).
      서버 것을 먼저 읽는 이유: 이 화면을 열어둔 사이 다른 직원이 카드를 긁었으면
      내 화면의 rec 에는 그 기록이 없다. 그걸 그대로 덮으면 결제가 없던 일이 되고,
@@ -11652,13 +11658,134 @@ async function downloadPLPdf(kind){
   const attach = (kind==='packing') ? ((plDrafts[plWh]||{}).files||[]) : [];
   await downloadPdfHtml(buildStageDoc(rec, plWh, kind, data), plNum(plBase,plWh) + suffix + '.pdf', btn, attach);
 }
+/* ═══ INVSEQ-1 (2026-10-08) — 인보이스 번호가 두 개 나오던 구멍 ═══
+   [stated] 하윤: "tty po#80054278 ... invoice넘저가 다른걸로 2번 invoice가 생산되서
+                   우리가 billing을 두번했던데" / "분명 우리 시스템에서 프린트 한거였는데
+                   그래서 mas 200에도 두개가 따로 들어가있고"
+   종이 두 장이 증거였다 (DOC092.pdf): 같은 PO 80054278, 같은 6줄 77장 $253.75,
+   둘 다 9/29/26 8:32 AM. 0265592 는 페이지 표시 1/6 에 "Printed by" 꼬리가 없고,
+   0265598 은 1/1 에 꼬리가 있다. printDocHtml 은 꼬리를 본문 맨 끝에 한 번만 붙이므로
+   -> 0265592 = 묶음 인쇄(printBatchInvoices)의 첫 장, 0265598 = 단독 인쇄(markInvPrinted).
+   그리고 그 오더에는 printedAt 이 없다 - 묶음 인쇄는 printedAt 을 항상 쓴다.
+   즉 묶음 쪽 저장이 통째로 안 들어갔다.
+
+   뿌리 셋:
+     ① 번호를 꺼낼 때 화면이 들고 있던 옛 사본만 봤다 - 이미 번호가 있어도 또 꺼냈다
+     ② 꺼낸 번호를 적어 넣는 저장이 실패해도 조용히 넘어갔다 (try/catch 빈 블록,
+        게다가 Prefer: return=minimal 은 0줄 갱신도 성공으로 보인다)
+     ③ 그래서 사라진 번호가 아무 흔적도 안 남았다 (빈 번호 다섯 개:
+        0265592 0265600 0265606 0265635 0265664)
+
+   고침: 번호는 invNoClaim 하나로만 받는다. 순서를 뒤집었다 -
+   예전엔 「종이 -> 번호 -> 저장(실패해도 조용)」, 이제는 「번호 + 저장 -> 종이」.
+   ⚠⚠ 여기서 return=minimal 을 절대 쓰지 말 것. 0줄도 200 으로 온다.
+   ⚠ select=base 를 붙여 돌려받는 칸을 하나로 줄인다 (po_pdf 가 몇 MB 다). */
+async function invNoClaim(base, wh){
+  const W = String(wh == null ? '' : wh).trim();
+  if(!base || !W) throw new Error('invNoClaim: base/wh missing');
+  const B = '/rest/v1/pr_orders?base=eq.' + encodeURIComponent(base);
+
+  /* 1) 지금 DB 에 있는 것을 읽는다 - 내 화면을 믿지 않는다 */
+  const r0 = await sbFetch(B + '&select=inv');
+  if(!r0.ok) throw new Error('could not read the order (' + r0.status + ')');
+  const j0 = await r0.json();
+  if(!Array.isArray(j0) || !j0.length) throw new Error('order not found in the database');
+  const cur = j0[0].inv || {};
+  invNoSync(base, cur);
+  const have = String(((cur[W] || {}).invNo) || '').trim();
+  if(have) return { no: have, reused: true };
+
+  /* 2) 번호를 꺼낸다 */
+  const no = await nextInvNo();
+  if(!no) throw new Error('could not take an invoice number');
+
+  /* 3) **아직 비어 있을 때만** 박는다. 0줄이면 그 사이 남이 가져갔다. */
+  const next = Object.assign({}, cur);
+  next[W] = Object.assign({}, cur[W] || {}, { invNo: no,
+    invNoAt: new Date().toISOString(), invNoBy: (SESS && SESS.email) || '' });
+  const r1 = await sbFetch(B + '&inv->' + encodeURIComponent(W) + '->>invNo=is.null&select=base',
+    { method: 'PATCH', headers: { Prefer: 'return=representation' },
+      body: JSON.stringify({ inv: next, updated_at: new Date().toISOString() }) });
+  if(!r1.ok) throw new Error('could not save invoice number ' + no + ' (' + r1.status + ')');
+  let j1 = [];
+  try{ j1 = await r1.json(); }catch(e){ j1 = []; }
+  if(Array.isArray(j1) && j1.length){ invNoSync(base, next); return { no: no, reused: false }; }
+
+  /* 4) 남이 먼저 박았다 - 그 번호를 쓴다. 내가 꺼낸 번호는 버린다 (빈 자리로 남는다). */
+  const r2 = await sbFetch(B + '&select=inv');
+  const j2 = r2.ok ? await r2.json() : [];
+  const theirs = String((((j2[0] || {}).inv || {})[W] || {}).invNo || '').trim();
+  if(theirs){ invNoSync(base, (j2[0] || {}).inv || {}); return { no: theirs, reused: true, raced: true }; }
+  throw new Error('invoice number ' + no + ' could not be saved');
+}
+/* DB 에서 읽은 inv 를 화면 사본에 덮는다 - 옛 사본 때문에 번호를 또 꺼내는 일을 막는 쪽이다.
+   ⚠ 편집 중인 값은 invDrafts 에 따로 있으므로 여기서 잃을 것이 없다. */
+function invNoSync(base, inv){
+  try{
+    const rec = (savedCache || []).find(function(s){ return s.base === base; });
+    if(rec && inv && typeof inv === 'object') rec.inv = inv;
+  }catch(e){}
+}
+/* 번호를 못 받았을 때 - 종이도 메일도 나가지 않았다고 분명히 말한다 */
+function invNoFail(e, what){
+  const m = (e && e.message) || String(e || '');
+  try{ alert('\u26a0 Invoice number NOT issued \u2014 ' + (what || 'nothing went out') + '.\n\n'
+    + m + '\n\nNothing was printed or sent. Try again. If it keeps failing, check the connection first \u2014 '
+    + 'printing without a saved number is what caused the double billing on PO 80054278.'); }catch(_){}
+  try{ showToast('\u26a0 No invoice number \u2014 nothing went out'); }catch(_){}
+}
+/* PATCH 가 **실제로 줄을 고쳤나**. return=minimal 은 0줄도 200 이라서 믿을 수 없다. */
+async function invRowChanged(r){
+  if(!r || !r.ok) return false;
+  try{ const j = await r.json(); return Array.isArray(j) && j.length > 0; }catch(e){ return false; }
+}
+/* ⚠ 빈 번호 감시 - 번호를 꺼냈는데 어느 오더에도 안 붙은 것. 이제는 생길 일이 없지만,
+   생기면 MAS 200 에는 종이가 남아 이중청구가 되므로 바로 눈에 보여야 한다. */
+function invSeqGaps(){
+  try{
+    const used = {};
+    (savedCache || []).forEach(function(r){
+      Object.keys((r && r.inv) || {}).forEach(function(w){
+        const iv = r.inv[w] || {};
+        const n = String(iv.invNo || '').trim();
+        if(/^0?265\d{3}$/.test(n)) used[parseInt(n, 10)] = 1;
+        ((iv.memos) || []).forEach(function(m){
+          const c = String((m && m.cm) || '').trim();
+          if(/^0?265\d{3}$/.test(c)) used[parseInt(c, 10)] = 1; });
+      });
+      ((r && r.returns) || []).forEach(function(t){
+        [(t && t.cm), (t && t.received && t.received.cm)].forEach(function(c){
+          c = String(c || '').trim();
+          if(/^0?265\d{3}$/.test(c)) used[parseInt(c, 10)] = 1; });
+      });
+    });
+    const nums = Object.keys(used).map(Number).sort(function(a, b){ return a - b; });
+    if(nums.length < 2) return [];
+    const out = [];
+    for(let n = nums[0]; n <= nums[nums.length - 1]; n++) if(!used[n]) out.push('0' + n);
+    return out;
+  }catch(e){ return []; }
+}
+function invSeqGapPaint(){
+  const el = document.getElementById('invnp-gap'); if(!el) return;
+  const g = invSeqGaps();
+  if(!g.length){ el.style.display = 'none'; el.innerHTML = ''; return; }
+  el.style.display = 'block';
+  el.innerHTML = '<b>\u26a0 ' + g.length + ' invoice number(s) are not on any order:</b> '
+    + '<span style="font-family:Consolas,monospace;font-weight:800;">' + g.map(esc).join('  \u00b7  ') + '</span>'
+    + '<div style="font-weight:400;margin-top:3px;">A number was taken but never landed on an invoice. '
+    + 'Check MAS 200 for each one \u2014 if it is there, that order was billed twice.</div>';
+}
 async function markInvPrinted(){
-  const rec = savedCache.find(s=>s.base===plBase); if(!rec) return;
+  const rec = savedCache.find(s=>s.base===plBase); if(!rec) throw new Error('order not found');
   rec.inv = rec.inv || {};
   const ivd = invDrafts[plWh] || {};
-  const ex = rec.inv[plWh] || {};
-  const invNo = ex.invNo || ivd.invNo || await nextInvNo();    /* INVSEQ-v1 */
+  /* INVSEQ-1 - DB 를 다시 읽어 번호를 받는다. 못 받으면 **던진다** - 부르는 쪽이 인쇄를 멈춘다. */
+  const _cl = await invNoClaim(plBase, plWh);
+  const invNo = _cl.no;
   if(invDrafts[plWh]) invDrafts[plWh].invNo = invNo;
+  /* ⚠ ex 는 claim **뒤에** 읽는다 - rec.inv 가 DB 것으로 갱신됐다 */
+  const ex = rec.inv[plWh] || {};
   rec.inv[plWh] = {
     ...ex,
     invNo: invNo,
@@ -11673,7 +11800,11 @@ async function markInvPrinted(){
     freight: Number(ivd.freight) || ex.freight || 0,
     lines: (Array.isArray(ivd.lines) && ivd.lines.length) ? ivd.lines : (ex.lines || [])
   };
-  try{ await sbFetch('/rest/v1/pr_orders?base=eq.'+encodeURIComponent(plBase), {method:'PATCH', headers:{Prefer:'return=minimal'}, body:JSON.stringify({inv:rec.inv, updated_at:new Date().toISOString()})}); }catch(e){}
+  /* INVSEQ-1 - 예전엔 여기가 `catch(e){}` 였다. 저장이 실패해도 조용히 넘어가서
+     종이에만 번호가 남았다. 이제는 던진다 - 종이를 만들기 전이라 안전하다. */
+  const _r = await sbFetch('/rest/v1/pr_orders?base=eq.'+encodeURIComponent(plBase)+'&select=base',
+    {method:'PATCH', headers:{Prefer:'return=representation'}, body:JSON.stringify({inv:rec.inv, updated_at:new Date().toISOString()})});
+  if(!await invRowChanged(_r)) throw new Error('the invoice could not be saved (' + ((_r&&_r.status)||'no reply') + ')');
   logHist(plBase, 'Invoice printed — ' + plWh + ' (' + invNo + ')');
   renderSaved();
 }
@@ -12769,12 +12900,18 @@ async function saveBOL(then){
   if(then === 'print') printDocHtml(docHtml, plNum(plBase, plWh) + '-BOL');
   else if(then === 'pdf') await downloadPdfHtml(docHtml, plNum(plBase, plWh) + '-BOL.pdf', document.getElementById('bolpdf-btn'));
 }
-function printStageDoc(kind){
+async function printStageDoc(kind){
   const rec = savedCache.find(s=>s.base===plBase); if(!rec) return;
   plFieldsToDraft();
+  /* ⭐⭐ INVSEQ-1 - 순서를 뒤집었다. 예전에는 종이를 먼저 찍고 **뒤에서** 번호를 저장했고,
+     그 저장이 실패해도 조용했다 - 번호가 찍힌 종이만 남고 우리는 잊었다 (PO 80054278).
+     이제는 번호를 받아 저장까지 끝낸 뒤에만 종이를 만든다. 실패하면 아무것도 안 찍는다. */
+  if(kind === 'invoice'){
+    try{ await markInvPrinted(); }
+    catch(e){ invNoFail(e, 'nothing was printed'); return; }
+  }
   const data = (kind==='invoice') ? invDocData() : (plDrafts[plWh]||{});
   printDocHtml(buildStageDoc(rec, plWh, kind, data), plNum(plBase, plWh) + (kind==='invoice'?'-INV':'-PL'));
-  if(kind==='invoice') markInvPrinted();
 }
 /* ═══ INVDOC-v1 (2026-09-24) — 고객에게 나가는 인보이스 ═══
    [stated] 하윤: "우리 인보이스 좀 새련되게 만들어줘"
@@ -16740,12 +16877,24 @@ async function sendInvoiceEmail(){
   showToast('📧 Sending invoice...');
   try{
     // 발송 = 발행: 번호 부여 + 저장 + 초록
-    rec.inv = rec.inv || {}; const cur = rec.inv[plWh] || {};
-    const invNo = cur.invNo || (invDrafts[plWh]&&invDrafts[plWh].invNo) || await nextInvNo();
+    rec.inv = rec.inv || {};
+    /* INVSEQ-1 - 메일 = 발행. 번호는 DB 를 다시 읽어 받고, 못 받으면 메일을 안 보낸다. */
+    let _cl;
+    try{ _cl = await invNoClaim(plBase, plWh); }
+    catch(e2){ invNoFail(e2, 'the invoice was not sent'); return; }
+    const invNo = _cl.no;
+    const cur = rec.inv[plWh] || {};   /* ⚠ claim 뒤에 읽는다 */
     rec.inv[plWh] = { ...cur, savedAt: cur.savedAt || new Date().toISOString(), printed: true, invNo: invNo,
       termType: d.termType || cur.termType || '', termDays: d.termDays || cur.termDays || 0, freight: Number(d.freight)||0, lines: d.lines || cur.lines || [] };
     if(invDrafts[plWh]) invDrafts[plWh].invNo = invNo;
-    await sbFetch('/rest/v1/pr_orders?base=eq.'+encodeURIComponent(plBase), {method:'PATCH', headers:{Prefer:'return=minimal'}, body:JSON.stringify({inv:rec.inv, updated_at:new Date().toISOString()})});
+    /* INVSEQ-1 - 예전엔 r.ok 를 아예 안 봤다. 저장이 안 됐는데 메일이 나가면
+       거래처는 번호를 받았는데 우리 장부에는 없다. 멈춘다. */
+    const _rp = await sbFetch('/rest/v1/pr_orders?base=eq.'+encodeURIComponent(plBase)+'&select=base',
+      {method:'PATCH', headers:{Prefer:'return=representation'}, body:JSON.stringify({inv:rec.inv, updated_at:new Date().toISOString()})});
+    if(!await invRowChanged(_rp)){
+      invNoFail(new Error('the invoice could not be saved (' + ((_rp&&_rp.status)||'no reply') + ')'), 'the invoice was not sent');
+      return;
+    }
     const blob = await makePdfBlob(buildStageDoc(rec, plWh, 'invoice', invDocData()), []);
     const b64 = await blobToB64(blob);
     const meta = poPaperMeta(rec);   /* SPLITPO-1 */
@@ -46612,9 +46761,10 @@ async function invSendFor(base, wh, toList){
   const rec = savedCache.find(s=>s.base===base); if(!rec) throw new Error('order not found');
   const meta = poPaperMeta(rec);   /* SPLITPO-1 */
   rec.inv = rec.inv || {};
-  const iv = rec.inv[wh] || {};
+  /* INVSEQ-1 - DB 를 다시 읽어 번호를 받는다. 못 받으면 던진다 (부르는 쪽이 알린다). */
+  const invNo = (await invNoClaim(base, wh)).no;
+  const iv = rec.inv[wh] || {};        /* ⚠ claim 뒤에 읽는다 */
   const pld = (rec.pl && rec.pl[wh]) || {};
-  const invNo = iv.invNo || await nextInvNo();
   let lines = (Array.isArray(iv.lines) && iv.lines.length) ? iv.lines
             : ((Array.isArray(pld.lines) && pld.lines.length) ? JSON.parse(JSON.stringify(pld.lines)) : []);
   if(!lines.length && meta.lockerStock)
@@ -47146,6 +47296,7 @@ function invNpOpen(){
     +     '<button id="invnp-tab-todo" onclick="invNpTab(\'todo\')" style="border:none;border-radius:7px 7px 0 0;padding:5px 14px;font-size:12px;font-weight:900;cursor:pointer;background:#fff;color:#9a3412;">\u{1F4CB} To Do</button>'
     +     '<button id="invnp-tab-hist" onclick="invNpTab(\'hist\')" style="border:none;border-radius:7px 7px 0 0;padding:5px 14px;font-size:12px;font-weight:700;cursor:pointer;background:transparent;color:#fed7aa;" title="Days where the invoices are finished - printed and emailed">\u{1F558} History</button>'
     +   '</div></div>'
+    + '<div id="invnp-gap" style="display:none;padding:8px 12px;background:#fef2f2;border-bottom:1px solid #fecaca;font-size:11px;color:#991b1b;line-height:1.5;"></div>'
     + '<div id="invnp-bar" style="display:flex;align-items:center;gap:10px;padding:8px 12px;background:#fff7ed;border-bottom:1px solid #fed7aa;">'
     +   '<label style="display:flex;align-items:center;gap:7px;font-size:12px;font-weight:800;color:#9a3412;cursor:pointer;">'
     +     '<input type="checkbox" id="invnp-all" checked style="width:16px;height:16px;accent-color:#c2410c;" onchange="invNpToggleAll(this.checked)"> Select all to print</label>'
@@ -47163,6 +47314,7 @@ function invNpOpen(){
   if(typeof initModalDrag==='function') initModalDrag(div);
   window._invNpTab = 'todo';
   invNpRender();
+  try{ invSeqGapPaint(); }catch(e){}   /* INVSEQ-1 - 빈 번호가 있으면 맨 위에 빨간 줄 */
 }
 async function printBatchInvoices(pairsIn){
   const pairs = ((Array.isArray(pairsIn) && pairsIn.length) ? pairsIn
@@ -47178,13 +47330,27 @@ async function printBatchInvoices(pairsIn){
       return !!(r.meta && r.meta.lockerStock);
     });
   if(!pairs.length){ showToast('🧾 No invoices to print — select shipped orders (with saved PL)'); return; }
-  const docs = []; const touched = {};
+  const docs = []; const touched = {}; const noNum = []; const noSave = [];
   for(const p of pairs){
-    const rec = savedCache.find(s=>s.base===p.base); const wh = p.wh;
+    const rec = savedCache.find(s=>s.base===p.base); if(!rec) continue;
+    const wh = p.wh;
     rec.inv = rec.inv || {};
-    const iv = rec.inv[wh] || {};
+    /* ⭐⭐ INVSEQ-1 - 번호를 **종이보다 먼저** 못 박는다. 못 받은 오더는 이 묶음에서
+       빼고 사람에게 알린다. 예전에는 번호만 꺼내고 저장이 조용히 실패해서,
+       종이에는 번호가 있고 우리 장부에는 없는 인보이스가 생겼다 (PO 80054278). */
+    let iv = rec.inv[wh] || {};
+    if(!iv.invNo){
+      try{
+        const _cl = await invNoClaim(rec.base, wh);
+        iv = rec.inv[wh] || {};
+        if(!iv.invNo){ iv = Object.assign({}, iv, { invNo: _cl.no }); rec.inv[wh] = iv; }
+      }catch(e){
+        noNum.push(((rec.meta&&rec.meta.cust)||'') + ' PO ' + ((rec.meta&&rec.meta.po)||'')
+          + ' (' + wh + ') \u2014 ' + ((e&&e.message)||String(e)));
+        continue;
+      }
+    }
     const pld = (rec.pl && rec.pl[wh]) || {};
-    if(!iv.invNo) iv.invNo = await nextInvNo();   /* INVSEQ-v1 */
     let lines = (Array.isArray(iv.lines) && iv.lines.length) ? iv.lines
               : ((Array.isArray(pld.lines) && pld.lines.length) ? JSON.parse(JSON.stringify(pld.lines)) : []);
     /* 🔒 locker stock 에 PL 이 없으면 오더 줄에서 그 창고 몫만 가져온다 (LOCKERPRINT-v1) */
@@ -47206,8 +47372,19 @@ async function printBatchInvoices(pairsIn){
   }
   for(const b in touched){
     const rec = touched[b];
-    try{ await sbFetch('/rest/v1/pr_orders?base=eq.'+encodeURIComponent(rec.base), {method:'PATCH', headers:{Prefer:'return=minimal'}, body:JSON.stringify({inv:rec.inv, updated_at:new Date().toISOString()})}); }catch(e){}
+    /* 번호는 이미 claim 에서 DB 에 박혔다. 여기서 실패하면 printedAt·줄만 안 남는다 -
+       그래도 조용히 넘기지 않는다. 무엇이 안 적혔는지 사람이 알아야 다시 누를 수 있다. */
+    let _r = null;
+    try{ _r = await sbFetch('/rest/v1/pr_orders?base=eq.'+encodeURIComponent(rec.base)+'&select=base',
+      {method:'PATCH', headers:{Prefer:'return=representation'}, body:JSON.stringify({inv:rec.inv, updated_at:new Date().toISOString()})}); }catch(e){ _r = null; }
+    if(!await invRowChanged(_r))
+      noSave.push(((rec.meta&&rec.meta.cust)||'') + ' PO ' + ((rec.meta&&rec.meta.po)||''));
   }
+  if(noNum.length) alert('\u26a0 ' + noNum.length + ' invoice(s) were NOT printed \u2014 no number could be issued:\n\n'
+    + noNum.join('\n') + '\n\nThe rest were printed. Try these again.');
+  if(noSave.length) alert('\u26a0\u26a0 ' + noSave.length + ' invoice(s) printed, but the print mark was NOT saved:\n\n'
+    + noSave.join('\n') + '\n\nThe invoice NUMBERS are safe. Open each order and press \ud83d\uddb8 Invoice once so it is recorded.');
+  if(!docs.length){ showToast('\ud83e\uddfe Nothing was printed'); renderSaved(); return; }
   printDocHtml(docs.join('<div style="page-break-before:always;break-before:page;"></div>'), 'INVOICES');
   renderSaved();
   showToast('🧾 ' + docs.length + ' invoice(s) printed → marked Complete');
