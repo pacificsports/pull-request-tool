@@ -314,7 +314,7 @@ body.po-dragging{user-select:none;}
   </span>
   <select id="lang-sel" onchange="setLang(this.value)" style="font-size:11px;padding:3px 6px;border-radius:5px;border:none;background:#1d3f66;color:#fff;"><option value="ko">한국어</option><option value="en">English</option><option value="es">Español</option></select>
   <button id="wide-btn" class="btn btn-sm" onclick="toggleWide()" title="화면 넓게 / 좁게 — 기본은 넓게 (이 브라우저에만 저장돼)" style="padding:2px 8px;font-size:10px;background:#1d3f66;color:#cfe0f2;border-color:#2b5384;">↔ Wide</button>
-  <span id="app-ver" style="font-size:10px;color:#9fb8d4;">v1225</span>
+  <span id="app-ver" style="font-size:10px;color:#9fb8d4;">v1226</span>
 </div>
 <script>
 // ↔ 넓게 보기 — 브라우저마다 따로 저장 (v793)
@@ -10521,8 +10521,8 @@ function payReqGuardPaint(){
   if(btn){
     const lock = bad.length > 0;
     btn.disabled = lock;
-    btn.style.background  = lock ? '#e2e8f0' : '#1d4ed8';
-    btn.style.borderColor = lock ? '#cbd5e1' : '#1d4ed8';
+    btn.style.background  = lock ? '#e2e8f0' : payReqGoColor();   /* PAYSENT-2 */
+    btn.style.borderColor = lock ? '#cbd5e1' : payReqGoColor();
     btn.style.color       = lock ? '#94a3b8' : '#fff';
     btn.style.cursor      = lock ? 'not-allowed' : '';
     btn.title = lock ? 'Print the invoice first - it has no number yet' : '';
@@ -10589,15 +10589,30 @@ async function payLinkStamp(items, to){
     if(!r.ok) throw new Error('stamp ' + r.status);
   }
 }
-/* PAYSENT-1 - 창 안에서 「전에 보낸 적이 있다」 를 보여 준다 (새로 고쳐도 남는다) */
-function payReqSentNote(rec, whs){
+/* ═══ PAYSENT-2 - 「이 오더에 전에 링크를 보낸 적이 있나」 ═══
+   ⭐⭐⭐ 이 판정을 쓰는 곳이 넷이다 (초록 알림줄 · 단추 글자 · 금액 고칠 때 되돌리는 색 ·
+      잠금 풀 때의 색). 그래서 여기 하나로 모았다 - 네 군데가 각자 보면 어긋난다.
+   여러 창고가 걸리면 **제일 나중에 보낸 것**을 돌려준다 (없으면 null). */
+function payLinkPrior(rec, whs){
   try{
     const list = (whs && whs.length) ? whs : Object.keys((rec && rec.inv) || {});
     let best = null;
     list.forEach(function(w){
-      const iv = (rec.inv||{})[w];
+      const iv = ((rec && rec.inv) || {})[w];
       if(iv && iv.payLinkAt && (!best || iv.payLinkAt > best.payLinkAt)) best = iv;
     });
+    return best;
+  }catch(e){ return null; }
+}
+/* PAYSENT-2 - 창 안의 단추 글자·색. 전에 보낸 건이면 Resend 로 보인다 */
+function payReqGoLabel(){
+  return _payReqPrior ? '\u{1F504} Resend payment link' : '\u{1F4E7} Send payment link';
+}
+function payReqGoColor(){ return _payReqPrior ? '#0e7490' : '#1d4ed8'; }
+/* PAYSENT-1 - 창 안에서 「전에 보낸 적이 있다」 를 보여 준다 (새로 고쳐도 남는다) */
+function payReqSentNote(rec, whs){
+  try{
+    const best = payLinkPrior(rec, whs);
     if(!best) return '';
     return '<div style="margin-top:10px;background:#f0fdf4;border:1px solid #86efac;border-radius:8px;'
       + 'padding:9px 11px;font-size:11.5px;color:#166534;line-height:1.6;">'
@@ -10620,6 +10635,8 @@ function payReqOrderCalc(){
 }
 /* RESEND-1 - 보낸 뒤의 상태. 같은 링크를 다시 보낼 때 쓴다. */
 let _payReqSent = null;
+/* PAYSENT-2 - 이 창을 열 때 「전에 보낸 건인가」. 창을 열 때 한 번 정해지고 그 뒤로 안 바뀐다 */
+let _payReqPrior = false;
 function payReqMailOut(to, subject, html){
   return fetch('https://po-confirm-email.hjbae.workers.dev/send-pl', {
     method:'POST', headers:{'Content-Type':'application/json'},
@@ -10654,9 +10671,9 @@ function payReqResetSent(){
   const box = document.getElementById('pr-sent'); if(box){ box.style.display = 'none'; box.innerHTML = ''; }
   const c = document.getElementById('pr-copy'); if(c) c.style.display = 'none';
   const b = document.getElementById('pr-go');
-  if(b){ b.textContent = '\u{1F4E7} Send payment link';
+  if(b){ b.textContent = payReqGoLabel();   /* PAYSENT-2 - 전에 보낸 건이면 Resend 로 되돌린다 */
          b.setAttribute('onclick', b.getAttribute('data-send') || '');
-         b.style.background = '#1d4ed8'; b.style.borderColor = '#1d4ed8'; }
+         b.style.background = payReqGoColor(); b.style.borderColor = payReqGoColor(); }
 }
 async function payReqResend(){
   const i = _payReqSent; if(!i) return;
@@ -10689,6 +10706,7 @@ function payReqOrder(base){
   const em = custEmailClean((typeof custEmailFor==='function' ? custEmailFor(cust) : '')
              || (rec.meta && rec.meta.custEmail) || '');
   _payReqSent = null;   /* RESEND-1 */
+  _payReqPrior = !!payLinkPrior(rec, rows.map(function(x){ return x.wh; }));   /* PAYSENT-2 */
   const ex = document.getElementById('modal-payreq'); if(ex) ex.remove();
   const div = document.createElement('div');
   div.id = 'modal-payreq';
@@ -10731,7 +10749,7 @@ function payReqOrder(base){
     <div style="padding:11px 18px;border-top:1px solid #e2e8f0;display:flex;gap:8px;">
       <button class="btn btn-sm" id="pr-copy" style="display:none;" onclick="payReqCopyLink()">\u{1F4CB} Copy link</button>
       <button class="btn btn-sm" id="pr-cancel" style="margin-left:auto;" onclick="document.getElementById('modal-payreq').remove()">Cancel</button>
-      <button class="btn btn-sm" id="pr-go" data-send="payReqOrderSend('${esc(base)}')" style="background:#1d4ed8;color:#fff;border-color:#1d4ed8;font-weight:800;" onclick="payReqOrderSend('${esc(base)}')">\u{1F4E7} Send payment link</button>
+      <button class="btn btn-sm" id="pr-go" data-send="payReqOrderSend('${esc(base)}')" style="background:${payReqGoColor()};color:#fff;border-color:${payReqGoColor()};font-weight:800;" onclick="payReqOrderSend('${esc(base)}')">${payReqGoLabel()}</button>
     </div></div>`;
   document.body.appendChild(div);
   payReqGuardPaint();   /* PAYGUARD-1 - 열자마자 상태가 맞아야 한다 */
@@ -10813,6 +10831,7 @@ function payReqOpen(base, wh){
   const em = custEmailClean((typeof custEmailFor==='function' ? custEmailFor(cust) : '')
              || (rec.meta && rec.meta.custEmail) || '');
   _payReqSent = null;   /* RESEND-1 */
+  _payReqPrior = !!payLinkPrior(rec, [wh]);   /* PAYSENT-2 */
   const ex = document.getElementById('modal-payreq'); if(ex) ex.remove();
   const div = document.createElement('div');
   div.id = 'modal-payreq';
@@ -10854,7 +10873,7 @@ function payReqOpen(base, wh){
     <div style="padding:11px 18px;border-top:1px solid #e2e8f0;display:flex;gap:8px;">
       <button class="btn btn-sm" id="pr-copy" style="display:none;" onclick="payReqCopyLink()">\u{1F4CB} Copy link</button>
       <button class="btn btn-sm" id="pr-cancel" style="margin-left:auto;" onclick="document.getElementById('modal-payreq').remove()">Cancel</button>
-      <button class="btn btn-sm" id="pr-go" data-send="payReqSend('${esc(base)}','${esc(wh)}')" style="background:#1d4ed8;color:#fff;border-color:#1d4ed8;font-weight:800;" onclick="payReqSend('${esc(base)}','${esc(wh)}')">\u{1F4E7} Send payment link</button>
+      <button class="btn btn-sm" id="pr-go" data-send="payReqSend('${esc(base)}','${esc(wh)}')" style="background:${payReqGoColor()};color:#fff;border-color:${payReqGoColor()};font-weight:800;" onclick="payReqSend('${esc(base)}','${esc(wh)}')">${payReqGoLabel()}</button>
     </div></div>`;
   document.body.appendChild(div);
   payReqGuardPaint();   /* PAYGUARD-1 */
