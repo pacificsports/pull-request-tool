@@ -314,7 +314,7 @@ body.po-dragging{user-select:none;}
   </span>
   <select id="lang-sel" onchange="setLang(this.value)" style="font-size:11px;padding:3px 6px;border-radius:5px;border:none;background:#1d3f66;color:#fff;"><option value="ko">한국어</option><option value="en">English</option><option value="es">Español</option></select>
   <button id="wide-btn" class="btn btn-sm" onclick="toggleWide()" title="화면 넓게 / 좁게 — 기본은 넓게 (이 브라우저에만 저장돼)" style="padding:2px 8px;font-size:10px;background:#1d3f66;color:#cfe0f2;border-color:#2b5384;">↔ Wide</button>
-  <span id="app-ver" style="font-size:10px;color:#9fb8d4;">v1228</span>
+  <span id="app-ver" style="font-size:10px;color:#9fb8d4;">v1229</span>
 </div>
 <script>
 // ↔ 넓게 보기 — 브라우저마다 따로 저장 (v793)
@@ -10991,6 +10991,74 @@ function custOutstanding(cust){
   return s;
 }
 function holdBlocked(rec){ return !!(rec && rec.meta && rec.meta._hold && !rec.meta._holdOk); }
+/* ═══ CREDIT-1 (2026-10-08) - 거래처 한 곳의 신용 상태를 한 군데서 계산한다 ═══
+   [stated] 하윤: Coface 보험으로 한도를 정하고, rating(1~10, 10 이 제일 좋음)도 같이 적는다
+   ⭐ `available` 식은 Customers 화면이 쓰던 것 그대로: 한도 - 미수(A/R) - 아직 청구 안 한 오더
+   ⚠⚠ **속도**: 아래 두 함수는 각각 오더 전체를 훑는다. 오더 줄마다 부르면 제곱이 된다
+      -> 거래처(그룹) 단위로 캐시하고, 그리기 시작할 때 `custCreditReset()` 으로 비운다
+   ⚠ 한 오더를 빼는 셈(`custOpenOrdersAmt(cust, base)`)은 **안 쓴다** - 그건 신용 보류를
+      판단할 때 쓰는 것이고, 여기는 「이 거래처가 지금 얼마나 남았나」를 보여주는 자리다 */
+let _crCache = null;
+function custCreditReset(){ _crCache = null; }
+function custCredit(cust){
+  const key = (typeof custGroupName === 'function') ? custGroupName(cust) : String(cust || '');
+  if(!_crCache) _crCache = {};
+  if(_crCache[key]) return _crCache[key];
+  let cs = {};
+  try{ cs = ((typeof custGroupStore === 'function') ? custGroupStore(cust) : (custStore[custKey(cust)] || {})) || {}; }catch(e){ cs = {}; }
+  const limit = Number(cs.creditLimit) || 0;
+  let out = 0, openOrd = 0;
+  try{ out = (typeof custOutstanding === 'function') ? custOutstanding(cust) : 0; }catch(e){}
+  try{ openOrd = (typeof custOpenOrdersAmt === 'function') ? custOpenOrdersAmt(cust) : 0; }catch(e){}
+  const rating = crRatingOf(cs);
+  const r = { limit: limit, out: Math.round(out * 100) / 100, openOrd: Math.round(openOrd * 100) / 100,
+              rating: rating,
+              avail: limit > 0 ? Math.round((limit - out - openOrd) * 100) / 100 : null };
+  _crCache[key] = r;
+  return r;
+}
+/* CREDIT-1 - Coface rating. 1~10 만 쓴다 (10 = 제일 안전). 비었거나 범위를 벗어나면 0 */
+function crRatingOf(cs){
+  /* ⚠ 글자를 긁어내면 안 된다 - '-3' 에서 '3' 만 남아 **조용히 3 이 된다.**
+     숫자만 적힌 글자일 때만 받는다 (틀린 값은 0 = 안 적은 것으로) */
+  const raw = String((cs && cs.crRating) != null ? cs.crRating : '').trim();
+  if(!/^[0-9]{1,2}$/.test(raw)) return 0;
+  const n = parseInt(raw, 10);
+  return (n >= 1 && n <= 10) ? n : 0;
+}
+function crMoney(v){ return '$' + Math.round(Number(v) || 0).toLocaleString('en-US'); }
+/* CREDIT-1 - rating 알약 색. 위험한 쪽이 빨강 */
+function crRatingChip(n){
+  if(!(n >= 1 && n <= 10)) return '';
+  const c = n >= 8 ? ['#ecfdf5', '#6ee7b7', '#047857']
+          : (n >= 5 ? ['#fffbeb', '#fcd34d', '#b45309'] : ['#fef2f2', '#fca5a5', '#b91c1c']);
+  return '<span title="Coface rating - 10 is the safest, 1 is the riskiest" style="background:' + c[0]
+    + ';border:1px solid ' + c[1] + ';color:' + c[2]
+    + ';border-radius:20px;padding:1px 8px;font-weight:900;white-space:nowrap;">rating ' + n + '</span>';
+}
+/* CREDIT-1 - 오더 줄 밑에 붙는 한 줄. 한도도 rating 도 없으면 아무것도 안 낸다 */
+function custCreditLine(rec){
+  try{
+    const cust = (rec && rec.meta && rec.meta.cust) || '';
+    if(!cust) return '';
+    const c = custCredit(cust);
+    if(!(c.limit > 0) && !(c.rating > 0)) return '';
+    const bits = [];
+    if(c.limit > 0){
+      bits.push('<span>credit limit <b style="font-family:Consolas,monospace;color:var(--text);">'
+        + crMoney(c.limit) + '</b></span>');
+      const a = Number(c.avail) || 0;
+      const col = a < 0 ? '#b91c1c' : (a < c.limit * 0.1 ? '#b45309' : '#166534');
+      bits.push('<span title="Credit limit minus A/R ' + crMoney(c.out)
+        + ' minus orders not invoiced yet ' + crMoney(c.openOrd)
+        + '">available <b style="font-family:Consolas,monospace;color:' + col + ';">'
+        + (a < 0 ? '\u2212' : '') + crMoney(Math.abs(a)) + '</b></span>');
+    }
+    if(c.rating > 0) bits.push(crRatingChip(c.rating));
+    return '<div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin-top:4px;'
+      + 'font-size:10.5px;color:var(--text2);font-weight:700;">' + bits.join('') + '</div>';
+  }catch(e){ return ''; }
+}
 async function approveHold(base){
   const rec = savedCache.find(s=>s.base===base); if(!rec) return;
   rec.meta = { ...rec.meta, _holdOk: { at: new Date().toISOString(), by: (SESS&&SESS.email)||'' } };
@@ -44098,6 +44166,7 @@ function cmDetailPane(name){
     + '</div>';
 }
 function renderCustomers(){
+  custCreditReset();   /* CREDIT-1 */
   const el = $('cust-body'); if(!el) return;
   /* 공용 customers 표(=MAS 번호가 사는 곳)를 한 번만 읽어 온다 (v1000) */
   if(!_imsCustList && typeof loadImsCustomers==='function'){ loadImsCustomers().then(()=>{ if($('cust-body')) renderCustomers(); }); }
@@ -44147,21 +44216,24 @@ function renderCustomers(){
   }
   el.innerHTML = `<div id="cust-topscroll" style="overflow-x:auto;overflow-y:hidden;height:14px;margin-bottom:2px;"><div style="height:1px;"></div></div>
   <div id="cust-xwrap" style="overflow-x:auto;"><table class="etbl">
-    <thead><tr><th class="tl" style="position:sticky;left:0;z-index:6;background:var(--header);">Customer</th><th class="tl">Address</th><th class="tl">Ship To</th><th>Orders</th><th>Total Sales</th><th>Outstanding</th><th>Open Orders</th><th>Credit Limit</th><th>Available</th><th>Terms</th><th>📧 Invoice Email</th><th>📦 PL Email</th><th></th></tr></thead>
+    <thead><tr><th class="tl" style="position:sticky;left:0;z-index:6;background:var(--header);">Customer</th><th class="tl">Address</th><th class="tl">Ship To</th><th>Orders</th><th>Total Sales</th><th>Outstanding</th><th>Open Orders</th><th>Credit Limit</th><th title="Coface rating - 10 is the safest, 1 is the riskiest">Rating</th><th>Available</th><th>Terms</th><th>📧 Invoice Email</th><th>📦 PL Email</th><th></th></tr></thead>
     <tbody>${list.map((m,i)=>{
       const k = custKey(m.name);
       const cs = custStore[k] || {};
-      const out = custOutstanding(m.name);
-      const openOrd = custOpenOrdersAmt(m.name);
+      /* CREDIT-1 - 오더 줄과 **같은 함수**를 본다 (숫자가 어긋날 수가 없다) + 거래처당 한 번만 계산 */
+      const _cc = custCredit(m.name);
+      const out = _cc.out;
+      const openOrd = _cc.openOrd;
       const isCC = (cs.termType || custLastTermType(m.name).termType || '') === 'cc';
-      const lim = Number(cs.creditLimit) || 0;   /* CUSTTERM-v1 - CC 여도 지우지 않는다 */
+      const lim = _cc.limit;   /* CUSTTERM-v1 - CC 여도 지우지 않는다 */
       const over = lim > 0 && (out + openOrd) > lim;
       const em = custEmailClean(cs.email || custEmailFor(m.name) || '');   /* CUSTTERM-v1 */
       const tt = cs.termType || custLastTermType(m.name).termType || '';
       const prof = custProfileFor(m.name) || {};
       const bo = cs.bill || {};
       const addr1 = [bo.addr||prof.billAddr, bo.city||prof.billCity, String(bo.state||prof.billState||'').toUpperCase()].filter(Boolean).join(', ');
-      const room = lim > 0 ? (lim - out - openOrd) : null;
+      const room = _cc.avail;   /* CREDIT-1 */
+      const _rt = _cc.rating;
       return `<tr ${over?'style="background:#fef2f2;"':''}>
         <td class="tl" style="font-weight:700;cursor:pointer;user-select:none;position:sticky;left:0;z-index:2;background:${over?'#fef2f2':'#fff'};box-shadow:2px 0 5px rgba(15,42,74,.07);" onclick="cmToggleAR('${esc(m.name)}')" title="Click for A/R detail"><span style="color:var(--text2);font-size:10px;">${cmOpenAR===m.name?'▼':'▶'}</span> ${esc(m.name)} <button class="btn btn-sm" style="border:none;padding:0 3px;font-size:11px;color:#64748b;font-weight:400;" onclick="event.stopPropagation();cmRename('${esc(m.name)}')" title="Rename this customer (updates all their orders)">✎</button>${over?' <span style="color:#b91c1c;font-size:10px;font-weight:900;">🔒 OVER</span>':''}${(()=>{ const br=Object.keys(m.brands||{}).filter(b=>b!==m.name); return br.length?`<div style="font-size:9.5px;font-weight:400;color:#64748b;">brands: ${br.map(esc).join(' · ')}</div>`:''; })()}</td>
         <td class="tl" style="font-size:11px;color:var(--text2);max-width:190px;"><div style="display:flex;align-items:center;gap:4px;"><span style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap;" title="${esc(addr1)}">${esc(addr1)||'—'}</span><button class="btn btn-sm" style="border:none;padding:0 3px;flex-shrink:0;" onclick="openCustAddr('${esc(m.name)}')" title="Edit address">✎</button></div></td>
@@ -44177,6 +44249,8 @@ function renderCustomers(){
         <td style="font-weight:800;color:${out>0?'#b91c1c':'#166534'};">${money2(out)}</td>
         <td style="font-weight:700;color:${openOrd>0?'#b45309':'#9ca3af'};" title="Orders received but not yet invoiced (excl. N/A lines)">${openOrd>0.005?money2(openOrd):'—'}</td>
         <td><div style="display:flex;align-items:center;gap:3px;justify-content:center;"><span style="font-weight:800;color:var(--text2);">$</span><input class="fi num" value="${lim?lim.toLocaleString():''}" placeholder="No limit" title="Credit limit - blank or 0 means no limit" oninput="this.value=this.value.replace(/[^0-9]/g,'').replace(/\B(?=(\d{3})+(?!\d))/g,',')" onchange="cmSet('${esc(k)}','creditLimit',this.value)" style="width:95px;text-align:right;font-family:Consolas,monospace;font-weight:700;"></div></td>
+        <!-- CREDIT-1 - Coface rating. 한도 바로 옆이라 둘을 같이 적게 된다 -->
+        <td><input class="fi num" type="number" min="1" max="10" step="1" value="${_rt||''}" placeholder="1-10" title="Coface rating - 10 is the safest, 1 is the riskiest. Leave it blank if you do not have one." onchange="cmSet('${esc(k)}','crRating',this.value)" style="width:58px;text-align:center;font-family:Consolas,monospace;font-weight:900;${_rt?('color:'+(_rt>=8?'#047857':(_rt>=5?'#b45309':'#b91c1c'))+';background:'+(_rt>=8?'#ecfdf5':(_rt>=5?'#fffbeb':'#fef2f2'))+';'):''}"></td>
         <td style="font-weight:800;font-family:Consolas,monospace;color:${room===null?'#9ca3af':(room<0?'#b91c1c':'#166534')};">${room===null?'—':(room<0?'−':'')+'$'+Math.abs(room).toLocaleString(undefined,{maximumFractionDigits:0})}</td>
         <td>${termSelectHtml(esc(k), tt, 'width:118px;font-size:11.5px;')}</td>
         <td><input class="fi" value="${esc(em)}" placeholder="email" title="${esc(em)}" onchange="cmSet('${esc(k)}','email',this.value)" style="width:180px;font-size:11px;"></td>
@@ -44189,7 +44263,7 @@ function renderCustomers(){
           <button class="btn btn-sm" style="border:none;padding:0 5px;margin-left:2px;" onclick="openCustLink('${esc(m.name)}')" title="Link/unlink as another brand of the same company">🔗</button>
           <button class="btn btn-sm" style="border:none;padding:0 5px;margin-left:2px;" onclick="cmDelete('${esc(m.name)}')" title="Delete this customer">🗑</button></td>
       </tr>`;
-    }).join('') || '<tr><td colspan="13" class="muted" style="padding:14px;">No customers yet</td></tr>'}</tbody>
+    }).join('') || '<tr><td colspan="14" class="muted" style="padding:14px;">No customers yet</td></tr>'}</tbody>
   </table></div>
   <div id="cust-ar-panel" style="margin-top:12px;">${cmOpenAR ? `<div style="border:1.5px solid #cbd5e1;border-radius:10px;background:#f8fafc;box-shadow:0 2px 8px rgba(15,42,74,.08);">
     <div style="display:flex;align-items:center;padding:8px 14px;background:#0f2a4a;border-radius:9px 9px 0 0;">
@@ -44647,6 +44721,12 @@ async function _cmSetDo(k, field, val){
     if(cur.webCust) cur.factored = false;
   }
   else if(field === 'payCard') cur.payCard = !!val;    /* PAYCARD-v1 - 참/거짓으로 못 박는다 */
+  /* CREDIT-1 - Coface rating. 1~10 만 저장한다. 그 밖이면 0 (= 안 적은 것) */
+  else if(field === 'crRating'){
+    const _raw = String(val == null ? '' : val).trim();
+    const _n = /^[0-9]{1,2}$/.test(_raw) ? parseInt(_raw, 10) : 0;   /* ⚠ '-3' 을 3 으로 읽지 않는다 */
+    cur.crRating = (_n >= 1 && _n <= 10) ? _n : 0;
+  }
   else if(field === 'factored') cur.factored = !!val;   /* INVDOC-v1 */
   else if(field === 'email') cur.email = custEmailClean(val);   /* CUSTTERM-v1 */
   else if(field === 'plEmail') cur.plEmail = custEmailClean(val);   /* CUSTPLEM-1 */
@@ -48598,6 +48678,7 @@ try{ setTimeout(verCheck, 25000); setInterval(verCheck, 90000); }catch(e){}
 try{ document.addEventListener('visibilitychange', function(){
   if(document.visibilityState === 'visible') setTimeout(verCheck, 1200); }); }catch(e){}
 function renderSaved(){
+  custCreditReset();   /* CREDIT-1 - 이 화면을 그리는 동안만 쓰는 캐시 */
   renderKpi();
   if(typeof icRenderDraftBtn==='function') icRenderDraftBtn();
   const bb = document.getElementById('bo-filter-btn');
@@ -48680,6 +48761,7 @@ function renderSaved(){
       ${_isHold?`<span style="margin-left:auto;padding:3px 10px;border-radius:20px;font-size:10.5px;font-weight:900;background:#450a0a;color:#fca5a5;white-space:nowrap;" title="A/R $${((s.meta._hold||{}).outstanding||0).toLocaleString()} + open orders $${((s.meta._hold||{}).openOrders||0).toLocaleString()} + this order $${((s.meta._hold||{}).orderAmt||0).toLocaleString()} > limit $${((s.meta._hold||{}).limit||0).toLocaleString()}">🔒 CREDIT HOLD</span><button class="btn btn-sm" style="background:#166534;color:#fff;border-color:#166534;font-weight:800;" onclick="approveHold('${esc(s.base)}')" title="Accounting approval — unlocks processing">✅ Approve</button>`:''}
       ${(()=>{ const st = recStatus(s); return `<span style="${_isHold?'':'margin-left:auto;'}padding:3px 12px;border-radius:20px;font-size:11px;font-weight:800;background:${st.bg};color:${st.color};white-space:nowrap;">${st.label}</span>`; })()}
       </div>
+      ${custCreditLine(s)}
       <div style="display:flex;align-items:center;gap:6px;flex-wrap:wrap;margin-top:8px;">
       <button class="btn btn-sm" onclick="openOrderSummary('${esc(s.base)}')">📋 Order Confirmation</button>
       <button class="btn btn-sm" onclick="copyOrderSummary('${esc(s.base)}')">📧 Copy Email</button>
