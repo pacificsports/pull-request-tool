@@ -314,7 +314,7 @@ body.po-dragging{user-select:none;}
   </span>
   <select id="lang-sel" onchange="setLang(this.value)" style="font-size:11px;padding:3px 6px;border-radius:5px;border:none;background:#1d3f66;color:#fff;"><option value="ko">한국어</option><option value="en">English</option><option value="es">Español</option></select>
   <button id="wide-btn" class="btn btn-sm" onclick="toggleWide()" title="화면 넓게 / 좁게 — 기본은 넓게 (이 브라우저에만 저장돼)" style="padding:2px 8px;font-size:10px;background:#1d3f66;color:#cfe0f2;border-color:#2b5384;">↔ Wide</button>
-  <span id="app-ver" style="font-size:10px;color:#9fb8d4;">v1224</span>
+  <span id="app-ver" style="font-size:10px;color:#9fb8d4;">v1225</span>
 </div>
 <script>
 // ↔ 넓게 보기 — 브라우저마다 따로 저장 (v793)
@@ -10555,6 +10555,59 @@ function payReqTermNote(rec){
       + 'You can still send the link. Make sure they agreed to pay by card.</div>';
   }catch(e){ return ''; }
 }
+/* ═══ PAYSENT-1 - 「이 인보이스에 결제 링크를 보냈다」 를 레코드에 찍는다 ═══
+   [stated] 하윤: "link send를 했으면 저기 payment 가 resend로 바뀌게 ... 다시 안보내지"
+   ⭐ 한 링크가 SC·CA 를 같이 담을 수 있다 -> 금액이 실린 창고 **전부**에 찍는다
+      (그래야 두 줄이 같이 Resend 로 바뀐다)
+   ⚠ 인보이스가 없는 창고는 건너뛴다 (빈 inv[wh] 를 만들면 다른 화면이 헷갈린다)
+   ⚠ 오더 하나에 PATCH 한 번 - 줄마다 쓰지 않는다
+   ⓘ 같은 링크를 다시 보내는 `payReqResend` 에서는 다시 안 찍는다 (줄은 이미 Resend 다) */
+async function payLinkStamp(items, to){
+  const at = new Date().toISOString(), by = (typeof SESS!=='undefined' && SESS && SESS.email) || '';
+  const byBase = {};
+  (items||[]).forEach(function(it){
+    if(!it || !(Number(it.amount) > 0)) return;
+    (byBase[it.base] = byBase[it.base] || []).push(it);
+  });
+  for(const base of Object.keys(byBase)){
+    const rec = (savedCache||[]).find(function(x){ return x.base === base; });
+    if(!rec) continue;
+    rec.inv = rec.inv || {};
+    let touched = false;
+    byBase[base].forEach(function(it){
+      const cur = rec.inv[it.wh];
+      if(!cur || !cur.savedAt) return;          /* 인보이스가 없으면 찍지 않는다 */
+      rec.inv[it.wh] = Object.assign({}, cur, {
+        payLinkAt: at, payLinkBy: by, payLinkTo: String(to||''),
+        payLinkAmt: Math.round((Number(it.amount)||0) * 100) / 100 });
+      touched = true;
+    });
+    if(!touched) continue;
+    const r = await sbFetch('/rest/v1/pr_orders?base=eq.' + encodeURIComponent(base),
+      { method:'PATCH', headers:{Prefer:'return=minimal'},
+        body: JSON.stringify({ inv: rec.inv, updated_at: new Date().toISOString() }) });
+    if(!r.ok) throw new Error('stamp ' + r.status);
+  }
+}
+/* PAYSENT-1 - 창 안에서 「전에 보낸 적이 있다」 를 보여 준다 (새로 고쳐도 남는다) */
+function payReqSentNote(rec, whs){
+  try{
+    const list = (whs && whs.length) ? whs : Object.keys((rec && rec.inv) || {});
+    let best = null;
+    list.forEach(function(w){
+      const iv = (rec.inv||{})[w];
+      if(iv && iv.payLinkAt && (!best || iv.payLinkAt > best.payLinkAt)) best = iv;
+    });
+    if(!best) return '';
+    return '<div style="margin-top:10px;background:#f0fdf4;border:1px solid #86efac;border-radius:8px;'
+      + 'padding:9px 11px;font-size:11.5px;color:#166534;line-height:1.6;">'
+      + '<b>\u2713 A payment link was already sent on '
+      + esc(String(best.payLinkAt).slice(0,10)) + '</b>'
+      + (best.payLinkTo ? (' to ' + esc(best.payLinkTo)) : '')
+      + (Number(best.payLinkAmt) > 0 ? (' \u00b7 ' + payReqMoney(best.payLinkAmt)) : '')
+      + '<br>Sending again is fine - it creates a new link for the amount below.</div>';
+  }catch(e){ return ''; }
+}
 function payReqOrderCalc(){
   payReqResetSent();   /* RESEND-1 - 금액이 바뀌면 새 링크여야 한다 */
   let t = 0;
@@ -10658,6 +10711,7 @@ function payReqOrder(base){
           <td id="prq-total" style="text-align:right;font-family:Consolas,monospace;font-weight:900;font-size:14px;">${payReqMoney(total)}</td></tr></tfoot>
       </table>
       <div style="font-size:11px;color:#94a3b8;margin-top:5px;">Set a line to 0 to leave that warehouse out of this request.</div>
+      ${payReqSentNote(rec, rows.map(function(x){ return x.wh; }))}
       ${payReqTermNote(rec)}
       <div id="pr-guard" style="display:none;margin-top:10px;"></div>
       <div style="margin-top:12px;">
@@ -10723,7 +10777,8 @@ async function payReqOrderSend(base){
       + psmP('You can pay this order online by credit card. The button below opens a secure page.')
       /* WHLABEL-2 - [stated] 하윤: 왼쪽은 FROM SC / FROM CA 만, 인보이스 번호는 금액 뒤에.
          왼쪽 칸이 짧고 일정해야 줄이 가지런히 읽힌다. */
-      + psmTable(items.map(x => psmRow('From ' + esc(x.wh),
+      + psmTable(psmCustRow(rec)
+        + items.map(x => psmRow('From ' + esc(x.wh),
           payReqMoney(x.amount)
           + (x.invNo ? ' <span style="font-weight:normal;font-size:12px;color:#8b8880;">(Invoice ' + esc(x.invNo) + ')</span>' : ''))).join('')
         + psmRow('Total', '<span style="font-size:16px;">' + payReqMoney(total) + '</span>'))
@@ -10736,6 +10791,9 @@ async function payReqOrderSend(base){
     if(!send.ok){ const e2 = await send.json().catch(()=>({})); throw new Error(e2.error || ('email HTTP ' + send.status)); }
     logHist(base, 'Payment link sent ' + payReqMoney(total) + ' ('
       + items.map(x => x.wh + ' ' + payReqMoney(x.amount)).join(', ') + ') to ' + em);
+    /* PAYSENT-1 - 메일이 나간 뒤에만 찍는다. 찍기가 실패하면 링크는 이미 나갔다고 알린다 */
+    try{ await payLinkStamp(items, em); }
+    catch(e2){ showToast('\u26a0 The link DID go out, but I could not mark the row - it still shows Payment'); }
     /* RESEND-1 - 창을 닫지 않는다. 단추가 Resend 로 바뀐다. */
     payReqShowSent({ to: em, link: link, subject: subject, html: html, base: base });
     showToast('\u{1F4E7} Payment link sent to ' + em);
@@ -10788,6 +10846,7 @@ function payReqOpen(base, wh){
         The customer gets a link to a secure page. The card is entered on Authorize.Net -
         we never see the card number. When they pay, this invoice is marked paid automatically.
       </div>
+      ${payReqSentNote(rec, [wh])}
       ${payReqTermNote(rec)}
       <div id="pr-guard" style="display:none;margin-top:10px;"></div>
     </div>
@@ -10845,6 +10904,9 @@ async function payReqSend(base, wh){
     const send = await payReqMailOut(em, subject, html);
     if(!send.ok){ const e2 = await send.json().catch(()=>({})); throw new Error(e2.error || ('email HTTP ' + send.status)); }
     logHist(base, 'Payment link sent ' + payReqMoney(amt) + ' (' + wh + ') to ' + em);
+    /* PAYSENT-1 */
+    try{ await payLinkStamp(row.items, em); }
+    catch(e2){ showToast('\u26a0 The link DID go out, but I could not mark the row - it still shows Payment'); }
     /* RESEND-1 - 창을 닫지 않는다. 단추가 Resend 로 바뀐다. */
     payReqShowSent({ to: em, link: link, subject: subject, html: html, base: base });
     showToast('\u{1F4E7} Payment link sent to ' + em);
@@ -46173,6 +46235,8 @@ function invNpList(){
                  at:(pl && pl.savedAt) || s.savedAt, amt, invNo:iv.invNo||'',
                  /* PAYDO-1 - 💳 Card on File 또는 🌐 Website 거래처인가 */
                  payCust: (typeof payDoCardCust==='function' ? payDoCardCust(s) : false),
+                 /* PAYSENT-1 - 결제 링크를 보낸 도장 (보냈으면 단추가 Resend 로 바뀐다) */
+                 payLinkAt: iv.payLinkAt || '', payLinkTo: iv.payLinkTo || '',
                  locker:_locker,
                  printed:!!iv.printed, printedAt:iv.printedAt||'', sentAt:_sent,
                  sentBy:_si.by, sentTo:_si.to,
@@ -46541,14 +46605,21 @@ function invNpRowsHtml(){
             하나 더 세우면 줄이 시끄러워진다)
          ⚠ [stated] 하윤 규칙: "결제 요청은 SC·CA 를 합쳐서 오더 전액으로" ->
            한 창고짜리 창이 아니라 **오더 전체 창**(payReqOrder)을 연다 */
+      /* PAYSENT-1 - 보낸 뒤에는 **Resend** 로 바뀐다 (💳 Reprint 와 같은 「이미 했다」 색).
+         [stated] 하윤: "그래야 아 보내졌구나 알고 다시 안보내지"
+         ⚠ 도장(`payLinkAt`)은 레코드에 있다 - 새로 고쳐도, 다른 사람 화면에서도 보인다 */
       + (r.printed
-          ? '<button class="btn btn-sm" style="padding:3px 10px;font-size:10.5px;white-space:nowrap;font-weight:800;'
-            + (r.payCust ? 'background:#6d28d9;color:#fff;border-color:#6d28d9;'
-                         : 'background:#f8fafc;color:#94a3b8;border-color:#e2e8f0;')
-            + '" onclick="payReqOrder(\'' + eb + '\')" title="'
-            + (r.payCust ? 'Email this customer a card payment link for this order'
-                         : 'This customer is not set up to pay by card. You can still send a link - press to open it.')
-            + '">\ud83d\udcb3 Payment</button>'
+          ? (r.payLinkAt
+              ? '<button class="btn btn-sm" style="padding:3px 10px;font-size:10.5px;white-space:nowrap;font-weight:800;background:#f0fdf4;color:#15803d;border-color:#86efac;" onclick="payReqOrder(\'' + eb + '\')" title="Payment link sent '
+                + esc(String(r.payLinkAt).slice(0,10)) + (r.payLinkTo ? (' to ' + esc(r.payLinkTo)) : '')
+                + ' \u2014 press to open it and send again">\ud83d\udd04 Resend</button>'
+              : '<button class="btn btn-sm" style="padding:3px 10px;font-size:10.5px;white-space:nowrap;font-weight:800;'
+                + (r.payCust ? 'background:#6d28d9;color:#fff;border-color:#6d28d9;'
+                             : 'background:#f8fafc;color:#94a3b8;border-color:#e2e8f0;')
+                + '" onclick="payReqOrder(\'' + eb + '\')" title="'
+                + (r.payCust ? 'Email this customer a card payment link for this order'
+                             : 'This customer is not set up to pay by card. You can still send a link - press to open it.')
+                + '">\ud83d\udcb3 Payment</button>')
           : '')
       + prBtn + mailBtn
       + '</div>';
