@@ -314,7 +314,7 @@ body.po-dragging{user-select:none;}
   </span>
   <select id="lang-sel" onchange="setLang(this.value)" style="font-size:11px;padding:3px 6px;border-radius:5px;border:none;background:#1d3f66;color:#fff;"><option value="ko">한국어</option><option value="en">English</option><option value="es">Español</option></select>
   <button id="wide-btn" class="btn btn-sm" onclick="toggleWide()" title="화면 넓게 / 좁게 — 기본은 넓게 (이 브라우저에만 저장돼)" style="padding:2px 8px;font-size:10px;background:#1d3f66;color:#cfe0f2;border-color:#2b5384;">↔ Wide</button>
-  <span id="app-ver" style="font-size:10px;color:#9fb8d4;">v1230</span>
+  <span id="app-ver" style="font-size:10px;color:#9fb8d4;">v1231</span>
 </div>
 <script>
 // ↔ 넓게 보기 — 브라우저마다 따로 저장 (v793)
@@ -44082,6 +44082,7 @@ function cmDetailPane(name){
      ⚠ 신용 보류 규칙(saveOrder)은 안 건드렸다 - CC 는 원래 안 잡는다(정책). 그래서 밑에 적어 준다. */
   const lim = Number(cs.creditLimit)||0;
   const room = lim > 0 ? (lim - out - openOrd) : null;
+  const _rt = (typeof crRatingOf==='function') ? crRatingOf(cs) : 0;   /* CREDITKPI-1 */
   const mas = cmMasNo(name);
   /* CUSTTERM-v1 - 우리 식구 주소는 거래처 카드에 안 보인다 */
   const em = custEmailClean(cs.email || ((typeof custEmailFor==='function') ? custEmailFor(name) : '') || '');
@@ -44144,7 +44145,8 @@ function cmDetailPane(name){
       + cmKpi('AVG DAYS TO PAY', dso ? (dso+' d') : '—', dsoN?(dsoN+' payments'):'no payments yet', '#fff7ed', '#fed7aa', '#c2410c')
       + cmKpi('LAST PAYMENT', lastPay ? esc(lastPay.at) : '—', lastPay ? cmMoney(lastPay.amt) : '', '#f5f3ff', '#ddd6fe', '#6d28d9')
     + '</div>'
-    + '<div style="display:grid;grid-template-columns:repeat(4,1fr);gap:8px;margin-bottom:12px;">'
+    /* CREDITKPI-1 - 4칸 -> 5칸. RATING 이 CREDIT LIMIT 바로 옆에 온다 */
+    + '<div style="display:grid;grid-template-columns:repeat(5,1fr);gap:8px;margin-bottom:12px;">'
       + cmKpi('OPEN ORDERS', openOrd>0.005?cmMoney0(openOrd):'—', 'received, not invoiced', '#fffbeb', '#fde68a', '#b45309')
       /* CUSTTERM-v1 - 이 두 칸은 **언제나** 보이고 그 자리에서 고친다 (CC 여도 마찬가지) */
       + cmKpi('CREDIT LIMIT',
@@ -44156,6 +44158,16 @@ function cmDetailPane(name){
           + ' onchange="cmSet(\''+_ck+'\',\'creditLimit\',this.value)"'
           + ' style="width:104px;text-align:right;font-family:Consolas,monospace;font-weight:800;font-size:14px;padding:2px 5px;"></span>',
           lim ? (isCC ? 'CC - not held' : 'edit any time') : 'no limit - edit any time', '#f8fafc', '#e2e8f0', '#334155')
+      /* CREDITKPI-1 - Coface rating (1~10, 10 이 제일 안전). 저장·읽기 모두 List 표와 같은 길 */
+      + cmKpi('RATING',
+          '<input class="fi num" type="number" min="1" max="10" step="1" value="'+(_rt||'')+'" placeholder="1-10"'
+          + ' title="Coface rating - 10 is the safest, 1 is the riskiest. Leave it blank if you do not have one."'
+          + ' onchange="cmSet(\''+_ck+'\',\'crRating\',this.value)"'
+          + ' style="width:70px;text-align:center;font-family:Consolas,monospace;font-weight:900;font-size:16px;padding:2px 5px;">',
+          _rt ? (_rt>=8 ? 'Coface - low risk' : (_rt>=5 ? 'Coface - watch' : 'Coface - high risk')) : 'Coface - not set',
+          _rt ? (_rt>=8?'#ecfdf5':(_rt>=5?'#fffbeb':'#fef2f2')) : '#f8fafc',
+          _rt ? (_rt>=8?'#6ee7b7':(_rt>=5?'#fcd34d':'#fca5a5')) : '#e2e8f0',
+          _rt ? (_rt>=8?'#047857':(_rt>=5?'#b45309':'#b91c1c')) : '#334155')
       + cmKpi('AVAILABLE', room===null ? '—' : ((room<0?'−':'')+cmMoney0(Math.abs(room))),
           room===null ? 'no limit set' : (isCC ? 'CC - not held' : (room<0?'🔒 over limit':'room to order')),
           room!==null&&room<0&&!isCC?'#fef2f2':'#f8fafc', room!==null&&room<0&&!isCC?'#fecaca':'#e2e8f0', room!==null&&room<0&&!isCC?'#b91c1c':'#334155')
@@ -45328,10 +45340,18 @@ function renderPsSheet(){
       <td>${has('4xl') ? inp(x.st,'price_4xl',p.price_4xl,auto('4XL')) : '<span class="muted">—</span>'}</td>
       <td>${has('5xl') ? inp(x.st,'price_5xl',p.price_5xl,auto('5XL')) : '<span class="muted">—</span>'}</td>${tail}</tr>`;
   }).join('');
+  /* PSALL-1 - 머리줄 체크박스에 지금 상태를 비춘다. 안 비추면 늘 빈 칸이라
+     두 번째 클릭도 「전체선택」이 된다 (그게 안 되던 이유다) */
+  const _psVis = psRows().filter(x=> _psTab==='kids' ? psIsKid(x) : !psIsKid(x));
+  const _psOn = _psVis.filter(function(x){ const c = (_imsPS[_psGk] && _imsPS[_psGk].rows) ? _imsPS[_psGk].rows[x.st] : null; return !!(c && c.included); }).length;
+  const _psAllOn = _psVis.length > 0 && _psOn === _psVis.length;
+  const _psSomeOn = _psOn > 0 && !_psAllOn;
   const head = _psTab==='kids'
-    ? `<tr><th style="width:36px;"><input type="checkbox" onchange="psSelectAll(this.checked)" style="width:14px;height:14px;"></th><th>STYLE #</th><th class="tl">DESCRIPTION</th><th class="tl">FABRIC</th><th>TODDLER<br><span style="font-weight:400;font-size:9px;">2T-4T</span></th><th>JUVY<br><span style="font-weight:400;font-size:9px;">S-L</span></th><th>YOUTH<br><span style="font-weight:400;font-size:9px;">XS-XL</span></th><th>KIDS<br><span style="font-weight:400;font-size:9px;">2T-5T</span></th><th>KIDS<br><span style="font-weight:400;font-size:9px;">XS-XL</span></th><th>NOTES</th></tr>`
-    : `<tr><th style="width:36px;"><input type="checkbox" onchange="psSelectAll(this.checked)" style="width:14px;height:14px;"></th><th>STYLE #</th><th class="tl">DESCRIPTION</th><th class="tl">FABRIC</th><th>XS–XL</th><th>2XL</th><th>3XL</th><th>4XL</th><th>5XL</th><th>NOTES</th></tr>`;
+    ? `<tr><th style="width:36px;"><input type="checkbox" id="ps-all" ${_psAllOn?'checked':''} title="Select all / unselect all" onchange="psSelectAll(this.checked)" style="width:14px;height:14px;"></th><th>STYLE #</th><th class="tl">DESCRIPTION</th><th class="tl">FABRIC</th><th>TODDLER<br><span style="font-weight:400;font-size:9px;">2T-4T</span></th><th>JUVY<br><span style="font-weight:400;font-size:9px;">S-L</span></th><th>YOUTH<br><span style="font-weight:400;font-size:9px;">XS-XL</span></th><th>KIDS<br><span style="font-weight:400;font-size:9px;">2T-5T</span></th><th>KIDS<br><span style="font-weight:400;font-size:9px;">XS-XL</span></th><th>NOTES</th></tr>`
+    : `<tr><th style="width:36px;"><input type="checkbox" id="ps-all" ${_psAllOn?'checked':''} title="Select all / unselect all" onchange="psSelectAll(this.checked)" style="width:14px;height:14px;"></th><th>STYLE #</th><th class="tl">DESCRIPTION</th><th class="tl">FABRIC</th><th>XS–XL</th><th>2XL</th><th>3XL</th><th>4XL</th><th>5XL</th><th>NOTES</th></tr>`;
   el.innerHTML = `<table class="etbl" style="font-size:12px;"><thead style="position:sticky;top:0;z-index:2;">${head}</thead><tbody>${body || `<tr><td colspan="11" class="muted" style="padding:14px;">No styles</td></tr>`}</tbody></table>`;
+  /* PSALL-1 - 중간 모양(일부만 골랐다)은 속성으로 못 준다 */
+  try{ const _a = document.getElementById('ps-all'); if(_a){ _a.checked = _psAllOn; _a.indeterminate = _psSomeOn; } }catch(e){}
   psFootUpdate();
 }
 async function psSetEffectiveAll(date){
