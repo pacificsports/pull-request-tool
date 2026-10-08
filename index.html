@@ -314,7 +314,7 @@ body.po-dragging{user-select:none;}
   </span>
   <select id="lang-sel" onchange="setLang(this.value)" style="font-size:11px;padding:3px 6px;border-radius:5px;border:none;background:#1d3f66;color:#fff;"><option value="ko">한국어</option><option value="en">English</option><option value="es">Español</option></select>
   <button id="wide-btn" class="btn btn-sm" onclick="toggleWide()" title="화면 넓게 / 좁게 — 기본은 넓게 (이 브라우저에만 저장돼)" style="padding:2px 8px;font-size:10px;background:#1d3f66;color:#cfe0f2;border-color:#2b5384;">↔ Wide</button>
-  <span id="app-ver" style="font-size:10px;color:#9fb8d4;">v1223</span>
+  <span id="app-ver" style="font-size:10px;color:#9fb8d4;">v1224</span>
 </div>
 <script>
 // ↔ 넓게 보기 — 브라우저마다 따로 저장 (v793)
@@ -10483,6 +10483,78 @@ function payReqOrderRows(rec){
              amount: Math.round((g + f) * 100) / 100 };
   });
 }
+/* ═══ PAYGUARD-1 - 번호 없는 인보이스로는 결제 요청을 못 보낸다 ═══
+   🔴 지금까지는 조용히 나갔다. 거래처가 받는 메일이 이렇게 된다:
+        제목  "Payment link - Invoice  - PO 305502"
+        표    Invoice #   (빈칸)
+      거래처 회계는 번호 없는 청구를 보류하거나 되묻는다.
+   ⭐⭐⭐ 세 자리(한 창고 창 · 오더 전체 창 · 보내는 함수)가 **이 함수 하나**를 본다.
+      같은 판정을 두 군데 적으면 반드시 어긋난다.
+   ⚠ 금액을 0 으로 둔 줄은 안 따진다 - 그 창고는 이번 요청에서 빠지는 것이다. */
+function payReqPicks(){
+  /* ⚠ 창 안에서만 센다. document 전체를 훑으면 다른 창이 떠 있을 때 남의 줄까지 따진다 */
+  const root = document.getElementById('modal-payreq') || document;
+  return [...root.querySelectorAll('.prq-amt')].map(i => ({
+    wh: i.getAttribute('data-wh') || '',
+    invNo: String(i.getAttribute('data-inv') || '').trim(),
+    amt: Math.round((parseFloat(String(i.value||'').replace(/[^0-9.]/g,'')) || 0) * 100) / 100
+  }));
+}
+function payReqNoInv(){
+  return payReqPicks().filter(p => p.amt > 0.005 && !p.invNo);
+}
+function payReqGuardPaint(){
+  const bad = payReqNoInv();
+  const box = document.getElementById('pr-guard');
+  if(box){
+    if(bad.length){
+      box.style.display = 'block';
+      box.innerHTML = '<div style="background:#fef2f2;border:1px solid #fca5a5;border-radius:8px;'
+        + 'padding:9px 11px;font-size:11.5px;color:#991b1b;line-height:1.6;">'
+        + '<b>\u26a0 Print the invoice first \u2014 ' + bad.map(b => esc(b.wh)).join(', ')
+        + ' has no invoice number.</b><br>'
+        + 'The customer would get a payment request with a blank invoice number. '
+        + 'Print it (that is when the number comes out), or set that line to 0.</div>';
+    } else { box.style.display = 'none'; box.innerHTML = ''; }
+  }
+  const btn = document.getElementById('pr-go');
+  if(btn){
+    const lock = bad.length > 0;
+    btn.disabled = lock;
+    btn.style.background  = lock ? '#e2e8f0' : '#1d4ed8';
+    btn.style.borderColor = lock ? '#cbd5e1' : '#1d4ed8';
+    btn.style.color       = lock ? '#94a3b8' : '#fff';
+    btn.style.cursor      = lock ? 'not-allowed' : '';
+    btn.title = lock ? 'Print the invoice first - it has no number yet' : '';
+  }
+}
+/* PAYDO-1 - 이 거래처는 **보통 카드로 내는** 거래처인가 (💳 Card on File 또는 🌐 Website).
+   오더 목록 위의 💳/🌐 거르개와 같은 판정을 본다 - 한쪽에서만 카드 거래처로 보이면 안 된다. */
+function payDoCardCust(rec){
+  try{
+    const cust = (rec && rec.meta && rec.meta.cust) || '';
+    if(typeof custPaysCard === 'function' && custPaysCard(cust)) return true;
+    if(rec && rec.meta && rec.meta.webCust) return true;
+    const cs = (typeof custGroupStore === 'function') ? (custGroupStore(cust) || {}) : {};
+    return !!cs.webCust;
+  }catch(e){ return false; }
+}
+/* PAYDO-1 - 카드 거래처가 아닌데 링크를 보낼 때(오버라이드) 창에 띄우는 호박색 줄.
+   ⚠ 막지 않는다 - 하윤이 "오버라이드해서 보낼수있게" 라고 했다. 말만 해 준다.
+   ⚠ 두 창(한 창고 · 오더 전체)이 **이 함수 하나**를 쓴다 - 글이 서로 달라지면 안 된다. */
+function payReqTermNote(rec){
+  try{
+    if(payDoCardCust(rec)) return '';
+    const cust = (rec && rec.meta && rec.meta.cust) || '';
+    const cs = (typeof custGroupStore === 'function') ? (custGroupStore(cust) || {}) : {};
+    const t = (typeof termLabel === 'function') ? termLabel(cs.termType || '') : '';
+    return '<div style="margin-top:10px;background:#fffbeb;border:1px solid #fcd34d;border-radius:8px;'
+      + 'padding:9px 11px;font-size:11.5px;color:#b45309;line-height:1.6;">'
+      + '<b>\u26a0 ' + esc(cust || 'This customer') + ' is not set up to pay by card'
+      + (t ? (' \u2014 terms are ' + esc(t)) : '') + '.</b><br>'
+      + 'You can still send the link. Make sure they agreed to pay by card.</div>';
+  }catch(e){ return ''; }
+}
 function payReqOrderCalc(){
   payReqResetSent();   /* RESEND-1 - 금액이 바뀌면 새 링크여야 한다 */
   let t = 0;
@@ -10491,6 +10563,7 @@ function payReqOrderCalc(){
   });
   const el = document.getElementById('prq-total');
   if(el) el.textContent = payReqMoney(Math.round(t * 100) / 100);
+  payReqGuardPaint();   /* PAYGUARD-1 - 0 으로 빼면 잠금이 풀려야 한다 */
 }
 /* RESEND-1 - 보낸 뒤의 상태. 같은 링크를 다시 보낼 때 쓴다. */
 let _payReqSent = null;
@@ -10585,6 +10658,8 @@ function payReqOrder(base){
           <td id="prq-total" style="text-align:right;font-family:Consolas,monospace;font-weight:900;font-size:14px;">${payReqMoney(total)}</td></tr></tfoot>
       </table>
       <div style="font-size:11px;color:#94a3b8;margin-top:5px;">Set a line to 0 to leave that warehouse out of this request.</div>
+      ${payReqTermNote(rec)}
+      <div id="pr-guard" style="display:none;margin-top:10px;"></div>
       <div style="margin-top:12px;">
         <label style="font-size:10.5px;font-weight:800;color:#64748b;letter-spacing:.05em;">SEND TO</label>
         <input class="fi" id="pr-em" value="${esc(em)}" placeholder="customer@company.com" style="width:100%;font-size:12.5px;padding:6px 8px;">
@@ -10605,6 +10680,7 @@ function payReqOrder(base){
       <button class="btn btn-sm" id="pr-go" data-send="payReqOrderSend('${esc(base)}')" style="background:#1d4ed8;color:#fff;border-color:#1d4ed8;font-weight:800;" onclick="payReqOrderSend('${esc(base)}')">\u{1F4E7} Send payment link</button>
     </div></div>`;
   document.body.appendChild(div);
+  payReqGuardPaint();   /* PAYGUARD-1 - 열자마자 상태가 맞아야 한다 */
 }
 
 async function payReqOrderSend(base){
@@ -10625,6 +10701,10 @@ async function payReqOrderSend(base){
   const em = custEmailClean(String(((document.getElementById('pr-em')||{}).value)||'').trim());
   const note = String(((document.getElementById('pr-note')||{}).value)||'').trim();
   if(!items.length || !(total > 0)){ showToast('\u26A0 Enter an amount'); return; }
+  /* PAYGUARD-1 - 화면 잠금이 어떤 이유로 풀려 있어도 여기서 멈춘다 */
+  const _bad = payReqNoInv();
+  if(_bad.length){ payReqGuardPaint();
+    showToast('\u26A0 Print the invoice first - ' + _bad.map(b=>b.wh).join(', ') + ' has no invoice number'); return; }
   if(!em || em.indexOf('@') < 0){ showToast('\u26A0 Enter the customer email'); return; }
   /* NOPOP-1 - 브라우저 팝업을 없앴다. 창에 이미 다 보인다. */
   if(btn){ btn.disabled = true; btn.textContent = '\u23F3 Sending...'; }
@@ -10693,7 +10773,7 @@ function payReqOpen(base, wh){
       <div style="display:flex;gap:10px;flex-wrap:wrap;">
         <div style="flex:0 0 140px;">
           <label style="font-size:10.5px;font-weight:800;color:#64748b;letter-spacing:.05em;">AMOUNT</label>
-          <input class="fi num" id="pr-amt" value="${bal.toFixed(2)}" style="width:100%;text-align:right;font-family:Consolas,monospace;font-weight:800;font-size:15px;padding:6px 8px;">
+          <input class="fi num prq-amt" id="pr-amt" data-wh="${esc(wh)}" data-inv="${esc(iv.invNo||'')}" value="${bal.toFixed(2)}" oninput="payReqResetSent(); payReqGuardPaint();" style="width:100%;text-align:right;font-family:Consolas,monospace;font-weight:800;font-size:15px;padding:6px 8px;">
         </div>
         <div style="flex:1;min-width:190px;">
           <label style="font-size:10.5px;font-weight:800;color:#64748b;letter-spacing:.05em;">SEND TO</label>
@@ -10708,6 +10788,8 @@ function payReqOpen(base, wh){
         The customer gets a link to a secure page. The card is entered on Authorize.Net -
         we never see the card number. When they pay, this invoice is marked paid automatically.
       </div>
+      ${payReqTermNote(rec)}
+      <div id="pr-guard" style="display:none;margin-top:10px;"></div>
     </div>
     <div id="pr-sent" style="display:none;padding:0 18px 12px;"></div>
     <div style="padding:11px 18px;border-top:1px solid #e2e8f0;display:flex;gap:8px;">
@@ -10716,6 +10798,7 @@ function payReqOpen(base, wh){
       <button class="btn btn-sm" id="pr-go" data-send="payReqSend('${esc(base)}','${esc(wh)}')" style="background:#1d4ed8;color:#fff;border-color:#1d4ed8;font-weight:800;" onclick="payReqSend('${esc(base)}','${esc(wh)}')">\u{1F4E7} Send payment link</button>
     </div></div>`;
   document.body.appendChild(div);
+  payReqGuardPaint();   /* PAYGUARD-1 */
   setTimeout(()=>{ const i = document.getElementById('pr-em'); if(i && !i.value) i.focus(); }, 60);
 }
 
@@ -10730,6 +10813,9 @@ async function payReqSend(base, wh){
   const note = String(((document.getElementById('pr-note')||{}).value)||'').trim();
   if(!(amt > 0)){ showToast('\u26A0 Enter an amount'); return; }
   if(amt > bal + 0.005){ showToast('\u26A0 That is more than the balance (' + payReqMoney(bal) + ')'); return; }
+  /* PAYGUARD-1 - 번호 없는 인보이스로는 안 나간다 (메일에 빈칸으로 찍힌다) */
+  if(!String(iv.invNo||'').trim()){ payReqGuardPaint();
+    showToast('\u26A0 Print the invoice first - it has no invoice number yet'); return; }
   if(!em || em.indexOf('@') < 0){ showToast('\u26A0 Enter the customer email'); return; }
   /* NOPOP-1 - 브라우저 팝업을 없앴다. 창에 이미 다 보인다. */
   if(btn){ btn.disabled = true; btn.textContent = '\u23F3 Sending...'; }
@@ -46085,6 +46171,8 @@ function invNpList(){
       if(!pl && _locker && !(amt > 0)) return;            // 줄도 금액도 없으면 청구할 게 없다
       out.push({ base:s.base, wh:w, po:(s.meta&&s.meta.po)||'', cust:(s.meta&&s.meta.cust)||'',
                  at:(pl && pl.savedAt) || s.savedAt, amt, invNo:iv.invNo||'',
+                 /* PAYDO-1 - 💳 Card on File 또는 🌐 Website 거래처인가 */
+                 payCust: (typeof payDoCardCust==='function' ? payDoCardCust(s) : false),
                  locker:_locker,
                  printed:!!iv.printed, printedAt:iv.printedAt||'', sentAt:_sent,
                  sentBy:_si.by, sentTo:_si.to,
@@ -46441,6 +46529,27 @@ function invNpRowsHtml(){
       + (r.invNo ? '<button onclick="invHistOpen(\'' + eb + '\',\'' + ew + '\')" title="Open this invoice (read-only)" style="font-family:Consolas,monospace;font-size:10.5px;font-weight:800;color:#0e7490;min-width:58px;text-align:left;background:none;border:0;padding:0;cursor:pointer;text-decoration:underline;text-underline-offset:2px;">' + esc(r.invNo) + '</button>'
                  : '<span style="font-family:Consolas,monospace;font-size:10.5px;font-weight:700;color:#cbd5e1;min-width:58px;" title="No invoice number yet \u2014 it gets one when you print">no #</span>')
       + '<span style="font-family:Consolas,monospace;font-weight:700;width:86px;text-align:right;">' + money + '</span>'
+      /* ═══ PAYDO-1 - 인쇄한 그 자리에서 바로 결제 요청 ═══
+         [stated] 하윤: "invoice to do 에 print 누르면 payment requset 나오게도 하자
+                         거기서 바로 요청할수있게"
+         [stated] 하윤: 카드/웹 거래처만 **active**, 나머지는 inactive 로 두되 **오버라이드 가능**
+         ⭐ 그래서 누르는 자리는 **두 경우가 똑같다** - 색과 설명만 다르다. 막지 않는다.
+            (카드 거래처가 아니면 창 안에 호박색 줄이 뜬다 - payReqTermNote)
+         ⚠ 잔액으로 가리지 않는다 (하윤 지시). 다 받은 건은 창이 "Nothing is outstanding" 이라고 말한다
+         ⚠ **인쇄된 줄에만** 뜬다 - 번호가 없으면 거래처 메일의 Invoice # 가 빈칸이 된다
+           (PAYGUARD-1 이 어차피 막는다. 아침 목록은 대부분 안 찍은 줄이라 회색 단추를
+            하나 더 세우면 줄이 시끄러워진다)
+         ⚠ [stated] 하윤 규칙: "결제 요청은 SC·CA 를 합쳐서 오더 전액으로" ->
+           한 창고짜리 창이 아니라 **오더 전체 창**(payReqOrder)을 연다 */
+      + (r.printed
+          ? '<button class="btn btn-sm" style="padding:3px 10px;font-size:10.5px;white-space:nowrap;font-weight:800;'
+            + (r.payCust ? 'background:#6d28d9;color:#fff;border-color:#6d28d9;'
+                         : 'background:#f8fafc;color:#94a3b8;border-color:#e2e8f0;')
+            + '" onclick="payReqOrder(\'' + eb + '\')" title="'
+            + (r.payCust ? 'Email this customer a card payment link for this order'
+                         : 'This customer is not set up to pay by card. You can still send a link - press to open it.')
+            + '">\ud83d\udcb3 Payment</button>'
+          : '')
       + prBtn + mailBtn
       + '</div>';
   }).join('');
