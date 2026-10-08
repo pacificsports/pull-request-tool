@@ -314,7 +314,7 @@ body.po-dragging{user-select:none;}
   </span>
   <select id="lang-sel" onchange="setLang(this.value)" style="font-size:11px;padding:3px 6px;border-radius:5px;border:none;background:#1d3f66;color:#fff;"><option value="ko">한국어</option><option value="en">English</option><option value="es">Español</option></select>
   <button id="wide-btn" class="btn btn-sm" onclick="toggleWide()" title="화면 넓게 / 좁게 — 기본은 넓게 (이 브라우저에만 저장돼)" style="padding:2px 8px;font-size:10px;background:#1d3f66;color:#cfe0f2;border-color:#2b5384;">↔ Wide</button>
-  <span id="app-ver" style="font-size:10px;color:#9fb8d4;">v1229</span>
+  <span id="app-ver" style="font-size:10px;color:#9fb8d4;">v1230</span>
 </div>
 <script>
 // ↔ 넓게 보기 — 브라우저마다 따로 저장 (v793)
@@ -10968,9 +10968,10 @@ function custGroupName(name){
 function custGroupStore(name){
   return custStore[custKey(custGroupName(name))] || custStore[custKey(name)] || {};
 }
-function custOpenOrdersAmt(cust, excludeBase){
+/* CRIDX-1 - `_rows` 는 세 번째 인수다. 안 주면 예전과 완전히 같다 */
+function custOpenOrdersAmt(cust, excludeBase, _rows){
   const key = custGroupName(cust); let s = 0;
-  (savedCache||[]).forEach(r=>{
+  (_rows || savedCache || []).forEach(r=>{
     if(!r.meta || custGroupName(r.meta.cust) !== key) return;
     if(recIsReplace(r)) return;   // 🔁 free replacement — not owed (v477)
     if(excludeBase && r.base === excludeBase) return;
@@ -10985,9 +10986,12 @@ function custOpenOrdersAmt(cust, excludeBase){
   });
   return s;
 }
-function custOutstanding(cust){
+/* CRIDX-1 - `_rows` 는 **안 주면 예전과 완전히 같다** (savedCache 전체).
+   주면 그 배열만 훑는다 - 거래처별 색인을 쥔 화면이 쓴다. 안쪽 그룹 검사는 그대로 남겨
+   둬서 엉뚱한 오더가 섞여도 금액에 안 들어간다 */
+function custOutstanding(cust, _rows){
   const key = custGroupName(cust); let s = 0;
-  (savedCache||[]).forEach(r=>{ if(r.meta && !recIsReplace(r) && custGroupName(r.meta.cust)===key) Object.keys(r.inv||{}).forEach(w=>{ s += invBalance(r, w); }); });
+  (_rows || savedCache || []).forEach(r=>{ if(r.meta && !recIsReplace(r) && custGroupName(r.meta.cust)===key) Object.keys(r.inv||{}).forEach(w=>{ s += invBalance(r, w); }); });
   return s;
 }
 function holdBlocked(rec){ return !!(rec && rec.meta && rec.meta._hold && !rec.meta._holdOk); }
@@ -10999,7 +11003,25 @@ function holdBlocked(rec){ return !!(rec && rec.meta && rec.meta._hold && !rec.m
    ⚠ 한 오더를 빼는 셈(`custOpenOrdersAmt(cust, base)`)은 **안 쓴다** - 그건 신용 보류를
       판단할 때 쓰는 것이고, 여기는 「이 거래처가 지금 얼마나 남았나」를 보여주는 자리다 */
 let _crCache = null;
-function custCreditReset(){ _crCache = null; }
+/* CRIDX-1 - 오더를 거래처(그룹)별로 한 번 묶어 둔다. 648건을 **한 번** 훑어 만들고,
+   그 뒤로 거래처마다 자기 오더만 본다 (69 x 648 -> 648) */
+let _crRows = null;
+function crRowsOf(cust){
+  if(!_crRows){
+    _crRows = {};
+    (savedCache || []).forEach(function(r){
+      if(!r || !r.meta) return;
+      let k;
+      try{ k = custGroupName(r.meta.cust); }catch(e){ k = String(r.meta.cust || ''); }
+      if(!_crRows[k]) _crRows[k] = [];
+      _crRows[k].push(r);
+    });
+  }
+  let key;
+  try{ key = custGroupName(cust); }catch(e){ key = String(cust || ''); }
+  return _crRows[key] || [];
+}
+function custCreditReset(){ _crCache = null; _crRows = null; }
 function custCredit(cust){
   const key = (typeof custGroupName === 'function') ? custGroupName(cust) : String(cust || '');
   if(!_crCache) _crCache = {};
@@ -11008,8 +11030,10 @@ function custCredit(cust){
   try{ cs = ((typeof custGroupStore === 'function') ? custGroupStore(cust) : (custStore[custKey(cust)] || {})) || {}; }catch(e){ cs = {}; }
   const limit = Number(cs.creditLimit) || 0;
   let out = 0, openOrd = 0;
-  try{ out = (typeof custOutstanding === 'function') ? custOutstanding(cust) : 0; }catch(e){}
-  try{ openOrd = (typeof custOpenOrdersAmt === 'function') ? custOpenOrdersAmt(cust) : 0; }catch(e){}
+  /* CRIDX-1 - 그 거래처 오더만 넘긴다 (숫자는 같고 빠르다) */
+  const _rows = crRowsOf(cust);
+  try{ out = (typeof custOutstanding === 'function') ? custOutstanding(cust, _rows) : 0; }catch(e){}
+  try{ openOrd = (typeof custOpenOrdersAmt === 'function') ? custOpenOrdersAmt(cust, '', _rows) : 0; }catch(e){}
   const rating = crRatingOf(cs);
   const r = { limit: limit, out: Math.round(out * 100) / 100, openOrd: Math.round(openOrd * 100) / 100,
               rating: rating,
