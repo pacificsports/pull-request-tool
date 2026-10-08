@@ -314,7 +314,7 @@ body.po-dragging{user-select:none;}
   </span>
   <select id="lang-sel" onchange="setLang(this.value)" style="font-size:11px;padding:3px 6px;border-radius:5px;border:none;background:#1d3f66;color:#fff;"><option value="ko">한국어</option><option value="en">English</option><option value="es">Español</option></select>
   <button id="wide-btn" class="btn btn-sm" onclick="toggleWide()" title="화면 넓게 / 좁게 — 기본은 넓게 (이 브라우저에만 저장돼)" style="padding:2px 8px;font-size:10px;background:#1d3f66;color:#cfe0f2;border-color:#2b5384;">↔ Wide</button>
-  <span id="app-ver" style="font-size:10px;color:#9fb8d4;">v1231</span>
+  <span id="app-ver" style="font-size:10px;color:#9fb8d4;">v1232</span>
 </div>
 <script>
 // ↔ 넓게 보기 — 브라우저마다 따로 저장 (v793)
@@ -3722,7 +3722,7 @@ function revLabelClick(base, wh, n, mode){
   const boxes = _mg ? _mg.boxes
     : ((window._blMode==='full') ? calcFullBoxesFromLines(src, wh) : calcPartialBoxesFromLines(src, wh));
   const _lbl = _mg ? _mg.src : src;
-  openBoxLabelModal(boxes, { customer_po: (rec.meta&&rec.meta.po)||'', customer_name: (rec.meta&&rec.meta.cust)||'',
+  openBoxLabelModal(boxes, { customer_po: poPaperOf(rec), customer_name: (rec.meta&&rec.meta.cust)||'',
     boxGuess: blBoxGuess(_lbl),
     warn: (_mg ? blRevMergeNote(wh, n, _mg) : blRevNote(wh, n, src)) + blBoxGapNote(wh, boxes) });
   if(!mode){ try{ markDocPrinted(base, revRowKey(wh, n), 'label'); }catch(e){} }
@@ -5480,6 +5480,40 @@ function poLockBanner(){
     + `<button class="btn btn-sm" onclick="poLockCloseAll()">Lock all</button>`;
 }
 // ═══ 오더 라인 분리: 일부 아이템/수량을 별도 오더(-S1)로 빼서 따로 진행 ═══
+/* SPLITPO-1 - 쪼갠 오더는 base 와 PO 뒤에 -S1 이 붙는다. 그건 우리 안에서 두
+   오더를 구별하려고 붙인 꼬리표이고, 거래처 AP 가 아는 번호는 원래 PO 하나뿐이다.
+   그래서 밖으로 나가는 종이와 메일에서는 꼬리표를 떼고 원래 번호를 보여준다.
+   ⚠ meta.po 자체는 절대 건드리지 않는다. 재고 차감 꼬리표(out_po = 'PO ' + meta.po)가
+     그 글자를 그대로 쓰기 때문에, 두 오더가 같은 PO 가 되면 한쪽이 다른쪽 박스를
+     자기 것으로 보고 되돌려 버린다.
+   ⚠ 거래처가 진짜로 '-S1' 로 끝나는 PO 를 낼 수도 있다. 그래서 글자 모양만 보지 않고
+     _splitFrom (쪼개서 생긴 오더라는 표시)이 있을 때만 떼어낸다. */
+function poPaperOf(rec){
+  const m = (rec && rec.meta) || {};
+  const s = String(m.po == null ? '' : m.po);
+  return m._splitFrom ? s.replace(/-S\d{1,2}$/i, '') : s;
+}
+function poPaperMeta(rec){
+  const m = (rec && rec.meta) || {};
+  const c = poPaperOf(rec);
+  /* 안 바뀌면 **원래 객체 그대로** 돌려준다 - 보통 오더는 한 글자도 달라지지 않는다 */
+  return (c === String(m.po == null ? '' : m.po)) ? m : Object.assign({}, m, { po: c });
+}
+/* SPLITHALF-1 - ½ 단추. 모든 줄을 반(내림)으로 채우고 체크까지 켠다. */
+function splitHalfFill(){
+  const root = document.getElementById('modal-split-order'); if(!root) return;
+  let n = 0, pcs = 0;
+  root.querySelectorAll('.so-q').forEach(function(q){
+    const i = q.getAttribute('data-i');
+    const cb = root.querySelector('.so-cb[data-i="' + i + '"]');
+    const mx = parseInt(q.getAttribute('max')) || 0;
+    const half = Math.floor(mx / 2);
+    if(half > 0){ q.value = half; if(cb) cb.checked = true; n++; pcs += half; }
+    else { q.value = ''; if(cb) cb.checked = false; }
+  });
+  try{ showToast(n ? ('\u00bd Half set - ' + n + ' line(s), ' + pcs.toLocaleString() + ' pcs move to the new order')
+                   : '\u26a0 Every line is 1 pc - nothing to halve'); }catch(e){}
+}
 function splitOrderOpen(base){
   const rec = savedCache.find(s=>s.base===base); if(!rec) return;
   const ex = document.getElementById('modal-split-order'); if(ex) ex.remove();
@@ -5505,9 +5539,10 @@ function splitOrderOpen(base){
           <td><input class="fi num so-q" data-i="${x.i}" type="number" min="0" max="${Number(x.l.qty)||0}" placeholder="0" style="width:80px;font-weight:800;"></td>
         </tr>`).join('')}</tbody>
       </table>
-      <div class="muted" style="font-size:10.5px;margin-top:8px;">Split qty = qty moving to the new order (full qty moves the whole line; partial splits it) · new order PO# will look like "${esc((rec.meta&&rec.meta.po)||'')}-S1"</div>
+      <div class="muted" style="font-size:10.5px;margin-top:8px;">Split qty = qty moving to the new order (full qty moves the whole line; partial splits it) · the new order is tagged "${esc((rec.meta&&rec.meta.po)||'')}-S1" inside psflowx only — invoices, packing lists and box labels print the original PO "${esc((rec.meta&&rec.meta.po)||'')}"</div>
     </div>
-    <div style="padding:10px 16px;border-top:1px solid var(--border);display:flex;gap:8px;justify-content:flex-end;">
+    <div style="padding:10px 16px;border-top:1px solid var(--border);display:flex;gap:8px;justify-content:flex-end;align-items:center;flex-wrap:wrap;">
+      <button class="btn" style="margin-right:auto;background:#f5f3ff;color:#6d28d9;border-color:#c4b5fd;font-weight:800;" onclick="splitHalfFill()" title="Fill every line with half its quantity (rounded down)">½ Half</button>
       <button class="btn" onclick="document.getElementById('modal-split-order').remove()">Cancel</button>
       <button class="btn btn-primary" style="background:#7c3aed;border-color:#7c3aed;" onclick="splitOrderDo('${esc(base)}')">✂ Split into new order</button>
     </div></div>`;
@@ -8073,7 +8108,7 @@ function _confBoxCount(lines, wh){
      경고가 거래처로 나가지 않게 한다. */
 function buildOrderSummaryHtml(rec, opts){
   opts = opts || {};
-  const meta = rec.meta || {};
+  const meta = poPaperMeta(rec);   /* SPLITPO-1 */
   const isRep = (typeof recIsReplace==='function') ? recIsReplace(rec) : !!(rec.meta && rec.meta._replaceOf);
   /* 🚢 PD(도착 대기) 는 **거래처 서류에서만 SC 로 합쳐서** 보여주다 (2026-09-17)
      [stated] 하유: "우리가 오더를 커버할수있는데 그냥 타이밍 상때문에 저러추 만드는거니까.
@@ -11540,7 +11575,7 @@ async function sendPLEmailFor(rec, wh, toEmail, extra){
   }
   const d = (rec.pl && rec.pl[wh]) || {};
   const num = plNum(rec.base, wh);
-  const meta = rec.meta || {};
+  const meta = poPaperMeta(rec);   /* SPLITPO-1 */
   const blob = await makePdfBlob(buildStageDoc(rec, wh, 'packing', d), d.files||[]);
   const b64 = await blobToB64(blob);
   const tot = (d.lines||[]).reduce((a,l)=>a+(l.qty||0),0);
@@ -11643,7 +11678,7 @@ async function markInvPrinted(){
   renderSaved();
 }
 function buildBOLDoc(rec, wh, d){
-  const meta = rec.meta || {};
+  const meta = poPaperMeta(rec);   /* SPLITPO-1 */
   const num = plNum(rec.base, wh);
   const lines = plHealWh(rec, (d.lines||[]).filter(l=>(l.qty||0)>0));
   const tot = lines.reduce((a,l)=>a+(Number(l.qty)||0),0);
@@ -13129,7 +13164,7 @@ function buildInvoiceDoc(rec, wh, d, meta, lines, num, dateStr){
       종이 무더기에서 인보이스와 한눈에 갈린다. 색만 다르고 뼈대는 인보이스와 같다. */
 function buildCreditMemoDoc(rec, ret){
   const money = n => '$' + Number(n).toLocaleString(undefined, { minimumFractionDigits:2, maximumFractionDigits:2 });
-  const meta = rec.meta || {};
+  const meta = poPaperMeta(rec);   /* SPLITPO-1 */
   const rc   = ret.received || {};
   /* CMGUARD-1 - 번호를 **지어내지 않는다.** 없으면 없다고 찍는다. */
   const cm   = rc.cm || ret.cm || 'NOT ISSUED';
@@ -13345,7 +13380,7 @@ async function invCfgDo(){
   }
 }
 function buildStageDoc(rec, wh, kind, d){
-  const meta = rec.meta || {};
+  const meta = poPaperMeta(rec);   /* SPLITPO-1 */
   // 🚚 CA 통합 발송: CA 문서엔 SC+CA 라인 전부 (fallback 시). 명시적 d.lines가 있으면 그걸 우선(이미 병합돼 저장됨).
   const _consol = recShipFromCA(rec) && wh==='CA' && (rec.whs||[]).includes('CA');
   const _fallback = _consol ? (rec.lines||[]).filter(l=>l.wh==='SC'||l.wh==='CA') : (rec.lines||[]).filter(l=>l.wh===wh);
@@ -13510,7 +13545,7 @@ function openBoxLabelModalPL(mode){
   window._blMode = (mode==='full') ? 'full' : 'box';
   const rec = savedCache.find(s=>s.base===plBase);
   const _bl = (window._blMode==='full') ? calcFullBoxesFromLines((plDrafts[plWh]||{}).lines, plWh) : calcPartialBoxList();
-  openBoxLabelModal(_bl, { customer_po: (rec&&rec.meta&&rec.meta.po)||'', customer_name: (rec&&rec.meta&&rec.meta.cust)||'', boxGuess: blBoxGuess((plDrafts[plWh]||{}).lines||[]) });
+  openBoxLabelModal(_bl, { customer_po: poPaperOf(rec), customer_name: (rec&&rec.meta&&rec.meta.cust)||'', boxGuess: blBoxGuess((plDrafts[plWh]||{}).lines||[]) });
 }
 /* ═══════════ 🏷 라벨 순서는 오더 줄 순서를 따른다 (v1091) ═══════════
    [stated] 하윤: "order open edit해서 M을 S하고 L 사이로 drag해서 올리고 save했는데
@@ -13566,7 +13601,7 @@ function openBoxLabelForRecWh(base, wh, mode){
   const src = blOrderLike((Array.isArray(i.lines) && i.lines.length) ? i.lines : (rec.lines||[]).filter(l=>l.wh===wh && (l.qty||0)>0), rec, wh);
   const boxes = (window._blMode==='full') ? calcFullBoxesFromLines(src, wh) : calcPartialBoxesFromLines(src, wh);
   // full box\uAC00 \uC5C6\uC5B4\uB3C4 \uBAA8\uB4C8\uC740 \uB744\uC6B4\uB2E4 \u2014 Customer + PO# \uB77C\uBCA8\uC740 \uC5EC\uC804\uD788 \uD504\uB9B0\uD2B8 \uAC00\uB2A5 (v701)
-  openBoxLabelModal(boxes, { customer_po: (rec.meta&&rec.meta.po)||'', customer_name: (rec.meta&&rec.meta.cust)||'',
+  openBoxLabelModal(boxes, { customer_po: poPaperOf(rec), customer_name: (rec.meta&&rec.meta.cust)||'',
     boxGuess: blBoxGuess(src), warn: blBoxGapNote(wh, boxes) });
 }
 function openBoxLabelForRec(base, mode){
@@ -13580,7 +13615,7 @@ function openBoxLabelForRec(base, mode){
     boxes = boxes.concat((window._blMode==='full') ? calcFullBoxesFromLines(src, w) : calcPartialBoxesFromLines(src, w));
     guess += blBoxGuess(src);
   });
-  openBoxLabelModal(boxes, { customer_po: (rec.meta&&rec.meta.po)||'', customer_name: (rec.meta&&rec.meta.cust)||'', boxGuess: guess });
+  openBoxLabelModal(boxes, { customer_po: poPaperOf(rec), customer_name: (rec.meta&&rec.meta.cust)||'', boxGuess: guess });
 }
 // 🏷 Full Box Label (2x1 inch) — 목적: 거래처와 PO# 가 멀리서도 잘 보이게. 나머지는 하단에 작게 (v375)
 // dpi: 203(기본) 또는 300 — 라벨 모달에서 선택, 좌표/폰트 전체 스케일
@@ -16713,7 +16748,7 @@ async function sendInvoiceEmail(){
     await sbFetch('/rest/v1/pr_orders?base=eq.'+encodeURIComponent(plBase), {method:'PATCH', headers:{Prefer:'return=minimal'}, body:JSON.stringify({inv:rec.inv, updated_at:new Date().toISOString()})});
     const blob = await makePdfBlob(buildStageDoc(rec, plWh, 'invoice', invDocData()), []);
     const b64 = await blobToB64(blob);
-    const meta = rec.meta || {};
+    const meta = poPaperMeta(rec);   /* SPLITPO-1 */
     /* INVATT-1 - [stated] 하윤: 인보이스 메일에 Packing List, signed BOL, PO 도 같이 나가야 한다.
        없는 것은 조용히 건너뛰고, 무엇이 붙었는지 메일에 한 줄로 적는다.
        signed BOL 은 창고가 찍은 스캔이고 Packing List PDF 뒤에 합쳐진다. */
@@ -17018,7 +17053,7 @@ async function downloadInvExcel(){
   const rec = savedCache.find(s=>s.base===plBase); if(!rec){ showToast('⚠ Order not found'); return; }
   try{ if(typeof plFieldsToDraft==='function') plFieldsToDraft(); }catch(e){}
   const d = invDocData();
-  const meta = rec.meta || {};
+  const meta = poPaperMeta(rec);   /* SPLITPO-1 */
   const lines = (Array.isArray(d.lines) ? d.lines : (rec.lines||[]).filter(l=>l.wh===plWh)).filter(l=>(l.qty||0)>0);
   lines.forEach(l=>{ const m = STYLE_MASTER[String(l.style||'').trim()]; if(m && !l.descManual) l.desc = styleItem(l.style) || m[0]; });
   const num = plNum(rec.base, plWh);
@@ -46575,7 +46610,7 @@ function invPoStatusHtml(rec, nowKey){
    ⚠ 메일이 나간 뒤에는 무슨 일이 있어도 발송을 되돌리지 않는다. 표시 저장이 실패해도 그렇다. */
 async function invSendFor(base, wh, toList){
   const rec = savedCache.find(s=>s.base===base); if(!rec) throw new Error('order not found');
-  const meta = rec.meta || {};
+  const meta = poPaperMeta(rec);   /* SPLITPO-1 */
   rec.inv = rec.inv || {};
   const iv = rec.inv[wh] || {};
   const pld = (rec.pl && rec.pl[wh]) || {};
@@ -49230,7 +49265,7 @@ function factorCandidates(days, withSent){
   const cut = Date.now() - back*86400000;
   const out = [];
   (savedCache||[]).forEach(rec=>{
-    const meta = rec.meta || {};
+    const meta = poPaperMeta(rec);   /* SPLITPO-1 */
     if(meta._cancelled) return;
     const cs = factorCustCard(meta.cust);
     const fac = (typeof csFactored==='function') ? csFactored(cs) : true;
