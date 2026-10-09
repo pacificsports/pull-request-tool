@@ -314,7 +314,7 @@ body.po-dragging{user-select:none;}
   </span>
   <select id="lang-sel" onchange="setLang(this.value)" style="font-size:11px;padding:3px 6px;border-radius:5px;border:none;background:#1d3f66;color:#fff;"><option value="ko">한국어</option><option value="en">English</option><option value="es">Español</option></select>
   <button id="wide-btn" class="btn btn-sm" onclick="toggleWide()" title="화면 넓게 / 좁게 — 기본은 넓게 (이 브라우저에만 저장돼)" style="padding:2px 8px;font-size:10px;background:#1d3f66;color:#cfe0f2;border-color:#2b5384;">↔ Wide</button>
-  <span id="app-ver" style="font-size:10px;color:#9fb8d4;">v1249</span>
+  <span id="app-ver" style="font-size:10px;color:#9fb8d4;">v1250</span>
 </div>
 <script>
 // ↔ 넓게 보기 — 브라우저마다 따로 저장 (v793)
@@ -10537,9 +10537,19 @@ async function saveCustomer(k, data){
     return Array.isArray(back) && back.length > 0;
   }catch(e){ return false; }
 }
+/* ═══ ⭐⭐⭐ ONEJUDGE-1 (2026-10-09) — 이 함수는 **한 번만** 정의돼야 한다 ═══
+   🔴 예전에는 같은 이름이 **두 번** 선언돼 있었고(여기 + 아래쪽), 끌어올리기(hoisting) 때문에
+      **나중 것이 이겼다.** 나중 것에는 「인보이스에 줄이 없으면 패킹리스트 줄을 쓴다」 는
+      안전장치가 없어서, 부르는 쪽이 세 개의 인수를 넘겨도 조용히 버려졌다.
+   ⚠ 실측(2026-10-09): 줄이 빈 인보이스가 0건이라 **돈이 틀린 적은 없었다.** 지뢰였을 뿐이다.
+      locker 오더처럼 줄이 안 들어가는 경우가 생기면 그 인보이스가 운임만 찍힌다.
+   ⚠ rec·wh 를 안 넘기고 부르는 자리가 있다(invPayDiff) - 그래서 없어도 안 터지게 받는다. */
 function invTotalOf(iv, rec, wh){
-  const ls = (Array.isArray(iv.lines) && iv.lines.length) ? iv.lines : ((rec.pl && rec.pl[wh] && rec.pl[wh].lines) || []);
-  return ls.reduce((a,l)=>a+(Number(l.qty)||0)*(Number(l.price)||0),0) + (Number(iv.freight)||0);
+  if(!iv) return 0;
+  const ls = (Array.isArray(iv.lines) && iv.lines.length) ? iv.lines
+           : ((rec && rec.pl && rec.pl[wh] && rec.pl[wh].lines) || []);
+  const t = ls.reduce((a,l)=>a+(Number(l.qty)||0)*(Number(l.price)||0),0) + (Number(iv.freight)||0);
+  return Math.round(t * 100) / 100;
 }
 function invPaidSum(iv){
   /* PAYCHIP-2 - payments[] 줄도 환불될 수 있다. 환불분을 빼지 않으면 잔액이 틀린다. */
@@ -12314,11 +12324,7 @@ function invChargedNet(iv){
   return Math.round(all.reduce((a,p)=>a + refundTotals(p).remain, 0) * 100) / 100;
 }
 /* 지금 인보이스 금액 (라인 + freight) */
-function invTotalOf(iv){
-  if(!iv) return 0;
-  const t = (iv.lines||[]).reduce((a,l)=>a + (Number(l.qty)||0) * (Number(l.price)||0), 0) + (Number(iv.freight)||0);
-  return Math.round(t * 100) / 100;
-}
+/* ONEJUDGE-1 - 여기 있던 두 번째 invTotalOf 는 지웠다. 위쪽 하나만 쓴다. */
 /* 인보이스 금액과 받은 돈의 차이. + 면 덜 받았고, − 면 더 받았다. */
 function invPayDiff(iv){
   const total = invTotalOf(iv), got = invChargedNet(iv);
@@ -17257,11 +17263,13 @@ async function sendInvoiceEmail(){
     /* INVDUE-1 - [stated] 하윤: 메일에도 Invoice date 아래에 Due date.
        종이 인보이스에는 이미 있다. 두 곳이 어긋나지 않게 **같은 날짜와 같은 조건**으로 센다.
        조건이 인보이스에 없으면 거래처 카드의 조건을 쓴다 (없으면 만기일은 안 적는다 - 지어내지 않는다). */
+    /* ⭐⭐ ONEJUDGE-1 - 메일 본문도 **첨부 PDF 와 같은 함수**로 조건을 찾는다 (invTermsFor).
+       🔴 예전에는 여기서만 거래처 카드를 봤다. 종이는 카드 → 그 거래처의 지난 인보이스 순으로
+          찾는데 여기는 카드만 봐서, 실측 27건이 **PDF 엔 Net 30 이 찍히고 본문엔 아무 줄도 없었다.**
+          거래처가 같은 메일 안에서 서로 다른 말을 본 셈이다. */
     const _invDate = d.date ? new Date(d.date + 'T00:00:00') : new Date();
-    let _ti = termInfo(d);
-    if(!_ti){
-      try{ _ti = termInfo(custStore[custKey(meta.cust||'')] || {}); }catch(e){ _ti = null; }
-    }
+    let _ti = null;
+    try{ _ti = invTermsFor(d, meta); }catch(e){ _ti = null; }
     const _termStr = _ti ? _ti.label : '';
     let _dueStr = '';
     if(_ti){
@@ -17523,9 +17531,11 @@ async function downloadInvExcel(){
   const totQ = lines.reduce((a,l)=>a+(l.qty||0),0);
   const totAmt = lines.reduce((a,l)=>a+(l.qty||0)*(l.price||0),0);
   const freight = Number(d.freight)||0;
-  const ti = termInfo(d);
+  /* ONEJUDGE-1 - 엑셀도 종이와 같은 함수로. 예전에는 폴백이 아예 없어서 조건·만기일이 빈칸으로 나갔다. */
+  let ti = null;
+  try{ ti = invTermsFor(d, meta); }catch(e){ ti = null; }
   let dueStr = '';
-  if(ti){ const base0 = new Date((d.date||todayStr())+'T00:00:00'); const due = new Date(base0); due.setDate(due.getDate()+ti.days); dueStr = ti.days===0 ? 'Due on Receipt' : due.toLocaleDateString('en-US'); }
+  if(ti){ const base0 = new Date((d.date||todayStr())+'T00:00:00'); const due = new Date(base0); due.setDate(due.getDate()+(Number(ti.days)||0)); dueStr = (Number(ti.days)||0)===0 ? 'Due on Receipt' : due.toLocaleDateString('en-US'); }
   const trks = (d.trackings||(d.tracking?[d.tracking]:[])).filter(Boolean).join(', ');
   showToast('📥 Building Excel...');
   try{
@@ -17730,7 +17740,11 @@ function renderPL(){
         ${(()=>{
           const ivR = rec.inv && rec.inv[plWh];
           if(!ivR || !ivR.savedAt) return '';
-          const tot = invTotalOf(ivR, rec, plWh), paid = invPaidSum(ivR), memo = invMemoSum(ivR), bal = Math.max(0, tot - paid - memo);
+          /* ONEJUDGE-1 - 오더 화면의 잔액도 같은 함수로. 💰 Payment 단추가 바로 옆이라 어긋나면 안 된다. */
+          const tot = invTotalOf(ivR, rec, plWh), paid = invPaidSum(ivR);
+          let _ret = 0; try{ _ret = Number(invReturnCredit(rec, plWh)) || 0; }catch(e){}
+          const memo = invMemoSum(ivR) + _ret;
+          const bal = invBalance(rec, plWh);
           const money2 = n => '$' + Number(n).toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2});
           return `<div style="margin-top:8px;padding:8px 12px;background:#f8fafc;border:1px solid var(--border);border-radius:8px;display:flex;align-items:center;gap:8px;flex-wrap:wrap;font-size:12px;">
             <span style="font-weight:700;color:var(--text2);">Invoice ${money2(tot)}${paid>0?` · Paid <b style=\"color:#166534;\">${money2(paid)}</b>`:''}${memo>0?` · Memo <b style=\"color:#7c2d12;\">−${money2(memo)}</b>`:''} · Balance <b style="color:${bal>0?'#b91c1c':'#166534'};">${money2(bal)}</b>${bal<=0.005?' ✅':''}</span>
@@ -44028,6 +44042,27 @@ async function custInvPeek(base, wh){
     + '</div></div>';
   document.body.appendChild(div);
 }
+/* ⭐⭐ ONEJUDGE-1 - 화면에 보여줄 「받은 돈」 목록. 잔액을 세는 invPaidSum 과 **같은 규칙**이다.
+   🔴 예전에는 raw 값을 그대로 늘어놓아서, 환불된 결제가 받은 것처럼 목록에 남고
+      avg days to pay 까지 그걸 셌다 (실측 3건). 잔액은 맞는데 옆 칸은 틀린 상태였다.
+   · 통째로 환불된 줄은 뺀다  · 일부만 환불됐으면 남은 금액만 적는다  · 중복결제(dupPays)도 같이 센다 */
+function arPaysOf(iv){
+  const out = [];
+  const push = function(p, note){
+    if(!p) return;
+    const amt = Number(p.amt) || 0;
+    if(!amt) return;
+    const back = (p.refunds||[]).reduce(function(s,r){ return s + (Number(r.amt)||0); }, 0)
+               + (p.refunded ? amt : 0);
+    const left = Math.round((amt - back) * 100) / 100;
+    if(left <= 0.005) return;                       /* 전부 돌려준 것은 받은 돈이 아니다 */
+    out.push({ amt: left, at: p.at, note: note || p.note || '' });
+  };
+  try{ (iv.payments||[]).forEach(function(p){ push(p, p.note); }); }catch(e){}
+  try{ (iv.dupPays||[]).forEach(function(p){ push(p, p.note || 'Card'); }); }catch(e){}
+  try{ if(iv.paid) push(iv.paid, 'Card'); }catch(e){}
+  return out;
+}
 function custARRows(cust){
   const key = custGroupName(cust);
   const rows = [];
@@ -44035,7 +44070,15 @@ function custARRows(cust){
     if(!r.meta || custGroupName(r.meta.cust) !== key) return;
     Object.keys(r.inv||{}).forEach(w=>{
       const iv = r.inv[w]; if(!iv || !iv.savedAt) return;
-      const tot = invTotalOf(iv, r, w), paid = invPaidSum(iv), memo = invMemoSum(iv), bal = Math.max(0, tot - paid - memo);
+      /* ⭐⭐ ONEJUDGE-1 - 잔액을 여기서 다시 세지 않는다. 받은 반품(RA)까지 빼는 invBalance 하나만 쓴다.
+         🔴 실측(2026-10-09): 이 줄이 반품 크레딧을 안 빼서 4건이 더 크게 보였다 -
+            T-Shirt Tycoon 26-5480 은 실제 $0 인데 화면엔 $3,997 로 떠 있었다 (안 받아도 될 돈이다).
+         ⚠ 화면의 CREDIT MEMO 칸에도 반품분을 같이 넣는다 - 안 그러면 「금액 − 받은돈 − 메모」 가
+            Balance 와 안 맞아서 직원이 둘 중 뭘 믿어야 할지 모른다. */
+      const tot = invTotalOf(iv, r, w), paid = invPaidSum(iv);
+      let _ret = 0; try{ _ret = Number(invReturnCredit(r, w)) || 0; }catch(e){}
+      const memo = invMemoSum(iv) + _ret;
+      const bal = invBalance(r, w);
       /* ═══ ⭐⭐⭐ ARTERM-1 (2026-10-09) — 같은 판정을 두 군데 적으면 반드시 어긋난다 ═══
          [stated] 하윤: "invoice date 하고 due date이 같이 나오고 있어" / "모든 거래처가 저렇다는데"
          🔴 여기가 **조건 판정을 혼자 다시 쓰고 있었다.** 인보이스 줄에 조건이 안 적혀 있으면
@@ -44062,7 +44105,7 @@ function custARRows(cust){
       const dueS = due.toISOString().slice(0,10);
       const past = Math.floor((Date.now() - due.getTime())/864e5);
       rows.push({ invNo: iv.invNo||'', dt, dueS, past, terms: _terms, po: (r.meta.po||''), wh: w, base: r.base, tot, paid, memo, bal,
-        pays: (iv.payments||[]).concat(iv.paid ? [{amt:iv.paid.amt, at:iv.paid.at, note:'Card'}] : []) });
+        pays: arPaysOf(iv) });
     });
   });
   rows.sort((a,b)=> (b.dt||'').localeCompare(a.dt||''));
@@ -47454,9 +47497,10 @@ async function invSendFor(base, wh, toList){
   const MAXB64 = 24000000; let used = 0; const keep = [], keptN = [];
   atts.forEach((a,i)=>{ const n=String(a.content||'').length;
     if(i===0 || used+n<=MAXB64){ keep.push(a); keptN.push(kept[i]); used+=n; } });
+  /* ONEJUDGE-1 - 묶어 보내는 길도 같은 함수로 (위 sendInvoiceEmail 과 한 글자도 다르면 안 된다) */
   const _invDate = d.date ? new Date(d.date + 'T00:00:00') : new Date();
-  let _ti = termInfo(d);
-  if(!_ti){ try{ _ti = termInfo(custStore[custKey(meta.cust||'')] || {}); }catch(e){ _ti = null; } }
+  let _ti = null;
+  try{ _ti = invTermsFor(d, meta); }catch(e){ _ti = null; }
   let _dueStr = '';
   if(_ti){ const _dd = new Date(_invDate); _dd.setDate(_dd.getDate() + (Number(_ti.days)||0));
     _dueStr = (Number(_ti.days)||0) === 0 ? 'Due on receipt' : _dd.toLocaleDateString('en-US'); }
