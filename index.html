@@ -314,7 +314,7 @@ body.po-dragging{user-select:none;}
   </span>
   <select id="lang-sel" onchange="setLang(this.value)" style="font-size:11px;padding:3px 6px;border-radius:5px;border:none;background:#1d3f66;color:#fff;"><option value="ko">한국어</option><option value="en">English</option><option value="es">Español</option></select>
   <button id="wide-btn" class="btn btn-sm" onclick="toggleWide()" title="화면 넓게 / 좁게 — 기본은 넓게 (이 브라우저에만 저장돼)" style="padding:2px 8px;font-size:10px;background:#1d3f66;color:#cfe0f2;border-color:#2b5384;">↔ Wide</button>
-  <span id="app-ver" style="font-size:10px;color:#9fb8d4;">v1241</span>
+  <span id="app-ver" style="font-size:10px;color:#9fb8d4;">v1243</span>
 </div>
 <script>
 // ↔ 넓게 보기 — 브라우저마다 따로 저장 (v793)
@@ -10894,6 +10894,7 @@ function payReqOrder(base){
     <div style="padding:11px 18px;border-top:1px solid #e2e8f0;display:flex;gap:8px;">
       <button class="btn btn-sm" id="pr-copy" style="display:none;" onclick="payReqCopyLink()">\u{1F4CB} Copy link</button>
       ${webPaidShow(rec) ? `<button class="btn btn-sm" id="pr-webpaid" style="background:#ecfeff;color:#0e7490;border-color:#a5f3fc;font-weight:800;" onclick="payReqWebPaid('${esc(base)}')" title="This is a website order - the card was already charged when the order was placed. Record it as paid without sending a link.">\u{1F310} Paid on website</button>` : ''}
+      ${paySelfBtn(cust, `payReqOrderSend('${esc(base)}','self')`)}
       <button class="btn btn-sm" id="pr-cancel" style="margin-left:auto;" onclick="document.getElementById('modal-payreq').remove()">Cancel</button>
       <button class="btn btn-sm" id="pr-go" data-send="payReqOrderSend('${esc(base)}')" style="background:${payReqGoColor()};color:#fff;border-color:${payReqGoColor()};font-weight:800;" onclick="payReqOrderSend('${esc(base)}')">${payReqGoLabel()}</button>
     </div></div>`;
@@ -10901,8 +10902,10 @@ function payReqOrder(base){
   payReqGuardPaint();   /* PAYGUARD-1 - 열자마자 상태가 맞아야 한다 */
 }
 
-async function payReqOrderSend(base){
-  const btn = document.getElementById('pr-go');
+async function payReqOrderSend(base, mode){
+  /* PAYSELF-1 - 'self' 면 거래처에게 메일을 보내지 않고 우리가 그 자리에서 연다. */
+  const _self = (mode === 'self');
+  const btn = document.getElementById(_self ? 'pr-self' : 'pr-go');
   if(btn && btn.disabled) return;
   const rec = (savedCache||[]).find(s2 => s2.base === base); if(!rec) return;
   const items = [];
@@ -10925,7 +10928,7 @@ async function payReqOrderSend(base){
     showToast('\u26A0 Print the invoice first - ' + _bad.map(b=>b.wh).join(', ') + ' has no invoice number'); return; }
   if(!em || em.indexOf('@') < 0){ showToast('\u26A0 Enter the customer email'); return; }
   /* NOPOP-1 - 브라우저 팝업을 없앴다. 창에 이미 다 보인다. */
-  if(btn){ btn.disabled = true; btn.textContent = '\u23F3 Sending...'; }
+  if(btn){ btn.disabled = true; btn.textContent = _self ? '\u23F3 Opening...' : '\u23F3 Sending...'; }
   try{
     const row = { created_by: (SESS&&SESS.email)||'', cust: (rec.meta&&rec.meta.cust)||'', email: em,
       amount: total, note: note, items: items };
@@ -10946,26 +10949,37 @@ async function payReqOrderSend(base){
           payReqMoney(x.amount)
           + (x.invNo ? ' <span style="font-weight:normal;font-size:12px;color:#8b8880;">(Invoice ' + esc(x.invNo) + ')</span>' : ''))).join('')
         + psmRow('Total', '<span style="font-size:16px;">' + payReqMoney(total) + '</span>'))
+      /* CONSENT-2 - [stated] 하윤: "Total 아래 거래처가 우리가 카드 run을 대신 해주는것에
+         동의되어있다라는 문구가 나오게 하자" */
+      + mitMailLine(rec)
       + psmBtn(link, 'Pay by credit card')
       + (note ? psmP(esc(note)) : '')
       + psmP('Your card details are entered on a secure form hosted by Authorize.Net, our payment processor. Pacific Sports never sees or stores your card number.')
       + psmP('Questions? Just reply to this email.'));
     const subject = 'Payment link - PO ' + ((rec.meta&&rec.meta.po)||'') + ' - ' + payReqMoney(total) + ' (Pacific Sports)';
-    const send = await payReqMailOut(em, subject, html);
-    if(!send.ok){ const e2 = await send.json().catch(()=>({})); throw new Error(e2.error || ('email HTTP ' + send.status)); }
-    logHist(base, 'Payment link sent ' + payReqMoney(total) + ' ('
-      + items.map(x => x.wh + ' ' + payReqMoney(x.amount)).join(', ') + ') to ' + em);
+    /* PAYSELF-1 - 우리가 직접 낼 때는 거래처에게 링크 메일을 보내지 않는다.
+       거래처는 결제가 끝난 뒤 영수증 메일만 받는다 (워커가 보낸다). */
+    if(!_self){
+      const send = await payReqMailOut(em, subject, html);
+      if(!send.ok){ const e2 = await send.json().catch(()=>({})); throw new Error(e2.error || ('email HTTP ' + send.status)); }
+    }
+    logHist(base, (_self ? 'Payment page opened in the office ' : 'Payment link sent ')
+      + payReqMoney(total) + ' ('
+      + items.map(x => x.wh + ' ' + payReqMoney(x.amount)).join(', ') + ')'
+      + (_self ? '' : (' to ' + em)));
     /* PAYSENT-1 - 메일이 나간 뒤에만 찍는다. 찍기가 실패하면 링크는 이미 나갔다고 알린다 */
-    try{ await payLinkStamp(items, em); }
-    catch(e2){ showToast('\u26a0 The link DID go out, but I could not mark the row - it still shows Payment'); }
+    try{ await payLinkStamp(items, _self ? 'our office (we paid it here)' : em); }
+    catch(e2){ showToast('\u26a0 The link ' + (_self ? 'was created' : 'DID go out') + ', but I could not mark the row - it still shows Payment'); }
     /* PAYSENT-3 - 찍든 못 찍든 목록을 다시 그린다. 화면이 기록과 같아야 한다. */
     try{ invNpRefresh(); }catch(e3){}
     /* RESEND-1 - 창을 닫지 않는다. 단추가 Resend 로 바뀐다. */
     payReqShowSent({ to: em, link: link, subject: subject, html: html, base: base });
-    showToast('\u{1F4E7} Payment link sent to ' + em);
+    if(_self){ paySelfOpen(link); showToast('\u{1F4B3} Payment page opened - pay it there'); }
+    else showToast('\u{1F4E7} Payment link sent to ' + em);
   }catch(e){
     showToast('\u26A0 Not sent: ' + ((e && e.message) || e));
-    if(btn){ btn.disabled = false; btn.textContent = '\u{1F4E7} Send payment link'; }
+    if(btn){ btn.disabled = false;
+      btn.innerHTML = _self ? '\u{1F4B3} Pay this myself' : '\u{1F4E7} Send payment link'; }
   }
 }
 function payReqOpen(base, wh){
@@ -11021,6 +11035,7 @@ function payReqOpen(base, wh){
     <div style="padding:11px 18px;border-top:1px solid #e2e8f0;display:flex;gap:8px;">
       <button class="btn btn-sm" id="pr-copy" style="display:none;" onclick="payReqCopyLink()">\u{1F4CB} Copy link</button>
       ${webPaidShow(rec) ? `<button class="btn btn-sm" id="pr-webpaid" style="background:#ecfeff;color:#0e7490;border-color:#a5f3fc;font-weight:800;" onclick="payReqWebPaid('${esc(base)}')" title="This is a website order - the card was already charged when the order was placed. Record it as paid without sending a link.">\u{1F310} Paid on website</button>` : ''}
+      ${paySelfBtn((rec.meta&&rec.meta.cust)||'', `payReqSend('${esc(base)}','${esc(wh)}','self')`)}
       <button class="btn btn-sm" id="pr-cancel" style="margin-left:auto;" onclick="document.getElementById('modal-payreq').remove()">Cancel</button>
       <button class="btn btn-sm" id="pr-go" data-send="payReqSend('${esc(base)}','${esc(wh)}')" style="background:${payReqGoColor()};color:#fff;border-color:${payReqGoColor()};font-weight:800;" onclick="payReqSend('${esc(base)}','${esc(wh)}')">${payReqGoLabel()}</button>
     </div></div>`;
@@ -11029,8 +11044,10 @@ function payReqOpen(base, wh){
   setTimeout(()=>{ const i = document.getElementById('pr-em'); if(i && !i.value) i.focus(); }, 60);
 }
 
-async function payReqSend(base, wh){
-  const btn = document.getElementById('pr-go');
+async function payReqSend(base, wh, mode){
+  /* PAYSELF-1 - 오더 창과 같은 규칙이다. */
+  const _self = (mode === 'self');
+  const btn = document.getElementById(_self ? 'pr-self' : 'pr-go');
   if(btn && btn.disabled) return;
   const rec = (savedCache||[]).find(s2=>s2.base===base); if(!rec) return;
   const iv = (rec.inv||{})[wh] || {};
@@ -11064,25 +11081,33 @@ async function payReqSend(base, wh){
         + psmRow('Invoice #', esc(iv.invNo||''))
         + psmRow('PO #', esc((rec.meta&&rec.meta.po)||''))
         + psmRow('Amount due', '<span style="font-size:16px;">' + payReqMoney(amt) + '</span>'))
+      /* CONSENT-2 - 오더 쪽 메일과 같은 문구를 쓴다. 두 군데가 달라지면 안 된다. */
+      + mitMailLine(rec)
       + psmBtn(link, 'Pay by credit card')
       + (note ? psmP(esc(note)) : '')
       + psmP('Your card details are entered on a secure form hosted by Authorize.Net, our payment processor. Pacific Sports never sees or stores your card number.')
       + psmP('Questions about this invoice? Just reply to this email.'));
     const subject = 'Payment link - Invoice ' + (iv.invNo||'') + ' - PO ' + ((rec.meta&&rec.meta.po)||'') + ' (Pacific Sports)';
-    const send = await payReqMailOut(em, subject, html);
-    if(!send.ok){ const e2 = await send.json().catch(()=>({})); throw new Error(e2.error || ('email HTTP ' + send.status)); }
-    logHist(base, 'Payment link sent ' + payReqMoney(amt) + ' (' + wh + ') to ' + em);
+    /* PAYSELF-1 - 오더 창과 같은 규칙이다. */
+    if(!_self){
+      const send = await payReqMailOut(em, subject, html);
+      if(!send.ok){ const e2 = await send.json().catch(()=>({})); throw new Error(e2.error || ('email HTTP ' + send.status)); }
+    }
+    logHist(base, (_self ? 'Payment page opened in the office ' : 'Payment link sent ')
+      + payReqMoney(amt) + ' (' + wh + ')' + (_self ? '' : (' to ' + em)));
     /* PAYSENT-1 */
-    try{ await payLinkStamp(row.items, em); }
-    catch(e2){ showToast('\u26a0 The link DID go out, but I could not mark the row - it still shows Payment'); }
+    try{ await payLinkStamp(row.items, _self ? 'our office (we paid it here)' : em); }
+    catch(e2){ showToast('\u26a0 The link ' + (_self ? 'was created' : 'DID go out') + ', but I could not mark the row - it still shows Payment'); }
     /* PAYSENT-3 */
     try{ invNpRefresh(); }catch(e3){}
     /* RESEND-1 - 창을 닫지 않는다. 단추가 Resend 로 바뀐다. */
     payReqShowSent({ to: em, link: link, subject: subject, html: html, base: base });
-    showToast('\u{1F4E7} Payment link sent to ' + em);
+    if(_self){ paySelfOpen(link); showToast('\u{1F4B3} Payment page opened - pay it there'); }
+    else showToast('\u{1F4E7} Payment link sent to ' + em);
   }catch(e){
     showToast('\u26A0 Not sent: ' + ((e && e.message) || e));
-    if(btn){ btn.disabled = false; btn.textContent = '\u{1F4E7} Send payment link'; }
+    if(btn){ btn.disabled = false;
+      btn.innerHTML = _self ? '\u{1F4B3} Pay this myself' : '\u{1F4E7} Send payment link'; }
   }
 }
 function invBalance(rec, wh){
@@ -44084,7 +44109,10 @@ function cmTypeChips(name, cs, isCC){
     + ' ' + cmMoneyPathHtml(k, cs)
     /* SAVECARD-1 - 거래처가 결제 링크에서 카드를 저장해 두면 여기에 뜬다.
        카드번호는 Authorize.Net 이 갖고 있고 우리는 지갑 번호와 뒷 4자리만 안다. */
-    + savedCardPill(k, cs);
+    + savedCardPill(k, cs)
+    /* CONSENT-2 - 거래처가 「우리가 긁어도 된다」 에 체크한 것은 카드 저장과 따로 보여 준다.
+       카드가 안 저장돼도 동의는 남을 수 있기 때문이다. */
+    + mitPill(cs);
 }
 /* INHOUSE-1 - 🏦 Factored | 🏠 In-House 두 단추. 하나만 켜진다.
    누르면 바로 저장된다 (cmSet 이 서버 응답을 보고 Saved / NOT saved 를 띄운다). */
@@ -44127,6 +44155,82 @@ function cmMoneyPathHtml(k, cs){
        + (clash ? ' <span title="This customer is ticked as a website customer AND as factored. Website customers are not handed to the factor - pick one. Until you do, the invoice keeps printing the HANA block." style="font-size:9px;font-weight:900;color:#b91c1c;background:#fef2f2;border:1px solid #fca5a5;border-radius:6px;padding:2px 6px;vertical-align:middle;">\u26a0 web + factored</span>' : '')
        + (set ? '' : ' <span title="Nobody has chosen yet, so the app is reading it from the \u{1F310} Website tick. Press one of the two to lock it in." style="font-size:9px;font-weight:800;color:#b45309;background:#fef3c7;border:1px solid #fcd34d;border-radius:6px;padding:2px 6px;vertical-align:middle;">not set</span>');
 }
+/* ═══ PAYSELF-1 - 「우리가 대신 결제한다」 단추 ═══
+   [stated] 하윤: "그럼 payment link 가 거래처에 매번 발송될 필요없고 우리가 대신 저거 눌러서
+   진행하고 거래처는 결제 처리잘됐다는 이멜 만 받으면 되는거니까"
+   ⚠ 동의한 거래처에만 뜬다. 동의가 없으면 우리가 긁을 근거가 없다.
+   ⭐ 단추 글자도 여기서만 만든다 - 창이 둘이라 따로 적으면 어긋난다. */
+function paySelfBtn(cust, call){
+  if(!mitInfo(cust)) return '';
+  return '<button class="btn btn-sm" id="pr-self"'
+    + ' style="background:#eff6ff;color:#1d4ed8;border-color:#bfdbfe;font-weight:800;"'
+    + ' onclick="' + call + '"'
+    + ' title="This customer authorized us to charge their card. This opens the payment page here instead'
+    + ' of emailing them a link. They still get the paid receipt by email.">'
+    + '\u{1F4B3} Pay this myself</button>';
+}
+/* 결제 페이지를 새 탭으로 연다. 팝업이 막히면 조용히 넘어가지 않는다. */
+function paySelfOpen(link){
+  let w = null;
+  try{ w = window.open(link, '_blank'); }catch(e){ w = null; }
+  if(!w){
+    try{ showToast('\u26a0 Your browser blocked the new tab - use \u{1F4CB} Copy link below'); }catch(e){}
+    return false;
+  }
+  return true;
+}
+/* CONSENT-2 - 메일에 들어가는 한 줄. 동의가 없으면 빈 글자를 돌려준다.
+   ⚠ 두 메일이 같은 문구를 써야 하므로 여기 하나로 모았다. */
+function mitMailLine(rec){
+  try{
+    const m = mitInfo((rec && rec.meta && rec.meta.cust) || '');
+    if(!m) return '';
+    const d = mitDateLbl(m.at);
+    return psmP('\u2705 You have authorized Pacific Sports to charge your card on file for orders you place'
+      + ' with us' + (d ? (', since ' + esc(d)) : '') + '. We email you a receipt every time.'
+      + ' You can cancel this at any time by replying to this email.');
+  }catch(e){ return ''; }
+}
+/* ═══ CONSENT-2 - 「이 거래처가 우리가 카드를 대신 긁는 것에 동의했나」 ═══
+   거래처가 결제 링크에서 직접 체크한 것만 여기 들어온다. 워커가 적는다.
+   ⭐⭐⭐ 이 판정을 쓰는 곳이 넷이다 (거래처 알약 · 결제요청 창 · 메일 두 군데).
+      그래서 여기 하나로 모았다 - 네 군데가 각자 보면 어긋난다.
+   ⚠ 직원이 대신 체크하는 길은 **일부러 만들지 않았다.** 우리가 누른 동의는 증거가 아니다. */
+function mitInfo(cust){
+  try{
+    let cs = null;
+    if(typeof custKey === 'function' && typeof custStore !== 'undefined' && custStore)
+      cs = custStore[custKey(cust)];
+    return mitInfoOf(cs);
+  }catch(e){ return null; }
+}
+function mitInfoOf(cs){
+  try{
+    if(!cs || cs.mitAuth !== true) return null;
+    const at = String(cs.mitAuthAt || '').slice(0, 10);
+    return { at: at, by: String(cs.mitAuthBy || ''), via: String(cs.mitAuthVia || '') };
+  }catch(e){ return null; }
+}
+/* 날짜 글자 (M/D/YY). 화면 글자는 영어다. */
+function mitDateLbl(d){
+  const t = String(d == null ? '' : d).slice(0, 10);
+  if(!/^\d{4}-\d{2}-\d{2}$/.test(t)) return '';
+  try{ return new Date(t + 'T00:00:00').toLocaleDateString('en-US',
+    { month:'numeric', day:'numeric', year:'2-digit' }); }catch(e){ return t; }
+}
+/* 거래처 화면의 알약. 카드가 저장돼 있든 아니든 동의는 따로 보여 준다. */
+function mitPill(cs){
+  const m = mitInfoOf(cs); if(!m) return '';
+  const d = mitDateLbl(m.at);
+  return ' <span title="This customer ticked the box on our payment link allowing Pacific Sports to charge'
+    + ' this card for future orders'
+    + (m.by ? (', from ' + esc(m.by)) : '')
+    + (d ? (' on ' + esc(d)) : '')
+    + '. They can cancel by replying to any of our emails."'
+    + ' style="display:inline-flex;align-items:center;gap:5px;font-size:11px;font-weight:800;'
+    + 'border:1px solid #1d4ed8;background:#eff6ff;color:#1d4ed8;border-radius:7px;padding:3px 9px;vertical-align:middle;">'
+    + '\u2705 We may charge' + (d ? (' \u00b7 ' + esc(d)) : '') + '</span>';
+}
 /* SAVECARD-1 - 결제 요청 창에 「이 거래처는 카드가 저장돼 있다」를 알려 준다.
    직원이 링크를 보낼 때 거래처가 한 번에 낼 수 있다는 것을 알 수 있게. */
 function payReqCardStrip(cust){
@@ -44134,10 +44238,17 @@ function payReqCardStrip(cust){
   try{ if(typeof custKey === 'function' && custStore) cs = custStore[custKey(cust)]; }catch(e){}
   if(!cs || !cs.anetPayProfileId) return '';   /* 지갑만 있고 카드가 없으면 안 띄운다 */
   const last4 = String(cs.anetCardLast4||'').replace(/[^0-9]/g,'').slice(-4);
+  const m = mitInfo(cust);
+  const d = m ? mitDateLbl(m.at) : '';
   return '<div style="margin:0 0 12px;padding:8px 11px;background:#f0fdf4;border:1px solid #86efac;border-radius:8px;'
     + 'font-size:11.5px;font-weight:700;color:#166534;">🔒 Card on file'
     + (last4 ? (' ···' + esc(last4)) : '')
-    + ' <span style="font-weight:400;">- they will see it already filled in and can pay in one click.</span></div>';
+    + ' <span style="font-weight:400;">- they will see it already filled in and can pay in one click.</span>'
+    /* CONSENT-2 - 동의가 있으면 그 줄 안에서 바로 알려 준다. 직원이 따로 찾아보지 않게. */
+    + (m ? ('<div style="margin-top:5px;padding-top:5px;border-top:1px solid #bbf7d0;color:#1d4ed8;">'
+            + '\u2705 This customer authorized us to charge this card'
+            + (d ? (' (' + esc(d) + ')') : '') + '</div>') : '')
+    + '</div>';
 }
 /* SAVECARD-1 - 저장된 카드 알약. 두 번 눌러야 지워진다 (팝업 안 띄운다). */
 let _cardForgetArm = '';
