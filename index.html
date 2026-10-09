@@ -314,7 +314,7 @@ body.po-dragging{user-select:none;}
   </span>
   <select id="lang-sel" onchange="setLang(this.value)" style="font-size:11px;padding:3px 6px;border-radius:5px;border:none;background:#1d3f66;color:#fff;"><option value="ko">한국어</option><option value="en">English</option><option value="es">Español</option></select>
   <button id="wide-btn" class="btn btn-sm" onclick="toggleWide()" title="화면 넓게 / 좁게 — 기본은 넓게 (이 브라우저에만 저장돼)" style="padding:2px 8px;font-size:10px;background:#1d3f66;color:#cfe0f2;border-color:#2b5384;">↔ Wide</button>
-  <span id="app-ver" style="font-size:10px;color:#9fb8d4;">v1238</span>
+  <span id="app-ver" style="font-size:10px;color:#9fb8d4;">v1239</span>
 </div>
 <script>
 // ↔ 넓게 보기 — 브라우저마다 따로 저장 (v793)
@@ -48295,7 +48295,9 @@ function boInfo(s){
     const d = String((s.meta.date || '') + '').slice(0, 10);
     const t = d ? new Date(d + 'T00:00:00').getTime() : (s.savedAt ? new Date(s.savedAt).getTime() : 0);
     const days = t ? Math.max(0, Math.round((Date.now() - t) / 86400000)) : 0;
-    return { pcs: pcs, amt: Math.round(amt * 100) / 100, days: days, mixed: other };
+    /* BODATE-1 - PO 받은 날짜를 그대로 같이 돌려준다. d 가 비면 savedAt 에서 뽑는다. */
+    const dOut = d || (s.savedAt ? String(s.savedAt).slice(0, 10) : '');
+    return { pcs: pcs, amt: Math.round(amt * 100) / 100, days: days, mixed: other, date: dOut };
   }catch(e){ return null; }
 }
 function boQueue(){
@@ -48303,7 +48305,7 @@ function boQueue(){
   (savedCache || []).forEach(function(s){
     const b = boInfo(s); if(!b) return;
     out.push({ base: s.base, cust: (s.meta && s.meta.cust) || '', po: (s.meta && s.meta.po) || '',
-               pcs: b.pcs, amt: b.amt, days: b.days, mixed: b.mixed });
+               pcs: b.pcs, amt: b.amt, days: b.days, mixed: b.mixed, date: b.date });
   });
   out.sort(function(a, b){ return b.days - a.days; });
   return out;
@@ -48323,17 +48325,75 @@ function boPill(s){
     + (b.mixed ? ' \u2014 the rest of this order can ship' : '') + '. Ordered ' + b.days + ' day(s) ago.">'
     + '\u26d4 BO ' + b.pcs.toLocaleString() + ' pcs \u00b7 ' + b.days + 'd</span>';
 }
+/* BODATE-1 - PO 받은 날짜 글자 (M/D/YY). 모든 화면 글자는 영어로 적는다. */
+function boDateLbl(d){
+  const t = String(d == null ? '' : d).slice(0, 10);
+  if(!/^\d{4}-\d{2}-\d{2}$/.test(t)) return '\u2014';
+  try{
+    return new Date(t + 'T00:00:00').toLocaleDateString('en-US',
+      { month:'numeric', day:'numeric', year:'2-digit' });
+  }catch(e){ return t; }
+}
+/* 여러 목록에서 같은 생각으로 쓰기 위해 나눠 둔다 - Saved 목록의 그 카드를 한 번 비춤다. */
+function savedCardEl(base){
+  let hit = null;
+  try{
+    document.querySelectorAll('.saved-item').forEach(function(el){
+      if(!hit && el.getAttribute('data-ref') === base) hit = el;
+    });
+  }catch(e){}
+  return hit;
+}
+function savedGoCard(base){
+  if(!base) return;
+  const rec = (savedCache || []).find(function(s){ return s.base === base; });
+  if(!rec){ try{ showToast('\u26a0 That order is no longer in the list'); }catch(e){} return; }
+  try{ if(typeof showView === 'function') showView('orders'); }catch(e){}
+  /* 그 오더가 들어 있는 날짜 묶음을 펴추다 - 접혀 있으면 카드가 아예 없다 */
+  try{
+    const dKey = String((rec.meta && rec.meta.date) || rec.savedAt || '').slice(0, 10);
+    if(dKey) dateCollapse[dKey] = false;
+  }catch(e){}
+  try{ renderSaved(); }catch(e){}
+  let el = savedCardEl(base);
+  if(!el){
+    /* 필터나 검색이 그 카드를 가리고 있다 - 걷어내고 다시 그린다 */
+    try{
+      boOnly = false; readyOnly = false; ccOnly = false; webOnly = false; doneFilter = '';
+      savedQuery = '';
+      const sb = document.getElementById('saved-search'); if(sb) sb.value = '';
+      renderSaved();
+    }catch(e){}
+    el = savedCardEl(base);
+  }
+  if(!el){ try{ showToast('\u26a0 Could not reach that card - search the Ref # instead'); }catch(e){} return; }
+  try{ el.scrollIntoView({ behavior:'smooth', block:'center' }); }
+  catch(e){ try{ el.scrollIntoView(); }catch(e2){} }
+  try{
+    const oOut = el.style.outline, oSh = el.style.boxShadow;
+    el.style.outline = '3px solid #b91c1c';
+    el.style.boxShadow = '0 0 0 6px rgba(185,28,28,.18)';
+    setTimeout(function(){ el.style.outline = oOut; el.style.boxShadow = oSh; }, 2600);
+  }catch(e){}
+}
+/* [stated] 하윤: "저기서 누르면 그냥 saved pull request 에 카드족으로 이동하는걸로하자"
+   오더를 폼에 불러오지 않는다 - 보고 나서 진행할지 정하는 것은 사람이 한다. */
+function boGoCard(base){
+  try{ const m = document.getElementById('modal-boq'); if(m) m.remove(); }catch(e){}
+  savedGoCard(base);
+}
 /* ① 타일을 누르면 뜨는 목록 */
 function kpiBackOrder(){
   const list = boQueue();
   const rows = list.map(function(r){
     const c = boTone(r.days);
     return '<div style="display:flex;align-items:center;gap:10px;padding:10px 14px;border-bottom:1px solid #f1f5f9;cursor:pointer;"'
-      + ' onclick="document.getElementById(\'modal-boq\').remove();loadSaved(\'' + esc(r.base) + '\')"'
+      + ' onclick="boGoCard(\'' + esc(r.base) + '\')"'
       + ' onmouseover="this.style.background=\'#fef2f2\'" onmouseout="this.style.background=\'\'">'
       + '<div style="flex:1;min-width:0;"><div style="font-size:13px;font-weight:800;color:#0f2a4a;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">'
       +   esc(r.cust || '(no name)') + ' <span style="color:#64748b;font-weight:600;">\u00b7 PO ' + esc(r.po || '\u2014') + '</span></div>'
       + '<div style="font-size:11px;color:#94a3b8;margin-top:3px;">'
+      +   '<span style="color:#475569;font-weight:700;">\ud83d\udcc5 PO received ' + esc(boDateLbl(r.date)) + '</span> \u00b7 '
       +   (r.mixed ? 'the rest of this order can ship' : 'nothing on this order can ship yet') + '</div></div>'
       + '<span style="font-size:12px;font-weight:900;color:#b91c1c;white-space:nowrap;">' + r.pcs.toLocaleString() + ' pcs</span>'
       + '<span style="font-size:11.5px;font-family:Consolas,monospace;font-weight:800;color:#64748b;white-space:nowrap;">' + invNpMoney(r.amt) + '</span>'
@@ -49291,7 +49351,7 @@ function renderSaved(){
     const _strips = (_isHold?1:0) + (_isUrg?1:0) + (_isMod?1:0) + (_isFuture?1:0);
     const _done = recIsDone(s);
     const _blindOff = _done && !!window._blindOff[s.base];
-    const _html = `<div class="saved-item ${_done?'saved-done':''} ${_blindOff?'blind-off':''} ${recHasPendingReturn(s)?'saved-return':''}" ${_done?`onclick="savedBlindToggle(event,'${esc(s.base)}')"`:''} ${_isMod?`title="✏️ Modified ${esc(_md.by||'')} · ${new Date(_md.at).toLocaleString()}"`:''} style="display:block;${stuck?'border:2px solid #dc2626;':''}${_strips?`position:relative;padding-left:${10+16*_strips}px;overflow:hidden;`:''}">
+    const _html = `<div class="saved-item ${_done?'saved-done':''} ${_blindOff?'blind-off':''} ${recHasPendingReturn(s)?'saved-return':''}" data-ref="${esc(s.base)}" ${_done?`onclick="savedBlindToggle(event,'${esc(s.base)}')"`:''} ${_isMod?`title="✏️ Modified ${esc(_md.by||'')} · ${new Date(_md.at).toLocaleString()}"`:''} style="display:block;${stuck?'border:2px solid #dc2626;':''}${_strips?`position:relative;padding-left:${10+16*_strips}px;overflow:hidden;`:''}">
       ${_isHold?`<div style="position:absolute;left:0;top:0;bottom:0;width:16px;background:#450a0a;display:flex;align-items:center;justify-content:center;"><span style="writing-mode:vertical-rl;transform:rotate(180deg);color:#fca5a5;font-size:8px;font-weight:900;letter-spacing:2px;white-space:nowrap;">🔒 CREDIT HOLD</span></div>`:''}
       ${_isUrg?`<div class="rushblink" style="position:absolute;left:${_isHold?16:0}px;top:0;bottom:0;width:16px;display:flex;align-items:center;justify-content:center;"><span style="writing-mode:vertical-rl;transform:rotate(180deg);color:inherit;font-size:8.5px;font-weight:900;letter-spacing:2.5px;white-space:nowrap;">🔥 RUSH</span></div>`:''}
       ${_isMod?`<div style="position:absolute;left:${(_isHold?16:0)+(_isUrg?16:0)}px;top:0;bottom:0;width:16px;background:#f59e0b;display:flex;align-items:center;justify-content:center;"><span style="writing-mode:vertical-rl;transform:rotate(180deg);color:#fff;font-size:8.5px;font-weight:900;letter-spacing:2.5px;white-space:nowrap;">MODIFIED</span></div>`:''}
