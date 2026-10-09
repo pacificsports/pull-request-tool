@@ -314,7 +314,7 @@ body.po-dragging{user-select:none;}
   </span>
   <select id="lang-sel" onchange="setLang(this.value)" style="font-size:11px;padding:3px 6px;border-radius:5px;border:none;background:#1d3f66;color:#fff;"><option value="ko">한국어</option><option value="en">English</option><option value="es">Español</option></select>
   <button id="wide-btn" class="btn btn-sm" onclick="toggleWide()" title="화면 넓게 / 좁게 — 기본은 넓게 (이 브라우저에만 저장돼)" style="padding:2px 8px;font-size:10px;background:#1d3f66;color:#cfe0f2;border-color:#2b5384;">↔ Wide</button>
-  <span id="app-ver" style="font-size:10px;color:#9fb8d4;">v1233</span>
+  <span id="app-ver" style="font-size:10px;color:#9fb8d4;">v1236</span>
 </div>
 <script>
 // ↔ 넓게 보기 — 브라우저마다 따로 저장 (v793)
@@ -420,7 +420,10 @@ try{ applyWide(localStorage.getItem('psx_wide') !== '0'); }catch(e){ applyWide(t
         <label style="display:flex;align-items:center;gap:4px;font-size:11px;font-weight:800;color:#065f46;cursor:pointer;white-space:nowrap;"><input type="checkbox" id="m-cc" style="width:13px;height:13px;accent-color:#065f46;cursor:pointer;"> 💳 Credit Card</label>
         <label style="display:flex;align-items:center;gap:4px;font-size:11px;font-weight:800;color:#7c3aed;cursor:pointer;white-space:nowrap;"><input type="checkbox" id="m-locker" style="width:13px;height:13px;accent-color:#7c3aed;cursor:pointer;"> 🔒 Locker Stock</label>
         <label style="display:flex;align-items:center;gap:4px;font-size:11px;font-weight:700;color:#0e7490;cursor:pointer;white-space:nowrap;"><input type="checkbox" id="m-webcust" style="width:13px;height:13px;accent-color:#0e7490;cursor:pointer;"> 🌐 Website Customer</label>
+        <label style="display:flex;align-items:center;gap:4px;font-size:11px;font-weight:800;color:#7c3aed;cursor:pointer;white-space:nowrap;" title="The customer wants this one PO shipped in two parts. Enter the whole order, press Save, and the Split window opens with half already filled in."><input type="checkbox" id="m-split" onchange="splitEntryToggle()" style="width:13px;height:13px;accent-color:#7c3aed;cursor:pointer;"> ✂ Split shipment</label>
+        <span id="m-split-note" style="display:none;font-size:10.5px;font-weight:700;color:#7c3aed;">Enter the whole order below — Save opens the Split window with half filled in</span>
       </div>
+      <div class="ff" id="m-fs2-cell" style="display:none;"><label style="color:#7c3aed;white-space:nowrap;" title="Ship date for the SECOND shipment — it goes on the new order the split creates">✂ 2nd Shipment Ship Date</label><input class="fi" id="m-futureship2" type="date"></div>
       <div class="ff"><label>Via</label>
         <div style="display:flex;gap:12px;align-items:center;min-height:34px;">
           <label style="display:flex;align-items:center;gap:4px;font-size:12px;font-weight:700;cursor:pointer;"><input type="checkbox" class="via-cb" value="UPS" onchange="viaCbChange(this)" style="width:14px;height:14px;accent-color:var(--primary);cursor:pointer;">UPS</label>
@@ -4596,6 +4599,10 @@ function webNoteShow(txt){
 }
 function setMeta(m){
   $('m-cust').value=m.cust||''; $('m-po').value=m.po||''; $('m-date').value=m.date||todayStr(); $('m-podate').value=m.podate||''; $('m-via').value=normVia(m.via)||''; syncViaBoxes(); if($('m-webcust')) $('m-webcust').checked = !!m.webCust; if($('m-urgent')) $('m-urgent').checked = !!m.urgent; if($('m-locker')) $('m-locker').checked = !!m.lockerStock; if($('m-cc')) $('m-cc').checked = !!m.cc; if($('m-futureship')) $('m-futureship').value = m.futureShip || ''; if($('m-confnote')) $('m-confnote').value = m.confNote || '';
+  /* SPLITENTRY-1 - ✂ Split 은 **한 번 쓰는 의사표시**다. meta 에 안 담고, 폼을 채울 때마다 끈다 */
+  if($('m-split')) $('m-split').checked = false;
+  if($('m-futureship2')) $('m-futureship2').value = '';
+  try{ splitEntryToggle(); }catch(e){}
   /* 🌐 저장된 웹 오더를 다시 열 때도 손님 메모를 띄운다.
      ⚠ 웹 오더가 아니면 빈 값이 들어와 줄이 숨는다 — 앞 오더의 메모가 남으면 안 된다 (v1115) */
   try{ webNoteShow(m && m.webNote); }catch(e){}
@@ -5263,8 +5270,23 @@ async function _saveCurrentInner(){
   if(existing && orderChanges.length) notifyModified(rec, orderChanges);
   logHist(base, existing ? ((window.__freshFix ? 'Order corrected before anything was pulled — no revision ('
     : (window.__pboxOnlyFix ? 'P.Box# only — no revision (' : 'Order modified (')) + orderChanges.length + ' changes)') : 'Order created');
+  /* SPLITENTRY-1 - ⚠ clearOrderForm() **앞**에서 읽는다. 뒤면 체크가 이미 풀려 있다
+     (CUSTSAVE-v1 과 같은 함정). */
+  const _splitWant = (function(){
+    try{
+      const c = document.getElementById('m-split');
+      if(!c || !c.checked) return null;
+      return { d1: String(((document.getElementById('m-futureship') || {}).value) || '').trim(),
+               d2: String(((document.getElementById('m-futureship2') || {}).value) || '').trim() };
+    }catch(e){ return null; }
+  })();
   clearOrderForm();           // 폼 즉시 비우기 — 느린 재고 동기화를 기다리지 않고 바로 다음 오더 입력 가능 (v494)
   invSyncOnSave(rec);         // 저장 = 재고 자동 반영 (풀박스 차감/정산 + PC Room 자투리) — 백그라운드 실행 (rec 스냅샷 기준이라 폼 비워도 안전)
+  /* SPLITENTRY-1 - ✂ Split shipment 를 체크했으면 Split 창을 바로 띄운다.
+     ⚠ 재고 반영(invSyncOnSave)은 이미 줄을 세웠다(_invSyncChain). 쪼개면 원본이 남는
+       박스를 되돌리고 새 오더가 다시 집는다 - 순서가 보장되므로 숫자는 맞는다.
+     ⚠ 창을 닫아도 오더는 이미 저장돼 있다. 목록에서 ✂ Split 로 다시 할 수 있다. */
+  if(_splitWant){ try{ splitEntryOpen(rec.base, _splitWant); }catch(e){ console.warn('splitEntryOpen', e); } }
 }
 function clearOrderForm(){
   setMeta({});
@@ -5514,6 +5536,36 @@ function splitHalfFill(){
   try{ showToast(n ? ('\u00bd Half set - ' + n + ' line(s), ' + pcs.toLocaleString() + ' pcs move to the new order')
                    : '\u26a0 Every line is 1 pc - nothing to halve'); }catch(e){}
 }
+/* ═══ SPLITENTRY-1 (2026-10-08) — 오더 입력에서 Split 을 시작한다 ═══
+   [stated] 하윤: "저기 website customer 옆에 split 만들고 거기 체크하면 line item이
+                   두칸이 되서 거기에 shipping 날짜를 적고 진행할수있으면 더 좋은거아닌가?"
+   ⚠ 줄 표(`renderTable`/`poLines`)에 수량 칸을 하나 더 붙이는 길은 **안 골랐다** - 하윤이
+     「저장하면 Split 창이 자동으로」 를 선택했다. 그 표는 매일 모든 오더가 지나가는 자리이고,
+     붙여넣기·창고 ✂ 나누기·⇄ 대체·BO·박스 미리보기·줄 잠금·REV 수정이 전부 거기에 엉켜 있다.
+   ⭐ 대신 Split 창을 **입력 흐름 안으로** 끌어왔다. 쪼개는 장치는 하나도 새로 만들지 않았다.
+   ⭐⭐⭐ 선적일을 박는 곳은 `splitOrderDo` **한 군데뿐**이다 - 입력에서 왔든 목록에서 왔든 같다. */
+let _splitDates = null;   /* {base, d1, d2} — 입력 화면에서 들고 온 날짜. 창을 열 때만 쓴다 */
+function splitEntryToggle(){
+  const on = !!((document.getElementById('m-split') || {}).checked);
+  const c = document.getElementById('m-fs2-cell'); if(c) c.style.display = on ? '' : 'none';
+  const n = document.getElementById('m-split-note'); if(n) n.style.display = on ? '' : 'none';
+  if(!on){ const d = document.getElementById('m-futureship2'); if(d) d.value = ''; }
+}
+/* 저장이 끝난 뒤 - Split 창을 ½ 로 채워서 띄운다 */
+function splitEntryOpen(base, want){
+  _splitDates = { base: base, d1: (want && want.d1) || '', d2: (want && want.d2) || '' };
+  try{ splitOrderOpen(base); }catch(e){ _splitDates = null; return; }
+  if(!document.getElementById('modal-split-order')){ _splitDates = null; return; }
+  try{ splitHalfFill(); }catch(e){}
+  try{ showToast('\u2702 Half is filled in \u2014 check the numbers and the two ship dates, then press Split'); }catch(e){}
+}
+/* 창을 열 때 날짜 칸에 무엇을 넣을까. 입력에서 온 것이 있으면 그것, 없으면 오더에 적힌 것. */
+function splitDateFor(base, which, rec){
+  const d = _splitDates;
+  if(d && d.base === base) return which === 1 ? (d.d1 || '') : (d.d2 || '');
+  if(which === 1) return String((rec && rec.meta && rec.meta.futureShip) || '').slice(0, 10);
+  return '';
+}
 function splitOrderOpen(base){
   const rec = savedCache.find(s=>s.base===base); if(!rec) return;
   const ex = document.getElementById('modal-split-order'); if(ex) ex.remove();
@@ -5540,6 +5592,11 @@ function splitOrderOpen(base){
         </tr>`).join('')}</tbody>
       </table>
       <div class="muted" style="font-size:10.5px;margin-top:8px;">Split qty = qty moving to the new order (full qty moves the whole line; partial splits it) · the new order is tagged "${esc((rec.meta&&rec.meta.po)||'')}-S1" inside psflowx only — invoices, packing lists and box labels print the original PO "${esc((rec.meta&&rec.meta.po)||'')}"</div>
+      <div style="display:flex;gap:12px;flex-wrap:wrap;align-items:flex-end;margin-top:10px;padding-top:9px;border-top:1px dashed var(--border);">
+        <div class="ff" style="min-width:148px;"><label style="color:#b45309;white-space:nowrap;">🚀 This order ships</label><input class="fi" id="sp-d1" type="date" value="${esc(splitDateFor(base, 1, rec))}"></div>
+        <div class="ff" style="min-width:148px;"><label style="color:#7c3aed;white-space:nowrap;">🚀 New order ships</label><input class="fi" id="sp-d2" type="date" value="${esc(splitDateFor(base, 2, rec))}"></div>
+        <div class="muted" style="font-size:10.5px;flex:1;min-width:190px;line-height:1.45;">Whatever is in these boxes becomes each order's 🚀 SHIP date. Leave one blank for no requested date.</div>
+      </div>
     </div>
     <div style="padding:10px 16px;border-top:1px solid var(--border);display:flex;gap:8px;justify-content:flex-end;align-items:center;flex-wrap:wrap;">
       <button class="btn" style="margin-right:auto;background:#f5f3ff;color:#6d28d9;border-color:#c4b5fd;font-weight:800;" onclick="splitHalfFill()" title="Fill every line with half its quantity (rounded down)">½ Half</button>
@@ -5571,14 +5628,18 @@ async function splitOrderDo(base){
     src.qty = (Number(src.qty)||0) - q;
   }
   if(!lines2.length){ alert('⚠ No quantity to split.'); return; }
+  /* ⭐⭐⭐ SPLITENTRY-1 - 선적일을 박는 곳은 여기 하나뿐이다 (입력에서 왔든 목록에서 왔든) */
+  const _sd1 = String(((document.getElementById('sp-d1') || {}).value) || '').trim();
+  const _sd2 = String(((document.getElementById('sp-d2') || {}).value) || '').trim();
   const remain = newLines.filter(l=>(Number(l.qty)||0)>0);
   if(!remain.length && !confirm('Splitting all lines leaves the original order empty. Continue?')) return;
-  const meta2 = {...rec.meta, po: String((rec.meta&&rec.meta.po)||'') + '-S' + n, _splitFrom: base};
+  const meta2 = {...rec.meta, po: String((rec.meta&&rec.meta.po)||'') + '-S' + n, _splitFrom: base, futureShip: _sd2};
   delete meta2._pcAuto; delete meta2._printed; delete meta2._hold; delete meta2._holdOk; delete meta2._modified;
   const rec2 = { base: base2, meta: meta2, lines: lines2, whs: [...new Set(lines2.map(l=>l.wh||'SC'))],
     savedAt: new Date().toISOString(), pl:{}, inv:{}, history:[{t:new Date().toISOString(), by, e:'Split from '+base}] };
   const orig = { ...rec, lines: remain, whs: [...new Set(remain.map(l=>l.wh||'SC'))],
-    meta: {...rec.meta, _modified:{at:new Date().toISOString(), by}} };
+    meta: {...rec.meta, futureShip: _sd1, _modified:{at:new Date().toISOString(), by}} };
+  _splitDates = null;   /* SPLITENTRY-1 - 한 번 쓰고 버린다 */
   if(!await upsertRec(rec2)){ alert('⚠ Failed to save split order'); return; }
   if(!await upsertRec(orig)){ alert('⚠ Failed to save original order'); return; }
   const ci = savedCache.findIndex(s=>s.base===base); if(ci>=0) savedCache[ci] = orig;
@@ -10875,6 +10936,8 @@ async function payReqOrderSend(base){
     /* PAYSENT-1 - 메일이 나간 뒤에만 찍는다. 찍기가 실패하면 링크는 이미 나갔다고 알린다 */
     try{ await payLinkStamp(items, em); }
     catch(e2){ showToast('\u26a0 The link DID go out, but I could not mark the row - it still shows Payment'); }
+    /* PAYSENT-3 - 찍든 못 찍든 목록을 다시 그린다. 화면이 기록과 같아야 한다. */
+    try{ invNpRefresh(); }catch(e3){}
     /* RESEND-1 - 창을 닫지 않는다. 단추가 Resend 로 바뀐다. */
     payReqShowSent({ to: em, link: link, subject: subject, html: html, base: base });
     showToast('\u{1F4E7} Payment link sent to ' + em);
@@ -10989,6 +11052,8 @@ async function payReqSend(base, wh){
     /* PAYSENT-1 */
     try{ await payLinkStamp(row.items, em); }
     catch(e2){ showToast('\u26a0 The link DID go out, but I could not mark the row - it still shows Payment'); }
+    /* PAYSENT-3 */
+    try{ invNpRefresh(); }catch(e3){}
     /* RESEND-1 - 창을 닫지 않는다. 단추가 Resend 로 바뀐다. */
     payReqShowSent({ to: em, link: link, subject: subject, html: html, base: base });
     showToast('\u{1F4E7} Payment link sent to ' + em);
@@ -47028,6 +47093,29 @@ function invNpCount(){
     + (heldN ? '<span style="color:#94a3b8;"> · </span><span style="color:#b91c1c;font-weight:800;">🔒 ' + heldN + ' on credit hold, ' + invNpMoney(heldAmt) + '</span>' : '');
 }
 function invNpToggleAll(on){ document.querySelectorAll('.invnp-cb').forEach(c=>{ c.checked = !!on; }); invNpCount(); }
+/* PAYSENT-3 (2026-10-09) — 메일이 나간 뒤 목록을 다시 그린다.
+   [stated] 하윤: "payment 버튼 누르고 들어가서 send 버튼 눌러서 이멜 나가면 저게 자동으로
+                   resend로 바껴야하는데 안바뀌고 내가 refresh를 하던 한번 나갔다 들어와야 바뀌네"
+   뿌리: `payLinkStamp` 가 DB 와 기억 속 기록은 고쳤는데 **화면을 다시 안 그렸다**.
+   그래서 단추가 💳 Payment 인 채로 남고, 사람이 또 눌러서 같은 링크를 두 번 보낼 수 있다.
+   ⚠ 줄을 다시 그리면 「인쇄 선택」 체크가 전부 다시 켜진다 - 사람이 꺼 둔 것은 되돌려 놓는다.
+   ⭐ 단추 모양을 여기서 따로 만들지 않는다. `invNpRender()` 한 길로만 그린다. */
+function invNpRefresh(){
+  const body = document.getElementById('invnp-body'); if(!body) return;
+  const off = {};
+  try{
+    body.querySelectorAll('.invnp-cb').forEach(function(c){
+      if(!c.checked) off[(c.dataset.base || '') + '|' + (c.dataset.wh || '')] = 1;
+    });
+  }catch(e){}
+  try{ invNpRender(); }catch(e){ return; }
+  try{
+    body.querySelectorAll('.invnp-cb').forEach(function(c){
+      if(off[(c.dataset.base || '') + '|' + (c.dataset.wh || '')]) c.checked = false;
+    });
+  }catch(e){}
+  try{ invNpCount(); }catch(e){}
+}
 function invNpRender(){
   const body = document.getElementById('invnp-body'); if(!body) return;
   if(window._invNpTab === 'hist'){ body.innerHTML = invHistHtml(); return; }
@@ -48050,6 +48138,80 @@ function laneReadyLegs(){
 }
 // 레인 타일 클릭 → 준비된 PO 목록 모듈. PO 클릭 시 UPS는 라벨 모듈, LTL은 packing list 오픈 (v677)
 // ═══ 📋 KPI 타일 → 목록 모듈 (스크롤 안 해도 바로 처리) (v791) ═══
+/* ═══ BOVIS-1 (2026-10-08) — 못 보낸 back order 를 보이게 한다 ═══
+   [stated] 하윤: "지금 back order가 오더 기존 오더 안에 붙어서 나와서 좀 헷갈린다는 의견."
+   실측 (오더 660건): BO 가 붙은 건 8건뿐인데 그 중 7건이 다른 창고와 **섞여 있다**.
+   섞이면 `recStatus` 가 `if(!whs.length)` 일 때만 ⛔ BACK ORDER 를 주므로 딱지가
+   CA 상태로 바뀌고, BO 가 몇 장 남았는지 줄만 봐서는 안 보인다. 세는 타일도 없었다.
+   그래서 Black Anchor PO 147 이 **6장 때문에 85일째**, Advanced Movement 가 3장으로 18일째.
+   ⚠ 카드를 쪼개지 않았다 — 쪼개면 「이 거래처한테 아직 덜 보냈다」 는 연결이 끊어진다.
+     쪼개고 싶을 때 쓰는 길(⚙ Process from SC/CA)은 전부터 있고 그대로 둔다.
+   ⭐⭐⭐ 타일·목록·줄의 알약이 **같은 함수** 를 본다. 거르는 조건을 복사하면 어긋난다
+     (locker 사고와 같은 뿌리 - [[psflowx-locker-invoice]]). */
+function boInfo(s){
+  try{
+    if(!s || !s.meta || s.meta._cancelled) return null;
+    let pcs = 0, amt = 0, other = false;
+    (s.lines || []).forEach(function(l){
+      const q = Number(l && l.qty) || 0; if(q <= 0) return;
+      const w = String((l && l.wh) || '').trim().toUpperCase();
+      if(w === 'BO' || w === 'NA'){ pcs += q; amt += q * (Number(l.price) || 0); }
+      else if(w === 'SC' || w === 'CA' || w === 'IT' || w === 'PD') other = true;
+    });
+    if(pcs <= 0) return null;
+    const d = String((s.meta.date || '') + '').slice(0, 10);
+    const t = d ? new Date(d + 'T00:00:00').getTime() : (s.savedAt ? new Date(s.savedAt).getTime() : 0);
+    const days = t ? Math.max(0, Math.round((Date.now() - t) / 86400000)) : 0;
+    return { pcs: pcs, amt: Math.round(amt * 100) / 100, days: days, mixed: other };
+  }catch(e){ return null; }
+}
+function boQueue(){
+  const out = [];
+  (savedCache || []).forEach(function(s){
+    const b = boInfo(s); if(!b) return;
+    out.push({ base: s.base, cust: (s.meta && s.meta.cust) || '', po: (s.meta && s.meta.po) || '',
+               pcs: b.pcs, amt: b.amt, days: b.days, mixed: b.mixed });
+  });
+  out.sort(function(a, b){ return b.days - a.days; });
+  return out;
+}
+/* 오래될수록 진해진다 - 6장짜리가 85일 묵은 것이 눈에 띄어야 한다 */
+function boTone(days){
+  if(days >= 30) return { bg:'#7f1d1d', fg:'#fff' };
+  if(days >= 14) return { bg:'#b91c1c', fg:'#fff' };
+  return { bg:'#fee2e2', fg:'#991b1b' };
+}
+/* ② 오더 줄의 알약 */
+function boPill(s){
+  const b = boInfo(s); if(!b) return '';
+  const c = boTone(b.days);
+  return '<span style="background:' + c.bg + ';color:' + c.fg + ';font-size:10.5px;font-weight:900;'
+    + 'padding:3px 10px;border-radius:20px;white-space:nowrap;" title="Still on back order'
+    + (b.mixed ? ' \u2014 the rest of this order can ship' : '') + '. Ordered ' + b.days + ' day(s) ago.">'
+    + '\u26d4 BO ' + b.pcs.toLocaleString() + ' pcs \u00b7 ' + b.days + 'd</span>';
+}
+/* ① 타일을 누르면 뜨는 목록 */
+function kpiBackOrder(){
+  const list = boQueue();
+  const rows = list.map(function(r){
+    const c = boTone(r.days);
+    return '<div style="display:flex;align-items:center;gap:10px;padding:10px 14px;border-bottom:1px solid #f1f5f9;cursor:pointer;"'
+      + ' onclick="document.getElementById(\'modal-boq\').remove();loadSaved(\'' + esc(r.base) + '\')"'
+      + ' onmouseover="this.style.background=\'#fef2f2\'" onmouseout="this.style.background=\'\'">'
+      + '<div style="flex:1;min-width:0;"><div style="font-size:13px;font-weight:800;color:#0f2a4a;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">'
+      +   esc(r.cust || '(no name)') + ' <span style="color:#64748b;font-weight:600;">\u00b7 PO ' + esc(r.po || '\u2014') + '</span></div>'
+      + '<div style="font-size:11px;color:#94a3b8;margin-top:3px;">'
+      +   (r.mixed ? 'the rest of this order can ship' : 'nothing on this order can ship yet') + '</div></div>'
+      + '<span style="font-size:12px;font-weight:900;color:#b91c1c;white-space:nowrap;">' + r.pcs.toLocaleString() + ' pcs</span>'
+      + '<span style="font-size:11.5px;font-family:Consolas,monospace;font-weight:800;color:#64748b;white-space:nowrap;">' + invNpMoney(r.amt) + '</span>'
+      + '<span style="font-size:10px;font-weight:900;color:' + c.fg + ';background:' + c.bg + ';border-radius:20px;padding:3px 9px;white-space:nowrap;">' + r.days + 'd</span>'
+      + '</div>';
+  }).join('') || '<div style="padding:24px;text-align:center;color:#94a3b8;font-size:13px;">Nothing on back order \ud83c\udf89</div>';
+  kpiShell('modal-boq', '\u26d4 Back order \u2014 still owed to the customer', '#b91c1c', rows,
+    list.length + ' order(s) \u00b7 ' + list.reduce(function(a, r){ return a + r.pcs; }, 0).toLocaleString()
+    + ' pcs \u00b7 ' + invNpMoney(list.reduce(function(a, r){ return a + r.amt; }, 0))
+    + ' \u00b7 oldest ' + (list.length ? list[0].days : 0) + ' days');
+}
 function kpiShell(id, title, color, rowsHtml, sub, width, flat){
   const ex = document.getElementById(id); if(ex) ex.remove();
   const div = document.createElement('div'); div.id = id;
@@ -48537,11 +48699,18 @@ function renderKpi(){
   /* RASPLIT-1 - 📦 Return Stock 타일 숫자. **목록(kpiReturnStock)과 같은 함수**를 쓴다 -
      locker 사고(타일이 조건을 복사해서 목록과 어긋남)를 되풀이하지 않는다. */
   let rstock = 0; try{ rstock = raStockQueue().length; }catch(e){ rstock = 0; }
+  /* BOVIS-1 - 타일 숫자. ⭐ 목록(kpiBackOrder)과 **같은 함수**를 쓴다 */
+  let _boN = 0, _boAmt = 0;
+  try{ const _bq = boQueue(); _boN = _bq.length; _boAmt = _bq.reduce(function(a,r){ return a + r.amt; }, 0); }catch(e){}
   const _kpiHtml = newsBarHtml() + `<div style="display:grid;grid-template-columns:repeat(6,minmax(0,1fr));gap:8px;margin-bottom:8px;align-items:stretch;">
     ${openTile(open, _oW, _pW, _oAmt, _oWAmt)}
     ${numTile('🔥 Rush', rush.toLocaleString(), '#dc2626', '#fef2f2', "kpiOpenOrders(true)", '', '', _rushAmt, 'Value still to be pulled on rush orders')}
     ${numTile('🧾 Invoice To Do', uninv.toLocaleString(), '#c2410c', '#fff7ed', "invNpOpen()", '', '', uninvAmt, 'Invoices still waiting to be printed or emailed to the customer')}
-    ${numTile('📝 CM Not Sent', pret.toLocaleString(), '#ea580c', '#fff7ed', "kpiPendingReturns()", '', '', 0, 'Returns whose credit memo is prepared but not sent to the customer yet')}
+    ${`<div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;align-items:stretch;">`
+      + numTile('📝 CM Not Sent', pret.toLocaleString(), '#ea580c', '#fff7ed', "kpiPendingReturns()", '', '', 0, 'Returns whose credit memo is prepared but not sent to the customer yet')
+      /* BOVIS-1 - 세는 데가 한 곳도 없어서 6장짜리가 85일 묵었다. 숫자·금액·목록 모두 boQueue() 하나를 본다 */
+      + numTile('⛔ Back Order', _boN.toLocaleString(), '#b91c1c', '#fef2f2', "kpiBackOrder()", '', _boN>0?'breq-blink':'', _boAmt, 'Goods still owed to customers \u2014 click for the list, oldest first')
+      + `</div>`}
     ${`<div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;align-items:stretch;">`
       + numTile('💳 Refund Pending', refund.toLocaleString(), '#7c2d12', '#faf5ff')
       /* RASPLIT-1 - 크레딧은 나갔는데 물건이 아직 선반에 안 올라간 것 (창고 매니저 일) */
@@ -49014,6 +49183,7 @@ function renderSaved(){
       ${putBackPending(s) ? `<span title="The order changed — stock came off the books but is still out of its bin. Click to print the Put Back Request." style="background:#b45309;color:#fff;font-size:10.5px;font-weight:900;padding:3px 10px;border-radius:20px;white-space:nowrap;cursor:pointer;box-shadow:0 1px 3px rgba(180,83,9,.4);" onclick="event.stopPropagation();putBackAsk('${esc(s.base)}')">↩ PUT BACK NEEDED</span>` : ''}
       ${recShipFromCA(s) ? (()=>{ const st=(s.meta&&s.meta._scToCA&&s.meta._scToCA.status)||''; const lab=st==='arrived'?'🚚 SC→CA · ✓ ARRIVED CA':(st==='transit'?'🚚 SC→CA · IN TRANSIT':'🚚 SC→CA · SHIP FROM CA'); const bg=st==='arrived'?'#166534':(st==='transit'?'#7c3aed':'#b45309'); return `<span style="background:${bg};color:#fff;font-size:10.5px;font-weight:900;padding:3px 10px;border-radius:20px;white-space:nowrap;box-shadow:0 1px 3px rgba(0,0,0,.25);" title="SC→CA transfer — packed in SC, rides the SC→CA truck, ships out combined from CA (CA just receives &amp; reships, no CA inventory)">${lab}</span>`; })() : ''}
       ${s.meta.futureShip ? `<span style="background:${new Date(s.meta.futureShip+'T00:00:00')>new Date()?'#2563eb':'#16a34a'};color:#fff;font-size:10.5px;font-weight:900;padding:3px 10px;border-radius:20px;white-space:nowrap;box-shadow:0 1px 3px rgba(37,99,235,.35);" title="Customer-requested ship date">🚀 SHIP ${new Date(s.meta.futureShip+'T00:00:00').toLocaleDateString('en-US',{month:'numeric',day:'numeric',year:'2-digit'})}</span>` : ''}
+      ${boPill(s)}
       ${_isHold?`<span style="margin-left:auto;padding:3px 10px;border-radius:20px;font-size:10.5px;font-weight:900;background:#450a0a;color:#fca5a5;white-space:nowrap;" title="A/R $${((s.meta._hold||{}).outstanding||0).toLocaleString()} + open orders $${((s.meta._hold||{}).openOrders||0).toLocaleString()} + this order $${((s.meta._hold||{}).orderAmt||0).toLocaleString()} > limit $${((s.meta._hold||{}).limit||0).toLocaleString()}">🔒 CREDIT HOLD</span><button class="btn btn-sm" style="background:#166534;color:#fff;border-color:#166534;font-weight:800;" onclick="approveHold('${esc(s.base)}')" title="Accounting approval — unlocks processing">✅ Approve</button>`:''}
       ${(()=>{ const st = recStatus(s); return `<span style="${_isHold?'':'margin-left:auto;'}padding:3px 12px;border-radius:20px;font-size:11px;font-weight:800;background:${st.bg};color:${st.color};white-space:nowrap;">${st.label}</span>`; })()}
       </div>
