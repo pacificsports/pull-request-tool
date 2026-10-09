@@ -314,7 +314,7 @@ body.po-dragging{user-select:none;}
   </span>
   <select id="lang-sel" onchange="setLang(this.value)" style="font-size:11px;padding:3px 6px;border-radius:5px;border:none;background:#1d3f66;color:#fff;"><option value="ko">한국어</option><option value="en">English</option><option value="es">Español</option></select>
   <button id="wide-btn" class="btn btn-sm" onclick="toggleWide()" title="화면 넓게 / 좁게 — 기본은 넓게 (이 브라우저에만 저장돼)" style="padding:2px 8px;font-size:10px;background:#1d3f66;color:#cfe0f2;border-color:#2b5384;">↔ Wide</button>
-  <span id="app-ver" style="font-size:10px;color:#9fb8d4;">v1247</span>
+  <span id="app-ver" style="font-size:10px;color:#9fb8d4;">v1248</span>
 </div>
 <script>
 // ↔ 넓게 보기 — 브라우저마다 따로 저장 (v793)
@@ -20059,6 +20059,135 @@ function scanPpbOf(key){
   return (e && Number(e.ppb)) || 72;
 }
 // ── 대조 ──
+/* ═══ RESET-1 - 「처음부터 다시 스캔」 (2026-10-09) ═══
+   [stated] 하윤: "psflowx.com/pic에 스캔하던거 잘못 해서 우리가 처음부터 다시 스캔하자
+            할떄 reset 버튼이 있으면 좋겠어. transfer들어가서 scan going out 누르고
+            스캔하는곳에 reset 누르면 지금까지 스캔한거 깨끗해지고 다시 스캔하게"
+
+   ⚠⚠ 화면 숫자만 0 으로 만드는 것으로는 안 된다. 서버는 카톤 번호로 같은 박스를 거르므로
+      (pr_scan_events 의 unique 색인) 줄이 남아 있으면 **다시 찍어도 안 들어간다.**
+      그래서 서버에 pic_scan_clear 를 불러 그 줄들을 치운다.
+   ⚠ 치운다고 지우는 게 아니다 - DB 는 void_at 도장만 찍고 줄은 그대로 남긴다.
+      2026-10-02 에 스캔이 통째로 사라진 사고가 세 번 났다. 잘못 눌러도 사무실이 되살릴 수 있다.
+   ⚠ 이송·입고는 모든 폰이 서버 합계를 보므로 **다른 사람 화면도 같이 0 이 된다.** 그게 맞다 -
+      "처음부터 다시" 는 팔레트 하나가 아니라 그 건 전체를 다시 세는 일이다. 그래서 두 번 눌러야 한다.
+   ⚠ 포장(PO) 화면은 서버에 줄을 안 쌓는다 - 그쪽은 이 폰에 있는 것만 치운다.
+   ⚠ confirm() 창을 안 쓴다 - 창고 폰에서 네모 창이 뜨면 뒤에서 돌던 스캔이 멈춘다.
+      그 대신 **두 번 누르기**(7초 안에)로 막는다. */
+let _scanRstArm = 0, _scanRstT = null;
+function scanResetBtnHtml(){
+  return '<button id="scan-reset" onclick="scanResetTap()"'
+    + ' style="margin-left:auto;background:rgba(255,255,255,.16);color:#fff;'
+    + 'border:1.5px solid rgba(255,255,255,.45);border-radius:8px;padding:6px 10px;'
+    + 'font-size:12px;font-weight:800;white-space:nowrap;"'
+    + ' title="Clear every box counted on this one and start scanning from zero">'
+    + '↺ Reset</button>';
+}
+function scanResetDisarm(){
+  if(_scanRstT){ clearTimeout(_scanRstT); _scanRstT = null; }
+  _scanRstArm = 0;
+  const b = document.getElementById('scan-reset');
+  if(b){
+    b.disabled = false;
+    b.style.background = 'rgba(255,255,255,.16)';
+    b.style.borderColor = 'rgba(255,255,255,.45)';
+    b.innerHTML = '↺ Reset';
+  }
+}
+function scanResetTap(){
+  if(!_scan) return;
+  if(_scanRstArm){ scanResetDo(); return; }
+  let got = 0; try{ got = scanTotalGot(); }catch(e){}
+  if(!got){ try{ showToast('ℹ Nothing counted yet — nothing to clear'); }catch(e){} return; }
+  _scanRstArm = 1;
+  const b = document.getElementById('scan-reset');
+  if(b){
+    b.style.background = '#dc2626';
+    b.style.borderColor = '#fecaca';
+    b.innerHTML = '⚠ Tap again — clears ' + got.toLocaleString();
+  }
+  try{ showToast('⚠ Tap Reset again to clear ' + got.toLocaleString() + ' box(es)'); }catch(e){}
+  _scanRstT = setTimeout(scanResetDisarm, 7000);
+}
+async function scanResetDo(){
+  if(!_scan) return;
+  if(_scanRstT){ clearTimeout(_scanRstT); _scanRstT = null; }
+  _scanRstArm = 0;
+  const btn = document.getElementById('scan-reset');
+  let had = 0; try{ had = scanTotalGot(); }catch(e){}
+  if(btn){ btn.disabled = true; btn.innerHTML = '⌛ Clearing…'; }
+  let info = { boxes: had, by: scanEvWho() };
+  if(scanEvOn()){
+    /* ⚠ 보내는 중인 줄이 치운 **뒤에** 서버에 들어가면 숫자가 되살아난다.
+       먼저 큐를 비우고, 날아가고 있는 것이 끝날 때까지 잠깐 기다린다 (최대 3초). */
+    const savedQ = ((_scan.q) || []).slice();
+    try{ if(_scanEvT){ clearTimeout(_scanEvT); _scanEvT = null; } }catch(e){}
+    _scan.q = [];
+    for(let i = 0; i < 20 && _scanEvBusy; i++){
+      await new Promise(function(r){ setTimeout(r, 150); });
+    }
+    try{
+      const r = await scanRpc('pic_scan_clear', { p_kind:scanEvKind(), p_id:String(_scan.id),
+        p_phase:scanEvPhase(), p_by:scanEvWho() });
+      if(!r.ok) throw new Error('HTTP ' + r.status);
+      const j = await r.json();
+      if(j && typeof j === 'object') info = { boxes:Number(j.boxes)||0, by:String(j.by||'') };
+    }catch(e){
+      /* 못 치웠다 - 보내려던 줄을 되돌려 놓고 아무것도 바꾸지 않는다 */
+      _scan.q = savedQ;
+      if(savedQ.length){ try{ scanEvFlushSoon(); }catch(err){} }
+      scanResetDisarm();
+      try{ showToast('⚠ Could not clear it — no signal. Nothing was changed. Try again.'); }catch(err){}
+      return;
+    }
+  }
+  scanResetLocal();
+  scanResetDisarm();
+  try{ const rb = document.getElementById('scan-restored'); if(rb) rb.remove(); }catch(e){}
+  try{ scanRender(); }catch(e){}
+  try{ scanCamList(); }catch(e){}
+  try{ scanEvBadge(); }catch(e){}
+  scanResetNote(info);
+  try{ if(scanEvOn()) scanEvPull(); }catch(e){}
+}
+/* 이 폰이 들고 있는 것을 전부 비운다 */
+function scanResetLocal(){
+  if(!_scan) return;
+  _scan.seen = new Map();
+  _scan.pbox = new Map();
+  _scan.manual = {};
+  _scan.photo = {};
+  _scan.q = [];
+  /* ⚠⚠ sent 를 안 비우면 같은 박스를 다시 찍어도 서버로 안 올라간다 (scanEvQueue 가 건너뛴다) */
+  _scan.sent = {};
+  _scan.srv = null;
+  _scan.mates = {}; _scan.mateNames = []; _scan.mateCounts = {};
+  _scan._spill = null;
+  _scan.restored = null;
+  _scan._evErr = ''; _scan._evAt = 0;
+  try{ scanKeep2Drop(); }catch(e){}                   /* 📥 입고 · 🚚 이송 저장분 */
+  try{ scanKeepDrop(scanKeepBases()); }catch(e){}     /* 📦 포장(PO) 저장분 */
+  try{ window._scanCloudN = 0; window._scanCloudAt = 0; window._scanCloudErr = ''; }catch(e){}
+  try{ window._scanSent = 0; }catch(e){}
+  try{ if(window._packScanRes && String(window._packScanRes.base) === String(_scan.id))
+         window._packScanRes = null; }catch(e){}
+}
+/* 치웠다는 사실을 화면에 남긴다 - 말없이 숫자만 0 이 되면 직원이 못 믿는다 */
+function scanResetNote(info){
+  const el = document.getElementById('scan-rst'); if(!el) return;
+  const n = Number((info && info.boxes) || 0);
+  const who = String((info && info.by) || '').trim();
+  let t = ''; try{ t = new Date().toLocaleTimeString([], {hour:'numeric', minute:'2-digit'}); }catch(e){}
+  el.innerHTML = '<div style="background:#fff7ed;border:1.5px solid #fdba74;border-radius:11px;'
+    + 'padding:11px 13px;margin-bottom:12px;font-size:12.5px;color:#9a3412;line-height:1.55;">'
+    + '↺ <b>Cleared ' + n.toLocaleString() + ' box' + (n === 1 ? '' : 'es') + '</b>'
+    + (who ? (' · ' + esc(who)) : '') + (t ? (' · ' + t) : '')
+    + '<br><span style="color:#c2410c;">Start again from the first box.'
+    + (scanEvOn()
+        ? ' Every phone on this shipment now shows 0. Nothing is deleted — the office can put it back.'
+        : ' This phone only.')
+    + '</span></div>';
+}
 function scanTally(){
   const t = {};
   if(!_scan) return t;
@@ -21069,10 +21198,11 @@ function scanSession(){
       </div>
       <button onclick="scanKeepClearNow()" style="background:#fff;color:#b45309;border:1.5px solid #fcd34d;border-radius:9px;padding:8px 12px;font-size:12px;font-weight:800;white-space:nowrap;">↺ 처음부터 다시</button>
     </div>` : '';
-  ov.innerHTML = `<div style="background:#0e7490;color:#fff;padding:14px 16px;display:flex;align-items:center;gap:10px;position:sticky;top:0;z-index:5;"><button onclick="scanExit()" style="background:rgba(255,255,255,.2);color:#fff;border:none;border-radius:8px;padding:6px 11px;font-size:13px;font-weight:700;">← Back</button><span style="font-size:16px;font-weight:800;">${esc(_scan.title)}</span></div>
+  ov.innerHTML = `<div style="background:#0e7490;color:#fff;padding:14px 16px;display:flex;align-items:center;gap:10px;position:sticky;top:0;z-index:5;"><button onclick="scanExit()" style="background:rgba(255,255,255,.2);color:#fff;border:none;border-radius:8px;padding:6px 11px;font-size:13px;font-weight:700;">← Back</button><span style="font-size:16px;font-weight:800;">${esc(_scan.title)}</span>${scanResetBtnHtml()}</div>
   <div style="flex:1;background:#f1f5f9;padding:14px;">
     <div style="max-width:560px;margin:0 auto;">
       ${_rsHtml}
+      <div id="scan-rst"></div>
       <div style="background:#0f2a4a;color:#fff;border-radius:12px;padding:14px 16px;display:flex;align-items:center;gap:10px;margin-bottom:12px;">
         <div><div style="font-size:11px;color:#cbd5e1;font-weight:800;letter-spacing:.08em;">SCANNED</div>
           <div style="font-size:30px;font-weight:900;line-height:1;"><span id="scan-n">0</span><span style="font-size:19px;font-weight:900;color:#e2e8f0;"> / ${expTot.toLocaleString()}</span></div>
@@ -44314,17 +44444,24 @@ function mitCardOf(cs){
   try{ return !!(cs && cs.anetPayProfileId); }catch(e){ return false; }
 }
 /* 거래처 화면의 알약. 카드가 저장돼 있든 아니든 동의는 따로 보여 준다. */
-function mitPill(cs){
+function mitPill(cs, k){
   const m = mitInfoOf(cs); if(!m) return '';
   const d = mitDateLbl(m.at);
   /* MITWARN-1 - 동의는 받았는데 카드가 없으면 빨갛게. 직원이 전화해서 다시 받아야 한다. */
   if(!mitCardOf(cs)){
-    return ' <span title="This customer agreed to let us charge their card, but no card was saved'
-      + ' - they did not tick \u0022Save this Credit Card information\u0022 on the card form.'
-      + ' Call them and send a new payment link so they can save it."'
+    /* ⚠⚠ RECHK-1 - 예전 글은 「거래처가 네모를 안 눌렀다」 고 **단정**했다. 그건 모르는 일이다.
+       실측(Viamerch 2026-10-09): 지갑(anetProfileId)은 만들어졌는데 카드만 비어 있었다 -
+       Authorize.Net 은 **결제가 끝난 뒤에** 카드를 지갑에 넣기 때문에, 우리 워커가 5초 안에
+       못 보고 포기한 것일 수도 있다. 두 경우를 화면만 보고 가를 수가 없다.
+       그래서 ① 말을 「아직 안 들어왔다」 로 바꾸고 ② 다시 물어보는 단추를 붙였다. */
+    return ' <span title="This customer agreed to let us charge their card, but no card has reached us yet.'
+      + ' Either they skipped \u0022Save this Credit Card information\u0022 on the card form, or'
+      + ' Authorize.Net filed it after we stopped looking.'
+      + ' Press Re-check card first - if that finds nothing, send a new payment link."'
       + ' style="display:inline-flex;align-items:center;gap:5px;font-size:11px;font-weight:800;'
       + 'border:1px solid #b91c1c;background:#fef2f2;color:#b91c1c;border-radius:7px;padding:3px 9px;vertical-align:middle;">'
-      + '\u26a0 Agreed but NO card saved' + (d ? (' \u00b7 ' + esc(d)) : '') + '</span>';
+      + '\u26a0 Agreed but NO card saved' + (d ? (' \u00b7 ' + esc(d)) : '') + '</span>'
+      + cardRecheckBtn(k);
   }
   return ' <span title="This customer ticked the box on our payment link allowing Pacific Sports to charge'
     + ' this card for future orders'
@@ -44337,6 +44474,10 @@ function mitPill(cs){
 }
 /* SAVECARD-1 - 결제 요청 창에 「이 거래처는 카드가 저장돼 있다」를 알려 준다.
    직원이 링크를 보낼 때 거래처가 한 번에 낼 수 있다는 것을 알 수 있게. */
+/* RECHK-1 - 거래처 이름에서 열쇠를 안전하게 꺼낸다 (custKey 가 없거나 터져도 빈 글자) */
+function csKeyOf(cust){
+  try{ return (typeof custKey === 'function') ? String(custKey(cust) || '') : ''; }catch(e){ return ''; }
+}
 function payReqCardStrip(cust){
   let cs = null;
   try{ if(typeof custKey === 'function' && custStore) cs = custStore[custKey(cust)]; }catch(e){}
@@ -44349,8 +44490,11 @@ function payReqCardStrip(cust){
       + 'font-size:11.5px;font-weight:700;color:#b91c1c;">\u26a0 They agreed to let us charge their card'
       + (d ? (' (' + esc(d) + ')') : '')
       + ', but no card was saved'
-      + '<div style="margin-top:4px;font-weight:400;">They skipped \u201cSave this Credit Card information\u201d on the card form.'
-      + ' Send this link and ask them to tick it, or type the card in yourself.</div></div>';
+      /* RECHK-1 - 여기서도 단정하지 않는다. 먼저 다시 물어볼 수 있게 단추를 준다. */
+      + '<div style="margin-top:4px;font-weight:400;">Either they skipped \u201cSave this Credit Card'
+      + ' information\u201d on the card form, or Authorize.Net filed it after we stopped looking.'
+      + ' Try \u21bb Re-check card first.</div>'
+      + '<div style="margin-top:6px;">' + cardRecheckBtn(csKeyOf(cust)) + '</div></div>';
   }
   if(!mitCardOf(cs)) return '';   /* 지갑만 있고 카드가 없으면 안 띄운다 */
   const last4 = String(cs.anetCardLast4||'').replace(/[^0-9]/g,'').slice(-4);
@@ -44369,7 +44513,62 @@ function payReqCardStrip(cust){
    · 카드가 없으면       : 동의 알약만 (동의는 받았는데 카드가 없으면 ⚠ 빨간 경고가 나간다)
    ⭐ 두 군데에서 각자 붙이면 차례가 어긋난다. 그래서 묶음을 함수 하나로 만들었다. */
 function cardPillGroup(k, cs){
-  return mitCardOf(cs) ? savedCardPill(k, cs) : mitPill(cs);
+  /* RECHK-1 - 카드가 없는 쪽에만 열쇠를 넘긴다. 저장된 쪽은 빨간 갈래를 안 타므로 그대로 둔다. */
+  return mitCardOf(cs) ? savedCardPill(k, cs) : mitPill(cs, k);
+}
+/* ═══ RECHK-1 - ↻ Re-check card (2026-10-09) ═══
+   [stated] 하윤: "agreed는 해줬는데 카드 save를 안했네 거래처가" / "어 하자"
+   Authorize.Net 은 결제가 끝난 **뒤에** 카드를 지갑에 넣는다. 워커는 5초(2번×2.5초)만
+   기다리고 포기했다. 그래서 카드가 저장됐는데도 우리 화면이 「없다」 고 할 수 있었다.
+   워커에 /recheck 를 만들어서 사람이 다시 물어볼 수 있게 했다.
+   ⚠ 돈은 한 푼도 안 움직인다 - 지갑을 읽고, 카드가 있으면 그 번호만 우리 쪽에 적는다.
+   ⚠ 못 찾으면 **아무것도 안 바꾼다** (그게 「거래처가 안 눌렀다」 의 근거가 된다).
+   ⚠ 되돌리는 길은 이미 있다 - 저장된 알약의 Remove (custForgetCard). */
+function cardRecheckBtn(k){
+  if(!k) return '';
+  const busy = (_cardRechkBusy === k);
+  return ' <button class="btn btn-sm" id="rechk-' + esc(k) + '"'
+    + ' style="font-size:10.5px;padding:2px 8px;color:' + (busy ? '#94a3b8' : '#b91c1c')
+    + ';background:#fff;border-color:#fca5a5;font-weight:700;vertical-align:middle;"'
+    + (busy ? ' disabled' : '')
+    + ' onclick="custRecheckCard(\'' + esc(k) + '\')"'
+    + ' title="Ask Authorize.Net again whether a card ended up saved for this customer.'
+    + ' Authorize.Net files the card after the payment, so it can arrive late.'
+    + ' No money moves, and nothing changes unless a card is found.">'
+    + (busy ? '\u23f3 Checking\u2026' : '\u21bb Re-check card') + '</button>';
+}
+let _cardRechkBusy = '';
+async function custRecheckCard(k){
+  if(!k || _cardRechkBusy) return;
+  _cardRechkBusy = k;
+  try{ renderCustomers(); }catch(e){}
+  const cur = custStore[k] || {};
+  const nm = String(cur.name || '').trim() || custNameOfKey(k);
+  let j = null;
+  try{
+    const r = await fetch(PAYREQ_API + '/recheck', { method:'POST',
+      headers:{ 'Content-Type':'application/json' },
+      body: JSON.stringify({ cust: nm }) });
+    j = await r.json();
+  }catch(e){ j = null; }
+  _cardRechkBusy = '';
+  if(!j || j.ok !== true){
+    try{ renderCustomers(); }catch(e){}
+    try{ showToast('\u26a0 Could not reach Authorize.Net - nothing was changed. Try again.'); }catch(e){}
+    return;
+  }
+  if(j.found === true){
+    /* 찾았다 - 우리 쪽 기록을 다시 읽어서 알약이 바로 초록으로 바뀌게 한다 */
+    try{ await loadCustomers(); }catch(e){}
+    try{ renderCustomers(); }catch(e){}
+    const l4 = String(j.last4 || '').replace(/[^0-9]/g, '').slice(-4);
+    try{ showToast((j.already ? '\u2705 Already on file' : '\u2705 Card found and saved')
+      + (l4 ? (' \u00b7\u00b7\u00b7' + l4) : '')); }catch(e){}
+    return;
+  }
+  try{ renderCustomers(); }catch(e){}
+  try{ showToast('\u2139 ' + String(j.why || 'No card in the wallet.')
+    + ' Send a new payment link and ask them to tick "Save this Credit Card information".'); }catch(e){}
 }
 /* SAVECARD-1 - 저장된 카드 알약. 두 번 눌러야 지워진다 (팝업 안 띄운다). */
 let _cardForgetArm = '';
