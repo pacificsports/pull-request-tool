@@ -314,7 +314,7 @@ body.po-dragging{user-select:none;}
   </span>
   <select id="lang-sel" onchange="setLang(this.value)" style="font-size:11px;padding:3px 6px;border-radius:5px;border:none;background:#1d3f66;color:#fff;"><option value="ko">한국어</option><option value="en">English</option><option value="es">Español</option></select>
   <button id="wide-btn" class="btn btn-sm" onclick="toggleWide()" title="화면 넓게 / 좁게 — 기본은 넓게 (이 브라우저에만 저장돼)" style="padding:2px 8px;font-size:10px;background:#1d3f66;color:#cfe0f2;border-color:#2b5384;">↔ Wide</button>
-  <span id="app-ver" style="font-size:10px;color:#9fb8d4;">v1236</span>
+  <span id="app-ver" style="font-size:10px;color:#9fb8d4;">v1237</span>
 </div>
 <script>
 // ↔ 넓게 보기 — 브라우저마다 따로 저장 (v793)
@@ -10872,6 +10872,7 @@ function payReqOrder(base){
     <div id="pr-sent" style="display:none;padding:0 18px 12px;"></div>
     <div style="padding:11px 18px;border-top:1px solid #e2e8f0;display:flex;gap:8px;">
       <button class="btn btn-sm" id="pr-copy" style="display:none;" onclick="payReqCopyLink()">\u{1F4CB} Copy link</button>
+      ${webPoOf(rec) ? `<button class="btn btn-sm" id="pr-webpaid" style="background:#ecfeff;color:#0e7490;border-color:#a5f3fc;font-weight:800;" onclick="payReqWebPaid('${esc(base)}')" title="This is a website order - the card was already charged when the order was placed. Record it as paid without sending a link.">\u{1F310} Paid on website</button>` : ''}
       <button class="btn btn-sm" id="pr-cancel" style="margin-left:auto;" onclick="document.getElementById('modal-payreq').remove()">Cancel</button>
       <button class="btn btn-sm" id="pr-go" data-send="payReqOrderSend('${esc(base)}')" style="background:${payReqGoColor()};color:#fff;border-color:${payReqGoColor()};font-weight:800;" onclick="payReqOrderSend('${esc(base)}')">${payReqGoLabel()}</button>
     </div></div>`;
@@ -10998,6 +10999,7 @@ function payReqOpen(base, wh){
     <div id="pr-sent" style="display:none;padding:0 18px 12px;"></div>
     <div style="padding:11px 18px;border-top:1px solid #e2e8f0;display:flex;gap:8px;">
       <button class="btn btn-sm" id="pr-copy" style="display:none;" onclick="payReqCopyLink()">\u{1F4CB} Copy link</button>
+      ${webPoOf(rec) ? `<button class="btn btn-sm" id="pr-webpaid" style="background:#ecfeff;color:#0e7490;border-color:#a5f3fc;font-weight:800;" onclick="payReqWebPaid('${esc(base)}')" title="This is a website order - the card was already charged when the order was placed. Record it as paid without sending a link.">\u{1F310} Paid on website</button>` : ''}
       <button class="btn btn-sm" id="pr-cancel" style="margin-left:auto;" onclick="document.getElementById('modal-payreq').remove()">Cancel</button>
       <button class="btn btn-sm" id="pr-go" data-send="payReqSend('${esc(base)}','${esc(wh)}')" style="background:${payReqGoColor()};color:#fff;border-color:${payReqGoColor()};font-weight:800;" onclick="payReqSend('${esc(base)}','${esc(wh)}')">${payReqGoLabel()}</button>
     </div></div>`;
@@ -11968,17 +11970,65 @@ function ccComboToggle(i, on){
 }
 const ANET_LOGIN_ID = '538BhgBf';
 const ANET_CLIENT_KEY = '9S9dzP4nBNaYQ82fVdvL8uV4F34xx6nzJK584a6vfg4srBCQQxkA5ZYcds737GjC';
+/* ═══ WEBPAID-1 (2026-10-09) — 웹 주문은 주문받을 때 이미 카드로 받았다 ═══
+   [stated] 하윤: "website 오더는 우리가 website주문받을떄 이미 카드 결제를 받으니까
+     저기 payment 누르고 들어갔을떄 send payment link옆에 payment received through
+     website 버튼이 있어서 그거 눌러서 돈 받은거로 처리할수있게"
+   ⭐⭐⭐ 「받은 것으로 적는」 길을 **새로 만들지 않았다**. 패킹리스트 화면의
+     `markPaidWebsite` 가 쓰던 속을 이 함수로 빼고, 두 화면이 같은 것을 부른다.
+     두 군데가 서로 다르게 적으면 한쪽은 인보이스 번호를 받고 한쪽은 못 받는 식으로 어긋난다.
+   ⚠ 카드를 긁지 않는다. 이미 받은 돈을 **장부에 적기만** 한다.
+   ⚠ INVSEQ-1 - 번호는 `invNoClaim` 으로 받는다 (이미 있으면 그걸 쓴다).
+   ⚠ 저장이 실패하면 **던진다**. 돈을 받았다고 적는 일이라 조용히 넘어가면 안 된다. */
+async function markPaidWebsiteFor(base, wh, amt){
+  const n = Math.round((Number(amt) || 0) * 100) / 100;
+  if(!(n > 0)) throw new Error('the amount is 0');
+  const W = String(wh || '').trim(); if(!base || !W) throw new Error('order/warehouse missing');
+  const rec = (savedCache || []).find(function(s){ return s.base === base; });
+  if(!rec) throw new Error('order not found');
+  rec.inv = rec.inv || {};
+  const no = (await invNoClaim(base, W)).no;
+  const cur = rec.inv[W] || {};
+  rec.inv[W] = Object.assign({}, cur, {
+    termType: 'cc', printed: true, invNo: no,
+    savedAt: cur.savedAt || new Date().toISOString(),
+    paid: { amt: n, method: 'website', acct: 'Website', transId: '', authCode: '',
+            at: new Date().toISOString(), by: (SESS && SESS.email) || '' } });
+  const r = await sbFetch('/rest/v1/pr_orders?base=eq.' + encodeURIComponent(base) + '&select=base',
+    { method: 'PATCH', headers: { Prefer: 'return=representation' },
+      body: JSON.stringify({ inv: rec.inv, updated_at: new Date().toISOString() }) });
+  if(!await invRowChanged(r)) throw new Error('the payment could not be saved (' + ((r && r.status) || 'no reply') + ')');
+  logHist(base, 'Marked PAID via website $' + n.toFixed(2) + ' \u2014 ' + W + ' (' + no + ')');
+  return no;
+}
+/* 결제창의 「🌐 Paid on website」 — 금액이 적힌 창고를 모두 받은 것으로 적는다 */
+async function payReqWebPaid(base){
+  const picks = payReqPicks().filter(function(p){ return p.amt > 0.005; });
+  if(!picks.length){ showToast('\u26a0 Enter an amount first'); return; }
+  const tot = picks.reduce(function(a, p){ return a + p.amt; }, 0);
+  if(!confirm('\ud83c\udf10 Record ' + payReqMoney(tot) + ' as already paid on the website?\n\n'
+    + picks.map(function(p){ return p.wh + '  ' + payReqMoney(p.amt); }).join('\n')
+    + '\n\nNo card is charged and no link is sent \u2014 this only records the money as received.')) return;
+  const bad = [];
+  for(const p of picks){
+    try{ await markPaidWebsiteFor(base, p.wh, p.amt); }
+    catch(e){ bad.push(p.wh + ' \u2014 ' + ((e && e.message) || e)); }
+  }
+  if(bad.length) try{ alert('\u26a0 NOT recorded:\n\n' + bad.join('\n')); }catch(e){}
+  else try{ showToast('\ud83c\udf10 Marked paid \u2014 ' + payReqMoney(tot)); }catch(e){}
+  try{ const m = document.getElementById('modal-payreq'); if(m) m.remove(); }catch(e){}
+  try{ invNpRefresh(); }catch(e){}
+  try{ renderSaved(); }catch(e){}
+}
 async function markPaidWebsite(){
   const amt = parseFloat(($('cc-amt') && $('cc-amt').value) || '0');
   if(!(amt > 0)){ showToast('⚠ Check the amount'); return; }
   if(!confirm('🌐 Mark this order as already paid on the website?\n\n$' + amt.toFixed(2) + ' — no card will be charged; it is only recorded as PAID.')) return;
-  const rec = savedCache.find(s=>s.base===plBase); if(!rec) return;
-  rec.inv = rec.inv || {}; const cur = rec.inv[plWh] || {};
-  rec.inv[plWh] = { ...cur, termType:'cc', printed: true, invNo: cur.invNo || await nextInvNo(), savedAt: cur.savedAt || new Date().toISOString(),
-    paid: { amt: amt, method:'website', acct:'Website', transId:'', authCode:'', at: new Date().toISOString(), by: (SESS&&SESS.email)||'' } };
-  if(invDrafts[plWh]){ invDrafts[plWh].termType = 'cc'; invDrafts[plWh].invNo = rec.inv[plWh].invNo; }
-  try{ await sbFetch('/rest/v1/pr_orders?base=eq.'+encodeURIComponent(plBase), {method:'PATCH', headers:{Prefer:'return=minimal'}, body:JSON.stringify({inv:rec.inv, updated_at:new Date().toISOString()})}); }catch(e){}
-  logHist(plBase, 'Marked PAID via website $' + amt.toFixed(2) + ' — ' + plWh + ' (' + rec.inv[plWh].invNo + ')');
+  /* WEBPAID-1 - 속은 markPaidWebsiteFor 하나뿐이다. 여기는 화면 값만 모아서 넘긴다. */
+  let _no = '';
+  try{ _no = await markPaidWebsiteFor(plBase, plWh, amt); }
+  catch(e){ try{ alert('\u26a0 NOT recorded \u2014 ' + ((e && e.message) || e)); }catch(_){} return; }
+  if(invDrafts[plWh]){ invDrafts[plWh].termType = 'cc'; invDrafts[plWh].invNo = _no; }
   showToast('🌐 Website payment confirmed — marked PAID ($' + amt.toFixed(2) + ')');
   renderPL(); renderSaved();
 }
@@ -16482,6 +16532,9 @@ async function lblSaveTracking(){
       pd.trackings=(_lblResult.tracking&&_lblResult.tracking.length)?_lblResult.tracking.slice():pd.trackings;
       if(typeof renderPL==='function' && plWh===_lblResult.origin) renderPL();
     } }catch(e){}
+    /* ⭐⭐ TRKSYNC-1 - **저장된** 패킹리스트에도 넣는다. 메일과 종이가 읽는 것은 이쪽이다.
+       위의 draft 줄은 화면이 열려 있을 때만 돌아서, 그것만으로는 옛 번호가 메일에 나갔다. */
+    try{ await plTrkSync(rec.base, _lblResult.origin, _lblResult.tracking || [], []); }catch(e){}
     // 📦 같은 박스에 함께 실린 다른 PO 에도 이 라벨을 붙인다 (v870)
     try{ await lblShareToBatch(rec.base, _lblResult); }catch(e){}
     if(typeof renderSaved==='function') renderSaved();
@@ -16620,6 +16673,61 @@ async function lblDownload(){
     showToast('⚠ PDF convert failed ('+(e.message||e)+') — saved raw ZPL instead');
   }
 }
+/* ═══ TRKSYNC-1 (2026-10-09) — 운송장 번호가 메일에 옛 것으로 나가던 것 ═══
+   [stated] 하윤: "ups label 만들어서 tracking # 받았다가 void하고 바꿔서 다시 하면
+                   새로 받은 tracking #가 이멜에 붙어가야하는데 옟날께 그냥 나가는거 같에"
+   ⚠⚠ 뿌리가 둘이다:
+     ① 라벨을 만들면 **`plDrafts[wh].trackings` 만** 고쳤다. 그것도 그 패킹리스트 화면이
+        마침 열려 있을 때만 (`plBase===rec.base && plDrafts[origin]`).
+        그런데 메일과 종이는 **저장된 `rec.pl[wh].trackings`** 를 읽는다
+        (`sendPLEmailFor` 의 `const d = (rec.pl && rec.pl[wh]) || {}`).
+        -> 화면이 안 열려 있었거나 다시 저장하지 않았으면 옛 번호가 그대로 나간다.
+     ② Void 는 `meta._ups[wh]` 만 지웠다. 패킹리스트의 번호는 **한 글자도 안 건드렸다**.
+   고침: 라벨을 만들 때와 지울 때 **저장된 패킹리스트까지** 같이 고친다.
+   ⚠ 손으로 적은 다른 운송장(LTL·FedEx)은 안 지운다 - Void 는 **그 라벨 번호만** 뺀다.
+   ⚠ 그래서 만들 때는 **더하기**(합집합)다. 지우지 않고 또 만들면 두 번호가 다 남는다 -
+     박스를 나눠 보낸 것일 수 있으니 그게 맞고, 틀리면 ✕ 로 지울 수 있다 (조용히 사라지지 않는다). */
+async function plTrkSync(base, wh, addList, dropList){
+  try{
+    const W = String(wh || '').trim(); if(!base || !W) return false;
+    const rec = (savedCache || []).find(function(s){ return s.base === base; });
+    if(!rec) return false;
+    const norm = function(a){ return (a || []).map(function(t){ return String(t == null ? '' : t).trim(); }).filter(Boolean); };
+    const add = norm(addList), drop = norm(dropList);
+    if(!add.length && !drop.length) return false;
+    const apply = function(list){
+      let out = norm(list);
+      if(drop.length) out = out.filter(function(t){ return drop.indexOf(t) < 0; });
+      add.forEach(function(t){ if(out.indexOf(t) < 0) out.push(t); });
+      return out.length ? out : [''];
+    };
+    /* 편집 중인 화면 */
+    try{
+      if(typeof plDrafts !== 'undefined' && plDrafts[W]
+         && typeof plBase !== 'undefined' && plBase === base){
+        plDrafts[W].trackings = apply(plDrafts[W].trackings);
+        if(typeof plWh !== 'undefined' && plWh === W && typeof renderPL === 'function') renderPL();
+      }
+    }catch(e){}
+    /* ⭐ 저장된 것 - 메일과 종이가 읽는 것은 이쪽이다 */
+    if(!(rec.pl && rec.pl[W])) return false;
+    const before = JSON.stringify(norm(rec.pl[W].trackings));
+    const next = apply(rec.pl[W].trackings);
+    if(JSON.stringify(norm(next)) === before) return true;
+    rec.pl[W].trackings = next;
+    const r = await sbFetch('/rest/v1/pr_orders?base=eq.' + encodeURIComponent(base) + '&select=base',
+      { method: 'PATCH', headers: { Prefer: 'return=representation' },
+        body: JSON.stringify({ pl: rec.pl, updated_at: new Date().toISOString() }) });
+    let ok = false;
+    try{ if(r && r.ok){ const j = await r.json(); ok = Array.isArray(j) && j.length > 0; } }catch(e){}
+    if(!ok){
+      try{ showToast('\u26a0 Tracking number was NOT saved to the packing list - check it before emailing'); }catch(e){}
+      return false;
+    }
+    try{ if(typeof renderSaved === 'function') renderSaved(); }catch(e){}
+    return true;
+  }catch(e){ return false; }
+}
 async function lblVoid(){
   if(!_lblResult || !_lblResult.shipmentId){ showToast('No shipment to void'); return; }
   if(!confirm('Void this UPS label at UPS?\n\nTracking: '+(_lblResult.tracking||[]).join(', ')+'\n\nThis cancels the label (no charge if before pickup).')) return;
@@ -16631,6 +16739,10 @@ async function lblVoid(){
     const j = await r.json();
     if(!j.ok){ showToast('❌ '+(j.error||'Void failed')); return; }
     showToast('✕ Label voided — '+(j.status||'ok'));
+    /* ⭐⭐ TRKSYNC-1 - 취소한 번호를 패킹리스트에서도 뺀다.
+       예전에는 `meta._ups` 만 지워서, 메일에는 죽은 운송장이 계속 나갔다.
+       ⚠ `_lblResult` 를 비우기 **전**에 해야 한다 - 아래에서 null 로 만든다. */
+    try{ if(!_lblResult.test && _lblRec) await plTrkSync(_lblRec.base, _lblResult.origin, [], _lblResult.tracking || []); }catch(e){}
     // 실제 라벨이었으면 이 창고 UPS 정보만 제거
     if(!_lblResult.test && _lblRec){
       _lblRec.meta = _lblRec.meta||{};
