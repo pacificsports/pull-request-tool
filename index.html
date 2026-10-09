@@ -314,7 +314,7 @@ body.po-dragging{user-select:none;}
   </span>
   <select id="lang-sel" onchange="setLang(this.value)" style="font-size:11px;padding:3px 6px;border-radius:5px;border:none;background:#1d3f66;color:#fff;"><option value="ko">한국어</option><option value="en">English</option><option value="es">Español</option></select>
   <button id="wide-btn" class="btn btn-sm" onclick="toggleWide()" title="화면 넓게 / 좁게 — 기본은 넓게 (이 브라우저에만 저장돼)" style="padding:2px 8px;font-size:10px;background:#1d3f66;color:#cfe0f2;border-color:#2b5384;">↔ Wide</button>
-  <span id="app-ver" style="font-size:10px;color:#9fb8d4;">v1244</span>
+  <span id="app-ver" style="font-size:10px;color:#9fb8d4;">v1245</span>
 </div>
 <script>
 // ↔ 넓게 보기 — 브라우저마다 따로 저장 (v793)
@@ -3083,8 +3083,72 @@ function prLooseBinsHtml(l){
 /* REVBIN-1 - 「어느 선반에서 몇 박스」 한 벌.
    ⭐⭐ 같은 판정을 두 군데 적으면 반드시 어긋난다 - 본 Pull Request 와 REV Pull Request 가
        이 함수 하나만 쓴다. 같은 선반이 여러 번 지정돼 있으면 합쳐서 한 줄로 만든다. */
+/* ═══ OUTBIN-1 - 종이의 「Pull from (bin)」 칸이 비던 문제 (2026-10-09) ═══
+   [stated] 하윤: "이러면 직원이 뭐가 어디에 있는지 알고 어떻케 뽑아"
+   뿌리: 저장할 때 시스템이 박스를 **알아서** 골라 재고에서 뺀다 (pr_boxes.out_po 도장).
+      그런데 그 선반을 오더 줄(pickLocs)에 안 적는다. 종이는 pickLocs 만 읽으므로
+      손으로 지정한 오더만 선반이 찍히고, 자동으로 빠진 오더는 전부 - 로 나왔다.
+   실측: Gone Tropo PO 0019571 - 오늘 11:43 에 98박스가 9개 선반에서 빠졌는데 종이는 전부 - .
+      픽커는 "이미 다 빠졌으니 더 지정할 게 없다" 며 손으로 적을 길도 막았다.
+   고침: 손으로 지정한 것이 없으면 **실제로 빠져나간 박스**에서 선반을 읽는다.
+   ⚠⚠ 전역 캐시를 쓰지 않는다 - 다른 오더를 찍을 때 앞 오더의 선반이 섞여 찍힌다.
+      그 오더의 **줄에 직접** 얹고(`_outBins`) 찍은 뒤 바로 지운다.
+   ⚠ 짝 맞추는 규칙(스타일·색·사이즈·창고)은 **새로 만들지 않았다** -
+      픽커가 쓰는 bxStyleFor / bxBaseColor / bxWh 를 그대로 쓴다. */
+function outBinsStamp(rec, wh, outRows){
+  const W = String(wh || '').trim().toUpperCase();
+  const rows = Array.isArray(outRows) ? outRows : [];
+  ((rec && rec.lines) || []).forEach(function(L){
+    try{ delete L._outBins; }catch(e){}
+    if((String(L.wh || 'SC').trim().toUpperCase() || 'SC') !== W) return;
+    const stU = String(bxStyleFor(L)).trim().toUpperCase();
+    const colB = bxBaseColor(bxColorFor(L));
+    const szU = String(L.size || '').trim().toUpperCase();
+    const sum = {}, order = [];
+    rows.forEach(function(b){
+      if(bxWh(b) !== W) return;
+      if(String(b.style == null ? '' : b.style).trim().toUpperCase() !== stU) return;
+      if(bxBaseColor(String(b.color == null ? '' : b.color).toUpperCase()) !== colB) return;
+      if(String(b.size == null ? '' : b.size).trim().toUpperCase() !== szU) return;
+      const k = String(b.loc || '?').toUpperCase();
+      if(!(k in sum)){ sum[k] = 0; order.push(k); }
+      sum[k] += 1;
+    });
+    if(order.length){
+      order.sort(function(a, b2){ return (sum[b2] - sum[a]) || (a < b2 ? -1 : 1); });
+      L._outBins = order.map(function(k){ return { loc: k, n: sum[k] }; });
+    }
+  });
+}
+function outBinsClear(rec){
+  try{ ((rec && rec.lines) || []).forEach(function(L){ delete L._outBins; }); }catch(e){}
+}
+/* 종이를 찍는 길이 둘이다 (한 장씩 · 묶어서). 둘 다 이걸 부른다. */
+async function outBinsLoad(rec, wh){
+  try{
+    const W = String(wh || '').trim().toUpperCase();
+    if(W !== 'SC' && W !== 'CA') return false;
+    const po = 'PO ' + ((rec && rec.meta && rec.meta.po) || '');
+    if(po === 'PO ') return false;
+    const r = await sbFetch('/rest/v1/pr_boxes?select=style,color,size,loc,wh&status=eq.OUT&out_po=eq.'
+      + encodeURIComponent(po));
+    if(!r || !r.ok) return false;
+    outBinsStamp(rec, W, await r.json());
+    return true;
+  }catch(e){ return false; }
+}
 function prFullBinRows(l){
   const gs = (l && l.pickLocs) || [];
+  /* OUTBIN-1 - 손으로 지정한 것이 없으면 실제로 빠져나간 박스의 선반을 쓴다 */
+  if(!gs.length){
+    const ob = (l && l._outBins) || [];
+    if(ob.length){
+      const pf0 = (l && l._palFrom) || {};
+      return ob.map(function(g){
+        return { loc: g.loc, n: g.n, pal: String(pf0[g.loc] || '').trim() };
+      });
+    }
+  }
   const sum = {}, order = [];
   gs.forEach(g=>{
     const k = String((g && g.loc) || '?').toUpperCase();
@@ -9573,10 +9637,13 @@ async function printSavedPRWh(base, wh){
         }
       }
       pick = bxPickListHtml(rec, wh, outRows);
+      /* OUTBIN-1 - 여기는 outRows 를 이미 읽어 뒀다. 다시 읽지 않는다. */
+      try{ outBinsStamp(rec, wh, outRows); }catch(e){}
     }catch(e){}
   }
   void pick;   // 옛 pick list(중복) 제거 — ②FULL BOX/③MOVE TO PC ROOM 는 이제 PR 문서(page 2)에 포함됨 (v491)
   printDocHtml(buildPRDocFromRec(rec, wh), plNum(rec.base, wh));
+  outBinsClear(rec);   /* OUTBIN-1 - 찍었으면 바로 지운다 (DB 에 남지 않게) */
   markDocPrinted(base, wh, 'pr');
 }
 /* ③ MOVE TO PC ROOM 을 "이미 옮김" 으로 표시한다.
@@ -47752,7 +47819,10 @@ async function batchPrintPRs(){
   const docs = [], touched = {};
   for(const p of pairs){
     const rec = savedCache.find(s=>s.base===p.base); if(!rec) continue;
+    /* OUTBIN-1 - 묶어 찍을 때도 선반이 찍혀야 한다 */
+    await outBinsLoad(rec, p.wh);
     docs.push('<div>'+buildPRDocFromRec(rec, p.wh)+'</div>');
+    outBinsClear(rec);
   }
   if(!docs.length){ showToast('🖨 No orders selected — check the box next to an SC/CA row first'); return; }
   printDocHtml(docs.join('<div style="page-break-before:always;break-before:page;"></div>'), 'PULL REQUESTS ('+docs.length+')');
