@@ -314,7 +314,7 @@ body.po-dragging{user-select:none;}
   </span>
   <select id="lang-sel" onchange="setLang(this.value)" style="font-size:11px;padding:3px 6px;border-radius:5px;border:none;background:#1d3f66;color:#fff;"><option value="ko">한국어</option><option value="en">English</option><option value="es">Español</option></select>
   <button id="wide-btn" class="btn btn-sm" onclick="toggleWide()" title="화면 넓게 / 좁게 — 기본은 넓게 (이 브라우저에만 저장돼)" style="padding:2px 8px;font-size:10px;background:#1d3f66;color:#cfe0f2;border-color:#2b5384;">↔ Wide</button>
-  <span id="app-ver" style="font-size:10px;color:#9fb8d4;">v1254</span>
+  <span id="app-ver" style="font-size:10px;color:#9fb8d4;">v1255</span>
 </div>
 <script>
 // ↔ 넓게 보기 — 브라우저마다 따로 저장 (v793)
@@ -11590,11 +11590,43 @@ function csPaysCard(cs){
   if(cs.payCard === undefined || cs.payCard === null) return cs.termType === 'cc';
   return !!cs.payCard;
 }
-function custPaysCard(cust){
+/* ═══ ⭐⭐⭐ ONEJUDGE-2 / CARDJ (2026-10-09) — 「카드로 받는 거래처인가」 도 한 군데서만 ═══
+   [stated] 하윤: "이것도 고쳐야하면 고쳐줘"
+   🔴 목록의 💳 CARD 딱지는 **지난 인보이스**까지 봤고, Detail·List 의 Card on File 체크칸은
+      안 봤다. 그래서 「카드로 결제한 적은 있는데 체크를 안 켠」 거래처가 생기면 같은 거래처가
+      한 화면에서는 CARD, 다른 화면에서는 꺼짐으로 보인다 - 직원이 긁어도 되는지 모른다.
+   ⭐ 세 단계로 한 줄 세웠다: ① payCard 칸 → ② 거래처 카드의 조건 → ③ **최근 인보이스**의 조건
+      ③은 목록 딱지가 쓰던 폴백이다. 없애면 실제로 카드로 받는 곳이 체크에서 빠진다.
+   ⚠ 틀릴 때는 **보여주는 쪽**으로 틀린다 - 안 보이면 직원이 카드가 있는 줄도 모르고,
+      보이면 한 번 확인하면 끝이다.
+   ⚠ csPaysCard(카드 한 장) 는 그대로 둔다 - 이 함수가 그것을 쓴다. */
+function custPaysCardEff(name, cs){
   try{
-    const cs = (typeof custGroupStore === 'function') ? custGroupStore(cust) : (custStore[custKey(cust)] || {});
-    return csPaysCard(cs);
+    let c = cs;
+    if(!c){ c = custStore[custKey(name)] || {}; }
+    if(c.payCard !== undefined && c.payCard !== null) return !!c.payCard;
+    if(c.termType) return c.termType === 'cc';
+    /* ONEJUDGE-2b - 모회사(브랜드) 카드. 예전에 custPaysCard 혼자 보던 길이다.
+       브랜드 자식 3곳(Concept 360 / Design Ink / Hybrid)은 자기 카드가 비어 있어서
+       이 단계가 없으면 모회사 설정이 통째로 무시된다. */
+    try{
+      const g = (typeof custGroupStore === 'function') ? (custGroupStore(name) || {}) : {};
+      if(g !== c){
+        if(g.payCard !== undefined && g.payCard !== null) return !!g.payCard;
+        if(g.termType) return g.termType === 'cc';
+      }
+    }catch(e){}
+    let tt = '';
+    try{ tt = String((custLastTermType(name) || {}).termType || ''); }catch(e){ tt = ''; }
+    return tt === 'cc';
   }catch(e){ return false; }
+}
+/* ONEJUDGE-2b - 이 함수는 이제 **답을 따로 세지 않는다.** 위 한 줄을 그대로 부른다.
+   실측(2026-10-09 라이브 거래처 71곳): 합치기 전후로 답이 달라지는 거래처 **0곳**.
+   ⚠ payDoCardCust 가 이걸 쓴다 - 💰 결제 링크 창을 띄울지 정하는 자리다.
+      그래서 틀릴 때는 **보여주는 쪽**으로 틀리게 뒀다 (안 보이면 직원이 카드가 있는 줄도 모른다). */
+function custPaysCard(cust){
+  try{ return custPaysCardEff(cust, null); }catch(e){ return false; }
 }
 /* CUSTTERM-v1 - 거래처 메일 칸에 우리 식구 주소가 섞여 들어와 있었다 (오더 283 건).
    [stated] 하윤: "customer쪽에 보면 막 우리 직원들 이멜도 다 나오는 거래처가 있는데 이것도 수정해줘"
@@ -13371,6 +13403,20 @@ function csFactored(cs){
 function csFactoredSet(cs){ return !!(cs && cs.factored !== undefined && cs.factored !== null); }
 /* 팩터가 아닌 거래처 인보이스에 찍는 우리 송금처. 회사 머리글과 **같은 값**에서 나온다. */
 function invOursRemit(){ return [INV_HQ.name, INV_HQ.dba, INV_HQ.addr]; }
+/* ═══ ⭐⭐⭐ ONEJUDGE-2 / FACGRP (2026-10-09) — 팩터 판정도 한 군데서만 ═══
+   [stated] 하윤: "이거 고쳐줘그럼"
+   🔴 화면(csFactored)은 **그 거래처 자기 카드**를, 종이(invFactored)는 **모회사(브랜드) 카드**를
+      봤다. 브랜드로 묶은 거래처가 3곳 있는데, 모회사 카드만 In-House 로 바꾸고 자식 카드를
+      안 바꾸면 **화면엔 HANA 인데 종이엔 우리 송금처가 찍힌다** - 거래처가 엉뚱한 데로 돈을 보낸다.
+   🔴 실측(2026-10-09): 오더 674건 중 **1건**이 이미 어긋나 있었다 -
+      Neo4ic PO 40725 (웹 오더). 종이는 In-House 인데 HANA 파일은 HANA 로 세고 있었다.
+      아직 인보이스를 안 끊어서 돈이 움직인 적은 없다.
+   ⭐ 이제 화면·목록·HANA 파일이 전부 **종이가 쓰는 invFactored** 를 그대로 부른다.
+   ⚠ csFactored 는 안 지웠다 - 「카드 한 장」 을 받는 낮은 단계 함수로 남아 invFactored 가 쓴다.
+      거래처 **이름**을 들고 물을 때는 반드시 custFactored 를 쓸 것. */
+function custFactored(name){
+  try{ return invFactored({ cust: name }); }catch(e){ return true; }
+}
 function invFactored(meta){
   let cs = {};
   try{
@@ -44439,7 +44485,7 @@ function cmAddrRow(name, em){
          ⚠ 팩터를 안 쓰는 거래처(웹샵·카드)에는 이 칸을 아예 안 보여준다 - 빈 칸이 늘면
            「뭘 안 채웠나」 가 매일 눈에 밟힌다.
          ⚠ [stated] 승인번호는 거래처마다 고정이다 - 그래서 오더가 아니라 거래처 카드에 둔다. */
-      + ((typeof csFactored==='function' && csFactored(cs)) ? (
+      + ((typeof custFactored==='function' && custFactored(name)) ? (
             emRow('🏦 HANA CODE', 'hanaCode', (cs&&cs.hanaCode)||'',
                   'LONEROCK, MARKINGS ...',
                   'The customer code HANA uses. It goes in the Customer_ID column of the daily assignment file.')
@@ -44469,7 +44515,7 @@ function cmTypeChips(name, cs, isCC){
     + '<input type="checkbox" '+(on?'checked':'')+' onchange="'+onch+'" style="width:13px;height:13px;accent-color:'+color+';cursor:pointer;">'+label+'</label>';
   /* PAYCARD-v1 - 이 칩은 이제 **조건이 아니라 「카드로 받는다」** 를 켠다.
      조건은 오른쪽 TERMS 칸에서 따로 고른다 (Net 30 + 카드 등록이 같이 되게). */
-  return chip(csPaysCard(cs), '#065f46', '💳 Card on File', "cmSet('"+k+"','payCard',this.checked)", 'Card on file — this customer pays by card. Payment terms are the separate TERMS box, so Net 30 + card on file is fine.')
+  return chip(custPaysCardEff(name, cs), '#065f46', '💳 Card on File', "cmSet('"+k+"','payCard',this.checked)", 'Card on file — this customer pays by card. Payment terms are the separate TERMS box, so Net 30 + card on file is fine.')
     + ' ' + chip(!!cs.webCust, '#0e7490', '🌐 Website', "cmSet('"+k+"','webCust',this.checked)", 'Website customer — new orders auto-tick 🌐 Website Customer')
     /* INHOUSE-1 - 돈을 누가 걷는가. 체크 두 개가 아니라 **둘 중 하나**다 (2026-10-03)
        [stated] 하윤: "우리 여기에 In-House 옵션도 factor옆에 하나 만들자"
@@ -44498,8 +44544,38 @@ function cmTypeChips(name, cs, isCC){
    ⚠⚠ 이미 「웹 + 팩터」 로 **손으로 적혀 있는** 줄은 조용히 안 바꾼다 - 그건 돈이 가는 방향을
       말없이 뒤집는 짓이다. 그런 줄에는 빨간 경고를 띄우고 사람이 고르게 둔다.
       (2026-10-03 실측: 거래처 65곳 중 그런 줄은 0곳이다) */
+/* ONEJUDGE-2c - 이 거래처가 브랜드 자식이면 모회사 이름을, 아니면 빈 글자를 돌려준다.
+   ⚠ 「돈길을 누가 정하나」 를 화면에 적기 위한 것이다. 판정 자체는 custFactored 가 한다. */
+function custFacParent(name){
+  try{
+    const own = custStore[custKey(name)] || {};
+    const p = String(own.parent || '').trim();
+    if(!p) return '';
+    const g = (typeof custGroupStore === 'function') ? (custGroupStore(name) || {}) : {};
+    if(g === own) return '';
+    return String(g.name || p);
+  }catch(e){ return ''; }
+}
 function cmMoneyPathHtml(k, cs){
-  const fac = csFactored(cs);
+  /* ONEJUDGE-2 - 종이와 같은 판정. 브랜드 자식이면 모회사 카드를 본다. */
+  const nmF = (cs && cs.name) || (typeof custNameOfKey==='function' ? custNameOfKey(k) : k);
+  const fac = custFactored(nmF);
+  /* ⚠⚠ ONEJUDGE-2c - 자식 카드에서는 단추를 안 낸다. 단추는 자식 카드에 쓰는데
+     보여주는 값은 모회사에서 읽으니, 그대로 두면 눌러도 안 바뀌는 죽은 단추가 된다.
+     답과 「어디서 정했는지」 만 보여주고, 고치려면 모회사 카드로 가게 한다. */
+  const facPar = custFacParent(nmF);
+  if(facPar){
+    return '<span title="This customer is grouped under ' + esc(facPar)
+      + ', and the money path is set on that card - the invoice reads it from there.'
+      + ' Open ' + esc(facPar) + ' to change it."'
+      + ' style="display:inline-flex;align-items:center;gap:4px;font-size:11px;font-weight:800;'
+      + 'border:1px solid ' + (fac ? '#7c2d12' : '#5b21b6') + ';background:'
+      + (fac ? '#7c2d1214' : '#5b21b614') + ';color:' + (fac ? '#7c2d12' : '#5b21b6')
+      + ';border-radius:7px;padding:3px 9px;vertical-align:middle;">'
+      + (fac ? '\u{1F3E6} Factored' : '\u{1F3E0} In-House') + '</span>'
+      + ' <span style="font-size:9px;font-weight:800;color:#0e7490;background:#ecfeff;border:1px solid #a5f3fc;'
+      + 'border-radius:6px;padding:2px 6px;vertical-align:middle;">set on ' + esc(facPar) + '</span>';
+  }
   const set = csFactoredSet(cs);
   const web = !!(cs && cs.webCust);
   const clash = web && (cs && cs.factored === true);
@@ -45004,15 +45080,16 @@ function cmFlagHtml(name, onDark){
   try{ cs = custStore[custKey(name)] || {}; }catch(e){ cs = {}; }
   let tt = '';
   try{ tt = String((custLastTermType(name) || {}).termType || ''); }catch(e){ tt = ''; }
-  const fac = (typeof csFactored === 'function') ? csFactored(cs) : false;
+  /* ONEJUDGE-2 - 목록 딱지도 종이와 같은 판정 */
+  const fac = (typeof custFactored === 'function') ? custFactored(name) : false;
   const web = !!cs.webCust;
   /* ⚠ 카드 판단도 앱의 기존 함수에 맞춘다 — Detail 카드와 List 의 💳 Card on File 칩이
      `csPaysCard(cs)`(= `payCard` 칸, 없으면 `cs.termType==='cc'`)를 쓴다. 여기만 조건 글자를
      보면 같은 거래처가 화면 두 곳에서 다르게 보인다 (PAYCARD-v1 이 둘을 갈라놓은 이유).
      ⭐ 다만 거래처 카드에 아무것도 안 적힌 곳은 `custLastTermType` 이 **최근 인보이스**에서
         찾아 준다 — 그 폴백까지 살려야 실제로 카드로 받는 곳이 빠지지 않는다. */
-  const pays = (cs.payCard !== undefined && cs.payCard !== null) ? !!cs.payCard
-             : (cs.termType ? cs.termType === 'cc' : tt === 'cc');
+  /* ONEJUDGE-2 - 체크칸과 같은 함수 */
+  const pays = custPaysCardEff(name, cs);
   const pill = (txt, bg, fg) => '<span title="' + esc(txt.t) + '" style="font-size:8.5px;font-weight:900;letter-spacing:.02em;'
     + 'padding:1px 5px;border-radius:9px;white-space:nowrap;background:' + bg + ';color:' + fg + ';">' + txt.s + '</span>';
   const out = [];
@@ -45265,7 +45342,7 @@ function renderCustomers(){
           <button class="btn btn-sm" style="margin-left:4px;${(cs.ups&&(cs.ups.account||cs.ups.mode))?'background:#7c2d12;color:#fff;border-color:#7c2d12;':''}" onclick="openCustUps('${esc(m.name)}')" title="UPS shipping account &amp; billing for this customer">🏷 UPS</button>
           <label style="display:inline-flex;align-items:center;gap:4px;margin-left:6px;font-size:11px;font-weight:700;color:#0e7490;cursor:pointer;vertical-align:middle;" title="Website customer — new orders auto-check 🌐 Website Customer"><input type="checkbox" ${cs.webCust?'checked':''} onchange="cmSet('${esc(k)}','webCust',this.checked)" style="width:13px;height:13px;accent-color:#0e7490;cursor:pointer;">🌐 Website</label>
           <!-- PAYCARD-v1 - 조건과 따로. 「카드로 받는 거래처」 표시 -->
-          <label style="display:inline-flex;align-items:center;gap:4px;margin-left:6px;font-size:11px;font-weight:700;color:#065f46;cursor:pointer;vertical-align:middle;" title="Card on file — this customer pays by card. Terms are the separate column."><input type="checkbox" ${csPaysCard(cs)?'checked':''} onchange="cmSet('${esc(k)}','payCard',this.checked)" style="width:13px;height:13px;accent-color:#065f46;cursor:pointer;">💳 Card on File</label>
+          <label style="display:inline-flex;align-items:center;gap:4px;margin-left:6px;font-size:11px;font-weight:700;color:#065f46;cursor:pointer;vertical-align:middle;" title="Card on file — this customer pays by card. Terms are the separate column."><input type="checkbox" ${custPaysCardEff(custNameOfKey(k), cs)?'checked':''} onchange="cmSet('${esc(k)}','payCard',this.checked)" style="width:13px;height:13px;accent-color:#065f46;cursor:pointer;">💳 Card on File</label>
           <button class="btn btn-sm" style="border:none;padding:0 5px;margin-left:2px;" onclick="openCustLink('${esc(m.name)}')" title="Link/unlink as another brand of the same company">🔗</button>
           <button class="btn btn-sm" style="border:none;padding:0 5px;margin-left:2px;" onclick="cmDelete('${esc(m.name)}')" title="Delete this customer">🗑</button></td>
       </tr>`;
@@ -50416,7 +50493,9 @@ function factorCandidates(days, withSent){
     const meta = poPaperMeta(rec);   /* SPLITPO-1 */
     if(meta._cancelled) return;
     const cs = factorCustCard(meta.cust);
-    const fac = (typeof csFactored==='function') ? csFactored(cs) : true;
+    /* ONEJUDGE-2 - HANA 파일도 **종이와 똑같이** 묻는다. meta.webCust(그 오더가 웹 오더인가)
+       까지 보므로 「종이엔 우리 송금처, 파일엔 HANA」 가 생기지 않는다. */
+    const fac = (typeof invFactored==='function') ? invFactored(meta) : true;
     /* 인보이스 */
     Object.keys(rec.inv||{}).forEach(wh=>{
       const iv = rec.inv[wh] || {};
