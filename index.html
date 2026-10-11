@@ -314,7 +314,7 @@ body.po-dragging{user-select:none;}
   </span>
   <select id="lang-sel" onchange="setLang(this.value)" style="font-size:11px;padding:3px 6px;border-radius:5px;border:none;background:#1d3f66;color:#fff;"><option value="ko">한국어</option><option value="en">English</option><option value="es">Español</option></select>
   <button id="wide-btn" class="btn btn-sm" onclick="toggleWide()" title="화면 넓게 / 좁게 — 기본은 넓게 (이 브라우저에만 저장돼)" style="padding:2px 8px;font-size:10px;background:#1d3f66;color:#cfe0f2;border-color:#2b5384;">↔ Wide</button>
-  <span id="app-ver" style="font-size:10px;color:#9fb8d4;">v1264</span>
+  <span id="app-ver" style="font-size:10px;color:#9fb8d4;">v1265</span>
 </div>
 <script>
 // ↔ 넓게 보기 — 브라우저마다 따로 저장 (v793)
@@ -7507,6 +7507,29 @@ function openCreditMemo(base, ra){
       <button class="btn" onclick="printCreditMemo('${esc(base)}','${esc(ra)}')">🖨 Print / PDF</button>
       <button class="btn btn-primary" id="cm-email-btn" style="background:#0e7490;border-color:#0e7490;" onclick="creditMemoEmail('${esc(base)}','${esc(ra)}')">📧 ${(ret.received&&ret.received.cmEmailedAt)?'Resend to customer':'Email to customer'}</button>
       ${(function(){
+        /* CMREF-1 (2026-10-11) 크레딧 메모를 낸 **그 자리에서** 카드도 돌려줄 수 있게.
+           [stated] 하윤: "credit memo issue하고 난후에 사람이 거기서 refund도 필요하면 바로"
+           ⚠⚠ 여기서 자동으로 긁지 않는다 - 기존 환불창을 **열어 줄 뿐**이고 누르는 건 사람이다.
+              (크레딧 메모가 늘 카드 환불인 것은 아니다. 다음 인보이스에서 깎는 경우가 더 많다)
+           ⚠ 안 띄우는 경우: 아직 발행 전 · 결제 기록 없음 · **거래번호 없음**(돌려줄 거래가 없다)
+              · 이미 다 돌려줬음 · 크레딧이 0
+           ⚠ 창을 안 닫는다 - 환불창(z-index 130)이 이 창(102) 위에 뜨고, 취소하면 제자리다.
+           ⓘ 금액은 **크레딧 금액**을 미리 채우되 남은 결제액을 넘지 않게 자른다.
+           ⓘ 두 번째 결제(payments[])·중복결제는 여기서 안 다룬다 - 오더 줄에 각각 단추가 있다. */
+        try{
+          if(!_issued || !_pd || !_pdWh || !_pd.transId) return '';
+          const _rt = refundTotals(_pd);
+          if(_rt.remain <= 0.005) return '';
+          const _pre = Math.min(Number(total) || 0, _rt.remain);
+          if(!(_pre > 0.005)) return '';
+          return '<button class="btn" style="background:#fff;color:#b91c1c;border-color:#fca5a5;font-weight:800;"'
+            + ' onclick="refundCharge(\'' + esc(base) + '\',\'' + esc(_pdWh) + '\',null,' + _pre.toFixed(2) + ')"'
+            + ' title="Open the refund window for the card' + (_cardLast4 ? (' ending ' + esc(_cardLast4)) : '')
+            + ' - $' + _rt.remain.toFixed(2) + ' of this payment has not been refunded yet.'
+            + ' Nothing is charged until you confirm in that window.">\u21A9 Refund $' + _pre.toFixed(2) + '</button>';
+        }catch(e){ return ''; }
+      })()}
+      ${(function(){
         /* CMSTOCKBTN-1 - 메일을 보내고 나면 **다음 할 일이 바로 여기 있어야 한다** (2026-10-06)
            [stated] 하윤: "이멜은 나간거 같은데 근데 왜 inventory location bin하는거는 안나오지?"
            🔴 들어가는 길이 대시보드 타일과 CM 목록의 ✓ Issued 칸 두 곳뿐이라, 메일을 보낸
@@ -7540,7 +7563,9 @@ function buildCreditMemoEmailBody(rec, ret, cm){
   const total=Number(rc.creditAmount!=null?rc.creditAmount:src.reduce((a,l)=>a+(Number(l.receivedQty!=null?l.receivedQty:l.qty)||0)*(Number(l.price)||0),0));
   const _wh=(ret.lines&&ret.lines[0]&&(ret.lines[0].toWh||ret.lines[0].wh))||'SC';
   let _pd=(rec.inv&&rec.inv[_wh]&&rec.inv[_wh].paid)||null;
-  if((!_pd || _pd.method==='website') && rec.inv){ for(const w of Object.keys(rec.inv)){ const q=rec.inv[w]&&rec.inv[w].paid; if(q && q.method!=='website' && String(q.acct||'').replace(/[^0-9]/g,'')){ _pd=q; break; } } }
+  /* CMREF-1 - 환불 단추가 **어느 창고 결제**를 가리키는지. 고르는 규칙은 안 바꾼다. */
+  let _pdWh=_pd?_wh:'';
+  if((!_pd || _pd.method==='website') && rec.inv){ for(const w of Object.keys(rec.inv)){ const q=rec.inv[w]&&rec.inv[w].paid; if(q && q.method!=='website' && String(q.acct||'').replace(/[^0-9]/g,'')){ _pd=q; _pdWh=w; break; } } }
   const _cardLast4=_pd?String(_pd.acct||'').replace(/[^0-9]/g,'').slice(-4):'';
   const _refDone=_pd?((typeof refundTotals==='function')?(refundTotals(_pd).refTot>0.005):!!(_pd.refunds&&_pd.refunds.length)):false;
   const _showCard = !!_cardLast4 || !!ret.cc;
