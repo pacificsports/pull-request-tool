@@ -314,7 +314,7 @@ body.po-dragging{user-select:none;}
   </span>
   <select id="lang-sel" onchange="setLang(this.value)" style="font-size:11px;padding:3px 6px;border-radius:5px;border:none;background:#1d3f66;color:#fff;"><option value="ko">한국어</option><option value="en">English</option><option value="es">Español</option></select>
   <button id="wide-btn" class="btn btn-sm" onclick="toggleWide()" title="화면 넓게 / 좁게 — 기본은 넓게 (이 브라우저에만 저장돼)" style="padding:2px 8px;font-size:10px;background:#1d3f66;color:#cfe0f2;border-color:#2b5384;">↔ Wide</button>
-  <span id="app-ver" style="font-size:10px;color:#9fb8d4;">v1260</span>
+  <span id="app-ver" style="font-size:10px;color:#9fb8d4;">v1261</span>
 </div>
 <script>
 // ↔ 넓게 보기 — 브라우저마다 따로 저장 (v793)
@@ -10183,7 +10183,13 @@ async function _savePLInner(rec){
   const _isPick = isPickupVia((rec.pl[plWh] || {}).via);
   showToast(t('a_plsaved',{x:plNum(plBase, plWh)}) + (plDrafts[plWh].serial ? ` (${plDrafts[plWh].serial})` : '')
     + (_isPick ? '' : ' — email is sent only when you press ✅ Complete'));
-  if(_isPick){ await sendPickupReadyMail(rec, plWh); }
+  if(_isPick){
+    await sendPickupReadyMail(rec, plWh);
+    /* 손님 화면도 같이 바뀌어야 한다 - 메일은 「준비됐다」 인데 화면이 Processing 이면 어긋난다 */
+    const _rd = await webSetReadyForPickup(rec);
+    if(_rd === 'set')    showToast('\u{1F310} Website now shows READY FOR PICKUP');
+    if(_rd === 'failed') showToast('\u26A0 Could not update the website status - press Save again');
+  }
 }
 /* 이 PO 와 한 박스로 함께 나가는 다른 PO 들 (v873).
    같은 거래처 메일로 가는 것만 묶는다 — 남의 회사 packing list 가 섞여 나가면 큰일이다.
@@ -11980,6 +11986,26 @@ async function sendPickupReadyMail(rec, wh){
     showToast('\u26A0 Pickup notice failed to send - press Save again to retry');
     return 'failed';
   }
+}
+/* READY-1 (2026-10-11) 웹 주문의 손님 화면 상태를 `ready` 로 민다.
+   ⚠ **앞으로만 간다** - 이미 shipped / rejected 인 줄은 조건에서 빠진다.
+   ⚠ 여러 번 불려도 안전하다 (두 번째부터 걸리는 줄이 0개).
+   ⚠⚠ 메일 잠금(_pickMailAt)과 **따로** 돈다 - 메일은 한 번만, 상태는 저장할 때마다
+      확인한다. 그래서 메일만 나가고 이 줄이 실패해도 다음 저장에서 저절로 고쳐진다.
+   ⚠⚠ PostgREST 는 한 줄도 안 맞아도 200/204 를 준다 - 꼭 `return=representation` 으로
+      **돌아온 줄을 세서** 바뀌었는지 판단한다. */
+async function webSetReadyForPickup(rec){
+  try{
+    const po = String(((rec.meta || {}) || {}).po || '').trim();
+    if(!/^(WEB-|W\d)/i.test(po)) return 'notweb';
+    const r = await sbFetch('/rest/v1/web_orders?order_number=eq.' + encodeURIComponent(po)
+      + '&status=in.(new,accepted,partial)',
+      { method:'PATCH', headers:{ Prefer:'return=representation' },
+        body: JSON.stringify({ status:'ready' }) });
+    if(!r.ok) return 'failed';
+    const rows = await r.json();
+    return (Array.isArray(rows) && rows.length) ? 'set' : 'nochange';
+  }catch(e){ return 'failed'; }
 }
 /* PL 화면에 보낸 사실을 띄운다 - 직원이 「갔나 안 갔나」 를 안 물어도 되게 */
 function plPickupStatusHtml(rec, wh){
@@ -22101,7 +22127,9 @@ function woLines(o){
 
 async function webOrdersLoad(silent){
   try{
-    const r = await sbFetch('/rest/v1/web_orders?status=in.(new,accepted,partial)'
+    /* READY-1 - `ready` 를 빼면 픽업 대기 주문이 이 목록에서 통째로 사라진다.
+       아직 손님이 안 가져간 건이라 직원 눈에 보여야 한다. */
+    const r = await sbFetch('/rest/v1/web_orders?status=in.(new,accepted,partial,ready)'
       + '&select=id,order_number,company_name,contact_name,email,phone,items,total_pcs,total_amount,ship_to,shipping_method,shipping_cost,shipping_legs,notes,status,created_at,paid_at'
       + '&order=created_at.desc&limit=60');
     _webOrders = r.ok ? (await r.json()) : [];
