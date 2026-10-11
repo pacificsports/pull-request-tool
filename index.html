@@ -314,7 +314,7 @@ body.po-dragging{user-select:none;}
   </span>
   <select id="lang-sel" onchange="setLang(this.value)" style="font-size:11px;padding:3px 6px;border-radius:5px;border:none;background:#1d3f66;color:#fff;"><option value="ko">한국어</option><option value="en">English</option><option value="es">Español</option></select>
   <button id="wide-btn" class="btn btn-sm" onclick="toggleWide()" title="화면 넓게 / 좁게 — 기본은 넓게 (이 브라우저에만 저장돼)" style="padding:2px 8px;font-size:10px;background:#1d3f66;color:#cfe0f2;border-color:#2b5384;">↔ Wide</button>
-  <span id="app-ver" style="font-size:10px;color:#9fb8d4;">v1261</span>
+  <span id="app-ver" style="font-size:10px;color:#9fb8d4;">v1262</span>
 </div>
 <script>
 // ↔ 넓게 보기 — 브라우저마다 따로 저장 (v793)
@@ -12052,31 +12052,40 @@ async function sendPLEmailFor(rec, wh, toEmail, extra){
             + psmRow('Invoice total', webMoney(extra.total));
     }catch(e){ extra.pdfFailed = true; console.warn('web invoice pdf fail', e); }
   }
-  const _xLine = _xAtt.length
-    ? 'Your order just left our warehouse. The packing list and your invoice are attached to this email.'
-    : 'Your order just left our warehouse. Your packing list is attached to this email.';
+  /* PICKED-1 - 픽업 건은 「보냈다 / 가는 중」 이 아니라 「가져가셨다」 다. */
+  const _isPick = isPickupVia(d.via);
+  const _xLine = _isPick
+    ? (_xAtt.length
+        ? 'Thank you for picking up your order. The packing list and your invoice are attached to this email.'
+        : 'Thank you for picking up your order. Your packing list is attached to this email.')
+    : (_xAtt.length
+        ? 'Your order just left our warehouse. The packing list and your invoice are attached to this email.'
+        : 'Your order just left our warehouse. Your packing list is attached to this email.');
   /* 집 스타일로 다시 그렸다 (v1126) — 첨부·받는사람·제목은 그대로 */
   const _trkList = (d.trackings||[]).filter(Boolean);
   const _trkUrl0 = _trkList.length ? plTrackUrl(_trkList[0], d.via, d.freightCo) : '';
   const _viaStr = d.via ? (d.via + (d.method ? ' ' + d.method : '') + (d.freightCo && d.via==='LTL' ? ' — ' + d.freightCo : '')) : '';
-  const bodyHtml = psmWrap('Order Shipped',
-      psmHead('PO # ' + esc(meta.po||''), _viaStr ? ('on the way via <b>' + esc(_viaStr) + '</b>') : 'on the way')
+  const bodyHtml = psmWrap(_isPick ? 'Order Picked Up' : 'Order Shipped',
+      psmHead('PO # ' + esc(meta.po||''),
+        _isPick ? ('picked up at our <b>' + esc(WH_LABEL[PICKUP_WH] || 'Eastvale, CA') + '</b> warehouse')
+                : (_viaStr ? ('on the way via <b>' + esc(_viaStr) + '</b>') : 'on the way'))
     + psmP(_xLine)
     + (_trkUrl0 ? psmBtn(_trkUrl0, 'Track shipment') : '')
     + psmTable(
         psmCustRow(meta)
       + psmRow('Packing list #', esc(num))
-      + psmRow('Ship date', esc(d.date ? new Date(d.date+'T00:00:00').toLocaleDateString('en-US') : ''))
+      + psmRow(_isPick ? 'Picked up' : 'Ship date', esc(d.date ? new Date(d.date+'T00:00:00').toLocaleDateString('en-US') : ''))
       + (trk ? psmRow('Tracking #', psmTrackLinks(d.trackings, d.via, d.freightCo)) : '')
       + psmRow('Total', tot.toLocaleString() + ' pcs')
       + _xRow)
     + (_xAtt.length ? psmNote('&#128179; &nbsp;<b>Paid by credit card</b> &mdash; amount due $0.00') : '')
-    + psmP('Questions about this shipment? Just reply to this email.'));
+    + psmP(_isPick ? 'Questions about this order? Just reply to this email.'
+                   : 'Questions about this shipment? Just reply to this email.'));
   const r = await fetch('https://po-confirm-email.hjbae.workers.dev/send-pl', {
     method:'POST', headers:{'Content-Type':'application/json'},
     body: JSON.stringify({
       to: String(toEmail).split(',').map(e=>e.trim()).filter(e=>e.includes('@')),
-      subject: 'Order Shipped — PO ' + (meta.po||'') + ' (Pacific Sports)',
+      subject: (_isPick ? 'Order Picked Up — PO ' : 'Order Shipped — PO ') + (meta.po||'') + ' (Pacific Sports)',
       html: bodyHtml,
       cc: STAFF_EMAILS, reply_to: MAIL_REPLY_TO,
       attachments: [{ filename: num + '-PL.pdf', content: b64 }].concat(_xAtt).concat(mergeFailedAsEmailAtts())
@@ -17750,6 +17759,14 @@ async function webOrderPushBack(rec, wh, d, invNo, totAmt){
       body.carrier         = (d.via === 'LTL') ? (d.freightCo || 'LTL') : 'UPS';
       body.shipped_at      = new Date().toISOString();
       body.status          = 'shipped';
+    } else if(isPickupVia(d.via)){
+      /* PICKED-1 (2026-10-11) 픽업은 추적번호가 없다.
+         🔴 위 if 는 추적번호가 있을 때만 돌기 때문에, 이 가지가 없으면 픽업 건은
+            ✅ Complete 를 해도 손님 화면이 **영영 `ready`** 로 남는다.
+         ⚠ 운송회사·추적번호는 안 넣는다 - 없는 것을 지어내지 않는다.
+         ⓘ shipped_at 은 「우리 손을 떠난 시각」이라 픽업에도 맞는 칸이다. */
+      body.shipped_at = new Date().toISOString();
+      body.status     = 'picked_up';
     }
 
     // ⚠ PostgREST 는 한 줄도 안 맞아도 PATCH 에 204 를 준다.
