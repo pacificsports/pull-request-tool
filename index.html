@@ -314,7 +314,7 @@ body.po-dragging{user-select:none;}
   </span>
   <select id="lang-sel" onchange="setLang(this.value)" style="font-size:11px;padding:3px 6px;border-radius:5px;border:none;background:#1d3f66;color:#fff;"><option value="ko">한국어</option><option value="en">English</option><option value="es">Español</option></select>
   <button id="wide-btn" class="btn btn-sm" onclick="toggleWide()" title="화면 넓게 / 좁게 — 기본은 넓게 (이 브라우저에만 저장돼)" style="padding:2px 8px;font-size:10px;background:#1d3f66;color:#cfe0f2;border-color:#2b5384;">↔ Wide</button>
-  <span id="app-ver" style="font-size:10px;color:#9fb8d4;">v1262</span>
+  <span id="app-ver" style="font-size:10px;color:#9fb8d4;">v1263</span>
 </div>
 <script>
 // ↔ 넓게 보기 — 브라우저마다 따로 저장 (v793)
@@ -10558,6 +10558,45 @@ async function sendBatchPLEmail(recs, wh, toEmail){
      안 남기면 History 에는 아무것도 안 보여서 "이멜 안 나갔다"로 오해된다. (v916) */
   recs.forEach(rec=>{ try{ logHist(rec.base, 'Packing List emailed — ' + wh + ' (batch of ' + recs.length + ' POs, one email) → ' + toEmail); }catch(_){} });
 }
+/* ═══ UNSHIP-1 (2026-10-11) — ↩ Undo Ship 이 손님 화면도 되돌린다 ═══
+   psflowx 에서 출고를 무르면 웹 주문도 포장 전 상태로 돌아가야 한다. 안 그러면
+   손님은 「찾으러 오세요」/「보냈습니다」 를 계속 보고, 있지도 않은 인보이스 버튼이 남는다.
+   ⚠ 되돌리는 범위: 상태 + 송장 + 인보이스 칸. **결제(payment_status)는 안 건드린다** —
+     돈은 그대로 받은 상태다. 환불은 취소(webCancelFinish)가 하는 일이지 여기가 아니다.
+   ⚠ 돌아갈 자리: 전에 `accepted_at` 이 찍혀 있었으면 `accepted`, 아니면 `new`.
+     (원래 상태를 따로 저장해 두지 않으므로 이 두 가지가 우리가 아는 전부다)
+   ⚠⚠ 다른 창고 몫이 아직 나가 있으면 **아무것도 안 한다** — 반만 무른 것이라
+      주문 전체를 「준비 안 됨」으로 되돌리면 거짓말이 된다.
+   ⚠ `rejected` 는 절대 안 건드린다 (조건에서 빠져 있다). */
+async function webUnshipReset(rec, whUndone){
+  try{
+    const po = String(((rec.meta || {}) || {}).po || '').trim();
+    if(!/^(WEB-|W\d)/i.test(po)) return 'notweb';
+    /* 다른 창고에 아직 살아 있는 Packing List 가 있으면 건드리지 않는다 */
+    const others = Object.keys(rec.pl || {}).filter(function(k){
+      return k !== whUndone && ((rec.pl[k] || {}).savedAt);
+    });
+    if(others.length) return 'partial';
+    const g = await sbFetch('/rest/v1/web_orders?order_number=eq.' + encodeURIComponent(po)
+      + '&select=status,accepted_at');
+    if(!g.ok) return 'failed';
+    const rows = await g.json();
+    const row = (Array.isArray(rows) && rows[0]) ? rows[0] : null;
+    if(!row) return 'norow';
+    const back = row.accepted_at ? 'accepted' : 'new';
+    const r = await sbFetch('/rest/v1/web_orders?order_number=eq.' + encodeURIComponent(po)
+      + '&status=in.(ready,picked_up,shipped)',
+      { method:'PATCH', headers:{ Prefer:'return=representation' },
+        body: JSON.stringify({ status: back,
+          tracking_number: null, carrier: null, shipped_at: null,
+          invoice_no: null, invoice_total: null, invoiced_at: null, invoice_html: null,
+          packing_no: null, packing_html: null }) });
+    if(!r.ok) return 'failed';
+    /* ⚠⚠ PostgREST 는 0줄에도 200 을 준다 - 돌아온 줄을 세야 진짜 바뀐 건지 안다 */
+    const out = await r.json();
+    return (Array.isArray(out) && out.length) ? back : 'nochange';
+  }catch(e){ return 'failed'; }
+}
 async function unshipPL(){
   const rec = savedCache.find(s=>s.base===plBase); if(!rec) return;
   const num = plNum(plBase, plWh);
@@ -10569,6 +10608,11 @@ async function unshipPL(){
   boxLinkUnship(plBase, plWh);   // 📦 안 나간 걸로 되돌린다 — 손님 화면은 다시 박스 내용만 (v865)
   const r = await sbFetch('/rest/v1/pr_orders?base=eq.'+encodeURIComponent(plBase), {method:'PATCH', headers:{Prefer:'return=minimal'}, body:JSON.stringify({pl:rec.pl, inv:rec.inv, updated_at:new Date().toISOString()})});
   if(!r.ok){ alert(t('save_fail')); return; }
+  /* UNSHIP-1 - 손님 화면도 포장 전으로 되돌린다 (웹 주문일 때만) */
+  const _ur = await webUnshipReset(rec, plWh);
+  if(_ur === 'new' || _ur === 'accepted') showToast('\u{1F310} Website is back to ' + (_ur === 'accepted' ? 'ACCEPTED' : 'PROCESSING'));
+  if(_ur === 'failed')  showToast('\u26A0 Could not roll the website back - check the order on the website');
+  if(_ur === 'partial') showToast('\u{1F310} Website left as is - the other warehouse is still shipped');
   delete plDrafts[plWh];
   delete invDrafts[plWh];
   renderSaved();
