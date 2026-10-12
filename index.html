@@ -314,7 +314,7 @@ body.po-dragging{user-select:none;}
   </span>
   <select id="lang-sel" onchange="setLang(this.value)" style="font-size:11px;padding:3px 6px;border-radius:5px;border:none;background:#1d3f66;color:#fff;"><option value="ko">한국어</option><option value="en">English</option><option value="es">Español</option></select>
   <button id="wide-btn" class="btn btn-sm" onclick="toggleWide()" title="화면 넓게 / 좁게 — 기본은 넓게 (이 브라우저에만 저장돼)" style="padding:2px 8px;font-size:10px;background:#1d3f66;color:#cfe0f2;border-color:#2b5384;">↔ Wide</button>
-  <span id="app-ver" style="font-size:10px;color:#9fb8d4;">v1267</span>
+  <span id="app-ver" style="font-size:10px;color:#9fb8d4;">v1268</span>
 </div>
 <script>
 // ↔ 넓게 보기 — 브라우저마다 따로 저장 (v793)
@@ -11092,12 +11092,19 @@ function payReqShowSent(info){
     const _t = new Date().toLocaleTimeString('en-US',{hour:'numeric',minute:'2-digit'});
     box.innerHTML = info.self
       ? ('<div style="padding:9px 11px;border-radius:8px;background:#eff6ff;border:1px solid #bfdbfe;'
-         + 'color:#1d4ed8;font-size:12px;font-weight:700;line-height:1.6;">\u{1F4B3} Payment page opened here at '
-         + esc(_t) + ' \u2014 nothing was emailed to the customer'
-         + '<div style="font-weight:400;font-size:11px;color:#1e40af;margin-top:3px;">They get the receipt by email'
-         + ' once the payment goes through.</div>'
-         + '<div style="font-weight:400;font-size:11px;color:#3b6ea5;margin-top:3px;overflow-wrap:anywhere;">'
-         + esc(info.link) + '</div></div>')
+         + 'color:#1d4ed8;font-size:12px;font-weight:700;line-height:1.6;">'
+         + (payReqCardTail(info.cust)
+             ? ('\u{1F512} Ready to charge the card ending ' + esc(payReqCardTail(info.cust))
+                + ' \u2014 nothing was emailed to the customer'
+                + '<div style="font-weight:400;font-size:11px;color:#1e40af;margin-top:3px;">'
+                + 'Press the green button to charge it. The customer gets the receipt by email.</div>')
+             : ('\u{1F4B3} Payment page opened here at ' + esc(_t)
+                + ' \u2014 nothing was emailed to the customer'
+                + '<div style="font-weight:400;font-size:11px;color:#1e40af;margin-top:3px;">'
+                + 'No card is saved for this customer, so type it on the payment page.</div>'
+                + '<div style="font-weight:400;font-size:11px;color:#3b6ea5;margin-top:3px;overflow-wrap:anywhere;">'
+                + esc(info.link) + '</div>'))
+         + '</div>')
       : ('<div style="padding:9px 11px;border-radius:8px;background:#f0fdf4;border:1px solid #86efac;'
          + 'color:#166534;font-size:12px;font-weight:700;line-height:1.6;">\u2705 Sent to ' + esc(info.to)
          + ' at ' + esc(_t)
@@ -11110,9 +11117,18 @@ function payReqShowSent(info){
      그래서 self 면 「결제 페이지 다시 열기」로 바꾼다 (메일을 안 건드린다). */
   if(b){ b.disabled = false;
          if(info.self){
-           b.textContent = '\u{1F517} Open the payment page again';
-           b.setAttribute('onclick', 'payReqSelfReopen()');
-           b.style.background = '#1d4ed8'; b.style.borderColor = '#1d4ed8';
+           /* OFFICEPAY-1 - 저장 카드가 있으면 **긁는 단추**가 먼저다.
+              없으면 예전처럼 결제 페이지를 여는 길만 준다. */
+           const _tl = payReqCardTail(info.cust);
+           if(_tl){
+             b.textContent = '\u{1F4B3} Charge \u00b7\u00b7\u00b7' + _tl + '  ' + payReqMoney(info.amount);
+             b.setAttribute('onclick', 'payReqOfficeCharge()');
+             b.style.background = '#047857'; b.style.borderColor = '#047857';
+           } else {
+             b.textContent = '\u{1F517} Open the payment page again';
+             b.setAttribute('onclick', 'payReqSelfReopen()');
+             b.style.background = '#1d4ed8'; b.style.borderColor = '#1d4ed8';
+           }
          } else {
            b.textContent = '\u{1F504} Resend link';
            b.setAttribute('onclick', 'payReqResend()');
@@ -11133,6 +11149,60 @@ function payReqResetSent(){
   if(b){ b.textContent = payReqGoLabel();   /* PAYSENT-2 - 전에 보낸 건이면 Resend 로 되돌린다 */
          b.setAttribute('onclick', b.getAttribute('data-send') || '');
          b.style.background = payReqGoColor(); b.style.borderColor = payReqGoColor(); }
+}
+/* ═══ OFFICEPAY-1 (2026-10-12) 저장된 카드로 **우리가 바로 긁는다** ═══
+   결제창(Accept Hosted)을 안 쓴다 - 저장 카드에 Card Code 를 묻는 것을
+   `cardCodeRequired` 로 끌 수 없기 때문이다 (Authorize.Net 이 그 플래그를
+   새 카드에만 적용한다). 폼이 없으면 물어볼 자리가 없다.
+   ⚠ 거래처가 받는 링크는 한 글자도 안 달라진다 - 거기선 CVV 를 계속 받는다. */
+function payReqCardTail(cust){
+  try{
+    const cs = (typeof custKey === 'function' && custStore) ? custStore[custKey(cust)] : null;
+    return String((cs && cs.anetCardLast4) || '').replace(/[^0-9]/g, '').slice(-4);
+  }catch(e){ return ''; }
+}
+async function payReqOfficeCharge(){
+  const i = _payReqSent; if(!i || !i.token) return;
+  const b = document.getElementById('pr-go');
+  const tail = payReqCardTail(i.cust);
+  const amt = payReqMoney(i.amount);
+  /* ⚠ 돈이 나가는 클릭이다. 금액과 카드를 글자로 다시 보여주고 묻는다. */
+  if(!confirm('\u{1F4B3} Charge ' + (tail ? ('the card ending ' + tail) : 'the card on file')
+    + ' ' + amt + ' now?\n\n' + (i.cust || '') + '\n\nThis charges the card immediately.'
+    + ' The customer gets the receipt by email.')) return;
+  if(b){ b.disabled = true; b.textContent = '\u23F3 Charging...'; }
+  let j = null, httpOk = false;
+  try{
+    const r = await fetch(PAYREQ_API + '/officepay', { method:'POST',
+      headers:{'Content-Type':'application/json'}, body: JSON.stringify({ token: i.token }) });
+    httpOk = r.ok;
+    try{ j = await r.json(); }catch(e2){ j = null; }
+  }catch(e){
+    /* ⚠⚠ 답을 못 받았다 = 안 긁혔다는 뜻이 **아니다.** 다시 누르게 하면 안 된다. */
+    if(b){ b.disabled = true; b.textContent = '\u26A0 No answer - check before retrying'; }
+    alert('\u26A0 We did not get an answer from the payment processor.\n\n'
+      + 'The card MAY have been charged. Do NOT press again - check Authorize.Net'
+      + ' or this order first.');
+    return;
+  }
+  if(httpOk && j && j.ok){
+    const t2 = (j.acct ? (' \u00b7 card ' + j.acct) : '');
+    showToast('\u2705 Charged ' + payReqMoney(j.amount != null ? j.amount : i.amount) + t2);
+    try{ if(i.base) logHist(i.base, 'Charged the card on file ' + payReqMoney(j.amount != null ? j.amount : i.amount)
+      + (j.authCode ? (' (auth ' + j.authCode + ')') : '')); }catch(e){}
+    const box = document.getElementById('pr-sent');
+    if(box) box.innerHTML = '<div style="padding:9px 11px;border-radius:8px;background:#ecfdf5;'
+      + 'border:1px solid #6ee7b7;color:#047857;font-size:12px;font-weight:800;line-height:1.6;">'
+      + '\u2705 Paid ' + esc(payReqMoney(j.amount != null ? j.amount : i.amount)) + esc(t2)
+      + '<div style="font-weight:400;font-size:11px;margin-top:3px;">The customer has been emailed the receipt.</div></div>';
+    if(b){ b.disabled = true; b.textContent = '\u2705 Paid'; b.style.background = '#047857'; b.style.borderColor = '#047857'; }
+    try{ invNpRefresh(); }catch(e){}
+    try{ renderSaved(); }catch(e){}
+    return;
+  }
+  const msg = (j && j.error) || 'the charge did not go through';
+  alert('\u26A0 Not charged\n\n' + msg);
+  if(b){ b.disabled = false; b.textContent = '\u{1F4B3} Charge the card on file'; }
 }
 /* PAYSELF-2 - 우리가 내는 건의 「다시 열기」. 메일은 한 통도 안 보낸다. */
 function payReqSelfReopen(){
@@ -11253,6 +11323,7 @@ async function payReqOrderSend(base, mode){
   /* NOPOP-1 - 브라우저 팝업을 없앴다. 창에 이미 다 보인다. */
   if(btn){ btn.disabled = true; btn.textContent = _self ? '\u23F3 Opening...' : '\u23F3 Sending...'; }
   try{
+    const _prAmt = total;   /* OFFICEPAY-1 - 긁는 단추에 넘길 금액 */
     const row = { created_by: (SESS&&SESS.email)||'', cust: (rec.meta&&rec.meta.cust)||'', email: em,
       amount: total, note: note, items: items };
     /* PAYSELF-2 - 사무실에서 내는 건이면 그 표시를 DB 줄에 적는다.
@@ -11296,8 +11367,19 @@ async function payReqOrderSend(base, mode){
     /* PAYSENT-3 - 찍든 못 찍든 목록을 다시 그린다. 화면이 기록과 같아야 한다. */
     try{ invNpRefresh(); }catch(e3){}
     /* RESEND-1 - 창을 닫지 않는다. 단추가 Resend 로 바뀐다. */
-    payReqShowSent({ to: em, link: link, subject: subject, html: html, base: base, self: _self });
-    if(_self){ paySelfOpen(link); showToast('\u{1F4B3} Payment page opened - pay it there'); }
+    payReqShowSent({ to: em, link: link, subject: subject, html: html, base: base, self: _self,
+      /* OFFICEPAY-1 - 긁는 단추가 쓸 것들 */
+      token: token, cust: (rec.meta&&rec.meta.cust)||'', amount: _prAmt });
+    /* OFFICEPAY-1 - 저장 카드가 있으면 **새 탭을 열지 않는다.** 창 안의 초록 단추로 긁는다.
+       (결제창은 저장 카드에 Card Code 를 묻기 때문에 우리가 쓸 수 없다)
+       저장 카드가 없으면 전처럼 페이지를 열어 준다 - 거기서 카드를 쳐야 한다. */
+    if(_self){
+      if(payReqCardTail((rec.meta&&rec.meta.cust)||'')){
+        showToast('\u{1F512} Ready - press the green button to charge the card on file');
+      } else {
+        paySelfOpen(link); showToast('\u{1F4B3} Payment page opened - pay it there');
+      }
+    }
     else showToast('\u{1F4E7} Payment link sent to ' + em);
   }catch(e){
     showToast('\u26A0 Not sent: ' + ((e && e.message) || e));
@@ -11387,6 +11469,7 @@ async function payReqSend(base, wh, mode){
   /* NOPOP-1 - 브라우저 팝업을 없앴다. 창에 이미 다 보인다. */
   if(btn){ btn.disabled = true; btn.textContent = '\u23F3 Sending...'; }
   try{
+    const _prAmt = amt;     /* OFFICEPAY-1 - 긁는 단추에 넘길 금액 */
     const row = { created_by: (SESS&&SESS.email)||'', cust: (rec.meta&&rec.meta.cust)||'', email: em,
       amount: amt, note: note,
       items: [{ base: base, wh: wh, invNo: iv.invNo||'', po: (rec.meta&&rec.meta.po)||'', amount: amt }] };
@@ -11424,8 +11507,19 @@ async function payReqSend(base, wh, mode){
     /* PAYSENT-3 */
     try{ invNpRefresh(); }catch(e3){}
     /* RESEND-1 - 창을 닫지 않는다. 단추가 Resend 로 바뀐다. */
-    payReqShowSent({ to: em, link: link, subject: subject, html: html, base: base, self: _self });
-    if(_self){ paySelfOpen(link); showToast('\u{1F4B3} Payment page opened - pay it there'); }
+    payReqShowSent({ to: em, link: link, subject: subject, html: html, base: base, self: _self,
+      /* OFFICEPAY-1 - 긁는 단추가 쓸 것들 */
+      token: token, cust: (rec.meta&&rec.meta.cust)||'', amount: _prAmt });
+    /* OFFICEPAY-1 - 저장 카드가 있으면 **새 탭을 열지 않는다.** 창 안의 초록 단추로 긁는다.
+       (결제창은 저장 카드에 Card Code 를 묻기 때문에 우리가 쓸 수 없다)
+       저장 카드가 없으면 전처럼 페이지를 열어 준다 - 거기서 카드를 쳐야 한다. */
+    if(_self){
+      if(payReqCardTail((rec.meta&&rec.meta.cust)||'')){
+        showToast('\u{1F512} Ready - press the green button to charge the card on file');
+      } else {
+        paySelfOpen(link); showToast('\u{1F4B3} Payment page opened - pay it there');
+      }
+    }
     else showToast('\u{1F4E7} Payment link sent to ' + em);
   }catch(e){
     showToast('\u26A0 Not sent: ' + ((e && e.message) || e));
