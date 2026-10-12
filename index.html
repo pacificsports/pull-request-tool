@@ -314,7 +314,7 @@ body.po-dragging{user-select:none;}
   </span>
   <select id="lang-sel" onchange="setLang(this.value)" style="font-size:11px;padding:3px 6px;border-radius:5px;border:none;background:#1d3f66;color:#fff;"><option value="ko">한국어</option><option value="en">English</option><option value="es">Español</option></select>
   <button id="wide-btn" class="btn btn-sm" onclick="toggleWide()" title="화면 넓게 / 좁게 — 기본은 넓게 (이 브라우저에만 저장돼)" style="padding:2px 8px;font-size:10px;background:#1d3f66;color:#cfe0f2;border-color:#2b5384;">↔ Wide</button>
-  <span id="app-ver" style="font-size:10px;color:#9fb8d4;">v1266</span>
+  <span id="app-ver" style="font-size:10px;color:#9fb8d4;">v1267</span>
 </div>
 <script>
 // ↔ 넓게 보기 — 브라우저마다 따로 저장 (v793)
@@ -10934,7 +10934,7 @@ function payReqTermNote(rec){
    ⚠ 인보이스가 없는 창고는 건너뛴다 (빈 inv[wh] 를 만들면 다른 화면이 헷갈린다)
    ⚠ 오더 하나에 PATCH 한 번 - 줄마다 쓰지 않는다
    ⓘ 같은 링크를 다시 보내는 `payReqResend` 에서는 다시 안 찍는다 (줄은 이미 Resend 다) */
-async function payLinkStamp(items, to){
+async function payLinkStamp(items, to, self){
   const at = new Date().toISOString(), by = (typeof SESS!=='undefined' && SESS && SESS.email) || '';
   const byBase = {};
   (items||[]).forEach(function(it){
@@ -10951,6 +10951,9 @@ async function payLinkStamp(items, to){
       if(!cur || !cur.savedAt) return;          /* 인보이스가 없으면 찍지 않는다 */
       rec.inv[it.wh] = Object.assign({}, cur, {
         payLinkAt: at, payLinkBy: by, payLinkTo: String(to||''),
+        /* PAYSELF-2 - 「우리가 냈다」를 칸으로 남긴다. 글자(payLinkTo)로 가르면
+           문구를 한 번만 고쳐도 판정이 어긋난다. */
+        payLinkSelf: !!self,
         payLinkAmt: Math.round((Number(it.amount)||0) * 100) / 100 });
       touched = true;
     });
@@ -11008,12 +11011,21 @@ function payReqSentNote(rec, whs){
   try{
     const best = payLinkPrior(rec, whs);
     if(!best) return '';
+    /* PAYSELF-2 - 우리가 낸 건에 「링크를 보냈다」 고 적으면 안 된다. 안 보냈다. */
+    const amt = (Number(best.payLinkAmt) > 0 ? (' \u00b7 ' + payReqMoney(best.payLinkAmt)) : '');
+    if(payLinkWasSelf(best)){
+      return '<div style="margin-top:10px;background:#eff6ff;border:1px solid #bfdbfe;border-radius:8px;'
+        + 'padding:9px 11px;font-size:11.5px;color:#1d4ed8;line-height:1.6;">'
+        + '<b>\u{1F4B3} We opened the payment page here on '
+        + esc(String(best.payLinkAt).slice(0,10)) + '</b>' + amt
+        + '<br>No link was emailed to the customer.</div>';
+    }
     return '<div style="margin-top:10px;background:#f0fdf4;border:1px solid #86efac;border-radius:8px;'
       + 'padding:9px 11px;font-size:11.5px;color:#166534;line-height:1.6;">'
       + '<b>\u2713 A payment link was already sent on '
       + esc(String(best.payLinkAt).slice(0,10)) + '</b>'
       + (best.payLinkTo ? (' to ' + esc(best.payLinkTo)) : '')
-      + (Number(best.payLinkAmt) > 0 ? (' \u00b7 ' + payReqMoney(best.payLinkAmt)) : '')
+      + amt
       + '<br>Sending again is fine - it creates a new link for the amount below.</div>';
   }catch(e){ return ''; }
 }
@@ -11031,6 +11043,38 @@ function payReqOrderCalc(){
 let _payReqSent = null;
 /* PAYSENT-2 - 이 창을 열 때 「전에 보낸 건인가」. 창을 열 때 한 번 정해지고 그 뒤로 안 바뀐다 */
 let _payReqPrior = false;
+/* ═══ PAYSELF-2 (2026-10-12) ═══
+   「이 건은 우리가 사무실에서 냈나」. ⭐⭐⭐ 이 판정을 쓰는 곳이 넷이다
+   (창의 초록칸 · 단추 · 큐 줄의 마우스 글자 · 알림줄). 그래서 여기 하나로 모았다. */
+function payLinkWasSelf(iv){
+  try{
+    if(!iv) return false;
+    if(iv.payLinkSelf === true) return true;
+    /* 2026-10-12 전에 찍힌 줄에는 이 칸이 없다 - 그때는 받는 사람 글자로 가른다 */
+    return String(iv.payLinkTo || '').indexOf('our office') === 0;
+  }catch(e){ return false; }
+}
+/* 결제 요청 줄을 DB 에 넣는다. 사무실에서 내는 건이면 by_office 를 같이 적는다.
+   ⚠ 그 칸이 아직 없는 DB 에서는 칸만 빼고 한 번 더 넣는다 - 결제 요청 자체가
+      멈추는 것이 훨씬 나쁘다. 그때는 토스트로 알려 준다. */
+async function payReqPost(row, self){
+  const withFlag = Object.assign({}, row, { by_office: !!self });
+  let r = await sbFetch('/rest/v1/pr_payreq', { method:'POST',
+    headers:{Prefer:'return=representation'}, body: JSON.stringify([withFlag]) });
+  if(r.ok) return r;
+  let t = '';
+  try{ t = String(await r.text()); }catch(e){ t = ''; }
+  if(t.indexOf('by_office') >= 0){
+    r = await sbFetch('/rest/v1/pr_payreq', { method:'POST',
+      headers:{Prefer:'return=representation'}, body: JSON.stringify([row]) });
+    if(r.ok){
+      try{ showToast('\u26a0 Saved, but the office flag column is missing - run the pr_payreq SQL'); }catch(e){}
+      return r;
+    }
+    try{ t = String(await r.text()); }catch(e){}
+  }
+  throw new Error('DB ' + r.status + ' ' + t.slice(0, 120));
+}
 function payReqMailOut(to, subject, html){
   return fetch('https://po-confirm-email.hjbae.workers.dev/send-pl', {
     method:'POST', headers:{'Content-Type':'application/json'},
@@ -11043,16 +11087,37 @@ function payReqShowSent(info){
   const box = document.getElementById('pr-sent');
   if(box){
     box.style.display = 'block';
-    box.innerHTML = '<div style="padding:9px 11px;border-radius:8px;background:#f0fdf4;border:1px solid #86efac;'
-      + 'color:#166534;font-size:12px;font-weight:700;line-height:1.6;">\u2705 Sent to ' + esc(info.to)
-      + ' at ' + new Date().toLocaleTimeString('en-US',{hour:'numeric',minute:'2-digit'})
-      + '<div style="font-weight:400;font-size:11px;color:#4d7c5a;margin-top:3px;overflow-wrap:anywhere;">'
-      + esc(info.link) + '</div></div>';
+    /* PAYSELF-2 - 우리가 내는 건에는 **메일이 안 나갔다.** 같은 칸에 거래처 주소를
+       찍어 놓으면 직원이 「보냈구나」 로 읽는다. 그래서 글자를 완전히 바꾼다. */
+    const _t = new Date().toLocaleTimeString('en-US',{hour:'numeric',minute:'2-digit'});
+    box.innerHTML = info.self
+      ? ('<div style="padding:9px 11px;border-radius:8px;background:#eff6ff;border:1px solid #bfdbfe;'
+         + 'color:#1d4ed8;font-size:12px;font-weight:700;line-height:1.6;">\u{1F4B3} Payment page opened here at '
+         + esc(_t) + ' \u2014 nothing was emailed to the customer'
+         + '<div style="font-weight:400;font-size:11px;color:#1e40af;margin-top:3px;">They get the receipt by email'
+         + ' once the payment goes through.</div>'
+         + '<div style="font-weight:400;font-size:11px;color:#3b6ea5;margin-top:3px;overflow-wrap:anywhere;">'
+         + esc(info.link) + '</div></div>')
+      : ('<div style="padding:9px 11px;border-radius:8px;background:#f0fdf4;border:1px solid #86efac;'
+         + 'color:#166534;font-size:12px;font-weight:700;line-height:1.6;">\u2705 Sent to ' + esc(info.to)
+         + ' at ' + esc(_t)
+         + '<div style="font-weight:400;font-size:11px;color:#4d7c5a;margin-top:3px;overflow-wrap:anywhere;">'
+         + esc(info.link) + '</div></div>');
   }
   const b = document.getElementById('pr-go');
-  if(b){ b.disabled = false; b.textContent = '\u{1F504} Resend link';
-         b.setAttribute('onclick', 'payReqResend()');
-         b.style.background = '#0e7490'; b.style.borderColor = '#0e7490'; }
+  /* 🔴 PAYSELF-2 - self 로 낸 뒤 이 단추가 `payReqResend()` 였다.
+     누르면 **거래처에게 링크 메일이 진짜로 나간다** - 보내지 않기로 한 건인데.
+     그래서 self 면 「결제 페이지 다시 열기」로 바꾼다 (메일을 안 건드린다). */
+  if(b){ b.disabled = false;
+         if(info.self){
+           b.textContent = '\u{1F517} Open the payment page again';
+           b.setAttribute('onclick', 'payReqSelfReopen()');
+           b.style.background = '#1d4ed8'; b.style.borderColor = '#1d4ed8';
+         } else {
+           b.textContent = '\u{1F504} Resend link';
+           b.setAttribute('onclick', 'payReqResend()');
+           b.style.background = '#0e7490'; b.style.borderColor = '#0e7490';
+         } }
   const c = document.getElementById('pr-copy');
   if(c) c.style.display = '';
   const x = document.getElementById('pr-cancel');
@@ -11069,8 +11134,17 @@ function payReqResetSent(){
          b.setAttribute('onclick', b.getAttribute('data-send') || '');
          b.style.background = payReqGoColor(); b.style.borderColor = payReqGoColor(); }
 }
+/* PAYSELF-2 - 우리가 내는 건의 「다시 열기」. 메일은 한 통도 안 보낸다. */
+function payReqSelfReopen(){
+  const i = _payReqSent; if(!i || !i.link) return;
+  if(typeof paySelfOpen === 'function' && paySelfOpen(i.link))
+    showToast('\u{1F4B3} Payment page opened - pay it there');
+}
 async function payReqResend(){
   const i = _payReqSent; if(!i) return;
+  /* 🔴 안전장치 - self 로 낸 건에서는 메일을 보내지 않는다. 단추를 바꿔 놓았지만
+     옛 화면이 열려 있을 수도 있으니 여기서도 한 번 더 막는다. */
+  if(i.self){ payReqSelfReopen(); return; }
   const b = document.getElementById('pr-go');
   if(b){ b.disabled = true; b.textContent = '\u23F3 Sending...'; }
   try{
@@ -11181,9 +11255,9 @@ async function payReqOrderSend(base, mode){
   try{
     const row = { created_by: (SESS&&SESS.email)||'', cust: (rec.meta&&rec.meta.cust)||'', email: em,
       amount: total, note: note, items: items };
-    const r = await sbFetch('/rest/v1/pr_payreq', { method:'POST', headers:{Prefer:'return=representation'},
-      body: JSON.stringify([row]) });
-    if(!r.ok) throw new Error('DB ' + r.status + ' ' + String(await r.text()).slice(0,120));
+    /* PAYSELF-2 - 사무실에서 내는 건이면 그 표시를 DB 줄에 적는다.
+       워커가 그것을 보고 저장된 카드에 Card Code 를 안 묻는다. */
+    const r = await payReqPost(row, _self);
     const j = await r.json();
     const token = j && j[0] && j[0].token;
     if(!token) throw new Error('no link came back');
@@ -11217,12 +11291,12 @@ async function payReqOrderSend(base, mode){
       + items.map(x => x.wh + ' ' + payReqMoney(x.amount)).join(', ') + ')'
       + (_self ? '' : (' to ' + em)));
     /* PAYSENT-1 - 메일이 나간 뒤에만 찍는다. 찍기가 실패하면 링크는 이미 나갔다고 알린다 */
-    try{ await payLinkStamp(items, _self ? 'our office (we paid it here)' : em); }
+    try{ await payLinkStamp(items, _self ? 'our office (we paid it here)' : em, _self); }
     catch(e2){ showToast('\u26a0 The link ' + (_self ? 'was created' : 'DID go out') + ', but I could not mark the row - it still shows Payment'); }
     /* PAYSENT-3 - 찍든 못 찍든 목록을 다시 그린다. 화면이 기록과 같아야 한다. */
     try{ invNpRefresh(); }catch(e3){}
     /* RESEND-1 - 창을 닫지 않는다. 단추가 Resend 로 바뀐다. */
-    payReqShowSent({ to: em, link: link, subject: subject, html: html, base: base });
+    payReqShowSent({ to: em, link: link, subject: subject, html: html, base: base, self: _self });
     if(_self){ paySelfOpen(link); showToast('\u{1F4B3} Payment page opened - pay it there'); }
     else showToast('\u{1F4E7} Payment link sent to ' + em);
   }catch(e){
@@ -11316,9 +11390,9 @@ async function payReqSend(base, wh, mode){
     const row = { created_by: (SESS&&SESS.email)||'', cust: (rec.meta&&rec.meta.cust)||'', email: em,
       amount: amt, note: note,
       items: [{ base: base, wh: wh, invNo: iv.invNo||'', po: (rec.meta&&rec.meta.po)||'', amount: amt }] };
-    const r = await sbFetch('/rest/v1/pr_payreq', { method:'POST', headers:{Prefer:'return=representation'},
-      body: JSON.stringify([row]) });
-    if(!r.ok) throw new Error('DB ' + r.status + ' ' + String(await r.text()).slice(0,120));
+    /* PAYSELF-2 - 사무실에서 내는 건이면 그 표시를 DB 줄에 적는다.
+       워커가 그것을 보고 저장된 카드에 Card Code 를 안 묻는다. */
+    const r = await payReqPost(row, _self);
     const j = await r.json();
     const token = j && j[0] && j[0].token;
     if(!token) throw new Error('no link came back');
@@ -11345,12 +11419,12 @@ async function payReqSend(base, wh, mode){
     logHist(base, (_self ? 'Payment page opened in the office ' : 'Payment link sent ')
       + payReqMoney(amt) + ' (' + wh + ')' + (_self ? '' : (' to ' + em)));
     /* PAYSENT-1 */
-    try{ await payLinkStamp(row.items, _self ? 'our office (we paid it here)' : em); }
+    try{ await payLinkStamp(row.items, _self ? 'our office (we paid it here)' : em, _self); }
     catch(e2){ showToast('\u26a0 The link ' + (_self ? 'was created' : 'DID go out') + ', but I could not mark the row - it still shows Payment'); }
     /* PAYSENT-3 */
     try{ invNpRefresh(); }catch(e3){}
     /* RESEND-1 - 창을 닫지 않는다. 단추가 Resend 로 바뀐다. */
-    payReqShowSent({ to: em, link: link, subject: subject, html: html, base: base });
+    payReqShowSent({ to: em, link: link, subject: subject, html: html, base: base, self: _self });
     if(_self){ paySelfOpen(link); showToast('\u{1F4B3} Payment page opened - pay it there'); }
     else showToast('\u{1F4E7} Payment link sent to ' + em);
   }catch(e){
@@ -47788,6 +47862,7 @@ function invNpList(){
                  payCust: (typeof payDoCardCust==='function' ? payDoCardCust(s) : false),
                  /* PAYSENT-1 - 결제 링크를 보낸 도장 (보냈으면 단추가 Resend 로 바뀐다) */
                  payLinkAt: iv.payLinkAt || '', payLinkTo: iv.payLinkTo || '',
+                 payLinkSelf: iv.payLinkSelf === true,
                  /* PAYRECV-1 - 다 받았으면 {amt, at}, 아니면 null */
                  recv: (typeof payRecv==='function' ? payRecv(s, w) : null),
                  locker:_locker,
@@ -48174,9 +48249,15 @@ function invNpRowsHtml(){
             + '">\u2713 Received</span>'
           : (r.printed
           ? (r.payLinkAt
-              ? '<button class="btn btn-sm" style="padding:3px 10px;font-size:10.5px;white-space:nowrap;font-weight:800;background:#f0fdf4;color:#15803d;border-color:#86efac;" onclick="payReqOrder(\'' + eb + '\')" title="Payment link sent '
-                + esc(String(r.payLinkAt).slice(0,10)) + (r.payLinkTo ? (' to ' + esc(r.payLinkTo)) : '')
-                + ' \u2014 press to open it and send again">\ud83d\udd04 Resend</button>'
+              ? '<button class="btn btn-sm" style="padding:3px 10px;font-size:10.5px;white-space:nowrap;font-weight:800;background:#f0fdf4;color:#15803d;border-color:#86efac;" onclick="payReqOrder(\'' + eb + '\')" title="'
+                /* PAYSELF-2 - 우리가 낸 건은 「보냈다」 가 아니다 */
+                + (payLinkWasSelf(r)
+                    ? ('We paid this here on ' + esc(String(r.payLinkAt).slice(0,10))
+                       + ' \u2014 nothing was emailed. Press to open it again')
+                    : ('Payment link sent ' + esc(String(r.payLinkAt).slice(0,10))
+                       + (r.payLinkTo ? (' to ' + esc(r.payLinkTo)) : '')
+                       + ' \u2014 press to open it and send again'))
+                + '">\ud83d\udd04 Resend</button>'
               : '<button class="btn btn-sm" style="padding:3px 10px;font-size:10.5px;white-space:nowrap;font-weight:800;'
                 + (r.payCust ? 'background:#6d28d9;color:#fff;border-color:#6d28d9;'
                              : 'background:#f8fafc;color:#94a3b8;border-color:#e2e8f0;')
