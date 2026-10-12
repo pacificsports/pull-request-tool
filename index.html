@@ -314,7 +314,7 @@ body.po-dragging{user-select:none;}
   </span>
   <select id="lang-sel" onchange="setLang(this.value)" style="font-size:11px;padding:3px 6px;border-radius:5px;border:none;background:#1d3f66;color:#fff;"><option value="ko">한국어</option><option value="en">English</option><option value="es">Español</option></select>
   <button id="wide-btn" class="btn btn-sm" onclick="toggleWide()" title="화면 넓게 / 좁게 — 기본은 넓게 (이 브라우저에만 저장돼)" style="padding:2px 8px;font-size:10px;background:#1d3f66;color:#cfe0f2;border-color:#2b5384;">↔ Wide</button>
-  <span id="app-ver" style="font-size:10px;color:#9fb8d4;">v1268</span>
+  <span id="app-ver" style="font-size:10px;color:#9fb8d4;">v1270</span>
 </div>
 <script>
 // ↔ 넓게 보기 — 브라우저마다 따로 저장 (v793)
@@ -11003,9 +11003,27 @@ function payRecv(rec, wh){
 }
 /* PAYSENT-2 - 창 안의 단추 글자·색. 전에 보낸 건이면 Resend 로 보인다 */
 function payReqGoLabel(){
+  /* SELFFIRST-1 - 카드를 맡아둔 거래처면 오른쪽 진한 단추가 「긁기」다 */
+  if(_payReqSelfFirst) return '\u{1F4B3} Charge the card on file';
   return _payReqPrior ? '\u{1F504} Resend payment link' : '\u{1F4E7} Send payment link';
 }
-function payReqGoColor(){ return _payReqPrior ? '#0e7490' : '#1d4ed8'; }
+function payReqGoColor(){
+  if(_payReqSelfFirst) return '#047857';   /* 초록 = 지금 할 일 */
+  return _payReqPrior ? '#0e7490' : '#1d4ed8';
+}
+/* SELFFIRST-1 - 왼쪽 옅은 단추. 자리를 바꾼 경우에는 여기가 「링크 보내기」가 된다. */
+function payReqAltBtn(cust, selfCall, sendCall){
+  if(payReqSelfFirst(cust)){
+    return '<button class="btn btn-sm" id="pr-sendlink"'
+      + ' style="background:#f8fafc;color:#1d4ed8;border-color:#cbd5e1;font-weight:700;"'
+      + ' onclick="' + sendCall + '"'
+      + ' title="Email the customer a link so they pay it themselves instead. They will be asked for'
+      + ' the card code on that page.">'
+      + (_payReqPrior ? '\u{1F504} Resend payment link' : '\u{1F4E7} Send payment link')
+      + '</button>';
+  }
+  return paySelfBtn(cust, selfCall);
+}
 /* PAYSENT-1 - 창 안에서 「전에 보낸 적이 있다」 를 보여 준다 (새로 고쳐도 남는다) */
 function payReqSentNote(rec, whs){
   try{
@@ -11043,6 +11061,12 @@ function payReqOrderCalc(){
 let _payReqSent = null;
 /* PAYSENT-2 - 이 창을 열 때 「전에 보낸 건인가」. 창을 열 때 한 번 정해지고 그 뒤로 안 바뀐다 */
 let _payReqPrior = false;
+/* SELFFIRST-1 - 「이 거래처는 우리가 긁는 것이 본래 할 일인가」.
+   동의 + 저장카드가 **둘 다** 있을 때만 참이다. 창을 열 때 굳힌다. */
+let _payReqSelfFirst = false;
+function payReqSelfFirst(cust){
+  try{ return !!(mitInfo(cust) && payReqCardTail(cust)); }catch(e){ return false; }
+}
 /* ═══ PAYSELF-2 (2026-10-12) ═══
    「이 건은 우리가 사무실에서 냈나」. ⭐⭐⭐ 이 판정을 쓰는 곳이 넷이다
    (창의 초록칸 · 단추 · 큐 줄의 마우스 글자 · 알림줄). 그래서 여기 하나로 모았다. */
@@ -11135,7 +11159,11 @@ function payReqShowSent(info){
            b.style.background = '#0e7490'; b.style.borderColor = '#0e7490';
          } }
   const c = document.getElementById('pr-copy');
-  if(c) c.style.display = '';
+  /* SELFFIRST-1 - 우리가 긁는 건에는 보낼 링크가 없다. 숨긴다. */
+  if(c) c.style.display = info.self ? 'none' : '';
+  /* 링크를 보내는 옅은 단추도 숨긴다 - 이 자리에서 또 보내면 헷갈린다 */
+  const sl = document.getElementById('pr-sendlink');
+  if(sl && info.self) sl.style.display = 'none';
   const x = document.getElementById('pr-cancel');
   if(x) x.textContent = 'Close';
 }
@@ -11150,6 +11178,25 @@ function payReqResetSent(){
          b.setAttribute('onclick', b.getAttribute('data-send') || '');
          b.style.background = payReqGoColor(); b.style.borderColor = payReqGoColor(); }
 }
+/* ROWCHARGE-1 - 긁기 전에 묻는 글자. ⭐ 창과 「한 번에」 길이 **같은 말**을 쓴다.
+   두 군데에 각자 적으면 한쪽만 고쳐져서 어긋난다. */
+function payReqAskCharge(cust, amount){
+  const tail = payReqCardTail(cust);
+  return confirm('\u{1F4B3} Charge ' + (tail ? ('the card ending ' + tail) : 'the card on file')
+    + ' ' + payReqMoney(amount) + ' now?\n\n' + (cust || '')
+    + '\n\nThis charges the card immediately. The customer gets the receipt by email.');
+}
+/* ROWCHARGE-1 - 이 오더를 긁으면 얼마인가. ⭐⭐⭐ **창이 쓰는 그 함수**로 더한다.
+   🔴 줄의 금액(`r.amt`)을 쓰면 안 된다 - 그것은 창고 한 칸이고, 결제는 오더 전액이다.
+      실측: Dalinghaus 줄 $114.40 vs 오더 전액 $1,544.80 (SC 114.40 + CA 1430.40). */
+function payReqOrderTotal(base){
+  try{
+    const rec = (savedCache||[]).find(function(s2){ return s2.base === base; });
+    if(!rec) return 0;
+    const t = payReqOrderRows(rec).reduce(function(a,x){ return a + (Number(x.amount)||0); }, 0);
+    return Math.round(t * 100) / 100;
+  }catch(e){ return 0; }
+}
 /* ═══ OFFICEPAY-1 (2026-10-12) 저장된 카드로 **우리가 바로 긁는다** ═══
    결제창(Accept Hosted)을 안 쓴다 - 저장 카드에 Card Code 를 묻는 것을
    `cardCodeRequired` 로 끌 수 없기 때문이다 (Authorize.Net 이 그 플래그를
@@ -11161,13 +11208,15 @@ function payReqCardTail(cust){
     return String((cs && cs.anetCardLast4) || '').replace(/[^0-9]/g, '').slice(-4);
   }catch(e){ return ''; }
 }
-async function payReqOfficeCharge(){
+async function payReqOfficeCharge(skipAsk){
+  /* ROWCHARGE-1 - 한 번에 끝내는 길에서는 **만들기 전에** 이미 물어봤다.
+     그래서 여기서 또 묻지 않는다 (두 번 묻는 것은 사람을 둔하게 만든다). */
   const i = _payReqSent; if(!i || !i.token) return;
   const b = document.getElementById('pr-go');
   const tail = payReqCardTail(i.cust);
   const amt = payReqMoney(i.amount);
   /* ⚠ 돈이 나가는 클릭이다. 금액과 카드를 글자로 다시 보여주고 묻는다. */
-  if(!confirm('\u{1F4B3} Charge ' + (tail ? ('the card ending ' + tail) : 'the card on file')
+  if(!skipAsk && !confirm('\u{1F4B3} Charge ' + (tail ? ('the card ending ' + tail) : 'the card on file')
     + ' ' + amt + ' now?\n\n' + (i.cust || '') + '\n\nThis charges the card immediately.'
     + ' The customer gets the receipt by email.')) return;
   if(b){ b.disabled = true; b.textContent = '\u23F3 Charging...'; }
@@ -11245,6 +11294,7 @@ function payReqOrder(base){
              || (rec.meta && rec.meta.custEmail) || '');
   _payReqSent = null;   /* RESEND-1 */
   _payReqPrior = !!payLinkPrior(rec, rows.map(function(x){ return x.wh; }));   /* PAYSENT-2 */
+  _payReqSelfFirst = payReqSelfFirst(cust);   /* SELFFIRST-1 */
   const ex = document.getElementById('modal-payreq'); if(ex) ex.remove();
   const div = document.createElement('div');
   div.id = 'modal-payreq';
@@ -11287,9 +11337,9 @@ function payReqOrder(base){
     <div style="padding:11px 18px;border-top:1px solid #e2e8f0;display:flex;gap:8px;">
       <button class="btn btn-sm" id="pr-copy" style="display:none;" onclick="payReqCopyLink()">\u{1F4CB} Copy link</button>
       ${webPaidShow(rec) ? `<button class="btn btn-sm" id="pr-webpaid" style="background:#ecfeff;color:#0e7490;border-color:#a5f3fc;font-weight:800;" onclick="payReqWebPaid('${esc(base)}')" title="This is a website order - the card was already charged when the order was placed. Record it as paid without sending a link.">\u{1F310} Paid on website</button>` : ''}
-      ${paySelfBtn(cust, `payReqOrderSend('${esc(base)}','self')`)}
+      ${payReqAltBtn(cust, `payReqOrderSend('${esc(base)}','self')`, `payReqOrderSend('${esc(base)}')`)}
       <button class="btn btn-sm" id="pr-cancel" style="margin-left:auto;" onclick="document.getElementById('modal-payreq').remove()">Cancel</button>
-      <button class="btn btn-sm" id="pr-go" data-send="payReqOrderSend('${esc(base)}')" style="background:${payReqGoColor()};color:#fff;border-color:${payReqGoColor()};font-weight:800;" onclick="payReqOrderSend('${esc(base)}')">${payReqGoLabel()}</button>
+      <button class="btn btn-sm" id="pr-go" data-send="payReqOrderSend('${esc(base)}'${_payReqSelfFirst ? ",'self'" : ''})" style="background:${payReqGoColor()};color:#fff;border-color:${payReqGoColor()};font-weight:800;" onclick="payReqOrderSend('${esc(base)}'${_payReqSelfFirst ? ",'self'" : ''})">${payReqGoLabel()}</button>
     </div></div>`;
   document.body.appendChild(div);
   payReqGuardPaint();   /* PAYGUARD-1 - 열자마자 상태가 맞아야 한다 */
@@ -11298,7 +11348,9 @@ function payReqOrder(base){
 async function payReqOrderSend(base, mode){
   /* PAYSELF-1 - 'self' 면 거래처에게 메일을 보내지 않고 우리가 그 자리에서 연다. */
   const _self = (mode === 'self');
-  const btn = document.getElementById(_self ? 'pr-self' : 'pr-go');
+  /* SELFFIRST-1 - 자리를 바꾼 창에서는 self 도 오른쪽 단추(pr-go)가 맡는다.
+     그래야 두 번 눌리는 것을 막고, 끝나면 그 단추가 초록 「긁기」로 바뀐다. */
+  const btn = document.getElementById((_self && !_payReqSelfFirst) ? 'pr-self' : 'pr-go');
   if(btn && btn.disabled) return;
   const rec = (savedCache||[]).find(s2 => s2.base === base); if(!rec) return;
   const items = [];
@@ -11321,8 +11373,17 @@ async function payReqOrderSend(base, mode){
     showToast('\u26A0 Print the invoice first - ' + _bad.map(b=>b.wh).join(', ') + ' has no invoice number'); return; }
   if(!em || em.indexOf('@') < 0){ showToast('\u26A0 Enter the customer email'); return; }
   /* NOPOP-1 - 브라우저 팝업을 없앴다. 창에 이미 다 보인다. */
-  if(btn){ btn.disabled = true; btn.textContent = _self ? '\u23F3 Opening...' : '\u23F3 Sending...'; }
+  /* 자리를 바꾼 창에서는 아무것도 「열지」 않는다 - 글자를 맞춘다 */
+  if(btn){ btn.disabled = true;
+    btn.textContent = _self ? (_payReqSelfFirst ? '\u23F3 Preparing...' : '\u23F3 Opening...')
+                            : '\u23F3 Sending...'; }
   try{
+    /* ROWCHARGE-1 - 한 번에 끝내는 길이면 **아무것도 만들기 전에** 묻는다.
+       취소하면 결제요청 줄도 안 생긴다 (안 쓴 링크가 쌓이는 것을 막는다). */
+    if(_self && _payReqSelfFirst && !payReqAskCharge((rec.meta&&rec.meta.cust)||'', total)){
+      if(btn){ btn.disabled = false; btn.innerHTML = payReqGoLabel(); }
+      return;
+    }
     const _prAmt = total;   /* OFFICEPAY-1 - 긁는 단추에 넘길 금액 */
     const row = { created_by: (SESS&&SESS.email)||'', cust: (rec.meta&&rec.meta.cust)||'', email: em,
       amount: total, note: note, items: items };
@@ -11374,7 +11435,10 @@ async function payReqOrderSend(base, mode){
        (결제창은 저장 카드에 Card Code 를 묻기 때문에 우리가 쓸 수 없다)
        저장 카드가 없으면 전처럼 페이지를 열어 준다 - 거기서 카드를 쳐야 한다. */
     if(_self){
-      if(payReqCardTail((rec.meta&&rec.meta.cust)||'')){
+      if(_payReqSelfFirst){
+        /* ROWCHARGE-1 - 이미 물어봤다. 바로 긁는다 (한 번에 끝난다). */
+        await payReqOfficeCharge(true);
+      } else if(payReqCardTail((rec.meta&&rec.meta.cust)||'')){
         showToast('\u{1F512} Ready - press the green button to charge the card on file');
       } else {
         paySelfOpen(link); showToast('\u{1F4B3} Payment page opened - pay it there');
@@ -11384,7 +11448,8 @@ async function payReqOrderSend(base, mode){
   }catch(e){
     showToast('\u26A0 Not sent: ' + ((e && e.message) || e));
     if(btn){ btn.disabled = false;
-      btn.innerHTML = _self ? '\u{1F4B3} Pay this myself' : '\u{1F4E7} Send payment link'; }
+      btn.innerHTML = _self ? (_payReqSelfFirst ? payReqGoLabel() : '\u{1F4B3} Pay this myself')
+                            : payReqGoLabel(); }
   }
 }
 function payReqOpen(base, wh){
@@ -11399,6 +11464,7 @@ function payReqOpen(base, wh){
              || (rec.meta && rec.meta.custEmail) || '');
   _payReqSent = null;   /* RESEND-1 */
   _payReqPrior = !!payLinkPrior(rec, [wh]);   /* PAYSENT-2 */
+  _payReqSelfFirst = payReqSelfFirst(cust);   /* SELFFIRST-1 */
   const ex = document.getElementById('modal-payreq'); if(ex) ex.remove();
   const div = document.createElement('div');
   div.id = 'modal-payreq';
@@ -11440,9 +11506,9 @@ function payReqOpen(base, wh){
     <div style="padding:11px 18px;border-top:1px solid #e2e8f0;display:flex;gap:8px;">
       <button class="btn btn-sm" id="pr-copy" style="display:none;" onclick="payReqCopyLink()">\u{1F4CB} Copy link</button>
       ${webPaidShow(rec) ? `<button class="btn btn-sm" id="pr-webpaid" style="background:#ecfeff;color:#0e7490;border-color:#a5f3fc;font-weight:800;" onclick="payReqWebPaid('${esc(base)}')" title="This is a website order - the card was already charged when the order was placed. Record it as paid without sending a link.">\u{1F310} Paid on website</button>` : ''}
-      ${paySelfBtn((rec.meta&&rec.meta.cust)||'', `payReqSend('${esc(base)}','${esc(wh)}','self')`)}
+      ${payReqAltBtn((rec.meta&&rec.meta.cust)||'', `payReqSend('${esc(base)}','${esc(wh)}','self')`, `payReqSend('${esc(base)}','${esc(wh)}')`)}
       <button class="btn btn-sm" id="pr-cancel" style="margin-left:auto;" onclick="document.getElementById('modal-payreq').remove()">Cancel</button>
-      <button class="btn btn-sm" id="pr-go" data-send="payReqSend('${esc(base)}','${esc(wh)}')" style="background:${payReqGoColor()};color:#fff;border-color:${payReqGoColor()};font-weight:800;" onclick="payReqSend('${esc(base)}','${esc(wh)}')">${payReqGoLabel()}</button>
+      <button class="btn btn-sm" id="pr-go" data-send="payReqSend('${esc(base)}','${esc(wh)}'${_payReqSelfFirst ? ",'self'" : ''})" style="background:${payReqGoColor()};color:#fff;border-color:${payReqGoColor()};font-weight:800;" onclick="payReqSend('${esc(base)}','${esc(wh)}'${_payReqSelfFirst ? ",'self'" : ''})">${payReqGoLabel()}</button>
     </div></div>`;
   document.body.appendChild(div);
   payReqGuardPaint();   /* PAYGUARD-1 */
@@ -11452,7 +11518,9 @@ function payReqOpen(base, wh){
 async function payReqSend(base, wh, mode){
   /* PAYSELF-1 - 오더 창과 같은 규칙이다. */
   const _self = (mode === 'self');
-  const btn = document.getElementById(_self ? 'pr-self' : 'pr-go');
+  /* SELFFIRST-1 - 자리를 바꾼 창에서는 self 도 오른쪽 단추(pr-go)가 맡는다.
+     그래야 두 번 눌리는 것을 막고, 끝나면 그 단추가 초록 「긁기」로 바뀐다. */
+  const btn = document.getElementById((_self && !_payReqSelfFirst) ? 'pr-self' : 'pr-go');
   if(btn && btn.disabled) return;
   const rec = (savedCache||[]).find(s2=>s2.base===base); if(!rec) return;
   const iv = (rec.inv||{})[wh] || {};
@@ -11467,8 +11535,17 @@ async function payReqSend(base, wh, mode){
     showToast('\u26A0 Print the invoice first - it has no invoice number yet'); return; }
   if(!em || em.indexOf('@') < 0){ showToast('\u26A0 Enter the customer email'); return; }
   /* NOPOP-1 - 브라우저 팝업을 없앴다. 창에 이미 다 보인다. */
-  if(btn){ btn.disabled = true; btn.textContent = '\u23F3 Sending...'; }
+  if(btn){ btn.disabled = true;
+    /* ROWCHARGE-1 - 오더 창과 같은 글자를 쓴다. 보내지 않는 길에서 "Sending" 은 거짓말이다. */
+    btn.textContent = _self ? (_payReqSelfFirst ? '\u23F3 Preparing...' : '\u23F3 Opening...')
+                            : '\u23F3 Sending...'; }
   try{
+    /* ROWCHARGE-1 - 한 번에 끝내는 길이면 **아무것도 만들기 전에** 묻는다.
+       취소하면 결제요청 줄도 안 생긴다 (안 쓴 링크가 쌓이는 것을 막는다). */
+    if(_self && _payReqSelfFirst && !payReqAskCharge((rec.meta&&rec.meta.cust)||'', amt)){
+      if(btn){ btn.disabled = false; btn.innerHTML = payReqGoLabel(); }
+      return;
+    }
     const _prAmt = amt;     /* OFFICEPAY-1 - 긁는 단추에 넘길 금액 */
     const row = { created_by: (SESS&&SESS.email)||'', cust: (rec.meta&&rec.meta.cust)||'', email: em,
       amount: amt, note: note,
@@ -11514,7 +11591,10 @@ async function payReqSend(base, wh, mode){
        (결제창은 저장 카드에 Card Code 를 묻기 때문에 우리가 쓸 수 없다)
        저장 카드가 없으면 전처럼 페이지를 열어 준다 - 거기서 카드를 쳐야 한다. */
     if(_self){
-      if(payReqCardTail((rec.meta&&rec.meta.cust)||'')){
+      if(_payReqSelfFirst){
+        /* ROWCHARGE-1 - 이미 물어봤다. 바로 긁는다 (한 번에 끝난다). */
+        await payReqOfficeCharge(true);
+      } else if(payReqCardTail((rec.meta&&rec.meta.cust)||'')){
         showToast('\u{1F512} Ready - press the green button to charge the card on file');
       } else {
         paySelfOpen(link); showToast('\u{1F4B3} Payment page opened - pay it there');
@@ -11524,7 +11604,8 @@ async function payReqSend(base, wh, mode){
   }catch(e){
     showToast('\u26A0 Not sent: ' + ((e && e.message) || e));
     if(btn){ btn.disabled = false;
-      btn.innerHTML = _self ? '\u{1F4B3} Pay this myself' : '\u{1F4E7} Send payment link'; }
+      btn.innerHTML = _self ? (_payReqSelfFirst ? payReqGoLabel() : '\u{1F4B3} Pay this myself')
+                            : payReqGoLabel(); }
   }
 }
 function invBalance(rec, wh){
@@ -48341,6 +48422,18 @@ function invNpRowsHtml(){
             + invNpMoney(r.recv.amt) + ' received'
             + (r.recv.at ? (' on ' + esc(String(r.recv.at).slice(0,10))) : '')
             + '">\u2713 Received</span>'
+          /* ROWCHARGE-1 - [stated] 하윤: "authorization 이나 카드 save된게 없으면
+             payment 버튼이 뜨고 만약 둘다 있으면 charge버튼이 뜨는게 맞지"
+             동의 + 저장카드가 **둘 다** 있으면 이 줄에서 바로 긁는 단추를 준다.
+             ⚠ 누르면 창이 열리고 거기서 **확인창 한 번**으로 끝난다 (바로 안 긁힌다).
+             ⚠ 금액은 **오더 전액**이다 - 줄의 금액(`r.amt`)이 아니다 (payReqOrderTotal). */
+          : (r.printed && payReqSelfFirst(r.cust) && (payReqOrderTotal(r.base) > 0.005)
+          ? '<button class="btn btn-sm" style="padding:3px 10px;font-size:10.5px;white-space:nowrap;font-weight:800;background:#047857;color:#fff;border-color:#047857;" onclick="payReqOrder(\'' + eb + '\')" title="'
+            + esc(String(r.cust || '')) + ' let us charge their card \u00b7\u00b7\u00b7'
+            + esc(payReqCardTail(r.cust)) + '. Press to charge this whole order, '
+            + invNpMoney(payReqOrderTotal(r.base))
+            + ' \u2014 you get one confirmation first.">\u{1F4B3} Charge '
+            + invNpMoney(payReqOrderTotal(r.base)) + '</button>'
           : (r.printed
           ? (r.payLinkAt
               ? '<button class="btn btn-sm" style="padding:3px 10px;font-size:10.5px;white-space:nowrap;font-weight:800;background:#f0fdf4;color:#15803d;border-color:#86efac;" onclick="payReqOrder(\'' + eb + '\')" title="'
@@ -48359,7 +48452,7 @@ function invNpRowsHtml(){
                 + (r.payCust ? 'Email this customer a card payment link for this order'
                              : 'This customer is not set up to pay by card. You can still send a link - press to open it.')
                 + '">\ud83d\udcb3 Payment</button>')
-          : ''))
+          : '')))
       + prBtn + mailBtn
       + '</div>';
   }).join('');
