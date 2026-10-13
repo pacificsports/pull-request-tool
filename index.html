@@ -314,7 +314,7 @@ body.po-dragging{user-select:none;}
   </span>
   <select id="lang-sel" onchange="setLang(this.value)" style="font-size:11px;padding:3px 6px;border-radius:5px;border:none;background:#1d3f66;color:#fff;"><option value="ko">한국어</option><option value="en">English</option><option value="es">Español</option></select>
   <button id="wide-btn" class="btn btn-sm" onclick="toggleWide()" title="화면 넓게 / 좁게 — 기본은 넓게 (이 브라우저에만 저장돼)" style="padding:2px 8px;font-size:10px;background:#1d3f66;color:#cfe0f2;border-color:#2b5384;">↔ Wide</button>
-  <span id="app-ver" style="font-size:10px;color:#9fb8d4;">v1277</span>
+  <span id="app-ver" style="font-size:10px;color:#9fb8d4;">v1278</span>
 </div>
 <script>
 // ↔ 넓게 보기 — 브라우저마다 따로 저장 (v793)
@@ -49705,11 +49705,14 @@ function laneReadyLegs(){
 function boInfo(s){
   try{
     if(!s || !s.meta || s.meta._cancelled) return null;
-    let pcs = 0, amt = 0, other = false;
+    let pcs = 0, amt = 0, other = false, nBo = 0, nNa = 0;
     (s.lines || []).forEach(function(l){
       const q = Number(l && l.qty) || 0; if(q <= 0) return;
       const w = String((l && l.wh) || '').trim().toUpperCase();
-      if(w === 'BO' || w === 'NA'){ pcs += q; amt += q * (Number(l.price) || 0); }
+      /* BONEW-2 - BO 와 NA 를 따로도 센다. 합(pcs)은 **한 글자도 안 바뀐다** -
+         목록·알약·타일이 전부 그 합을 보고 있다. */
+      if(w === 'BO' || w === 'NA'){ pcs += q; amt += q * (Number(l.price) || 0);
+        if(w === 'BO') nBo += q; else nNa += q; }
       else if(w === 'SC' || w === 'CA' || w === 'IT' || w === 'PD') other = true;
     });
     if(pcs <= 0) return null;
@@ -49718,7 +49721,8 @@ function boInfo(s){
     const days = t ? Math.max(0, Math.round((Date.now() - t) / 86400000)) : 0;
     /* BODATE-1 - PO 받은 날짜를 그대로 같이 돌려준다. d 가 비면 savedAt 에서 뽑는다. */
     const dOut = d || (s.savedAt ? String(s.savedAt).slice(0, 10) : '');
-    return { pcs: pcs, amt: Math.round(amt * 100) / 100, days: days, mixed: other, date: dOut };
+    return { pcs: pcs, amt: Math.round(amt * 100) / 100, days: days, mixed: other, date: dOut,
+             bo: nBo, na: nNa };
   }catch(e){ return null; }
 }
 function boQueue(){
@@ -49726,7 +49730,8 @@ function boQueue(){
   (savedCache || []).forEach(function(s){
     const b = boInfo(s); if(!b) return;
     out.push({ base: s.base, cust: (s.meta && s.meta.cust) || '', po: (s.meta && s.meta.po) || '',
-               pcs: b.pcs, amt: b.amt, days: b.days, mixed: b.mixed, date: b.date });
+               pcs: b.pcs, amt: b.amt, days: b.days, mixed: b.mixed, date: b.date,
+               bo: b.bo, na: b.na });
   });
   /* BONEW-1 - [stated] 하윤: "가장 최근꺼를 맨 위로" (예전엔 오래된 것이 위였다).
      ⚠ 묵은 날 수 알약(89d 가 제일 진한 빨강)은 그대로라 오래된 것은 여전히 눈에 띈다.
@@ -49805,8 +49810,132 @@ function savedGoCard(base){
      [stated] 하윤: "저 백오더 카드 flash하는거는 안해도 될꺼같에"
      카드를 화면 가운데로 가져다 놓는 것만 한다. */
 }
+/* ═══ BONEW-2 - 백오더 목록 줄에서 바로 손을 쓴다 ═══
+   [stated] 하윤: "process from SC process from CA 버튼들 여기에도 달고 alternative 도
+   달고 cancel 도 달고 go to order도 달고 할까?" -> "네 개 다 (Go to order 포함)"
+   ⭐⭐⭐ 단추가 가려지나 마나 하는 판정은 **여기 한 곳**에만 적는다. */
+
+/* 이 오더의 백오더가 어느 쪽인가. BO 와 NA 가 **섞이면 빈 글자**를 준다 -
+   processFromWh 는 한 번에 한 쪽만 옮기므로 애매하면 단추를 안 내는 게 맞다.
+   실측 2026-10-13: 백오더 8건 중 섞인 것 0건 (BO 만 7 · NA 만 1). */
+function boSrcWh(r){
+  const b = Number(r && r.bo) || 0, n = Number(r && r.na) || 0;
+  if(b > 0 && n > 0) return '';
+  if(b > 0) return 'BO';
+  if(n > 0) return 'NA';
+  return '';
+}
+/* Cancel 이 두 가지다. 오더에 나갈 줄이 남아 있으면 백오더 줄만 지운다.
+   오더 전체가 백오더면 줄을 다 지워 **빈 오더**가 남으므로 원래 쓰던 취소 창을 연다. */
+function boCancelMode(r){ return (r && r.mixed) ? 'lines' : 'order'; }
+
+/* 목록이 열려 있으면 다시 그린다 - 진행하고 나면 그 줄은 목록에서 빠져야 한다 */
+function boRelist(){
+  try{ if(document.getElementById('modal-boq')) kpiBackOrder(); }catch(e){}
+}
+async function boProcess(base, srcWh, target){
+  try{ await processFromWh(base, srcWh, target); }catch(e){}
+  boRelist();
+}
+function boAlt(base){
+  try{ const m = document.getElementById('modal-boq'); if(m) m.remove(); }catch(e){}
+  boAltFromList(base);
+}
+function boCancelOrder(base){
+  try{ const m = document.getElementById('modal-boq'); if(m) m.remove(); }catch(e){}
+  if(typeof cancelOrderOpen === 'function') cancelOrderOpen(base);
+  else showToast('⚠ Open the order and cancel it from the card');
+}
+/* [stated] 하윤: "백오더 줄만 지운다"
+   ⚠ BO/NA 줄은 재고에서 뺀 적이 없다 - 되돌릴 물건이 없다 (put-back 없음).
+   ⚠⚠ 저장이 실패하면 **화면에서도 되돌린다**. 반만 지워진 채로 두면
+      다음 저장이 그 반쪽을 서버에 굳혀 버린다. */
+async function boCancelLines(base){
+  const rec = (savedCache || []).find(function(s2){ return s2.base === base; });
+  if(!rec){ showToast('⚠ That order is no longer in the list'); return; }
+  const info = boInfo(rec);
+  if(!info){ showToast('⚠ Nothing is on back order on this order any more'); boRelist(); return; }
+  if(boCancelMode(info) === 'order'){ boCancelOrder(base); return; }
+  const po = String((rec.meta && rec.meta.po) || '').trim();
+  if(!confirm('🗑 Drop the back-ordered items from PO ' + (po || base) + '?\n\n'
+    + info.pcs.toLocaleString() + ' pcs · ' + invNpMoney(info.amt)
+    + ' will be taken off this order — we are not sending them.\n'
+    + 'Everything else on the order is untouched and still ships as usual.\n\n'
+    + 'Continue?')) return;
+  const isBoNa = function(l){
+    const w = String((l && l.wh) || '').trim().toUpperCase();
+    return w === 'BO' || w === 'NA';
+  };
+  const oldLines = rec.lines || [], oldWhs = rec.whs || [], oldMeta = rec.meta || {};
+  const dropped = oldLines.filter(isBoNa);
+  if(!dropped.length){ showToast('⚠ No back-order line to drop'); boRelist(); return; }
+  const keep = oldLines.filter(function(l){ return !isBoNa(l); });
+  const whs = oldWhs.filter(function(w){ return w !== 'BO' && w !== 'NA'; });
+  const meta = Object.assign({}, oldMeta);
+  meta._boDropped = { at: new Date().toISOString(), by: (SESS && SESS.email) || '',
+                      pcs: info.pcs, amt: info.amt,
+                      lines: JSON.parse(JSON.stringify(dropped)) };
+  rec.lines = keep; rec.whs = whs; rec.meta = meta;
+  let ok = false, why = '';
+  try{
+    const r = await sbFetch('/rest/v1/pr_orders?base=eq.' + encodeURIComponent(base),
+      { method:'PATCH', headers:{ Prefer:'return=representation' },
+        body: JSON.stringify({ lines: keep, whs: whs, meta: meta,
+                               updated_at: new Date().toISOString() }) });
+    if(r.ok){ const back = await r.json(); ok = Array.isArray(back) && back.length === 1;
+      if(!ok) why = 'the server changed no row'; }
+    else { why = 'HTTP ' + r.status; }
+  }catch(e){ why = e.message || String(e); }
+  if(!ok){
+    rec.lines = oldLines; rec.whs = oldWhs; rec.meta = oldMeta;
+    alert('❌ NOTHING WAS CHANGED — the back-ordered items are still on PO '
+      + (po || base) + '.\n\n' + why + '\n\nTry again, or open the order and remove the lines there.');
+    boRelist(); return;
+  }
+  try{ logHist(base, '🗑 Back order dropped — ' + dropped.length + ' line(s), '
+    + info.pcs.toLocaleString() + ' pcs (' + invNpMoney(info.amt) + ') removed from the order'); }catch(e){}
+  try{ renderSaved(); }catch(e){}
+  showToast('🗑 Back order dropped — ' + info.pcs.toLocaleString()
+    + ' pcs off PO ' + (po || base) + '; the rest of the order is untouched');
+  boRelist();
+}
+/* BONEW-2 - 줄에 붙는 단추 한 벌. 모양·글자·조건을 Saved 카드와 **똑같이** 맞춘다. */
+function boRowBtns(r){
+  const sw = boSrcWh(r);
+  const b = function(bg, fg, bd, call, title, label){
+    return '<button class="btn btn-sm" style="background:' + bg + ';color:' + fg + ';border-color:' + bd
+      + ';font-weight:700;" onclick="' + call + '" title="' + esc(title) + '">' + label + '</button>';
+  };
+  const bs = esc(r.base), sfx = sw === 'BO' ? '-B' : '-N';
+  let out = '';
+  if(sw){
+    out += b('#f5f3ff', '#6d28d9', '#c4b5fd', 'boProcess(\'' + bs + '\',\'' + sw + '\',\'SC\')',
+      'Stock arrived — split into a separate order (' + sfx + ') and ship from SC', '⚙ Process from SC');
+    out += b('#fff7ed', '#c2410c', '#fed7aa', 'boProcess(\'' + bs + '\',\'' + sw + '\',\'CA\')',
+      'Stock arrived — split into a separate order (' + sfx + ') and ship from CA', '⚙ Process from CA');
+  }
+  if((Number(r.bo) || 0) > 0){
+    out += b('#fee2e2', '#b91c1c', '#fca5a5', 'boAlt(\'' + bs + '\')',
+      'Replace a back-ordered item with an in-stock alternative (style / color / size / qty), then finish the order',
+      '⇄ Alternate');
+  }
+  out += b('#f1f5f9', '#334155', '#cbd5e1', 'boGoCard(\'' + bs + '\')',
+    'Jump to this order\'s card in the Saved list', '→ Go to order');
+  out += boCancelMode(r) === 'order'
+    ? b('#fef2f2', '#7f1d1d', '#fecaca', 'boCancelOrder(\'' + bs + '\')',
+        'Everything on this order is on back order — open the full cancel screen', '❌ Cancel order')
+    : b('#fef2f2', '#7f1d1d', '#fecaca', 'boCancelLines(\'' + bs + '\')',
+        'We are not sending the back-ordered items — take just those lines off the order', '🗑 Cancel back order');
+  if(!sw){
+    out += '<span style="font-size:10.5px;color:#b45309;font-weight:700;align-self:center;">'
+      + '⚠ BO and N/A are mixed — process them from the order card</span>';
+  }
+  return out;
+}
 /* [stated] 하윤: "저기서 누르면 그냥 saved pull request 에 카드족으로 이동하는걸로하자"
-   오더를 폼에 불러오지 않는다 - 보고 나서 진행할지 정하는 것은 사람이 한다. */
+   오더를 폼에 불러오지 않는다 - 보고 나서 진행할지 정하는 것은 사람이 한다.
+   ⚠ BONEW-2 - 이제 줄 전체가 아니라 「\u2192 Go to order」 단추가 이 일을 한다.
+     [stated] 하윤: "go to order 버튼으로 오더로 가게 하면 줄 클릭해서 가는거는 없애자" */
 function boGoCard(base){
   try{ const m = document.getElementById('modal-boq'); if(m) m.remove(); }catch(e){}
   savedGoCard(base);
@@ -49816,9 +49945,11 @@ function kpiBackOrder(){
   const list = boQueue();
   const rows = list.map(function(r){
     const c = boTone(r.days);
-    return '<div style="display:flex;align-items:center;gap:10px;padding:10px 14px;border-bottom:1px solid #f1f5f9;cursor:pointer;"'
-      + ' onclick="boGoCard(\'' + esc(r.base) + '\')"'
-      + ' onmouseover="this.style.background=\'#fef2f2\'" onmouseout="this.style.background=\'\'">'
+    /* BONEW-2 - 줄 자체를 누르는 것은 뺐다. 단추가 생겼으니 어디를 눌러도
+       오더로 날아가 버리면 단추를 못 누른다.
+       [stated] 하윤: "go to order 버튼으로 오더로 가게 하면 줄 클릭해서 가는거는 없애자" */
+    return '<div style="padding:10px 14px;border-bottom:1px solid #f1f5f9;">'
+      + '<div style="display:flex;align-items:center;gap:10px;">'
       + '<div style="flex:1;min-width:0;"><div style="font-size:13px;font-weight:800;color:#0f2a4a;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">'
       +   esc(r.cust || '(no name)') + ' <span style="color:#64748b;font-weight:600;">\u00b7 PO ' + esc(r.po || '\u2014') + '</span></div>'
       + '<div style="font-size:11px;color:#94a3b8;margin-top:3px;">'
@@ -49827,12 +49958,14 @@ function kpiBackOrder(){
       + '<span style="font-size:12px;font-weight:900;color:#b91c1c;white-space:nowrap;">' + r.pcs.toLocaleString() + ' pcs</span>'
       + '<span style="font-size:11.5px;font-family:Consolas,monospace;font-weight:800;color:#64748b;white-space:nowrap;">' + invNpMoney(r.amt) + '</span>'
       + '<span style="font-size:10px;font-weight:900;color:' + c.fg + ';background:' + c.bg + ';border-radius:20px;padding:3px 9px;white-space:nowrap;">' + r.days + 'd</span>'
+      + '</div>'
+      + '<div style="display:flex;gap:6px;flex-wrap:wrap;margin-top:8px;">' + boRowBtns(r) + '</div>'
       + '</div>';
   }).join('') || '<div style="padding:24px;text-align:center;color:#94a3b8;font-size:13px;">Nothing on back order \ud83c\udf89</div>';
   kpiShell('modal-boq', '\u26d4 Back order \u2014 still owed to the customer', '#b91c1c', rows,
     list.length + ' order(s) \u00b7 ' + list.reduce(function(a, r){ return a + r.pcs; }, 0).toLocaleString()
     + ' pcs \u00b7 ' + invNpMoney(list.reduce(function(a, r){ return a + r.amt; }, 0))
-    + ' \u00b7 oldest ' + boOldest(list) + ' days');
+    + ' \u00b7 oldest ' + boOldest(list) + ' days', 980);
 }
 function kpiShell(id, title, color, rowsHtml, sub, width, flat){
   const ex = document.getElementById(id); if(ex) ex.remove();
