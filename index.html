@@ -314,7 +314,7 @@ body.po-dragging{user-select:none;}
   </span>
   <select id="lang-sel" onchange="setLang(this.value)" style="font-size:11px;padding:3px 6px;border-radius:5px;border:none;background:#1d3f66;color:#fff;"><option value="ko">한국어</option><option value="en">English</option><option value="es">Español</option></select>
   <button id="wide-btn" class="btn btn-sm" onclick="toggleWide()" title="화면 넓게 / 좁게 — 기본은 넓게 (이 브라우저에만 저장돼)" style="padding:2px 8px;font-size:10px;background:#1d3f66;color:#cfe0f2;border-color:#2b5384;">↔ Wide</button>
-  <span id="app-ver" style="font-size:10px;color:#9fb8d4;">v1278</span>
+  <span id="app-ver" style="font-size:10px;color:#9fb8d4;">v1279</span>
 </div>
 <script>
 // ↔ 넓게 보기 — 브라우저마다 따로 저장 (v793)
@@ -14970,18 +14970,55 @@ function buildBoxQr2x2Zpl(it, ctn, order){
 }
 
 // 🏷 거래처 + PO# 만 크게 찍는 식별 라벨 (2x1) — pallet/박스에 붙여 어느 거래처·PO 물건인지 구분 (v699)
+/* TAGID-2 - 거래처 이름을 띄어쓰기에서 최대 2줄로 접는다.
+   줄 나누는 자리를 **전부 따져 보고** 제일 긴 줄이 가장 짧아지는 것을 고른다
+   (앞에서부터 채우는 식으로 하면 "EOI ENTERTAINMENT OUTFITTERS" / "LLC" 처럼
+    한 줄만 길어져서 글자가 작아진다).
+   ⚠ 단어가 ws.length 보다 적으면 그 줄 수는 못 만든다 - 빈 줄을 만들지 않는다. */
+function idLabelWrap(ws, lines){
+  if(lines <= 1) return [ws.join(' ')];
+  if(ws.length < lines) return null;
+  /* 똑같이 긴 것이 여럿이면 **첫 줄이 긴 쪽**을 고른다 - 위가 길고 아래가 짧은 것이
+     읽기 좋다 ("TRIPLE / Z ENTERPRISES / DBA PACIFIC ART" 보다
+     "TRIPLE Z / ENTERPRISES / DBA PACIFIC ART"). */
+  const best = { cut: null, longest: 1e9, first: -1 };
+  const walk = function(start, left, cuts){
+    if(left === 1){
+      const pts = cuts.concat([ws.length]);
+      let p = 0, longest = 0;
+      for(let i = 0; i < pts.length; i++){
+        longest = Math.max(longest, ws.slice(p, pts[i]).join(' ').length);
+        p = pts[i];
+      }
+      const first = ws.slice(0, pts[0]).join(' ').length;
+      if(longest < best.longest || (longest === best.longest && first > best.first)){
+        best.longest = longest; best.first = first; best.cut = pts.slice();
+      }
+      return;
+    }
+    for(let i = start + 1; i <= ws.length - (left - 1); i++) walk(i, left - 1, cuts.concat([i]));
+  };
+  walk(0, lines, []);
+  if(!best.cut) return null;
+  const out = []; let p = 0;
+  best.cut.forEach(function(q){ out.push(ws.slice(p, q).join(' ')); p = q; });
+  return out;
+}
 function buildIdLabelZpl(order){
   /* v843: 2×1 → 2×2. 라벨지를 Full Box·QR 스티커와 통일하고,
      팔레트에 붙여 멀리서 읽는 라벨이므로 남는 세로를 글자 크기에 그대로 쓴다. */
   const S=blDpi()/203; const k=v=>Math.round(v*S);
-  const fit=(txt,maxFont,avail)=>{ const n=Math.max(1,String(txt).length); return Math.max(18,Math.min(maxFont,Math.floor(avail/(n*0.60)))); };
-  const cust=String((order&&order.customer_name)||'').toUpperCase().substring(0,30)||'-';
+  /* TAGID-2 - [stated] 하윤: "살짝 거래처 이름이 좀 작은 느낌이라서"
+     그전까지: 30글자에서 자르고 무조건 한 줄로 욱여넣어서
+     EOI ENTERTAINMENT OUTFITTERS LLC 가 "...OUTFITTERS L" 21 dot 으로 나왔다.
+     이제 60글자까지 받고(실측 제일 긴 이름 36) 줄을 접어 큰 글자로 낸다. */
+  const cust=String((order&&order.customer_name)||'').toUpperCase().replace(/\s+/g,' ').trim().substring(0,60)||'-';
   /* TAGID-1 - [stated] 하윤: "PO#가 저렇케 두줄로 나오면 안되지. 한줄에 나오던지 아님
      그냥 PO#이거 빼고 그냥 PO#에사용되는것만 나오게 해서 공간을 더 확보해서 한줄에"
      그전까지: 'PO# ' 네 글자가 폭을 잡아먹어서 K92926 이 'PO# K929' / '26' 으로 갈라졌다.
      이제 번호만, 언제나 한 줄. 네 글자가 비니까 번호가 더 크게 나온다. */
   const poTxt=String((order&&order.customer_po)||'').trim().substring(0,40);
-  const fC=fit(cust,96,386);
+  /* PO 번호는 예전 그대로 - 언제나 한 줄, 알아서 커진다 */
   let poShow=poTxt, fP=0;
   if(poShow){
     const n=Math.max(1,poShow.length);
@@ -14990,12 +15027,32 @@ function buildIdLabelZpl(order){
     if(poShow.length>cpl) poShow=poShow.slice(0,cpl);   // 그래도 길면 잘라서라도 한 줄
   }
   const poL = poShow ? [poShow] : [];
-  const gap=18, H=406, tot=fC+gap+poL.length*fP+(poL.length-1)*4;
-  const top=Math.max(20,Math.round((H-tot)/2));
-  const poY=top+fC+gap;
-  const poZpl=poL.map((ln,li)=>'^FO'+k(8)+','+k(poY+li*(fP+4))+'^A0N,'+k(fP)+','+k(fP)+'^FD'+ln+'^FS\n').join('');
+  const gap=18, H=406, PAD=20, LG=4;
+  /* TAGID-2 - 이름이 쓸 수 있는 세로. PO 가 먼저 자리를 가져간다
+     (사람은 번호로 맞춘다) 그 나머지를 이름이 전부 쓴다. */
+  const availH = H - PAD*2 - (poL.length ? gap + fP : 0);
+  const ws = cust.split(' ').filter(Boolean);
+  let custL = [cust], fC = 18;
+  /* TAGID-2 - [stated] 하윤이 2줄까지를 골랐다 (A=3줄 / B=2줄 미리보기를 보고).
+     3줄이 글자는 더 크지만 "EOI / ENTERTAINMENT / OUTFITTERS LLC" 처럼 토막나서
+     읽기가 나쁘다. 2줄이면 한 줄에 더 들어가고 PO 번호도 더 돋보인다. */
+  for(let L=1; L<=Math.min(2, Math.max(1, ws.length)); L++){
+    const lines = idLabelWrap(ws, L);
+    if(!lines || lines.length !== L) continue;
+    const longest = lines.reduce(function(m,x){ return Math.max(m, x.length); }, 1);
+    const byW = Math.floor(386/(longest*0.60));
+    const byH = Math.floor((availH - (L-1)*LG)/L);
+    const f = Math.max(18, Math.min(96, byW, byH));
+    if(f > fC){ fC = f; custL = lines; }
+  }
+  const custH = custL.length*fC + (custL.length-1)*LG;
+  const tot=custH+gap+poL.length*fP+(poL.length-1)*LG;
+  const top=Math.max(PAD,Math.round((H-tot)/2));
+  const custZpl=custL.map((ln,li)=>'^FO'+k(8)+','+k(top+li*(fC+LG))+'^A0N,'+k(fC)+','+k(fC)+'^FD'+ln+'^FS\n').join('');
+  const poY=top+custH+gap;
+  const poZpl=poL.map((ln,li)=>'^FO'+k(8)+','+k(poY+li*(fP+LG))+'^A0N,'+k(fP)+','+k(fP)+'^FD'+ln+'^FS\n').join('');
   return '^XA\n^POI\n^MMT\n^PW'+k(406)+'\n^LL'+k(H)+'\n^LS0\n'
-    + '^FO'+k(8)+','+k(top)+'^A0N,'+k(fC)+','+k(fC)+'^FD'+cust+'^FS\n'
+    + custZpl
     + poZpl
     + '^XZ';
 }
