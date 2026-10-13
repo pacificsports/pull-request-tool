@@ -314,7 +314,7 @@ body.po-dragging{user-select:none;}
   </span>
   <select id="lang-sel" onchange="setLang(this.value)" style="font-size:11px;padding:3px 6px;border-radius:5px;border:none;background:#1d3f66;color:#fff;"><option value="ko">한국어</option><option value="en">English</option><option value="es">Español</option></select>
   <button id="wide-btn" class="btn btn-sm" onclick="toggleWide()" title="화면 넓게 / 좁게 — 기본은 넓게 (이 브라우저에만 저장돼)" style="padding:2px 8px;font-size:10px;background:#1d3f66;color:#cfe0f2;border-color:#2b5384;">↔ Wide</button>
-  <span id="app-ver" style="font-size:10px;color:#9fb8d4;">v1279</span>
+  <span id="app-ver" style="font-size:10px;color:#9fb8d4;">v1282</span>
 </div>
 <script>
 // ↔ 넓게 보기 — 브라우저마다 따로 저장 (v793)
@@ -37637,10 +37637,30 @@ const TR_ROUTES = {
      · CA 재고로 들어갔다 다시 나간다 → 정차지를 CA 로 주고 받은 뒤 CA→3P 이송을 새로 만든다
        (재고가 CA 를 실제로 거친 기록이 정직하게 남는다) */
 const TR_STOP_KINDS = ['SC','CA','LK'];
+/* ═══ CUSTOP-1 - 거래처 집 앞 정차지 ═══
+   정차지 글자가 'CU:' 로 시작하면 **우리 창고가 아니라 거래처 주소**다.
+   이름이 글자 안에 들어 있어서 ↑↓ 로 옮기거나 ✕ 로 지워도 짝이 안 어긋난다.
+   주소는 meta.stopAddr[그 글자] 에 둔다. */
+function trIsCustStop(k){ return /^CU:/.test(String(k || '')); }
+function trStopCustName(k){ return trIsCustStop(k) ? String(k).slice(3) : ''; }
+function trStopCustKey(name){
+  return 'CU:' + String(name == null ? '' : name).replace(/[:<>]/g, ' ')
+    .replace(/\s+/g, ' ').trim().toUpperCase().slice(0, 40);
+}
+/* 그 정차지의 주소. 없으면 null - 이름만 있고 주소가 비어도 종이는 나와야 한다. */
+function trStopAddr(meta, k){
+  try{
+    if(!trIsCustStop(k)) return null;
+    const a = ((meta && meta.stopAddr) || {})[k];
+    return (a && typeof a === 'object') ? a : null;
+  }catch(e){ return null; }
+}
 function trIsMultiRoute(route){ return !!(TR_ROUTES[route] && TR_ROUTES[route].multi); }
 function trStopsOf(rec){
   const m = (rec && rec.meta && typeof rec.meta==='object') ? rec.meta : {};
-  return Array.isArray(m.stops) ? m.stops.filter(k=>TR_STOP_KINDS.indexOf(k) >= 0) : [];
+  /* CUSTOP-1 - 거래처 정차지('CU:이름')도 통과시킨다. 거르는 규칙이 여기 하나뿐이라
+     목록·종이·받기가 전부 같은 것을 본다. */
+  return Array.isArray(m.stops) ? m.stops.filter(k=>TR_STOP_KINDS.indexOf(k) >= 0 || trIsCustStop(k)) : [];
 }
 /* 팔레트의 정차지 번호. 줄에 박아둔 `stop` 이 1순위 —
    팔레트 이름은 지우고 나면 다시 번호가 매겨져서(`Pallet 2`→`Pallet 1`) 이름으로만
@@ -37677,7 +37697,11 @@ function trStopTag(i, k){ return 'Stop ' + (i+1) + ' · ' + trKindShort(k); }
       trHbinMap() · meta.palletStop · trLinesFlat() 이 전부 그 값으로 서로를 찾는다.
       그래서 **보여줄 때만** 바꾼다. v1148 사고가 이름표를 신원으로 쓴 결과였다. */
 const TR_STOP_PFX = { SC:'SC', CA:'CA', LK:'MC', '3P':'HD' };   /* MC = Melmarc */
-function trStopPfx(k){ return TR_STOP_PFX[k] || String(k||'').toUpperCase(); }
+function trStopPfx(k){
+  /* CUSTOP-1 - 거래처 정차지는 이름 첫 낱말을 앞글자로 쓴다 (팔레트 이름표에 붙는다). */
+  if(trIsCustStop(k)) return (trStopCustName(k).split(' ')[0] || 'CUST').slice(0, 6);
+  return TR_STOP_PFX[k] || String(k||'').toUpperCase();
+}
 /* 짐 전체를 한 번에 훑어 이름을 매긴다 — 정차지 쪽지마다 1번부터 다시 세면
    같은 팔레트가 종이마다 다른 이름을 갖는다. */
 /* MSCOLOR-v1 - 정차지 종류마다 색 한 벌. **기본값이 LK(보라)** 라서 multi 가 아닌
@@ -37688,7 +37712,12 @@ const TR_STOP_THEME = {
   SC:   { bd:'#86efac', bg:'#f0fdf4', fg:'#15803d', th:'#dcfce7', pill:'#16a34a' },
   '3P': { bd:'#fbbf24', bg:'#fffbeb', fg:'#b45309', th:'#fef3c7', pill:'#b45309' }
 };
-function trStopTheme(k){ return TR_STOP_THEME[k] || TR_STOP_THEME.LK; }
+/* CUSTOP-1 - 거래처 정차지는 장미색 한 벌 - 창고(초록/파랑/보라/호박)와 한눈에 갈린다 */
+const TR_CUST_THEME = { bd:'#fda4af', bg:'#fff1f2', fg:'#be123c', th:'#ffe4e6', pill:'#be123c' };
+function trStopTheme(k){
+  if(trIsCustStop(k)) return TR_CUST_THEME;
+  return TR_STOP_THEME[k] || TR_STOP_THEME.LK;
+}
 /* MSCOLOR-v1 - **화면용** 정차지 번호. 이름·색·그리는 차례가 전부 이 한 곳을 본다.
    ⚠ 받기·재고가 쓰는 `trStopIdxOfPallet` 자체는 여전히 한 글자도 안 건드린다. */
 function trPalStopIdxDisp(D, p){
@@ -37756,6 +37785,14 @@ function trStopSplit(D){
   });
   return groups;
 }
+/* CUSTOP-2 - 거래처 정차지의 주소를 글자로. 머리띠와 BOL 이 **같은 함수**를 쓴다.
+   ⚠ 주소를 두 군데 적으면 반드시 어긋난다 - BOL 에서 제일 비싼 실수다. */
+function trStopAddrHtml(meta, k){
+  const a = trStopAddr(meta, k);
+  const ls = trStopAddrLines(a);
+  if(!ls.length) return esc(trStopCustName(k) || String(k || ''));
+  return ls.map(function(x){ return esc(x); }).join('<br>');
+}
 /* 종이 맨 위 띠 — 기사와 받는 쪽이 **이 종이가 어느 정차지 것인지**를 한눈에 본다 */
 function trStopBanner(g, n){
   const labs = g.pallets.filter(p=>p.lines && p.lines.length).map(p=>trPalDisp(g.D, p.label));
@@ -37763,6 +37800,16 @@ function trStopBanner(g, n){
        + `margin:0 auto 12px;max-width:8.5in;font-family:Arial,sans-serif;">`
        + `<div style="font-size:17px;font-weight:800;letter-spacing:.4px;">STOP ${g.idx+1} OF ${n}`
        + ` &mdash; ${esc(String(trKindShort(g.kind)).toUpperCase())}</div>`
+       + (trIsCustStop(g.kind)
+            ? (`<div style="font-size:12.5px;margin-top:6px;line-height:1.45;">`
+               + `<span style="font-size:10px;letter-spacing:.6px;opacity:.75;">DELIVER TO</span><br>`
+               + trStopAddrHtml((g.D && g.D.meta) || {}, g.kind)
+               + ((trStopAddr((g.D && g.D.meta) || {}, g.kind) || {}).note
+                   ? (`<div style="font-size:11px;margin-top:4px;opacity:.85;">`
+                      + esc(String((trStopAddr((g.D && g.D.meta) || {}, g.kind) || {}).note)) + `</div>`)
+                   : '')
+               + `</div>`)
+            : '')
        + `<div style="font-size:11.5px;margin-top:3px;">`
        + (labs.length ? ('Pallets: ' + esc(labs.join(', ')) + ' &middot; ') : '')
        + `this sheet covers ONLY this stop</div></div>`;
@@ -37803,13 +37850,19 @@ function trRouteChip(route, size, rec){
 function trRoute(rec){ const r = ((rec&&rec.meta)||{}).route; return TR_ROUTES[r] ? r : 'SC2CA'; }
 function trSrcKind(route){ return (TR_ROUTES[route]||TR_ROUTES.SC2CA).from; }
 function trDstKind(route){ return (TR_ROUTES[route]||TR_ROUTES.SC2CA).dest; }
+/* ⚠ 거래처 정차지는 3자 창고가 **아니다** - bin 을 요구하면 안 된다 */
 function trIsSpecKind(k){ return k==='3P' || k==='LK'; }
-function trWhOfKind(k){ return (k==='CA'||k==='LK') ? 'CA' : 'SC'; }
-function trKindName(k){ return k==='3P' ? '3rd Party (SC · H*)' : k==='LK' ? '3rd Party (CA · SPECIAL*)' : (k+' warehouse'); }
-function trKindShort(k){ return k==='3P' ? 'Hodge (H*)' : k==='LK' ? '3rd Party CA (SPECIAL*)' : k; }
+/* CUSTOP-1 - 거래처 집은 **우리 창고가 아니다**. 빈 글자를 주면 bin 목록도 비고
+   재고로 받을 길도 없다 - 그것이 맞다. */
+function trWhOfKind(k){ if(trIsCustStop(k)) return ''; return (k==='CA'||k==='LK') ? 'CA' : 'SC'; }
+function trKindName(k){ if(trIsCustStop(k)) return trStopCustName(k) + ' (customer address)';
+  return k==='3P' ? '3rd Party (SC · H*)' : k==='LK' ? '3rd Party (CA · SPECIAL*)' : (k+' warehouse'); }
+function trKindShort(k){ if(trIsCustStop(k)) return trStopCustName(k);
+  return k==='3P' ? 'Hodge (H*)' : k==='LK' ? '3rd Party CA (SPECIAL*)' : k; }
 function trBinHint(k){ return k==='3P' ? 'H bin (e.g. H2999)' : k==='LK' ? 'SPECIAL bin' : ('bin code ('+k+')'); }
 // bin 이 그 종류에 맞는지
 function trLocIsKind(bin, k){
+  if(trIsCustStop(k)) return false;   /* CUSTOP-1 - 거래처 집에는 선반이 없다 */
   const b = String(bin||'').toUpperCase();
   if(k==='3P') return trIs3PLoc(b, 'SC');
   if(k==='LK') return bxIsLockerLoc(b, 'CA');
@@ -38813,19 +38866,24 @@ function trStopBarHtml(){
   if(!trIsMultiRoute(_shipRoute)) return '';
   const st = trStopsOf({meta:_shipMeta});
   const org = trSrcKind(_shipRoute);
-  const chip = (k,i)=>`<span style="display:inline-flex;align-items:center;gap:5px;background:#f5f3ff;border:1.5px solid #c4b5fd;border-radius:8px;padding:4px 6px 4px 9px;font-size:11.5px;font-weight:800;color:#5b21b6;white-space:nowrap;">`
+  /* CUSTOP-3 - 알약 색을 trStopTheme 에서 가져온다. 전에는 보라가 박혀 있어서
+     거래처 정차지가 Melmarc 와 같은 색으로 보였다. ⭐ 색을 정하는 곧은 한 곳이어야 한다. */
+  const chip = (k,i)=>{ const t = trStopTheme(k);
+    return `<span style="display:inline-flex;align-items:center;gap:5px;background:${t.bg};border:1.5px solid ${t.bd};border-radius:8px;padding:4px 6px 4px 9px;font-size:11.5px;font-weight:800;color:${t.fg};white-space:nowrap;">`
+    + (trIsCustStop(k) ? `<span title="Customer address — not our warehouse">🏠</span> ` : '')
     + `<span style="font-family:Consolas,monospace;opacity:.7;">${i+1}</span> ${esc(trKindShort(k))}`
-    + `<button class="btn btn-sm" style="padding:0 4px;font-size:10px;border-color:#c4b5fd;color:#6d28d9;" onclick="trStopMove(${i},-1)" title="Earlier stop"${i===0?' disabled':''}>↑</button>`
-    + `<button class="btn btn-sm" style="padding:0 4px;font-size:10px;border-color:#c4b5fd;color:#6d28d9;" onclick="trStopMove(${i},1)" title="Later stop"${i===st.length-1?' disabled':''}>↓</button>`
+    + `<button class="btn btn-sm" style="padding:0 4px;font-size:10px;border-color:${t.bd};color:${t.fg};" onclick="trStopMove(${i},-1)" title="Earlier stop"${i===0?' disabled':''}>↑</button>`
+    + `<button class="btn btn-sm" style="padding:0 4px;font-size:10px;border-color:${t.bd};color:${t.fg};" onclick="trStopMove(${i},1)" title="Later stop"${i===st.length-1?' disabled':''}>↓</button>`
     + `<button class="btn btn-sm" style="padding:0 5px;font-size:10px;border-color:#fecaca;color:#b91c1c;" onclick="trStopDel(${i})" title="Remove this stop">✕</button>`
-    + `</span>`;
-  const opts = TR_STOP_KINDS.map(k=>`<option value="${k}">+ ${esc(trKindShort(k))}</option>`).join('');
+    + `</span>`; };
+  const opts = TR_STOP_KINDS.map(k=>`<option value="${k}">+ ${esc(trKindShort(k))}</option>`).join('')
+    + '<option value="__cust__">+ Customer address...</option>';   /* CUSTOP-1 */
   return `<div style="margin-top:10px;padding:9px 11px;background:#faf5ff;border:1.5px solid #d8b4fe;border-radius:8px;">
     <div style="font-size:10px;color:#6d28d9;font-weight:800;margin-bottom:7px;">🛛 STOPS — in the order the truck stops. Then tell each pallet where it comes off.</div>
     <div style="display:flex;gap:7px;align-items:center;flex-wrap:wrap;">
       <span style="font-size:11.5px;font-weight:800;color:#334155;white-space:nowrap;">🏠 ${esc(trKindShort(org))}</span>
       ${st.map((k,i)=>`<span style="color:#a78bfa;font-weight:900;">→</span>${chip(k,i)}`).join('')}
-      <select class="fi" style="font-size:11px;padding:3px 5px;width:auto;" onchange="if(this.value){trStopAdd(this.value);this.value='';}">
+      <select class="fi" style="font-size:11px;padding:3px 5px;width:auto;" onchange="if(this.value){ if(this.value==='__cust__') trStopCustOpen(); else trStopAdd(this.value); this.value=''; }">
         <option value="">+ add stop</option>${opts}</select>
       ${st.length<2?'<span style="font-size:10.5px;color:#b45309;font-weight:700;">⚠ Add at least 2 stops, or use a normal single-route transfer.</span>':''}
     </div>${trStopOnlyHtml()}</div>`;
@@ -38835,9 +38893,16 @@ function trStopBarHtml(){
 function trStopOnlyHtml(){
   const st = trStopsOf({meta:_shipMeta});
   if(st.length < 2) return '';
+  /* CUSTOP-3 - 접을 수 있는 곧(우리 창고·3자 창고)이 하나도 없으면 줄을 안 낸다 */
+  if(!st.some(function(k){ return !trIsCustStop(k); })) return '';
   return `<div style="margin-top:8px;padding-top:8px;border-top:1px dashed #d8b4fe;display:flex;gap:7px;align-items:center;flex-wrap:wrap;">`
     + `<span style="font-size:10.5px;color:#6d28d9;font-weight:800;">Changed your mind? Send the whole truck to one place:</span>`
-    + st.map((k,i)=>{ const t = trStopTheme(k);
+    + st.map((k,i)=>{
+        /* CUSTOP-3 🔴 거래처 집 앞으로 **트럭 전체**를 보내는 것은 안 된다 -
+           우리 재고 팔레트까지 따라가고, 그 박스는 받는 절차가 없어
+           재고에서 조용히 사라진다. 팔레트별로 보내는 길은 DROP 칸에 그대로 있다. */
+        if(trIsCustStop(k)) return '';
+        const t = trStopTheme(k);
         return `<button class="btn btn-sm" style="background:${t.bg};color:${t.fg};border-color:${t.bd};font-weight:800;" `
           + `onclick="trStopPlanOpen(${i})" `
           + `title="Every pallet comes off at ${esc(trKindShort(k))} and the other stop(s) are removed — one packing list, one BOL">`
@@ -39388,10 +39453,128 @@ function trStopsRerender(){
   trRenderPallets();
 }
 function trStopAdd(k){
-  if(TR_STOP_KINDS.indexOf(k) < 0) return;
+  if(TR_STOP_KINDS.indexOf(k) < 0 && !trIsCustStop(k)) return;   /* CUSTOP-1 */
   const st = trStopsOf({meta:_shipMeta});
   if(st.length >= 4){ showToast('⚠ 4 stops is the most one truck should carry'); return; }
   st.push(k); _shipMeta.stops = st; trStopsRerender();
+}
+/* ═══ CUSTOP-1 - 거래처 주소 정차지를 더하는 창 ═══
+   [stated] 하윤: "우리 거래처가 원하는 주소로 보낼수있게 우리가 자유자재로 추가할수있게"
+   거래처를 고르면 우리 거래처 카드의 배송 주소가 들어온다. 손으로 고쳐도 되고
+   아예 새 주소를 쳐도 된다 - 거래처 명부에는 **안 쓴다** (이 트럭에만 쓰는 주소다).
+   ⚠ 화면 글자는 영어로 적는다. */
+function trStopCustList(){
+  const m = {};
+  try{ Object.keys(custStore || {}).forEach(function(k){
+    const r = custStore[k]; const n = String((r && r.name) || '').trim();
+    if(n) m[n.toUpperCase()] = 1; }); }catch(e){}
+  try{ (savedCache || []).forEach(function(s2){
+    const n = String(((s2 && s2.meta) || {}).cust || '').trim();
+    if(n) m[n.toUpperCase()] = 1; }); }catch(e){}
+  return Object.keys(m).sort();
+}
+/* 그 거래처의 배송 주소 - 거래처 카드가 1순위, 없으면 옛 오더 */
+function trStopCustAddr(cust){
+  const out = { name:'', addr:'', city:'', state:'', zip:'' };
+  if(!cust) return out;
+  try{
+    const cs = (custStore || {})[custKey(cust)] || {};
+    const st = Array.isArray(cs.shipTos) ? cs.shipTos.filter(Boolean)[0] : null;
+    if(st && (st.addr || st.city)){
+      out.name = String(st.name || cust); out.addr = String(st.addr || '');
+      out.city = String(st.city || ''); out.state = String(st.state || '').toUpperCase();
+      out.zip = String(st.zip || ''); return out;
+    }
+  }catch(e){}
+  try{
+    const p = (typeof custProfileFor === 'function' ? custProfileFor(cust) : null) || {};
+    if(p.shipAddr || p.shipCity){
+      out.name = String(p.shipName || cust); out.addr = String(p.shipAddr || '');
+      out.city = String(p.shipCity || ''); out.state = String(p.shipState || '').toUpperCase();
+      out.zip = String(p.shipZip || ''); return out;
+    }
+  }catch(e){}
+  out.name = String(cust);
+  return out;
+}
+function trStopCustOpen(){
+  const ex = document.getElementById('modal-custop'); if(ex) ex.remove();
+  const names = trStopCustList();
+  const div = document.createElement('div');
+  div.id = 'modal-custop';
+  div.style.cssText = 'position:fixed;inset:0;background:rgba(15,23,42,.55);z-index:150;display:flex;align-items:center;justify-content:center;padding:14px;';
+  div.onclick = function(e){ if(e.target === div) div.remove(); };
+  const F = function(id, lbl, ph, w){
+    return '<div style="flex:' + (w || 1) + ';min-width:0;">'
+      + '<div style="font-size:10px;font-weight:800;color:#64748b;margin-bottom:3px;">' + lbl + '</div>'
+      + '<input class="fi" id="' + id + '" placeholder="' + ph + '" style="width:100%;font-size:12.5px;"></div>';
+  };
+  div.innerHTML = '<div style="background:#fff;border-radius:12px;width:620px;max-width:96vw;box-shadow:0 20px 60px rgba(0,0,0,.35);overflow:hidden;">'
+    + '<div style="background:#be123c;color:#fff;padding:11px 16px;font-weight:800;display:flex;justify-content:space-between;align-items:center;">'
+    +   '<span>🏠 Add a customer address as a stop</span>'
+    +   '<button onclick="document.getElementById(\'modal-custop\').remove()" style="background:none;border:none;color:#fff;font-size:18px;cursor:pointer;">✕</button></div>'
+    + '<div style="padding:14px 16px;display:flex;flex-direction:column;gap:10px;">'
+    +   '<div style="font-size:11.5px;color:#64748b;">Pick one of our customers to fill in their shipping address, or just type any address. '
+    +     'This address is used on this truck only — the customer card is not changed.</div>'
+    +   '<div><div style="font-size:10px;font-weight:800;color:#64748b;margin-bottom:3px;">CUSTOMER</div>'
+    +     '<input class="fi" id="custop-cust" list="custop-names" placeholder="Start typing a customer name" '
+    +     'oninput="trStopCustFill()" style="width:100%;font-size:13px;font-weight:700;">'
+    +     '<datalist id="custop-names">' + names.map(function(n){ return '<option value="' + esc(n) + '">'; }).join('') + '</datalist></div>'
+    +   '<div style="display:flex;gap:8px;">' + F('custop-name', 'SHIP TO NAME', 'Name on the dock') + '</div>'
+    +   '<div style="display:flex;gap:8px;">' + F('custop-addr', 'STREET ADDRESS', '123 Main St') + '</div>'
+    +   '<div style="display:flex;gap:8px;">' + F('custop-city', 'CITY', 'City', 2)
+    +     F('custop-state', 'STATE', 'CA', 1) + F('custop-zip', 'ZIP', '91761', 1) + '</div>'
+    +   '<div style="display:flex;gap:8px;">' + F('custop-note', 'NOTE FOR THE DRIVER (optional)', 'Dock hours, contact, gate code') + '</div>'
+    + '</div>'
+    + '<div style="padding:12px 16px;border-top:1px solid #e2e8f0;display:flex;gap:8px;justify-content:flex-end;">'
+    +   '<button class="btn" onclick="document.getElementById(\'modal-custop\').remove()">Cancel</button>'
+    +   '<button class="btn btn-primary" style="background:#be123c;border-color:#be123c;font-weight:800;" onclick="trStopCustAdd()">🏠 Add this stop</button>'
+    + '</div></div>';
+  document.body.appendChild(div);
+  try{ const el = document.getElementById('custop-cust'); if(el) el.focus(); }catch(e){}
+}
+/* 거래처를 고르면 주소를 채운다. ⚠ 사람이 이미 친 칸은 안 덮는다. */
+function trStopCustFill(){
+  const g = function(id){ return document.getElementById(id); };
+  const c = String((g('custop-cust') || {}).value || '').trim();
+  if(!c) return;
+  const known = trStopCustList();
+  if(known.indexOf(c.toUpperCase()) < 0) return;      /* 아직 다 치지 않았다 */
+  const a = trStopCustAddr(c);
+  [['custop-name', a.name], ['custop-addr', a.addr], ['custop-city', a.city],
+   ['custop-state', a.state], ['custop-zip', a.zip]].forEach(function(p){
+    const el = g(p[0]); if(!el) return;
+    if(String(el.value || '').trim() && el.dataset.custopFill !== '1') return;
+    el.value = p[1] || ''; el.dataset.custopFill = '1';
+  });
+}
+function trStopCustAdd(){
+  const g = function(id){ return String((document.getElementById(id) || {}).value || '').trim(); };
+  const cust = g('custop-cust'), nm = g('custop-name') || cust;
+  if(!nm){ showToast('⚠ Type a customer or a ship-to name'); return; }
+  const k = trStopCustKey(nm);
+  const st = trStopsOf({ meta:_shipMeta });
+  if(st.indexOf(k) >= 0){ showToast('⚠ That stop is already on this truck'); return; }
+  if(st.length >= 4){ showToast('⚠ 4 stops is the most one truck should carry'); return; }
+  _shipMeta = _shipMeta || {};
+  _shipMeta.stopAddr = _shipMeta.stopAddr || {};
+  _shipMeta.stopAddr[k] = { cust: cust || nm, name: nm, addr: g('custop-addr'),
+                            city: g('custop-city'), state: g('custop-state').toUpperCase(),
+                            zip: g('custop-zip'), note: g('custop-note') };
+  const ex = document.getElementById('modal-custop'); if(ex) ex.remove();
+  trStopAdd(k);
+  showToast('🏠 Stop added — ' + nm);
+}
+/* 주소 한 덩이를 글자로. 종이와 화면이 **같은 함수**를 쓴다. */
+function trStopAddrLines(a){
+  if(!a) return [];
+  const out = [];
+  if(a.name) out.push(String(a.name));
+  if(a.addr) out.push(String(a.addr));
+  const tail = [a.city, [String(a.state || '').toUpperCase(), a.zip].filter(Boolean).join(' ')]
+    .filter(Boolean).join(', ');
+  if(tail) out.push(tail);
+  return out;
 }
 function trStopMove(i, d){
   const st = trStopsOf({meta:_shipMeta}); const j = i + d;
@@ -39417,7 +39600,14 @@ function trPalletStopHtml(p){
   const st = trStopsOf({meta:_shipMeta});
   if(!st.length) return '';
   const cur = (p.stop >= 0 && p.stop < st.length) ? p.stop : -1;
-  const opts = st.map((k,i)=>`<option value="${i}"${i===cur?' selected':''}>↓ off at ${i+1} · ${esc(trKindShort(k))}</option>`).join('');
+  /* CUSTOP-1 ⚠⚠ 우리 재고 줄이 있는 팔레트는 거래처 집 앞에 못 내린다 -
+     거기서 내리면 그 박스가 재고에서 조용히 사라진다 (받는 절차가 없다).
+     거래처 오더(orderShip)만 실린 팔레트는 원래부터 재고가 아니라 괜찮다. */
+  const _hasStock = !!(p && p.lines && p.lines.length);
+  const opts = st.map((k,i)=>{
+    const _no = _hasStock && trIsCustStop(k);
+    return `<option value="${i}"${i===cur?' selected':''}${_no?' disabled':''}>↓ off at ${i+1} · ${esc(trKindShort(k))}${_no?' (warehouse stock cannot drop here)':''}</option>`;
+  }).join('');
   /* MSCOLOR-v1 - 고른 정차지 색을 그대로 입는다 (안 정했으면 예전처럼 빨강) */
   const _t = cur < 0 ? null : trStopTheme(st[cur]);
   return `<span style="display:inline-flex;align-items:center;gap:4px;background:${_t?_t.bg:'#fef2f2'};border:1.5px solid ${_t?_t.bd:'#fca5a5'};border-radius:8px;padding:2px 4px 2px 8px;">`
@@ -41675,7 +41865,9 @@ function trBOLHtml(D, stopKind){
     const _A = { SC:'Pacific Sports — SC Warehouse<br>Sumter, SC',
                  CA:'Pacific Sports — CA Warehouse<br>Eastvale, CA',
                  '3P':trPartyAddrHtml('3P', true), LK:trPartyAddrHtml('LK', true) };
-    if(_A[stopKind]) PT.to = _A[stopKind];
+    /* CUSTOP-2 - 거래처 집 앞 정차지면 그 주소가 SHIP TO 다 */
+    if(trIsCustStop(stopKind)) PT.to = trStopAddrHtml(M, stopKind);
+    else if(_A[stopKind]) PT.to = _A[stopKind];
   }
   const lines = (D.pallets||[]).reduce((a,p)=>a.concat(p.lines),[]);
   const _os = (M.orderShip||[]);
@@ -42383,8 +42575,17 @@ function oshipSyncPal(){
 function osOrderKind(base){
   const rec = ((typeof savedCache!=='undefined' && savedCache) || []).find(r=>r && r.base===base);
   if(!rec) return '';
+  const c = String(((rec.meta)||{}).cust||'').toUpperCase();
+  /* CUSTOP-1 - 이 트럭에 **그 거래처 집 앞** 정차지가 있으면 거기서 내린다.
+     사람이 고를 일이 아니다 - 오더가 답을 안다. */
   try{
-    const c = String(((rec.meta)||{}).cust||'').toUpperCase();
+    const _st = trStopsOf({ meta:(typeof _shipMeta !== 'undefined' ? _shipMeta : null) });
+    const hit = _st.find(function(k){
+      return trIsCustStop(k) && custKey(trStopCustName(k)) === custKey(c);
+    });
+    if(hit) return hit;
+  }catch(e){}
+  try{
     if(c && typeof trLkCustMatch==='function' && c.indexOf(trLkCustMatch()) >= 0) return 'LK';
   }catch(e){}
   return 'CA';
