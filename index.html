@@ -314,7 +314,7 @@ body.po-dragging{user-select:none;}
   </span>
   <select id="lang-sel" onchange="setLang(this.value)" style="font-size:11px;padding:3px 6px;border-radius:5px;border:none;background:#1d3f66;color:#fff;"><option value="ko">한국어</option><option value="en">English</option><option value="es">Español</option></select>
   <button id="wide-btn" class="btn btn-sm" onclick="toggleWide()" title="화면 넓게 / 좁게 — 기본은 넓게 (이 브라우저에만 저장돼)" style="padding:2px 8px;font-size:10px;background:#1d3f66;color:#cfe0f2;border-color:#2b5384;">↔ Wide</button>
-  <span id="app-ver" style="font-size:10px;color:#9fb8d4;">v1286</span>
+  <span id="app-ver" style="font-size:10px;color:#9fb8d4;">v1287</span>
 </div>
 <script>
 // ↔ 넓게 보기 — 브라우저마다 따로 저장 (v793)
@@ -16976,10 +16976,53 @@ function upsForWh(rec, wh){
 function recShipFromCA(rec){ return !!(rec && rec.meta && rec.meta._shipFromCA); }
 // 라벨 출발지(요금·라벨 주소)를 정함 — 이관 오더의 SC 몫은 CA에서 출발
 function lblShipFromFor(rec, portionWh){ return (recShipFromCA(rec) && portionWh==='SC') ? 'CA' : portionWh; }
+/* ═══ DIRECTSC-1 — 「Direct ship from SC」 ═══
+   [stated] 하윤: "direct ship from SC도 만들자 ... 그래서 우리가 truck에 담을수있께"
+   뜻: 이 오더는 **SC 에서 거래처로 바로 나간다.** 우리 트럭이 거래처 문 앞에 내려준다.
+   ⭐ 서류는 한 글자도 안 바뀐다 - Melmarc 오더와 같은 갈래다. 바뀌는 것은 딱 하나,
+     거래처 정차지가 있는 트럭의 「Orders on this truck」 에 이 오더가 뜬다는 것.
+   ⚠ Ship from CA 와 **같이 켤 수 없다** (그건 「CA 에서 나간다」는 뜻이라 서류가 바뀐다). */
+function recDirectSC(rec){ return !!(rec && rec.meta && rec.meta._directSC); }
+async function toggleDirectSC(base){
+  const rec=(savedCache||[]).find(r=>r.base===base); if(!rec) return;
+  rec.meta=rec.meta||{};
+  const on=!rec.meta._directSC;
+  /* ⚠ 조용히 다른 표시를 끄지 않는다 - 막고 말한다 */
+  if(on && recShipFromCA(rec)){
+    alert('\u26a0 This order is set to Ship from CA.\n\n'
+      + 'Ship from CA means the SC boxes move to CA and go out from there, and the paperwork says so.\n'
+      + 'Direct ship from SC means it leaves SC on our truck to the customer.\n\n'
+      + 'Turn Ship from CA off first, then set this.');
+    return;
+  }
+  if(on){ rec.meta._directSC=true; rec.meta._directSCAt=new Date().toISOString(); rec.meta._directSCBy=(SESS&&SESS.email)||''; }
+  else { delete rec.meta._directSC; delete rec.meta._directSCAt; delete rec.meta._directSCBy; }
+  try{
+    const r = await sbFetch('/rest/v1/pr_orders?base=eq.'+encodeURIComponent(base),
+      {method:'PATCH', headers:{Prefer:'return=representation'},
+       body:JSON.stringify({meta:rec.meta, updated_at:new Date().toISOString()})});
+    const back = r.ok ? await r.json() : null;
+    if(!(Array.isArray(back) && back.length===1)) throw new Error('the server changed no row');
+    const i=savedCache.findIndex(s2=>s2.base===base); if(i>=0) savedCache[i]=rec;
+    showToast(on?'\ud83c\udfe0 Direct ship from SC \u2014 it can ride a truck to this customer\u0027s door'
+                :'Direct-ship-from-SC turned off');
+    if(typeof renderSaved==='function') renderSaved();
+  }catch(e){
+    if(on){ delete rec.meta._directSC; delete rec.meta._directSCAt; delete rec.meta._directSCBy; }
+    else { rec.meta._directSC=true; }
+    alert('\u274c NOTHING WAS CHANGED \u2014 '+String(e&&e.message||e));
+  }
+}
 async function toggleShipFromCA(base){
   const rec=(savedCache||[]).find(r=>r.base===base); if(!rec) return;
   rec.meta=rec.meta||{};
   const on=!rec.meta._shipFromCA;
+  /* DIRECTSC-1 - 반대쪽도 같이 막는다. 한 군데만 막으면 순서에 따라 둘 다 켜진다. */
+  if(on && recDirectSC(rec)){
+    alert('\u26a0 This order is set to Direct ship from SC.\n\n'
+      + 'Turn that off first \u2014 an order cannot both go out of CA and leave SC direct.');
+    return;
+  }
   if(on){ rec.meta._shipFromCA=true; rec.meta._shipFromCAAt=new Date().toISOString(); rec.meta._shipFromCABy=(SESS&&SESS.email)||''; }
   else { delete rec.meta._shipFromCA; delete rec.meta._shipFromCAAt; delete rec.meta._shipFromCABy; }
   try{
@@ -42294,10 +42337,24 @@ function trOrderShipWants(route){
   const rt = route || _shipRoute;
   if(trIsMultiRoute(rt)){
     const st = trStopsOf({meta:_shipMeta});
-    return { ca: st.indexOf('CA') >= 0, lk: st.indexOf('LK') >= 0 };
+    /* DIRECTSC-1 - cu: 이 트럭이 서는 **거래처 집** 정차지들 */
+    return { ca: st.indexOf('CA') >= 0, lk: st.indexOf('LK') >= 0,
+             cu: st.filter(function(k2){ return trIsCustStop(k2); }) };
   }
   const k = trDstKind(rt);
-  return { ca: k !== 'LK', lk: k === 'LK' };
+  return { ca: k !== 'LK', lk: k === 'LK', cu: [] };
+}
+/* DIRECTSC-1 - 이 오더가 이 트럭의 어느 거래처 정차지로 가나. 없으면 빈 글자.
+   ⭐ osOrderKind 와 **같은 견줌**(custKey) 을 쓴다 - 다르면 실을 수는 있는데
+     팔레트가 엉뚱한 정차지에 붙는다. */
+function trCuStopForOrder(rec, wants){
+  try{
+    const list = (wants && wants.cu) || [];
+    if(!list.length || !recDirectSC(rec)) return '';
+    const c = custKey(String((rec.meta||{}).cust||''));
+    if(!c) return '';
+    return list.find(function(k2){ return custKey(trStopCustName(k2)) === c; }) || '';
+  }catch(e){ return ''; }
 }
 // ═══════ 🚚 Ship-from-CA 오더 박스를 SC→CA 트럭에 태워 보내기 (v635) ═══════
 /* ═══ 🚚 이 트럭에 실을 수 있는 오더 (v1080 에서 갈래를 나눴다) ═══
@@ -42331,6 +42388,16 @@ function trOrderShipEligible(){
       /* 이미 SC 몫을 Complete 한(=나간) 오더는 또 실을 이유가 없다 */
       if(((r.pl||{}).SC||{})._completed) return false;
       _kind[r.base] = 'LK';
+      return true;
+    }
+    /* DIRECTSC-1 - 거래처 집 정차지가 있고 그 거래처 오더에
+       「Direct ship from SC」 가 켜지어 있으면 실을 수 있다.
+       Melmarc 와 같은 갈래다 - Ship from CA 는 요구하지 않고,
+       재고로도 안 들어간다. */
+    const _cu = trCuStopForOrder(r, _want);
+    if(_cu){
+      if(((r.pl||{}).SC||{})._completed) return false;
+      _kind[r.base] = _cu;
       return true;
     }
     if(!_want.ca){
@@ -51286,7 +51353,7 @@ function renderSaved(){
         const tip = has ? 'Label created' : (ready ? 'Warehouse entered boxes — ready to make the label' : 'Waiting for warehouse to enter boxes');
         return `<button class="btn btn-sm" style="${sty}" onclick="openLabelModal('${esc(s.base)}','${w}')" title="${tip} (${w})">🏷 UPS${only?' Label':' '+w}${has?' ✓':(ready?' •':'')}</button>`; }).join(''); })()}
       ${(s.meta&&s.meta._shipApproval)?`<span title="Shipping cost approval: ${esc(_apprMoney(s.meta._shipApproval.amount))} → ${esc(s.meta._shipApproval.email||'')}" style="cursor:pointer;" onclick="openLabelModal('${esc(s.base)}','${esc((s.meta._shipApproval.wh==='CA'?'CA':'SC'))}')">${apprStatusChip(s.meta._shipApproval)}</span>`:''}
-      ${(s.whs||[]).includes('SC') ? `<button class="btn btn-sm" style="${recShipFromCA(s)?'background:#b45309;color:#fff;border-color:#b45309;font-weight:800;':'color:#b45309;border-color:#fdba74;'}" onclick="toggleShipFromCA('${esc(s.base)}')" title="SC boxes transfer to CA on the next LTL, combine with the CA portion, and ship out from CA as one shipment. CA just receives &amp; reships — no CA inventory impact.">🚚 ${recShipFromCA(s)?'Ships from CA ✓':'Ship from CA'}</button>` : ''}
+      ${(s.whs||[]).includes('SC') ? `<button class="btn btn-sm" style="${recShipFromCA(s)?'background:#b45309;color:#fff;border-color:#b45309;font-weight:800;':'color:#b45309;border-color:#fdba74;'}" onclick="toggleShipFromCA('${esc(s.base)}')" title="SC boxes transfer to CA on the next LTL, combine with the CA portion, and ship out from CA as one shipment. CA just receives &amp; reships — no CA inventory impact.">🚚 ${recShipFromCA(s)?'Ships from CA ✓':'Ship from CA'}</button>` : ''}${(s.whs||[]).includes('SC') ? `<button class="btn btn-sm" style="${recDirectSC(s)?'background:#be123c;color:#fff;border-color:#be123c;font-weight:800;':'color:#be123c;border-color:#fda4af;'}" onclick="toggleDirectSC('${esc(s.base)}')" title="This order leaves SC on our own truck straight to the customer. Paperwork does not change — it only lets you load this order onto a truck that stops at this customer&#39;s address.">🏠 ${recDirectSC(s)?'Direct from SC ✓':'Direct ship from SC'}</button>` : ''}
       <button class="btn btn-sm" onclick="openHistory('${esc(s.base)}')" title="Change history">🕘</button>
       <button class="btn btn-sm" style="color:#7c3aed;" onclick="splitOrderOpen('${esc(s.base)}')" title="Split some items into a separate order (-S) — run urgent items separately (stock deductions transfer too)">✂ Split</button>
       ${!recIsReplace(s) && (s.whs||[]).some(w=>s.pl && s.pl[w] && s.pl[w].savedAt) ? `<button class="btn btn-sm" style="color:#be123c;border-color:#fda4af;" onclick="replaceOrderOpen('${esc(s.base)}')" title="Replace defective shipped items — creates a free PO#R order (no invoice)">🔁 Replace</button>` : ''}
