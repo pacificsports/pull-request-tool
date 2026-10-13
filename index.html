@@ -314,7 +314,7 @@ body.po-dragging{user-select:none;}
   </span>
   <select id="lang-sel" onchange="setLang(this.value)" style="font-size:11px;padding:3px 6px;border-radius:5px;border:none;background:#1d3f66;color:#fff;"><option value="ko">한국어</option><option value="en">English</option><option value="es">Español</option></select>
   <button id="wide-btn" class="btn btn-sm" onclick="toggleWide()" title="화면 넓게 / 좁게 — 기본은 넓게 (이 브라우저에만 저장돼)" style="padding:2px 8px;font-size:10px;background:#1d3f66;color:#cfe0f2;border-color:#2b5384;">↔ Wide</button>
-  <span id="app-ver" style="font-size:10px;color:#9fb8d4;">v1275</span>
+  <span id="app-ver" style="font-size:10px;color:#9fb8d4;">v1276</span>
 </div>
 <script>
 // ↔ 넓게 보기 — 브라우저마다 따로 저장 (v793)
@@ -6267,6 +6267,18 @@ function raIsReplace(r){
       물건이 창고에 서 있는데 아무 화면도 그걸 모르는 상태가 된다.
    ⚠ 크레딧 메모 **종이와 메일**은 그대로 `cmIssued` 를 본다 (교체 건은 종이가 없다). */
 function raCreditSettled(r){ return cmIssued(r) || raIsReplace(r); }
+/* REPLACED-2 - **거래처에게 보여줄** 크레딧 메모 번호. 교체 건은 빈칸이다.
+   ⚠⚠ `ret.cm` 자체는 **지우지 않는다** - `invScanMax()` 가 그 번호를 훑어서
+      DB 를 못 쓸 때 같은 번호를 인보이스로 다시 내주는 것을 막고 있다.
+      지우면 같은 번호가 두 서류에 붙는다. 번호는 은퇴시켜 레코드에 남기고,
+      **종이와 메일에서만** 숨긴다 (returnCancel 의 VOID 규칙과 같은 정신).
+   ⚠ 내부 화면(받는 창·취소창·큐 줄)은 `retCmNo` 를 그대로 본다 - 은퇴한 번호를
+      사람이 볼 수 있어야 한다. */
+function raShowCmNo(ret){ return raIsReplace(ret) ? '' : retCmNo(ret); }
+/* REPLACED-2 - 이미 만들어진 RA 를 교체 건으로 돌릴 수 있나.
+   ⚠ 크레딧 메모가 **이미 발행된** 건은 안 된다 - 종이가 이미 거래처 장부에 올라갔다.
+      그건 교체 전환이 아니라 환불/무효 문제다. */
+function raCanMarkReplace(ret){ return !!ret && !cmIssued(ret) && !raIsReplace(ret); }
 function alGen(base, rec){
   const n = recReturns(rec).filter(raIsAdj).length + 1;
   return 'AL-' + base + (n>1?('-'+n):'');
@@ -6454,8 +6466,9 @@ function buildRASheetHtml(rec, ret, wh, lines){
       <thead><tr><th class="tl">Style</th><th class="tl">Color</th><th>Size</th><th>Qty</th><th class="tl">Reason</th></tr></thead>
       <tbody>${rows}</tbody>
     </table>
-    ${(function(){ /* RACM-v1 - 번호를 미리 알려준다. 거래처가 물건을 보내기 전에 번호를 손에 쥔다. */
-        const _c = (typeof retCmNo==='function') ? retCmNo(ret) : '';
+    ${(function(){ /* RACM-v1 - 번호를 미리 알려준다. 거래처가 물건을 보내기 전에 번호를 손에 쥔다.
+        REPLACED-2 - 교체 건은 이 네모가 아예 안 나온다 (낼 메모가 없다). */
+        const _c = (typeof raShowCmNo==='function') ? raShowCmNo(ret) : '';
         if(!_c) return '';
         return '<div style="margin-top:16px;padding:10px 14px;background:#fff7ed;border:1.5px solid #fdba74;border-radius:8px;">'
           + '<span style="font-size:11px;font-weight:800;color:#9a3412;letter-spacing:.5px;">CREDIT MEMO PREPARED</span>'
@@ -6491,7 +6504,8 @@ async function sendReturnEmail(rec, ret){
       + psmRow('Reason', esc(ret.reason||'—'))
       + psmRow('Total', totQty.toLocaleString()+' pcs')
       /* RACM-v1 - 번호가 없으면 줄을 안 만든다 (빈 칸을 보내지 않는다) */
-      + (retCmNo(ret) ? psmRow('Credit memo #', '<b>'+esc(retCmNo(ret))+'</b>') : ''))
+      /* REPLACED-2 - 교체 건은 번호 줄을 안 만든다 (raShowCmNo 가 빈칸을 준다) */
+      + (raShowCmNo(ret) ? psmRow('Credit memo #', '<b>'+esc(raShowCmNo(ret))+'</b>') : ''))
     + psmP(multi ? '<b>Ship to TWO warehouses</b> &mdash; see below.' : 'Return shipping address:')
     + addrSection
     + psmList(
@@ -6578,6 +6592,7 @@ function openReturnDetail(base, ra, edit){
            <button class="btn btn-primary" style="background:#16a34a;border-color:#16a34a;" onclick="returnDetailSave('${esc(base)}','${esc(ret.ra)}')">💾 Save changes</button>`
         : `${ret.status==='pending'?`<button class="btn" style="color:#b91c1c;border-color:#fca5a5;margin-right:auto;" onclick="returnCancel('${esc(base)}','${esc(ret.ra)}')">🗑 Cancel RA</button>`:''}
            ${ret.status==='arrived'?`<button class="btn" style="color:#b91c1c;border-color:#fca5a5;margin-right:auto;" onclick="returnCancel('${esc(base)}','${esc(ret.ra)}')">🗑 Cancel RA</button>`:''}
+           ${raCanMarkReplace(ret)?`<button class="btn" style="background:#fff1f2;color:#be123c;border-color:#fda4af;font-weight:800;" onclick="returnMarkReplace('${esc(base)}','${esc(ret.ra)}')" title="A replacement was sent for these items, so no credit memo is issued. The returned goods still go back into stock.">🔁 No credit — replacement</button>`:''}
            ${ret.status==='pending'?`<button class="btn" style="background:#f5f3ff;color:#6d28d9;border-color:#c4b5fd;font-weight:700;" onclick="openReturnDetail('${esc(base)}','${esc(ret.ra)}',true)">✏ Edit</button>`:''}
            ${ret.status==='pending'?`<button class="btn" style="background:#fff7ed;color:#ea580c;border-color:#fdba74;" onclick="returnResendEmail('${esc(base)}','${esc(ret.ra)}')" title="Send the customer the RA so they can ship the goods back">📧 ${ret.emailedAt?'Resend':'Send'} RA</button>`:''}
            ${ret.status==='arrived'?`<button class="btn" style="background:#374151;color:#fff;border-color:#374151;" onclick="printReturnInspection('${esc(base)}','${esc(ret.ra)}')" title="Print the inspection sheet again">🖨 Reprint</button>`:''}
@@ -6644,6 +6659,57 @@ async function returnResendReceivedEmail(base, ra){
     const m=document.getElementById('modal-radetail'); if(m) m.remove();
     renderSaved();
   }catch(e){ alert('📧 Email failed: '+(e.message||e)); }
+}
+/* REPLACED-2 - 이미 만들어진 RA 를 「교체로 끝낸 건」 으로 돌린다.
+   [stated] 하윤: "저기서도 이건은 replacement으로 처리됐으니 credit memo를 없애야되잖아"
+   ⭐⭐ 번호는 **지우지 않고 은퇴**시킨다 (`ret.cm` 그대로 + `cmRetiredAt`).
+      `invScanMax()` 가 `ret.cm` 을 훑어서 같은 번호가 인보이스로 다시 나가는 것을
+      막고 있기 때문이다. 거래처용 종이·메일에서만 `raShowCmNo` 가 숨긴다.
+   ⚠ 돌아온 물건은 그대로 재고로 들어간다 - 크레딧만 안 나간다.
+   ⚠⚠ 저장이 실패하면 화면 값을 되돌린다 (CMSAVE-1 정신). */
+async function returnMarkReplace(base, ra){
+  const rec = (savedCache||[]).find(s=>s.base===base); if(!rec) return;
+  const ret = recReturns(rec).find(r=>r.ra===ra); if(!ret) return;
+  if(cmIssued(ret)){
+    alert('\u26d4 Credit memo ' + (retCmNo(ret)||'') + ' has already been issued for this return.\n\n'
+        + 'It cannot be turned into a replacement from here \u2014 the customer already has the credit.\n'
+        + 'Refund or void it instead.');
+    return;
+  }
+  if(raIsReplace(ret)){ showToast('\u{1F501} This return is already marked as replaced'); return; }
+  const _cm = retCmNo(ret);
+  if(!confirm('\u{1F501} Mark ' + ra + ' as REPLACED \u2014 no credit memo?\n\n'
+    + (_cm ? ('\u2022 Credit memo ' + _cm + ' is retired. It stays on the books so the number is\n'
+              + '  accounted for, and it is never reused \u2014 but it will NOT be issued.\n') : '')
+    + '\u2022 The customer sees no credit memo number on the RA from now on.\n'
+    + '\u2022 The returned goods still go back into stock as usual.\n'
+    + '\u2022 This return leaves the Credit Memo Not Issued list.\n\n'
+    + (ret.emailedAt ? 'The RA email already went out with the old wording \u2014 press\n\u{1F4E7} Resend RA afterwards if you want the customer to get the corrected one.\n\n' : '')
+    + 'Do this only if a replacement was sent for these items.')) return;
+  /* 되돌릴 값을 쥐고 간다 */
+  const _old = { kind: ret.kind, cmStatus: ret.cmStatus, cmRetiredAt: ret.cmRetiredAt, cmRetiredBy: ret.cmRetiredBy };
+  ret.kind = 'replace';
+  ret.cmStatus = 'replaced';
+  if(_cm){ ret.cmRetiredAt = new Date().toISOString(); ret.cmRetiredBy = (SESS&&SESS.email)||''; }
+  rec.meta = rec.meta||{};
+  rec.meta._returns = recReturns(rec).map(r=>r.ra===ra?ret:r);
+  try{
+    await sbSaveRow('/rest/v1/pr_orders?base=eq.'+encodeURIComponent(base),
+      {meta:rec.meta, updated_at:new Date().toISOString()}, 'Return ' + ra + ' marked replaced');
+  }catch(e){
+    ret.kind = _old.kind; ret.cmStatus = _old.cmStatus;
+    ret.cmRetiredAt = _old.cmRetiredAt; ret.cmRetiredBy = _old.cmRetiredBy;
+    rec.meta._returns = recReturns(rec).map(r=>r.ra===ra?ret:r);
+    alert('\u26d4 NOTHING WAS SAVED\n\n' + ((e && e.message) || e)
+      + '\n\nThe return is unchanged. Log out and back in, then try again.');
+    return;
+  }
+  logHist(base, '\u{1F501} Return marked REPLACED \u2014 ' + ra + ' \u00b7 no credit memo'
+    + (_cm ? (' \u00b7 ' + _cm + ' retired (number never reused)') : ''));
+  const m = document.getElementById('modal-radetail'); if(m) m.remove();
+  renderSaved();
+  showToast('\u{1F501} ' + ra + ' \u2014 replaced, no credit memo'
+    + (_cm ? (' \u00b7 ' + _cm + ' retired') : ''));
 }
 async function returnCancel(base, ra){
   /* RACM-v1 - 번호가 이미 나간 반품은 지우지 않는다.
@@ -6729,10 +6795,14 @@ async function sendReturnReceivedEmail(rec, ret, email){
     + psmTd('<b>'+(Number(l.qty)||0).toLocaleString()+'</b>', 'right')
     + '</tr>').join('');
   const _tot=_ls.reduce((a,l)=>a+(Number(l.qty)||0),0);
-  const _cm=(typeof retCmNo==='function') ? retCmNo(ret) : '';
+  /* REPLACED-2 - 교체 건은 번호를 안 보여준다 */
+  const _cm=(typeof raShowCmNo==='function') ? raShowCmNo(ret) : '';
   const html=psmWrap('Return Received',
       psmHead('Return received', 'RA # ' + esc(ret.ra) + (meta.po ? (' &middot; PO # ' + esc(meta.po)) : ''))
-    + psmP('We have <b>received</b> your returned items. Our team is inspecting them now, and a credit memo will follow.')
+    /* REPLACED-2 - 교체 건에 「크레딧 메모가 따라옵니다」 라고 하면 안 된다 */
+    + psmP(raIsReplace(ret)
+        ? 'We have <b>received</b> your returned items. A replacement was sent for them, so <b>no credit memo will be issued</b> for this return.'
+        : 'We have <b>received</b> your returned items. Our team is inspecting them now, and a credit memo will follow.')
     + psmTable(
         psmRow('RA #', esc(ret.ra))
       + psmRow('PO #', esc(meta.po||'—'))
