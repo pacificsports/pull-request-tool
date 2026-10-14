@@ -314,7 +314,7 @@ body.po-dragging{user-select:none;}
   </span>
   <select id="lang-sel" onchange="setLang(this.value)" style="font-size:11px;padding:3px 6px;border-radius:5px;border:none;background:#1d3f66;color:#fff;"><option value="ko">한국어</option><option value="en">English</option><option value="es">Español</option></select>
   <button id="wide-btn" class="btn btn-sm" onclick="toggleWide()" title="화면 넓게 / 좁게 — 기본은 넓게 (이 브라우저에만 저장돼)" style="padding:2px 8px;font-size:10px;background:#1d3f66;color:#cfe0f2;border-color:#2b5384;">↔ Wide</button>
-  <span id="app-ver" style="font-size:10px;color:#9fb8d4;">v1291</span>
+  <span id="app-ver" style="font-size:10px;color:#9fb8d4;">v1292</span>
 </div>
 <script>
 // ↔ 넓게 보기 — 브라우저마다 따로 저장 (v793)
@@ -11237,7 +11237,25 @@ function payReqSplitCalc(){
     const w = i.getAttribute('data-wh') || '';
     if(document.getElementById('prq-mdse-' + w)) i.value = payReqRowReq(w).toFixed(2);
   });
+  payReqWebNotePaint();
   payReqOrderCalc();
+}
+/* WEBMDSE-1 - 보내기 **전에** 「이만큼이 받은 것으로 적힌다」를 창에 보여 준다.
+   ⚠ 확인 팝업은 안 띄운다 (NOPOP-1) - 창에 다 보이게 하는 쪽이다. */
+function payReqWebNotePaint(){
+  const box = document.getElementById('prq-webnote'); if(!box) return;
+  const root = document.getElementById('modal-payreq') || document;
+  let tot = 0;
+  [...root.querySelectorAll('.prq-amt')].forEach(function(i){
+    const w = i.getAttribute('data-wh') || '';
+    if(payReqWebOn(w)) tot += payReqNum(document.getElementById('prq-mdse-' + w));
+  });
+  tot = Math.round(tot * 100) / 100;
+  if(!(tot > 0)){ box.style.display = 'none'; box.innerHTML = ''; return; }
+  box.style.display = 'block';
+  box.innerHTML = '\u{1F310} ' + payReqMoney(tot) + ' will also be recorded as <b>already received on the website</b>'
+    + '<div style="font-weight:400;font-size:11px;margin-top:3px;">So the invoice balance closes and the row turns'
+    + ' \u2713 Received once the shipping is paid.</div>';
 }
 function payReqOrderCalc(){
   payReqResetSent();   /* RESEND-1 - 금액이 바뀌면 새 링크여야 한다 */
@@ -11521,6 +11539,7 @@ function payReqOrder(base){
         <tfoot><tr><td></td><td></td><td></td><td class="tl" style="text-align:right;font-weight:800;">TOTAL</td>
           <td id="prq-total" style="text-align:right;font-family:Consolas,monospace;font-weight:900;font-size:14px;">${payReqMoney(total)}</td></tr></tfoot>
       </table>
+      <div id="prq-webnote" style="display:none;margin-top:8px;background:#ecfeff;border:1px solid #a5f3fc;border-radius:8px;padding:8px 11px;font-size:12px;color:#0e7490;font-weight:700;"></div>
       <div style="font-size:11px;color:#94a3b8;margin-top:5px;">REQUEST is merchandise + shipping. Set both to 0 to leave that warehouse out.
         Press <b>\u{1F310} Paid via website</b> when the goods were already paid there \u2014 the email still shows that amount, marked as received, and only the rest is charged.</div>
       ${payReqSentNote(rec, rows.map(function(x){ return x.wh; }))}
@@ -11549,6 +11568,7 @@ function payReqOrder(base){
     </div></div>`;
   document.body.appendChild(div);
   payReqGuardPaint();   /* PAYGUARD-1 - 열자마자 상태가 맞아야 한다 */
+  try{ payReqWebNotePaint(); }catch(_w){}   /* WEBMDSE-1 */
 }
 
 /* PAYSPLIT-1 - 결제요청 메일의 금액 줄. **여기 한 군데**에서 만든다.
@@ -11661,6 +11681,19 @@ async function payReqOrderSend(base, mode){
     /* PAYSENT-1 - 메일이 나간 뒤에만 찍는다. 찍기가 실패하면 링크는 이미 나갔다고 알린다 */
     try{ await payLinkStamp(items, _self ? 'our office (we paid it here)' : em, _self); }
     catch(e2){ showToast('\u26a0 The link ' + (_self ? 'was created' : 'DID go out') + ', but I could not mark the row - it still shows Payment'); }
+    /* WEBMDSE-1 - 「🌐 Paid via website」 를 켠 창고의 물건값을 **입금으로 적는다.**
+       ⚠ 메일(또는 self 준비)이 끝난 **뒤에** 적는다 - 안 나간 건에 돈을 적지 않는다.
+       ⚠ 실패하면 크게 알린다. 돈 기록이라 조용히 넘기면 안 된다. */
+    const _wm = items.filter(function(x){ return x && x.mdseWeb && (Number(x.mdse) || 0) > 0; });
+    if(_wm.length){
+      const _wbad = [];
+      for(const x of _wm){
+        try{ await invAddWebMdse(base, x.wh, x.mdse); }
+        catch(e4){ _wbad.push(x.wh + ' \u2014 ' + ((e4 && e4.message) || e4)); }
+      }
+      if(_wbad.length) try{ alert('\u26a0 The link went out, but the website merchandise was NOT recorded:\n\n'
+        + _wbad.join('\n') + '\n\nRecord it by hand on the invoice, or the balance will stay open.'); }catch(e5){}
+    }
     /* PAYSENT-3 - 찍든 못 찍든 목록을 다시 그린다. 화면이 기록과 같아야 한다. */
     try{ invNpRefresh(); }catch(e3){}
     /* RESEND-1 - 창을 닫지 않는다. 단추가 Resend 로 바뀐다. */
@@ -12933,6 +12966,41 @@ const ANET_CLIENT_KEY = '9S9dzP4nBNaYQ82fVdvL8uV4F34xx6nzJK584a6vfg4srBCQQxkA5ZY
    ⚠ 카드를 긁지 않는다. 이미 받은 돈을 **장부에 적기만** 한다.
    ⚠ INVSEQ-1 - 번호는 `invNoClaim` 으로 받는다 (이미 있으면 그걸 쓴다).
    ⚠ 저장이 실패하면 **던진다**. 돈을 받았다고 적는 일이라 조용히 넘어가면 안 된다. */
+/* WEBMDSE-1 - 옛 웹사이트에서 받은 **물건값**을 이 인보이스의 입금으로 적는다.
+   [stated] 하윤: "resend가 received로 안바뀌니까 invoice email을 안하게 된거지"
+   ⚠⚠ markPaidWebsiteFor 와 **다른 함수다.** 그쪽은 `iv.paid` 를 덮어쓰므로
+      이미 카드 결제가 들어 있는 인보이스에 쓰면 그 기록이 날아간다.
+      여기는 더하기만 하는 `iv.payments[]` 에 적는다 (invPaidSum 이 이미 센다).
+   ⚠ 같은 쪽지의 입금이 이미 있으면 **아무것도 안 한다** - 링크를 다시 보내도 두 번 안 적힌다.
+   ⚠ 인보이스가 없는 창고에는 안 적는다 (payLinkStamp 와 같은 규칙).
+   돌려주는 값: 'added' / 'already' / 'skip' */
+async function invAddWebMdse(base, wh, amt){
+  const n = Math.round((Number(amt) || 0) * 100) / 100;
+  const W = String(wh == null ? '' : wh).trim();
+  if(!base || !W || !(n > 0)) return 'skip';
+  const rec = (savedCache || []).find(function(s2){ return s2.base === base; });
+  if(!rec) throw new Error('order not found');
+  const iv = (rec.inv || {})[W];
+  if(!iv || !iv.savedAt) return 'skip';
+  iv.payments = Array.isArray(iv.payments) ? iv.payments : [];
+  if(iv.payments.some(function(p){ return String((p && p.note) || '').trim() === WEB_MDSE_NOTE; })) return 'already';
+  const row = { amt: n, at: new Date().toISOString(), by: (SESS && SESS.email) || '', note: WEB_MDSE_NOTE };
+  iv.payments.push(row);
+  let r = null;
+  try{
+    r = await sbFetch('/rest/v1/pr_orders?base=eq.' + encodeURIComponent(base) + '&select=base',
+      { method: 'PATCH', headers: { Prefer: 'return=representation' },
+        body: JSON.stringify({ inv: rec.inv, updated_at: new Date().toISOString() }) });
+  }catch(e){ r = null; }
+  if(!await invRowChanged(r)){
+    /* 저장이 안 됐으면 화면 사본도 되돌린다 - 안 들어간 돈을 들어간 것처럼 들고 있으면 안 된다 */
+    const i = iv.payments.indexOf(row);
+    if(i >= 0) iv.payments.splice(i, 1);
+    throw new Error('the website amount could not be saved (' + ((r && r.status) || 'no reply') + ')');
+  }
+  logHist(base, 'Merchandise paid on website $' + n.toFixed(2) + ' \u2014 ' + W + ' (' + (iv.invNo || '') + ')');
+  return 'added';
+}
 async function markPaidWebsiteFor(base, wh, amt){
   const n = Math.round((Number(amt) || 0) * 100) / 100;
   if(!(n > 0)) throw new Error('the amount is 0');
@@ -15981,6 +16049,8 @@ const UPS_LABEL_URL = 'https://checkout.hjbae.workers.dev/label';
    ⭐ fedex 워커는 UPS /rates 와 **묻는 모양이 같다** - 그래서 UPS 에게 보낸
    그 몸통을 그대로 보낸다. 돌려받는 모양도 같다({services:[{code,name,total,list}]}).
    ⚠ 지금은 **보여주기만** 한다. FedEx 라벨은 라벨 검증을 통과해야 쓸 수 있다. */
+/* WEBMDSE-1 - 이 쪽지 글이 **중복을 막는 열쇠**다. 바꾸면 옛 기록을 못 알아본다. */
+const WEB_MDSE_NOTE = 'Merchandise paid on website';
 const FEDEX_RATE_URL = 'https://fedex.hjbae.workers.dev/rates';
 async function fxQuote(body){
   try{
