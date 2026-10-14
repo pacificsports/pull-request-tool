@@ -314,7 +314,7 @@ body.po-dragging{user-select:none;}
   </span>
   <select id="lang-sel" onchange="setLang(this.value)" style="font-size:11px;padding:3px 6px;border-radius:5px;border:none;background:#1d3f66;color:#fff;"><option value="ko">한국어</option><option value="en">English</option><option value="es">Español</option></select>
   <button id="wide-btn" class="btn btn-sm" onclick="toggleWide()" title="화면 넓게 / 좁게 — 기본은 넓게 (이 브라우저에만 저장돼)" style="padding:2px 8px;font-size:10px;background:#1d3f66;color:#cfe0f2;border-color:#2b5384;">↔ Wide</button>
-  <span id="app-ver" style="font-size:10px;color:#9fb8d4;">v1289</span>
+  <span id="app-ver" style="font-size:10px;color:#9fb8d4;">v1290</span>
 </div>
 <script>
 // ↔ 넓게 보기 — 브라우저마다 따로 저장 (v793)
@@ -10969,11 +10969,17 @@ function payReqOrderRows(rec){
   return payReqWhs(rec).map(w => {
     const iv = (rec.inv||{})[w] || {};
     if(iv.savedAt){
-      return { wh: w, invNo: iv.invNo || '', how: 'Invoice balance', amount: invBalance(rec, w) };
+      /* PAYSPLIT-1 - 인보이스가 난 줄도 운임을 갈라서 보여 준다.
+         ⚠ 잔액이 운임보다 적으면 **전부 운임 쪽**으로 둔다 (물건값이 음수가 되면 안 된다). */
+      const _bal = invBalance(rec, w);
+      const _shp = Math.min(Math.round((payReqFreight(rec, w)) * 100) / 100,
+                            Math.round(_bal * 100) / 100);
+      return { wh: w, invNo: iv.invNo || '', how: 'Invoice balance', amount: _bal,
+               mdse: Math.round((_bal - _shp) * 100) / 100, ship: Math.max(0, _shp) };
     }
     const g = payReqGoods(rec, w), f = payReqFreight(rec, w);
     return { wh: w, invNo: '', how: 'Goods ' + payReqMoney(g) + ' + shipping ' + payReqMoney(f),
-             amount: Math.round((g + f) * 100) / 100 };
+             amount: Math.round((g + f) * 100) / 100, mdse: g, ship: f };
   });
 }
 /* ═══ PAYGUARD-1 - 번호 없는 인보이스로는 결제 요청을 못 보낸다 ═══
@@ -11188,6 +11194,50 @@ function payReqSentNote(rec, whs){
       + amt
       + '<br>Sending again is fine - it creates a new link for the amount below.</div>';
   }catch(e){ return ''; }
+}
+/* ═══ PAYSPLIT-1 - 물건값 / 운임 두 칸 ═══
+   [stated] 하윤: "merchandise 금액이 나오고 옆에 received via website가 찍혀가고
+   우리가 요청하는금액은 차액만 요청되게"
+   ⭐⭐⭐ 「이번에 청구하는 금액」을 적는 곳은 여전히 `.prq-amt` 하나뿐이다 -
+   여기서는 그 칸에 **써 넣기만** 한다. 막는 규칙(PAYGUARD)·보내는 함수는 그대로 그 칸을 읽는다. */
+function payReqNum(el){
+  return Math.round((parseFloat(String((el && el.value) || '').replace(/[^0-9.]/g, '')) || 0) * 100) / 100;
+}
+function payReqWebOn(wh){
+  const b = document.getElementById('prq-web-' + wh);
+  return !!(b && b.getAttribute('data-on') === '1');
+}
+/* 그 창고 줄이 이번에 청구하는 금액. 물건값을 웹에서 이미 받았으면 운임만. */
+function payReqRowReq(wh){
+  const m = payReqNum(document.getElementById('prq-mdse-' + wh));
+  const s2 = payReqNum(document.getElementById('prq-ship-' + wh));
+  return Math.round(((payReqWebOn(wh) ? 0 : m) + s2) * 100) / 100;
+}
+function payReqWebPaint(wh){
+  const b = document.getElementById('prq-web-' + wh); if(!b) return;
+  const on = b.getAttribute('data-on') === '1';
+  b.innerHTML = on ? '✓ Received via website' : '🌐 Paid via website';
+  b.style.background = on ? '#0e7490' : '#f8fafc';
+  b.style.color = on ? '#fff' : '#64748b';
+  b.style.borderColor = on ? '#0e7490' : '#cbd5e1';
+  b.style.fontWeight = on ? '800' : '600';
+  const m = document.getElementById('prq-mdse-' + wh);
+  if(m){ m.style.opacity = on ? '.55' : '1'; m.style.textDecoration = on ? 'line-through' : 'none'; }
+}
+function payReqWebToggle(wh){
+  const b = document.getElementById('prq-web-' + wh); if(!b) return;
+  b.setAttribute('data-on', b.getAttribute('data-on') === '1' ? '0' : '1');
+  payReqWebPaint(wh);
+  payReqSplitCalc();
+}
+/* 두 칸이 바뀔 때마다 청구 금액을 다시 적고, 합계·잠금은 예전 함수에 맡긴다 */
+function payReqSplitCalc(){
+  const root = document.getElementById('modal-payreq') || document;
+  [...root.querySelectorAll('.prq-amt')].forEach(function(i){
+    const w = i.getAttribute('data-wh') || '';
+    if(document.getElementById('prq-mdse-' + w)) i.value = payReqRowReq(w).toFixed(2);
+  });
+  payReqOrderCalc();
 }
 function payReqOrderCalc(){
   payReqResetSent();   /* RESEND-1 - 금액이 바뀌면 새 링크여야 한다 */
@@ -11444,7 +11494,7 @@ function payReqOrder(base){
   const div = document.createElement('div');
   div.id = 'modal-payreq';
   div.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,.55);z-index:150;display:flex;align-items:center;justify-content:center;';
-  div.innerHTML = `<div style="background:#fff;border-radius:12px;width:560px;max-width:95vw;overflow:hidden;box-shadow:0 20px 60px rgba(0,0,0,.35);">
+  div.innerHTML = `<div style="background:#fff;border-radius:12px;width:720px;max-width:95vw;overflow:hidden;box-shadow:0 20px 60px rgba(0,0,0,.35);">
     <div style="background:#0f2a4a;color:#fff;padding:12px 18px;font-weight:800;display:flex;align-items:center;gap:8px;">
       \u{1F4B3} Request payment
       <span style="margin-left:auto;font-size:11.5px;font-weight:400;color:#93c5fd;">${esc(cust)} \u00B7 PO ${esc((rec.meta&&rec.meta.po)||'')}</span>
@@ -11452,16 +11502,27 @@ function payReqOrder(base){
     <div style="padding:16px 18px;">
       ${payReqCardStrip(cust)}
       <table class="etbl" style="width:100%;font-size:12.5px;">
-        <thead><tr><th class="tl" style="width:56px;">FROM</th><th class="tl">WHAT</th><th style="width:118px;text-align:right;">AMOUNT</th></tr></thead>
+        <thead><tr><th class="tl" style="width:50px;">FROM</th><th class="tl">WHAT</th>
+          <th style="width:146px;text-align:right;">MERCHANDISE</th>
+          <th style="width:96px;text-align:right;">SHIPPING</th>
+          <th style="width:96px;text-align:right;">REQUEST</th></tr></thead>
         <tbody>${rows.map(r => `<tr>
-          <td class="tl"><span class="chip chip-${esc(r.wh)}" style="min-width:32px;text-align:center;">${esc(r.wh)}</span></td>
-          <td class="tl" style="font-size:11.5px;color:#64748b;">${r.invNo ? ('<b style="color:#0f2a4a;">' + esc(r.invNo) + '</b> \u00B7 ') : '<b style="color:#b45309;">not invoiced yet</b> \u00B7 '}${esc(r.how)}</td>
-          <td><input class="fi num prq-amt" data-wh="${esc(r.wh)}" data-inv="${esc(r.invNo)}" value="${r.amount.toFixed(2)}" oninput="payReqOrderCalc()" style="width:100%;text-align:right;font-family:Consolas,monospace;font-weight:800;"></td>
+          <td class="tl" style="vertical-align:top;padding-top:7px;"><span class="chip chip-${esc(r.wh)}" style="min-width:32px;text-align:center;">${esc(r.wh)}</span></td>
+          <td class="tl" style="font-size:11.5px;color:#64748b;vertical-align:top;padding-top:8px;">${r.invNo ? ('<b style="color:#0f2a4a;">' + esc(r.invNo) + '</b> \u00B7 ') : '<b style="color:#b45309;">not invoiced yet</b> \u00B7 '}${esc(r.how)}</td>
+          <td style="vertical-align:top;">
+            <input class="fi num prq-mdse" id="prq-mdse-${esc(r.wh)}" value="${(Number(r.mdse)||0).toFixed(2)}" oninput="payReqSplitCalc()" style="width:100%;text-align:right;font-family:Consolas,monospace;font-weight:800;">
+            <button type="button" id="prq-web-${esc(r.wh)}" data-on="0" onclick="payReqWebToggle('${esc(r.wh)}')"
+              title="The customer already paid for the goods on the website. The email still shows this amount, marked as received, and we only charge the rest."
+              style="width:100%;margin-top:4px;font-size:10px;padding:3px 4px;border:1px solid #cbd5e1;border-radius:6px;background:#f8fafc;color:#64748b;font-weight:600;cursor:pointer;">\u{1F310} Paid via website</button>
+          </td>
+          <td style="vertical-align:top;"><input class="fi num prq-ship" id="prq-ship-${esc(r.wh)}" value="${(Number(r.ship)||0).toFixed(2)}" oninput="payReqSplitCalc()" style="width:100%;text-align:right;font-family:Consolas,monospace;font-weight:800;"></td>
+          <td style="vertical-align:top;"><input class="fi num prq-amt" readonly data-wh="${esc(r.wh)}" data-inv="${esc(r.invNo)}" value="${r.amount.toFixed(2)}" style="width:100%;text-align:right;font-family:Consolas,monospace;font-weight:900;background:#f1f5f9;color:#0f2a4a;"></td>
         </tr>`).join('')}</tbody>
-        <tfoot><tr><td></td><td class="tl" style="text-align:right;font-weight:800;">TOTAL</td>
+        <tfoot><tr><td></td><td></td><td></td><td class="tl" style="text-align:right;font-weight:800;">TOTAL</td>
           <td id="prq-total" style="text-align:right;font-family:Consolas,monospace;font-weight:900;font-size:14px;">${payReqMoney(total)}</td></tr></tfoot>
       </table>
-      <div style="font-size:11px;color:#94a3b8;margin-top:5px;">Set a line to 0 to leave that warehouse out of this request.</div>
+      <div style="font-size:11px;color:#94a3b8;margin-top:5px;">REQUEST is merchandise + shipping. Set both to 0 to leave that warehouse out.
+        Press <b>\u{1F310} Paid via website</b> when the goods were already paid there \u2014 the email still shows that amount, marked as received, and only the rest is charged.</div>
       ${payReqSentNote(rec, rows.map(function(x){ return x.wh; }))}
       ${payReqTermNote(rec)}
       <div id="pr-guard" style="display:none;margin-top:10px;"></div>
@@ -11490,6 +11551,33 @@ function payReqOrder(base){
   payReqGuardPaint();   /* PAYGUARD-1 - 열자마자 상태가 맞아야 한다 */
 }
 
+/* PAYSPLIT-1 - 결제요청 메일의 금액 줄. **여기 한 군데**에서 만든다.
+   덧칸(mdse/ship)이 없으면 예전과 글자 하나 안 틀리게 한 줄로 나온다
+   (한 창고짜리 창 payReqSend 가 그 길이다). */
+function payReqMailRows(items){
+  return (items || []).map(function(x){
+    const tail = x.invNo
+      ? ' <span style="font-weight:normal;font-size:12px;color:#8b8880;">(Invoice ' + esc(x.invNo) + ')</span>'
+      : '';
+    if(x.mdse == null && x.ship == null) return psmRow('From ' + esc(x.wh), payReqMoney(x.amount) + tail);
+    const m = Number(x.mdse) || 0, sh = Number(x.ship) || 0;
+    const out = [];
+    if(m > 0) out.push(['From ' + esc(x.wh) + ' \u2014 merchandise',
+      payReqMoney(m) + (x.mdseWeb
+        ? ' <span style="font-weight:normal;font-size:12px;color:#0e7490;">(already received via website)</span>'
+        : '')]);
+    if(sh > 0 || !out.length) out.push(['From ' + esc(x.wh) + ' \u2014 shipping', payReqMoney(sh)]);
+    /* 인보이스 번호는 그 창고의 **첫 줄**에 한 번만 붙인다 */
+    if(tail) out[0][1] = out[0][1] + tail;
+    return out.map(function(r){ return psmRow(r[0], r[1]); }).join('');
+  }).join('');
+}
+/* 물건값을 웹에서 이미 받은 줄이 있으면 합계 글자를 바꾼다 - 위에 보이는 숫자들의
+   단순 합이 아니라 「지금 낼 금액」 이기 때문이다. */
+function payReqTotalLabel(items){
+  return (items || []).some(function(x){ return x && x.mdseWeb && (Number(x.mdse) || 0) > 0; })
+    ? 'Amount due now' : 'Total';
+}
 async function payReqOrderSend(base, mode){
   /* PAYSELF-1 - 'self' 면 거래처에게 메일을 보내지 않고 우리가 그 자리에서 연다. */
   const _self = (mode === 'self');
@@ -11503,8 +11591,13 @@ async function payReqOrderSend(base, mode){
   document.querySelectorAll('.prq-amt').forEach(i => {
     const a = Math.round((parseFloat(String(i.value||'').replace(/[^0-9.]/g,'')) || 0) * 100) / 100;
     if(a > 0){
-      items.push({ base: base, wh: i.getAttribute('data-wh'), invNo: i.getAttribute('data-inv') || '',
-                   po: (rec.meta&&rec.meta.po)||'', amount: a });
+      const _w = i.getAttribute('data-wh') || '';
+      /* PAYSPLIT-1 - 메일에 쓸 덧칸. 워커는 `amount` 만 보므로 돈에는 영향이 없다. */
+      const _m = document.getElementById('prq-mdse-' + _w);
+      const _s3 = document.getElementById('prq-ship-' + _w);
+      items.push(Object.assign({ base: base, wh: _w, invNo: i.getAttribute('data-inv') || '',
+                   po: (rec.meta&&rec.meta.po)||'', amount: a },
+        _m ? { mdse: payReqNum(_m), ship: payReqNum(_s3), mdseWeb: payReqWebOn(_w) } : {}));
       total += a;
     }
   });
@@ -11545,10 +11638,8 @@ async function payReqOrderSend(base, mode){
       /* WHLABEL-2 - [stated] 하윤: 왼쪽은 FROM SC / FROM CA 만, 인보이스 번호는 금액 뒤에.
          왼쪽 칸이 짧고 일정해야 줄이 가지런히 읽힌다. */
       + psmTable(psmCustRow(rec)
-        + items.map(x => psmRow('From ' + esc(x.wh),
-          payReqMoney(x.amount)
-          + (x.invNo ? ' <span style="font-weight:normal;font-size:12px;color:#8b8880;">(Invoice ' + esc(x.invNo) + ')</span>' : ''))).join('')
-        + psmRow('Total', '<span style="font-size:16px;">' + payReqMoney(total) + '</span>'))
+        + payReqMailRows(items)
+        + psmRow(payReqTotalLabel(items), '<span style="font-size:16px;">' + payReqMoney(total) + '</span>'))
       /* CONSENT-2 - [stated] 하윤: "Total 아래 거래처가 우리가 카드 run을 대신 해주는것에
          동의되어있다라는 문구가 나오게 하자" */
       + mitMailLine(rec)
