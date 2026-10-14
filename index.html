@@ -314,7 +314,7 @@ body.po-dragging{user-select:none;}
   </span>
   <select id="lang-sel" onchange="setLang(this.value)" style="font-size:11px;padding:3px 6px;border-radius:5px;border:none;background:#1d3f66;color:#fff;"><option value="ko">한국어</option><option value="en">English</option><option value="es">Español</option></select>
   <button id="wide-btn" class="btn btn-sm" onclick="toggleWide()" title="화면 넓게 / 좁게 — 기본은 넓게 (이 브라우저에만 저장돼)" style="padding:2px 8px;font-size:10px;background:#1d3f66;color:#cfe0f2;border-color:#2b5384;">↔ Wide</button>
-  <span id="app-ver" style="font-size:10px;color:#9fb8d4;">v1293</span>
+  <span id="app-ver" style="font-size:10px;color:#9fb8d4;">v1294</span>
 </div>
 <script>
 // ↔ 넓게 보기 — 브라우저마다 따로 저장 (v793)
@@ -6200,7 +6200,21 @@ async function replaceOrderDo(){
   const meta2 = {...rec.meta, po: String((rec.meta&&rec.meta.po)||'') + sfx, date: todayStr(),
     _replaceOf: { base: base, po: String((rec.meta&&rec.meta.po)||''), reasons: reasons, note: note, reason: reason,
                  ...(swaps.length ? { swaps: swaps } : {}), at: new Date().toISOString(), by } };
-  ['_pcAuto','_printed','_hold','_holdOk','_modified','_from','futureShip','confNote'].forEach(k=>delete meta2[k]);
+  /* ═══ RETCOPY-1 (v1294) ═══ 위 `{...rec.meta}` 는 **전부** 베낀다.
+     🔴 2026-10-14 실측: 그래서 원래 오더의 반품 기록(`_returns`)까지 교체 오더로 따라가,
+        반품 하나가 오더 두 줄에 앉았다. 📝 Credit Memo Not Issued 머리가 13건을 15건으로
+        세고 있었다 (PO 80054340 + 80054340R2 / PO 80053987 + 80053987R).
+     🔴 더 나쁜 것: 베껴진 쪽도 같은 크레딧 메모 번호를 들고 있어서, 누가 그 줄에서
+        `✓ Confirm & Credit Memo` 를 누르면 같은 반품에 크레딧이 두 번 나갈 수 있었다.
+     ⭐ 아래는 전부 **「그 오더에 일어난 일」의 기록**이다. 새 오더에는 하나도 없는 것이 맞고,
+        교체 오더는 쓰면서 자기 것을 새로 만든다. 거래처 정보(주소·이멜·결제조건)는 그대로 베낀다.
+        · _returns  반품/RA         · _revs      수정(REV) 줄
+        · _putBack  선반에 되돌린 기록 · _ups       UPS 라벨/운송장
+        · _boDropped 지운 백오더 줄    · _cancelled 취소 표시
+     ⚠ 실측으로 확인: `1005TTY80054361R` 의 `_revs`·`_putBack`·`_ups` 는 원래 오더와
+        **글자까지 같았다** (= 베낀 것). 다른 교체 오더들의 같은 칸은 전부 달랐다 (= 자기 것). */
+  ['_pcAuto','_printed','_hold','_holdOk','_modified','_from','futureShip','confNote',
+   '_returns','_revs','_putBack','_ups','_boDropped','_cancelled'].forEach(k=>delete meta2[k]);
   const rec2 = { base: base2, meta: meta2, lines: lines2, whs: [...new Set(lines2.map(l=>l.wh||'SC'))],
     savedAt: new Date().toISOString(), pl:{}, inv:{}, history:[{t:new Date().toISOString(), by, e:'Replace of '+base + (reason?' — '+reason:'')}] };
   const btn = document.getElementById('rp-go'); if(btn){ btn.disabled=true; btn.textContent='Saving…'; }
@@ -6269,6 +6283,26 @@ function raIsReplace(r){
       물건이 창고에 서 있는데 아무 화면도 그걸 모르는 상태가 된다.
    ⚠ 크레딧 메모 **종이와 메일**은 그대로 `cmIssued` 를 본다 (교체 건은 종이가 없다). */
 function raCreditSettled(r){ return cmIssued(r) || raIsReplace(r); }
+/* RSARRIVE-1 (v1294) - 「선반에 올릴 수 있나」. 크레딧 정리 **그리고** 물건이 실제로 돌아왔나.
+   🔴 2026-10-14 실측: 교체 건 3개가 0 pcs 로 📦 Return Stock 큐에 떠 있었다
+      (RA-1005TTY80054361 / RA-1006TTY80054395 / RA-1002TTY80054340-2, 전부 status pending).
+   🔴 까닭: REPLACED-1(v1274) 에서 큐 문지기를 `raCreditSettled` 하나로 뒀는데, 교체 건은
+      **RA 를 만드는 순간** 크레딧이 「없음」으로 정리된다. 그래서 물건이 오기도 전에 큐에 들어왔다.
+      일반 반품은 크레딧 메모를 내야 들어오니 이 문제가 없었다 - 교체 건에만 난다.
+   ⭐⭐⭐ 큐와 창이 **이 함수 하나**를 같이 본다. 목록에 뜨는데 눌러보니 못 여는 일이 없어야 한다.
+   ⚠ `received` 는 「물건 받았다」를 누를 때 생긴다 (A/B/Failed 장수가 거기 있다).
+      그 전에는 선반에 올릴 것이 몇 장인지 아무도 모른다. */
+function raStockReady(r){
+  try{ return !!(r && raCreditSettled(r) && r.received); }catch(e){ return false; }
+}
+/* 전량 불량일 때 몇 장이 버려졌나 (RSZERO-1 확인창에 적는다) */
+function raStockFailed(r){
+  try{
+    const rc = (r && r.received) || {};
+    const n = (rc.lines || []).reduce(function(a, l){ return a + (Number(l && l.failed) || 0); }, 0);
+    return n || Number(rc.failedTotal) || 0;
+  }catch(e){ return 0; }
+}
 /* REPLACED-2 - **거래처에게 보여줄** 크레딧 메모 번호. 교체 건은 빈칸이다.
    ⚠⚠ `ret.cm` 자체는 **지우지 않는다** - `invScanMax()` 가 그 번호를 훑어서
       DB 를 못 쓸 때 같은 번호를 인보이스로 다시 내주는 것을 막고 있다.
@@ -7331,11 +7365,44 @@ function returnStockOpen(base, ra){
   const rec = (savedCache||[]).find(s=>s.base===base); if(!rec){ showToast('⚠ Order not found'); return; }
   const ret = recReturns(rec).find(r=>r.ra===ra); if(!ret){ showToast('⚠ Return not found'); return; }
   /* REPLACED-1 - 교체 건은 크레딧 메모가 없다. 그래도 **물건은 선반에 올려야 한다.** */
-  if(!raCreditSettled(ret)){ showToast('⚠ Press Confirm on this return first'); return; }
+  if(!raStockReady(ret)){ showToast('⚠ Press Confirm receipt on this return first'); return; }
   const st = retInvStatus(ret);
   if(st === 'done'){ showToast('✓ This return is already back in stock'); return; }
   const lines = raStockLines(ret), bTot = raStockBTotal(ret);
-  if(!lines.length && !bTot){ showToast('✓ Nothing to put back on this return'); return; }
+  /* ═══ RSZERO-1 (v1294) ═══ 전량 불량이면 선반에 올릴 것이 없다.
+     🔴 예전에는 여기서 토스트만 띄우고 돌아섰다 - 「끝났다」 표시를 안 찍으니
+        그 건은 📦 Return Stock 큐에 **영영** 남았다. 교체 반품은 대개 전량 불량이라
+        이 길이 주 경로다.
+     ⚠ 조용히 끝내지 않는다 - 사람에게 물어보고, 기록에 남긴다. */
+  if(!lines.length && !bTot){
+    const _f = raStockFailed(ret);
+    if(!confirm('📦 Nothing goes back on the shelf for this return.\n\n'
+      + (_f ? (_f.toLocaleString() + ' pcs were marked Failed (scrap).\n\n') : '')
+      + 'Close it out and take it off the 📦 Return Stock list?\n'
+      + '(No stock is moved.)')) return;
+    /* ⚠ `returnStockOpen` 은 async 가 아니다 - await 를 쓰면 안 된다 */
+    const _st0 = ret.invStatus, _sk0 = ret.stock;
+    ret.invStatus = 'done';
+    ret.stock = Object.assign({}, ret.stock, { doneAt: new Date().toISOString(), scrapped: true,
+      bins: (ret.stock && ret.stock.bins) || [] });
+    rec.meta._returns = recReturns(rec).map(function(x){ return x.ra === ra ? ret : x; });
+    sbSaveRow('/rest/v1/pr_orders?base=eq.' + encodeURIComponent(base),
+      { meta: rec.meta, updated_at: new Date().toISOString() }, 'Return scrapped ' + ra)
+      .then(function(){
+        logHist(base, '📦 Return closed with nothing put back — ' + ra
+          + (_f ? (' · ' + _f + ' pcs scrapped') : ''));
+        renderSaved();
+        try{ if(typeof renderKpi === 'function') renderKpi(); }catch(e){}
+        showToast('✅ ' + ra + ' closed — nothing went back on the shelf');
+      })
+      .catch(function(){
+        /* ⚠ 저장이 안 됐으면 화면 사본도 되돌린다 (CMSAVE-1 정신) */
+        ret.invStatus = _st0; ret.stock = _sk0;
+        rec.meta._returns = recReturns(rec).map(function(x){ return x.ra === ra ? ret : x; });
+        alert('⚠ The "done" mark did NOT save.\n\nNOTHING WAS CHANGED — tell the office.');
+      });
+    return;
+  }
   window._raStock = { base:base, ra:ra, lines:lines };
   window._raBinSet = null;   /* RABINCHK-1 - 열 때마다 아는 bin 을 새로 센다 (방금 넣은 것도 반영) */
   window._raBinOk  = {};     /* RABINNEW-1 - 「만들기로 했다」 는 이 창 안에서만 산다 */
@@ -7491,8 +7558,10 @@ function raStockQueue(){
   const out = [];
   (savedCache||[]).forEach(function(s){
     (typeof recReturns==='function' ? recReturns(s) : []).forEach(function(r){
-      /* REPLACED-1 - 교체 건도 이 큐에 들어온다 (돌아온 물건은 똑같이 선반으로 간다) */
-      if(!r || !raCreditSettled(r)) return;
+      /* REPLACED-1 - 교체 건도 이 큐에 들어온다 (돌아온 물건은 똑같이 선반으로 간다)
+         RSARRIVE-1 - 단, **물건이 실제로 돌아온 뒤**에. 교체 건은 RA 를 만들자마자
+         크레딧이 정리되므로, 「받았다」를 안 보면 안 온 물건이 0 pcs 로 목록에 뜬다. */
+      if(!r || !raStockReady(r)) return;
       const st = retInvStatus(r);
       if(st !== 'pending' && st !== 'working') return;
       out.push({ base:s.base, ra:r.ra, po:(s.meta&&s.meta.po)||'', cust:(s.meta&&s.meta.cust)||'',
@@ -20673,7 +20742,7 @@ async function pchkLtlBatchSave(){
       updated = (res === 'updated');
       if(res === 'denied' || res === 'bad') throw new Error('bulk save refused (' + res + ')');
     }catch(e){ if(msg){ msg.style.color='#dc2626'; msg.textContent='Could not save the grouping: ' + (e.message||e); }
-      if(btn){ btn.disabled=false; btn.textContent='\U0001f4be Save & create bulk shipment'; } return; }
+      if(btn){ btn.disabled=false; btn.textContent='💾 Save & create bulk shipment'; } return; }
     if(msg){ msg.style.color='#16a34a'; msg.innerHTML= updated
       ? '✅ 이미 있던 묶음 <b>'+esc(dup.same.ref)+'</b> 을 최신 내용으로 고쳤습니다 — 새로 만들지 않았습니다.<br>'+rows.length+' PO · '+tot+' box(es).'
       : (M==='UPS'
