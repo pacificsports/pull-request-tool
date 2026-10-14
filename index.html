@@ -314,7 +314,7 @@ body.po-dragging{user-select:none;}
   </span>
   <select id="lang-sel" onchange="setLang(this.value)" style="font-size:11px;padding:3px 6px;border-radius:5px;border:none;background:#1d3f66;color:#fff;"><option value="ko">한국어</option><option value="en">English</option><option value="es">Español</option></select>
   <button id="wide-btn" class="btn btn-sm" onclick="toggleWide()" title="화면 넓게 / 좁게 — 기본은 넓게 (이 브라우저에만 저장돼)" style="padding:2px 8px;font-size:10px;background:#1d3f66;color:#cfe0f2;border-color:#2b5384;">↔ Wide</button>
-  <span id="app-ver" style="font-size:10px;color:#9fb8d4;">v1294</span>
+  <span id="app-ver" style="font-size:10px;color:#9fb8d4;">v1295</span>
 </div>
 <script>
 // ↔ 넓게 보기 — 브라우저마다 따로 저장 (v793)
@@ -5826,6 +5826,83 @@ function rtApplyReasonsToAll(){
   });
   showToast('✓ Applied '+top.join(', ')+' to '+targets.length+' item(s)');
 }
+/* ═══ RAREP-1 (v1295) - 단추 하나 → 세 갈래 ═══
+   [stated] 하윤: "우리 replace랑 return하는걸 하나로 묶어서 진행해야할꺼같지 않아??
+   지금은 우리가 replace 버튼이 있어서 ... 그다음 RA authorization 버튼 또 눌러서"
+   [stated] 하윤: "그럼 그 안에 Replace only 버튼하나 더 달면 되는거 아닌가?"
+
+   예전에는 오더 줄에 `🔁 Replace` 와 `↩ Return` 이 나란히 있었고 서로를 몰랐다.
+   하나만 누르고 끝내면 아무도 모른다 (교체만 하고 RA 를 안 내면 물건이 서류 없이 돌아온다).
+
+   ⭐⭐⭐ 두 창을 한 창으로 합치지 않았다 - 모으는 것이 다르기 때문이다:
+     · Return 창  = **돌아올** 수량 / 돌아올 창고 / 사유 / RA 이멜
+     · Replace 창 = **나갈** 물건 / 다른 품목으로 바꿔주기 / 바꾼 줄 가격
+   한 창에 다 넣으면 직원이 「이 수량이 올 거야 갈 거야」를 헷갈린다.
+   그래서 **들어가는 문만 하나로** 하고, 고른 대로 맞는 창을 연다.
+
+   ⭐ Replace + Return 은 RA 창의 `rt-rep` 체크를 켜 둘 뿐이다.
+      이어서 Replace 창을 여는 판정은 **그 체크 하나**가 한다 (returnDo 안) -
+      여기서 또 판정하면 두 군데가 되고, 사람이 창 안에서 체크를 바꾸면 어긋난다. */
+function raRepOpen(base){
+  const rec = (savedCache || []).find(function(s2){ return s2.base === base; });
+  if(!rec){ showToast('\u26a0 Order not found'); return; }
+  const cust = (rec.meta && rec.meta.cust) || '';
+  const po = (rec.meta && rec.meta.po) || base;
+  const ex = document.getElementById('modal-rarep'); if(ex) ex.remove();
+  const div = document.createElement('div');
+  div.id = 'modal-rarep';
+  div.style.cssText = 'position:fixed;inset:0;background:rgba(15,23,42,.55);z-index:101;display:flex;align-items:center;justify-content:center;padding:20px;';
+  div.onclick = function(e){ if(e.target === div) div.remove(); };
+  const card = function(key, icon, head, lines, color, bg, bd){
+    return '<button type="button" onclick="raRepGo(\'' + esc(base) + '\',\'' + key + '\')"'
+      + ' style="display:flex;gap:13px;align-items:flex-start;text-align:left;width:100%;background:' + bg
+      + ';border:1.5px solid ' + bd + ';border-radius:10px;padding:13px 15px;cursor:pointer;font:inherit;"'
+      + ' onmouseover="this.style.borderColor=\'' + color + '\';this.style.boxShadow=\'0 2px 10px rgba(15,42,74,.13)\';"'
+      + ' onmouseout="this.style.borderColor=\'' + bd + '\';this.style.boxShadow=\'none\';">'
+      + '<span style="font-size:21px;line-height:1.1;flex:none;">' + icon + '</span>'
+      + '<span style="min-width:0;">'
+      +   '<span style="display:block;font-size:13.5px;font-weight:800;color:' + color + ';">' + head + '</span>'
+      +   lines.map(function(t){ return '<span style="display:block;font-size:11.5px;color:#475569;margin-top:3px;line-height:1.55;">' + t + '</span>'; }).join('')
+      + '</span></button>';
+  };
+  div.innerHTML = '<div style="background:#fff;border-radius:12px;max-width:560px;width:100%;overflow:hidden;box-shadow:0 20px 60px rgba(0,0,0,.35);">'
+    + '<div style="background:#ea580c;color:#fff;padding:11px 16px;font-weight:800;display:flex;align-items:center;gap:9px;">'
+    +   '\u21a9 Return / Replace'
+    +   '<span style="margin-left:auto;font-size:11.5px;font-weight:400;color:#fed7aa;">' + esc(cust) + ' \u00b7 PO ' + esc(po) + '</span>'
+    + '</div>'
+    + '<div style="padding:15px 16px;display:flex;flex-direction:column;gap:10px;">'
+    +   '<div style="font-size:12px;color:#64748b;margin-bottom:1px;">What is happening with this order?</div>'
+    +   card('ret', '\u21a9', 'Return only',
+            ['The customer sends the goods back and we credit them.',
+             '\u2192 RA # and the return email go out, and a <b>credit memo</b> is prepared.'],
+            '#ea580c', '#fff7ed', '#fed7aa')
+    +   card('both', '🔁', 'Replace + Return',
+            ['We send a replacement <b>and</b> the goods come back.',
+             '\u2192 RA # and the return email go out, <b>no credit memo</b>. The replacement order opens right after.'],
+            '#be123c', '#fff1f2', '#fda4af')
+    +   card('rep', '🔁', 'Replace only',
+            ['We send a replacement and <b>nothing comes back</b> (the customer keeps or scraps them).',
+             '\u2192 No RA, no return email, no credit memo \u2014 just the free replacement order.'],
+            '#9f1239', '#fdf2f8', '#f9a8d4')
+    + '</div>'
+    + '<div style="padding:10px 16px;border-top:1px solid #e2e8f0;display:flex;justify-content:flex-end;">'
+    +   '<button class="btn" onclick="document.getElementById(\'modal-rarep\').remove()">Cancel</button>'
+    + '</div></div>';
+  document.body.appendChild(div);
+}
+/* 고른 대로 맞는 창을 연다. ⚠ 체크를 **창이 열린 뒤에** 켠다 (openReturnModal 이 창을 새로 그린다) */
+function raRepGo(base, key){
+  const m = document.getElementById('modal-rarep'); if(m) m.remove();
+  window._rpFromRa = '';   /* RAREP-1 - 어느 RA 에서 이어진 교체인지 (two-way link) */
+  if(key === 'rep'){ replaceOrderOpen(base); return; }
+  openReturnModal(base);
+  const cb = document.getElementById('rt-rep');
+  if(cb){
+    cb.checked = (key === 'both');
+    try{ cb.dispatchEvent(new Event('change', { bubbles: true })); }catch(e){}
+  }
+  if(key === 'both') showToast('🔁 No credit memo \u2014 the replacement order opens after the RA is created');
+}
 function replaceOrderOpen(base){
   const rec = savedCache.find(s=>s.base===base); if(!rec) return;
   window._rrSel.rp = new Set();
@@ -6199,7 +6276,10 @@ async function replaceOrderDo(){
   const by = (SESS&&SESS.email)||'';
   const meta2 = {...rec.meta, po: String((rec.meta&&rec.meta.po)||'') + sfx, date: todayStr(),
     _replaceOf: { base: base, po: String((rec.meta&&rec.meta.po)||''), reasons: reasons, note: note, reason: reason,
-                 ...(swaps.length ? { swaps: swaps } : {}), at: new Date().toISOString(), by } };
+                 ...(swaps.length ? { swaps: swaps } : {}),
+                 /* RAREP-1 - 어느 RA 에서 이어진 교체인지. Replace only 면 빈칸이다 */
+                 ...((window._rpFromRa) ? { ra: String(window._rpFromRa) } : {}),
+                 at: new Date().toISOString(), by } };
   /* ═══ RETCOPY-1 (v1294) ═══ 위 `{...rec.meta}` 는 **전부** 베낀다.
      🔴 2026-10-14 실측: 그래서 원래 오더의 반품 기록(`_returns`)까지 교체 오더로 따라가,
         반품 하나가 오더 두 줄에 앉았다. 📝 Credit Memo Not Issued 머리가 13건을 15건으로
@@ -6226,6 +6306,24 @@ async function replaceOrderDo(){
     + (swaps.length ? ' · ' + swaps.length + ' different item(s)' : '') + ' (free · no invoice)');
   logHist(base, 'Replace order created → ' + base2 + (reason?' ('+reason+')':'')
     + (swaps.length ? ' — swapped: ' + swaps.map(x=>(x.from?x.from+' → ':'+ ')+x.to+' ×'+x.qty).join(', ') : ''));
+  /* ═══ RAREP-1 ═══ RA 쪽에도 교체 오더 번호를 적어 둔다 (양쪽에서 서로를 찾을 수 있게).
+     ⚠ 저장이 안 돼도 교체 오더는 이미 만들어졌다 - 되돌리지 않고 조용히 넘어간다
+        (표시가 없으면 「아직 안 만들었다」로 보일 뿐, 숫자가 틀리지는 않는다). */
+  if(window._rpFromRa){
+    const _fromRa = String(window._rpFromRa);
+    window._rpFromRa = '';
+    try{
+      const _src = (savedCache || []).find(function(x){ return x.base === base; });
+      const _rt = _src ? recReturns(_src).find(function(x){ return x.ra === _fromRa; }) : null;
+      if(_rt){
+        _rt.repBase = base2; _rt.repPo = meta2.po; _rt.repAt = new Date().toISOString();
+        await sbFetch('/rest/v1/pr_orders?base=eq.' + encodeURIComponent(base),
+          { method:'PATCH', headers:{ Prefer:'return=minimal' },
+            body: JSON.stringify({ meta: _src.meta, updated_at: new Date().toISOString() }) });
+        logHist(base, '🔁 ' + _fromRa + ' \u2192 replacement order ' + meta2.po);
+      }
+    }catch(e){ console.warn('[RAREP] back-link not saved', e); }
+  }
   await invSyncOnSave(rec2);   // stock deduction + PC Room moves
 }
 // ══════════ ↩ Customer Return / RMA ══════════
@@ -6470,6 +6568,16 @@ async function returnDo(base, doEmail){
   } else {
     showToast('✅ '+ra+' created (no email sent)');
   }
+  /* ═══ RAREP-1 ═══ 교체 건이면 여기서 바로 Replace 창을 연다.
+     ⭐ 판정은 위에서 쓴 `_rep`(= `rt-rep` 체크) 하나뿐이다. 고르는 창이 따로 판정하지 않는다.
+     ⚠ `_rpFromRa` 로 「어느 RA 에서 왔는지」를 들고 간다 - 교체 오더가 만들어질 때
+        양쪽에 서로를 적어 둔다 (replaceOrderDo). 하나만 누르고 끝내면 RA 에 표시가 남는다. */
+  if(_rep){
+    window._rpFromRa = ra;
+    showToast('🔁 Now set up the replacement order for ' + ra);
+    try{ replaceOrderOpen(base); }
+    catch(e){ alert('\u26a0 ' + ra + ' is saved, but the replacement window did not open.\n\nUse the \u21a9 Return / Replace button again and pick Replace only.'); }
+  }
 }
 function raRetWh(l){ return (String((l&&(l.toWh||l.wh))||'SC').toUpperCase()==='CA')?'CA':'SC'; }
 // 창고별 RA 시트 (반품 배송지 주소 포함) — SC/CA 각각 첨부용 (v507)
@@ -6595,12 +6703,19 @@ function openReturnDetail(base, ra, edit){
     : ret.status==='arrived'
       ? '<span style="background:#dbeafe;color:#1d4ed8;padding:2px 10px;border-radius:20px;font-size:11px;font-weight:800;">📥 GOODS IN — inspecting</span>'
       : '<span style="background:#fff7ed;color:#ea580c;padding:2px 10px;border-radius:20px;font-size:11px;font-weight:800;">⏳ PENDING</span>';
+  /* RAREP-1 - 교체로 끝내기로 한 RA 인데 교체 오더가 아직 없다.
+     하나만 누르고 끝낸 바로 그 경우다 - 끝난 것처럼 보이면 안 된다. */
+  const repBadge = (typeof raIsReplace === 'function' && raIsReplace(ret))
+    ? (ret.repPo
+        ? '<span style="background:#fff1f2;color:#be123c;padding:2px 10px;border-radius:20px;font-size:11px;font-weight:800;white-space:nowrap;">🔁 replacement PO ' + esc(ret.repPo) + '</span>'
+        : '<span style="background:#fef3c7;color:#92400e;padding:2px 10px;border-radius:20px;font-size:11px;font-weight:800;white-space:nowrap;" title="This return was marked as a replacement, but no replacement order has been created yet.">\u26a0 replacement order not created yet</span>')
+    : '';
   const ex=document.getElementById('modal-radetail'); if(ex) ex.remove();
   const div=document.createElement('div'); div.id='modal-radetail';
   div.style.cssText='position:fixed;inset:0;background:rgba(15,23,42,.55);z-index:100;display:flex;align-items:center;justify-content:center;padding:20px;';
   div.onclick=e=>{ if(e.target===div) div.remove(); };
   div.innerHTML=`<div style="background:#fff;border-radius:12px;max-width:720px;width:100%;max-height:90vh;display:flex;flex-direction:column;overflow:hidden;">
-    <div style="background:#ea580c;color:#fff;padding:10px 16px;font-weight:800;display:flex;align-items:center;gap:10px;flex-wrap:wrap;">↩ ${esc(ret.ra)} · ${esc((rec.meta&&rec.meta.cust)||'')} — PO ${esc((rec.meta&&rec.meta.po)||'')} ${statusBadge}
+    <div style="background:#ea580c;color:#fff;padding:10px 16px;font-weight:800;display:flex;align-items:center;gap:10px;flex-wrap:wrap;">↩ ${esc(ret.ra)} · ${esc((rec.meta&&rec.meta.cust)||'')} — PO ${esc((rec.meta&&rec.meta.po)||'')} ${statusBadge}${repBadge}
       ${ret.cc?'<span style="background:#fff;color:#b91c1c;font-size:10px;font-weight:900;padding:2px 8px;border-radius:20px;">💳 CREDIT CARD</span>':''}
       <button class="btn btn-sm" style="margin-left:auto;background:transparent;color:#fed7aa;border-color:#fdba74;" onclick="document.getElementById('modal-radetail').remove()">✕</button></div>
     <div style="overflow-y:auto;padding:14px 16px;">
@@ -51786,8 +51901,9 @@ function renderSaved(){
       ${(s.whs||[]).includes('SC') ? `<button class="btn btn-sm" style="${recShipFromCA(s)?'background:#b45309;color:#fff;border-color:#b45309;font-weight:800;':'color:#b45309;border-color:#fdba74;'}" onclick="toggleShipFromCA('${esc(s.base)}')" title="SC boxes transfer to CA on the next LTL, combine with the CA portion, and ship out from CA as one shipment. CA just receives &amp; reships — no CA inventory impact.">🚚 ${recShipFromCA(s)?'Ships from CA ✓':'Ship from CA'}</button>` : ''}${(s.whs||[]).includes('SC') ? `<button class="btn btn-sm" style="${recDirectSC(s)?'background:#be123c;color:#fff;border-color:#be123c;font-weight:800;':'color:#be123c;border-color:#fda4af;'}" onclick="toggleDirectSC('${esc(s.base)}')" title="This order leaves SC on our own truck straight to the customer. Paperwork does not change — it only lets you load this order onto a truck that stops at this customer&#39;s address.">🏠 ${recDirectSC(s)?'Direct from SC ✓':'Direct ship from SC'}</button>` : ''}
       <button class="btn btn-sm" onclick="openHistory('${esc(s.base)}')" title="Change history">🕘</button>
       <button class="btn btn-sm" style="color:#7c3aed;" onclick="splitOrderOpen('${esc(s.base)}')" title="Split some items into a separate order (-S) — run urgent items separately (stock deductions transfer too)">✂ Split</button>
-      ${!recIsReplace(s) && (s.whs||[]).some(w=>s.pl && s.pl[w] && s.pl[w].savedAt) ? `<button class="btn btn-sm" style="color:#be123c;border-color:#fda4af;" onclick="replaceOrderOpen('${esc(s.base)}')" title="Replace defective shipped items — creates a free PO#R order (no invoice)">🔁 Replace</button>` : ''}
-      ${!recIsReplace(s) && (s.whs||[]).some(w=>s.pl && s.pl[w] && s.pl[w].savedAt) ? `<button class="btn btn-sm" style="color:#ea580c;border-color:#fdba74;" onclick="openReturnModal('${esc(s.base)}')" title="Customer return — create RA#, choose return warehouse & qty, email the customer">↩ Return</button>` : ''}
+      ${/* RAREP-1 - 단추 둘을 하나로. 누르면 세 갈래(Return only / Replace + Return / Replace only) 중 고른다.
+             ⚠ 뜨는 조건은 예전 두 단추와 **한 글자도 같다** (교체 오더가 아니고, 나간 창고가 있을 때) */''}
+      ${!recIsReplace(s) && (s.whs||[]).some(w=>s.pl && s.pl[w] && s.pl[w].savedAt) ? `<button class="btn btn-sm" style="color:#ea580c;border-color:#fdba74;" onclick="raRepOpen('${esc(s.base)}')" title="Customer return or defect replacement — pick what is happening, then fill in the one window it opens">↩ Return / Replace</button>` : ''}
       ${recReturns(s).map(r=> raIsAdj(r)
         /* ALLOW-1 - 가격 조정 건은 반품 상세 화면으로 보내면 안 된다 (돌아온 물건이 없다).
            누르면 바로 크레딧 메모 창 - 인쇄와 메일이 거기 있다. 딱지에는 **CM 번호**를 적는다. */
