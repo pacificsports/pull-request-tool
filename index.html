@@ -314,7 +314,7 @@ body.po-dragging{user-select:none;}
   </span>
   <select id="lang-sel" onchange="setLang(this.value)" style="font-size:11px;padding:3px 6px;border-radius:5px;border:none;background:#1d3f66;color:#fff;"><option value="ko">한국어</option><option value="en">English</option><option value="es">Español</option></select>
   <button id="wide-btn" class="btn btn-sm" onclick="toggleWide()" title="화면 넓게 / 좁게 — 기본은 넓게 (이 브라우저에만 저장돼)" style="padding:2px 8px;font-size:10px;background:#1d3f66;color:#cfe0f2;border-color:#2b5384;">↔ Wide</button>
-  <span id="app-ver" style="font-size:10px;color:#9fb8d4;">v1300</span>
+  <span id="app-ver" style="font-size:10px;color:#9fb8d4;">v1301</span>
 </div>
 <script>
 // ↔ 넓게 보기 — 브라우저마다 따로 저장 (v793)
@@ -11341,21 +11341,47 @@ function invMemoSum(iv){ return (iv.memos||[]).reduce((a,m)=>a+(Number(m.amt)||0
    [stated] 하윤: 웹/카드 오더는 'Paid — Credit Card (뒷 4자리) / Amount Due $0.00' 이 맞다.
    ⚠ 금액은 invPaidSum 을 그대로 쓴다 — 환불·중복결제를 이미 빼주는 함수다.
    ⚠ 결제 기록이 없으면 null 을 준다 → 문서는 예전과 완전히 똑같이 나온다. */
+/* PAYKIND-1 (2026-10-16) - 「어떻게 받았나」를 한 군데에서 가른다.
+   [stated] 하윤: "우리가 invoice clear 할때 노트로 check이면 check하고 번호 적는데
+     invoice 에 paid-credit card 날짜 이런식으로 다나온데"
+   🔴 예전에는 글자가 **'PAID - Credit Card' 로 박혀** 있었다. 받은 방법을 아예 안 봤다.
+      실측: 돈 받은 인보이스 248장 중 **155장이 카드가 아닌데 카드라고 찍히고 있었다**
+      (체크 CH# 17736 · CH# 5509 등). 거래처가 받는 종이와 메일 둘 다 틀렸다.
+   가르는 법: **거래 기록이 있으면 카드** (acct 뒷자리 4개 또는 transId - 결제링크·웹샵·
+      사무실 긁기가 전부 남긴다), 없으면 직원이 손으로 적은 것이므로 **그 노트를 그대로**
+      쓴다 (CH# 12681 처럼).
+   ⚠ 노트도 없으면 그냥 'PAID' - 모르면서 「카드」라고 말하지 않는다.
+   ⚠ 종이(buildInvoiceDoc)와 메일(invPaidMailRow)이 **둘 다 이 함수 하나**를 쓴다. */
+function invPayIsCard(p){
+  try{
+    if(!p) return false;
+    if(String(p.transId||'').trim()) return true;
+    return String(p.acct||'').replace(/[^0-9]/g,'').length >= 4;
+  }catch(e){ return false; }
+}
 function invPaidNote(rec, wh){
   const iv = (rec && rec.inv && rec.inv[wh]) || null;
   if(!iv) return null;
   const paid = invPaidSum(iv);
   if(!(paid > 0.005)) return null;
-  // 뒷자리는 마지막으로 숫자가 남아 있는 결제에서 가져온다 (Website 결제는 숫자가 없다)
-  let l4 = '', at = '';
+  /* 뒷자리는 마지막으로 숫자가 남아 있는 결제에서 (Website 결제는 숫자가 없다) */
+  let l4 = '', at = '', card = false;
+  const notes = [];
   const all = [iv.paid].concat(iv.dupPays||[], iv.payments||[]).filter(Boolean);
   all.forEach(p=>{
     const n = String((p&&p.acct)||'').replace(/[^0-9]/g,'');
     if(n.length >= 4) l4 = n.slice(-4);
+    if(invPayIsCard(p)) card = true;
+    else {
+      const nt = String((p&&p.note)||'').trim();
+      if(nt && notes.indexOf(nt) < 0) notes.push(nt);
+    }
     if(p && p.at) at = p.at;
   });
-  let label = 'PAID — Credit Card';
-  if(l4) label += ' \u00b7\u00b7\u00b7\u00b7' + l4;
+  const parts = [];
+  if(card) parts.push('Credit Card' + (l4 ? ' \u00b7\u00b7\u00b7\u00b7' + l4 : ''));
+  if(notes.length) parts.push(notes.join(' + ').slice(0, 60));
+  let label = 'PAID' + (parts.length ? ' — ' + parts.join(' + ') : '');
   if(at){ try{ label += ' \u00b7 ' + new Date(at).toLocaleDateString('en-US'); }catch(e){} }
   return { paid: paid, label: label };
 }
