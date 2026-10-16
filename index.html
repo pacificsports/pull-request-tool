@@ -314,7 +314,7 @@ body.po-dragging{user-select:none;}
   </span>
   <select id="lang-sel" onchange="setLang(this.value)" style="font-size:11px;padding:3px 6px;border-radius:5px;border:none;background:#1d3f66;color:#fff;"><option value="ko">한국어</option><option value="en">English</option><option value="es">Español</option></select>
   <button id="wide-btn" class="btn btn-sm" onclick="toggleWide()" title="화면 넓게 / 좁게 — 기본은 넓게 (이 브라우저에만 저장돼)" style="padding:2px 8px;font-size:10px;background:#1d3f66;color:#cfe0f2;border-color:#2b5384;">↔ Wide</button>
-  <span id="app-ver" style="font-size:10px;color:#9fb8d4;">v1298</span>
+  <span id="app-ver" style="font-size:10px;color:#9fb8d4;">v1299</span>
 </div>
 <script>
 // ↔ 넓게 보기 — 브라우저마다 따로 저장 (v793)
@@ -14780,6 +14780,32 @@ function invDueStr(d, ti){
   due.setDate(due.getDate() + ti.days);
   return due.toLocaleDateString('en-US');
 }
+/* INVDATE-1 (2026-10-16) - 인보이스에 찍히는 날짜는 「실제로 나간 날」 하나뿐이다.
+   [stated] 하윤: "future ship date은 우리 internal이 보기 위한거고
+     invoice는 직접나간날짜가 찍혀야지"
+   🔴 전에는 PL 날짜(pl[wh].date)를 그대로 찍었다. 그런데 그 칸은 PL 을 처음 만들 때
+      meta.futureShip (거래처가 요청한 미래 발송일) 로 채워진다. 그래서 10/13 에 나간
+      물건의 인보이스가 10/27 로 찍혀 나갔고 만기도 2주 밀렸다 (PO 1B000063 / 0265732).
+   차례:
+     1) inv[wh].invDate - 사람이 못 박아 둔 값이 있으면 그것이 이긴다 (지금은 자동으로 안 쓴다)
+     2) pl[wh]._completed / _shipMailAt - 실제로 나간 날. 이 값은 한 번 찍히면 안 바뀐다
+     3) 사람이 PL 에 적은 날짜. 단 futureShip 과 같으면 안 쓴다 (자동으로 채워진 값이다)
+     4) 오늘
+   ⚠⚠ 이 함수를 쓰는 곳이 다섯이다 - 종이(buildStageDoc) · 메일 두 곳 · HANA 파일.
+      날짜를 각자 세면 종이와 메일과 팩터 파일이 서로 다른 날을 말한다. */
+function invDateFor(rec, wh, d){
+  try{
+    const iv = ((rec && rec.inv) || {})[wh] || {};
+    if(iv.invDate) return String(iv.invDate).slice(0, 10);
+    const pl = ((rec && rec.pl) || {})[wh] || {};
+    const got = pl._completed || pl._shipMailAt || '';
+    if(got) return String(got).slice(0, 10);
+    const pd = String((d && d.date) || pl.date || '').slice(0, 10);
+    const fs = String((rec && rec.meta && rec.meta.futureShip) || '').slice(0, 10);
+    if(pd && pd !== fs) return pd;
+    return todayStr();
+  }catch(e){ return todayStr(); }
+}
 /* 🏦 팩터 문구를 이 인보이스에 넣을 것인가.
    [stated] 하윤: 거래처마다 체크 + 기본은 🌐 Website 체크로 자동 구분
    ⚠⚠ 모르면 **넣는다.** 팩터 대상인데 문구가 빠지면 거래처가 우리에게 직접 돈을 보내고
@@ -15243,7 +15269,14 @@ function buildStageDoc(rec, wh, kind, d){
   const isInv = kind==='invoice';
   /* INVDOC-v1 - 인보이스는 전용 함수가 통째로 그린다 (아래는 패킹리스트 쪽 그대로).
      ⚠ 예전 invoice 가지는 걷어냈다 - 두 군데서 그리면 한쪽만 고쳐져 어긋난다. */
-  if(isInv) return buildInvoiceDoc(rec, wh, d, meta, lines, num, dateStr);
+  /* INVDATE-1 - 인보이스 날짜만 「나간 날」로 바꿔 넘긴다. d.date 를 같이 바꾸므로
+     만기일(invDueStr)도 저절로 따라온다 - 날짜를 두 군데서 정하지 않기 위해서다.
+     ⚠ 패킹리스트 쪽 dateStr 은 한 글자도 안 건드린다. */
+  if(isInv){
+    const _ivd = invDateFor(rec, wh, d);
+    return buildInvoiceDoc(rec, wh, Object.assign({}, d, { date: _ivd }), meta, lines, num,
+      new Date(_ivd + 'T00:00:00').toLocaleDateString('en-US'));
+  }
   let theadHtml, rowsHtml, tfootHtml;
   {
     const _mixWh = pboxMixed(lines);          // SC+CA 통합 문서면 박스 번호에 창고를 붙인다
@@ -18886,7 +18919,8 @@ async function sendInvoiceEmail(){
        🔴 예전에는 여기서만 거래처 카드를 봤다. 종이는 카드 → 그 거래처의 지난 인보이스 순으로
           찾는데 여기는 카드만 봐서, 실측 27건이 **PDF 엔 Net 30 이 찍히고 본문엔 아무 줄도 없었다.**
           거래처가 같은 메일 안에서 서로 다른 말을 본 셈이다. */
-    const _invDate = d.date ? new Date(d.date + 'T00:00:00') : new Date();
+    /* INVDATE-1 - 첨부 PDF 와 **같은 날짜**여야 한다 */
+    const _invDate = new Date(invDateFor(rec, plWh, d) + 'T00:00:00');
     let _ti = null;
     try{ _ti = invTermsFor(d, meta); }catch(e){ _ti = null; }
     const _termStr = _ti ? _ti.label : '';
@@ -49557,7 +49591,8 @@ async function invSendFor(base, wh, toList){
   atts.forEach((a,i)=>{ const n=String(a.content||'').length;
     if(i===0 || used+n<=MAXB64){ keep.push(a); keptN.push(kept[i]); used+=n; } });
   /* ONEJUDGE-1 - 묶어 보내는 길도 같은 함수로 (위 sendInvoiceEmail 과 한 글자도 다르면 안 된다) */
-  const _invDate = d.date ? new Date(d.date + 'T00:00:00') : new Date();
+  /* INVDATE-1 - 첨부 PDF 와 **같은 날짜**여야 한다 */
+  const _invDate = new Date(invDateFor(rec, wh, d) + 'T00:00:00');
   let _ti = null;
   try{ _ti = invTermsFor(d, meta); }catch(e){ _ti = null; }
   let _dueStr = '';
@@ -52586,7 +52621,9 @@ function factorCandidates(days, withSent){
       const no = String(iv.invNo||'').trim();
       if(!no) return;                       /* 번호가 없으면 아직 서류가 아니다 */
       if(iv.factorAt && !withSent) return;  /* 이미 보냈다 (withSent 면 담는다) */
-      const dt = factorYmd((rec.pl && rec.pl[wh] && rec.pl[wh].date) || iv.savedAt);
+      /* INVDATE-1 - HANA 가 받는 날짜도 종이에 찍힌 그 날짜여야 한다.
+         ⚠ 예전에는 PL 날짜를 그대로 썼다 -> 미래 발송예정일이 팩터 파일로 나갔다. */
+      const dt = factorYmd(invDateFor(rec, wh, (rec.pl && rec.pl[wh]) || null) || iv.savedAt);
       if(!dt) return;
       if(new Date(dt+'T00:00:00').getTime() < cut) return;
       const ti = factorTermOf(rec, wh);
