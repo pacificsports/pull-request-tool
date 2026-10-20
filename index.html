@@ -314,7 +314,7 @@ body.po-dragging{user-select:none;}
   </span>
   <select id="lang-sel" onchange="setLang(this.value)" style="font-size:11px;padding:3px 6px;border-radius:5px;border:none;background:#1d3f66;color:#fff;"><option value="ko">한국어</option><option value="en">English</option><option value="es">Español</option></select>
   <button id="wide-btn" class="btn btn-sm" onclick="toggleWide()" title="화면 넓게 / 좁게 — 기본은 넓게 (이 브라우저에만 저장돼)" style="padding:2px 8px;font-size:10px;background:#1d3f66;color:#cfe0f2;border-color:#2b5384;">↔ Wide</button>
-  <span id="app-ver" style="font-size:10px;color:#9fb8d4;">v1304</span>
+  <span id="app-ver" style="font-size:10px;color:#9fb8d4;">v1305</span>
 </div>
 <script>
 // ↔ 넓게 보기 — 브라우저마다 따로 저장 (v793)
@@ -9184,6 +9184,26 @@ async function attachPoToSaved(base, isRevised){
    포장 때 붙여둔 박스들을 "진짜 나갔다" 로 바꾼다. 이때부터 손님이 QR 을 찍으면
    거래처 이름과 PO# 가 나온다. Undo Ship 하면 도로 닫히고, 박스 내용만 나온다.
    실패해도 Complete 자체는 막지 않는다 — 서류가 우선이다. */
+/* QRNONE-1 (2026-10-19) - 이 창고 몫에 **카톤 QR 이 붙을 풀박스가 있기는 한가**.
+   [stated] 하윤: "나 스캔 다 했는데" (Mad Engine IC10192026001 - 1줄 1장짜리 오더인데
+     Complete 창이 「packing was not scanned」 를 먼저 말해서 자기가 빼먹은 줄 알았다)
+   🔴 카톤 QR(pr_boxship)은 **풀박스에만** 붙는다. PC Room 낱장만 있는 오더는
+      붙일 QR 이 처음부터 없다. 그런데 경고문이 「스캔을 안 했다」를 먼저 말했다.
+   ⭐ 수요(풀박스 수)를 알아야 「없는 게 맞다」와 「있어야 하는데 없다」를 가를 수 있다.
+   ⚠ REV 창고 키(SC-R1)로 와도 줄은 부모 창고(SC)로 적혀 있다 -> revParentWh 로 되돌린다. */
+function boxFullLooseOf(rec, wh){
+  try{
+    const W = (typeof revParentWh === 'function') ? revParentWh(wh) : wh;
+    let full = 0, loose = 0;
+    ((rec && rec.lines) || []).forEach(function(l){
+      if(String((l && l.wh) || '').trim().toUpperCase() !== String(W).trim().toUpperCase()) return;
+      const b = boxCalc(l);
+      full += (b && b.full) || 0;
+      loose += (b && b.loose) || 0;
+    });
+    return { full: full, loose: loose };
+  }catch(e){ return { full: 0, loose: 0 }; }
+}
 async function boxLinkCount(base, wh){
   try{
     const r = await sbFetch('/rest/v1/pr_boxship?select=ctn,shipped_at&base=eq.'+encodeURIComponent(base)+'&wh=eq.'+encodeURIComponent(wh));
@@ -10893,11 +10913,18 @@ function plCompleteAsk(o){
     }
 
     /* 📦 박스 QR */
+    /* QRNONE-1 - 세 갈래. 「붙을 풀박스가 없는 오더」를 경고로 말하지 않는다. */
+    const _fl = o.blFL || { full: 0, loose: 0 };
     html += o.blTotal > 0
       ? card('', 'Box QR', '📦 <b>' + o.blTotal + '</b> box QR label' + (o.blTotal>1?'s':'') + ' linked &mdash; '
           + (o.prepay ? 'they stay <b>closed</b> until the money is in, then open by themselves.'
                       : 'when the customer scans one they will see the customer name and PO #.'))
-      : card('warn', 'Box QR', '⚠ No box QR is linked to this order (packing was not scanned, or these are PC Room boxes).<br>Complete still works, but a customer scanning a label will not see the customer name or PO #.');
+      : (_fl.full === 0
+        ? card('', 'Box QR', '📦 <b>No full box on this order</b>'
+            + (_fl.loose > 0 ? (' &mdash; ' + _fl.loose.toLocaleString() + ' loose pc' + (_fl.loose>1?'s':'') + ' from the PC Room') : '')
+            + '. Carton QR labels are only on full boxes, so there is <b>nothing to link</b> here.<br>Complete works normally.')
+        : card('warn', 'Box QR', '⚠ This order has <b>' + _fl.full + ' full box' + (_fl.full>1?'es':'')
+            + '</b> but <b>no box QR is linked</b> &mdash; the packing was probably not scanned.<br>Complete still works, but a customer scanning a label will not see the customer name or PO #.'));
 
     /* 🌐 웹 오더 금액 */
     if(o.wp && o.wp.notFound){
@@ -10994,7 +11021,7 @@ async function completePL(){
   const _matesLeft = _mates.mates.filter(m=>!m.done);
   const _ans = await plCompleteAsk({ wh:plWh, cust:(rec.meta&&rec.meta.cust)||'', po:(rec.meta&&rec.meta.po)||plBase,
     toEmail:custEm, wantSend:wantSend, isWeb:(function(){ try{ return !!webPoOf(rec); }catch(e){ return false; } })(),
-    blTotal:(_bl&&_bl.total)||0, wp:_wp, matesRef:_mates.ref, matesAll:_mates.mates, matesLeft:_matesLeft,
+    blTotal:(_bl&&_bl.total)||0, blFL:boxFullLooseOf(rec, plWh), wp:_wp, matesRef:_mates.ref, matesAll:_mates.mates, matesLeft:_matesLeft,
     /* PPHOLD-1 - 금액을 새로 지어내지 않는다. 인보이스 장부를 그대로 보여준다 */
     prepay: _ppHold ? { tot: invTotalOf((rec.inv||{})[plWh]||{}, rec, plWh), paid: invPaidSum((rec.inv||{})[plWh]||{}), bal: invBalance(rec, plWh) } : null });
   if(!_ans) return;
