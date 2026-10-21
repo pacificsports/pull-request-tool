@@ -314,7 +314,7 @@ body.po-dragging{user-select:none;}
   </span>
   <select id="lang-sel" onchange="setLang(this.value)" style="font-size:11px;padding:3px 6px;border-radius:5px;border:none;background:#1d3f66;color:#fff;"><option value="ko">한국어</option><option value="en">English</option><option value="es">Español</option></select>
   <button id="wide-btn" class="btn btn-sm" onclick="toggleWide()" title="화면 넓게 / 좁게 — 기본은 넓게 (이 브라우저에만 저장돼)" style="padding:2px 8px;font-size:10px;background:#1d3f66;color:#cfe0f2;border-color:#2b5384;">↔ Wide</button>
-  <span id="app-ver" style="font-size:10px;color:#9fb8d4;">v1307</span>
+  <span id="app-ver" style="font-size:10px;color:#9fb8d4;">v1308</span>
 </div>
 <script>
 // ↔ 넓게 보기 — 브라우저마다 따로 저장 (v793)
@@ -348,6 +348,11 @@ try{ applyWide(localStorage.getItem('psx_wide') !== '0'); }catch(e){ applyWide(t
     <div style="text-align:center;color:var(--text2);font-size:10px;letter-spacing:2px;margin:4px 0 22px;">STAFF ONLY</div>
     <div class="ff" style="margin-bottom:10px;"><label>Email</label><input class="fi" id="auth-email" type="email" placeholder="you@company.com" autocomplete="username"></div>
     <div class="ff"><label>Password</label><input class="fi" id="auth-pw" type="password" placeholder="••••••••" autocomplete="current-password" onkeydown="if(event.key==='Enter')doLogin()"></div>
+    <div id="db-down" style="display:none;margin:0 0 10px;padding:10px 12px;background:#fef2f2;border:1.5px solid #fca5a5;border-radius:8px;">
+      <div style="font-weight:800;color:#b91c1c;font-size:12.5px;margin-bottom:4px;">&#9888; The database is not responding</div>
+      <div style="font-size:11.5px;color:#7f1d1d;line-height:1.5;">Your data is safe on the server. This is not a problem with your computer. Please wait a few minutes and try again.</div>
+      <button class="btn" id="db-down-btn" style="width:100%;justify-content:center;margin-top:9px;font-size:12px;padding:7px;" onclick="location.reload()">Try again</button>
+    </div>
     <div id="auth-err" style="color:var(--bad);font-size:12px;min-height:18px;margin:10px 0 6px;"></div>
     <button class="btn btn-primary" id="auth-btn" style="width:100%;justify-content:center;font-size:13px;padding:10px;" onclick="doLogin()">Log in →</button>
     <div style="text-align:center;margin-top:14px;"><a href="#" onclick="forgotPw();return false;" style="font-size:11.5px;color:#0d3c6e;">Forgot password?</a></div>
@@ -4917,15 +4922,18 @@ async function doLogin(){
   if(!email || !pw){ errEl.textContent = t('a_needcred'); return; }
   const btn = $('auth-btn'); btn.disabled = true; btn.textContent = '...';
   try{
-    const r = await fetch(SB_URL+'/auth/v1/token?grant_type=password', {method:'POST', headers:{apikey:SB_KEY,'Content-Type':'application/json'}, body:JSON.stringify({email, password:pw})});
+    const r = await sbTimed(fetch(SB_URL+'/auth/v1/token?grant_type=password', {method:'POST', headers:{apikey:SB_KEY,'Content-Type':'application/json'}, body:JSON.stringify({email, password:pw})}));
     const d = await r.json();
     if(!r.ok) throw new Error(d.error_description || d.msg || 'Login failed');
     SESS = {token:d.access_token, refresh:d.refresh_token||null, expires_at:Date.now()+((d.expires_in||3600)*1000), userId:d.user&&d.user.id, email:d.user&&d.user.email};
     saveSess();
-    if(!(await checkStaff())){ SESS = null; saveSess(); throw new Error(t('a_staffonly')); }
+    if(!(await sbTimed(checkStaff()))){ SESS = null; saveSess(); throw new Error(t('a_staffonly')); }
     enterApp();
     logLogin('login');
-  }catch(e){ errEl.textContent = e.message; }
+  }catch(e){
+    if(sbIsTimeout(e)){ errEl.textContent = 'The database is not responding. Please try again in a few minutes.'; dbDownShow(true); }
+    else errEl.textContent = e.message;
+  }
   finally{ btn.disabled = false; btn.textContent = 'Log in →'; }
 }
 function doLogout(){ SESS = null; saveSess(); location.reload(); }
@@ -5014,6 +5022,19 @@ async function loadPackedMap(){
 }
 function packReady(base, wh){ return !!(window._packedMap && window._packedMap[base] && window._packedMap[base][wh]); }
 function packVia(base, wh){ const m=window._packedMap && window._packedMap[base] && window._packedMap[base][wh]; return (m && typeof m==='object') ? String(m.via||'').toUpperCase() : ''; }
+/* BLANKFIX-1 - DB 가 응답을 안 하면 영원히 기다리지 않는다.
+   2026-09-25 와 2026-10-20 에 같은 사고가 났고 두 번 다 직원 눈에는
+   머리줄만 있는 흰 화면이었다 (login-page 도 app-main 도 안 켜진 상태).
+   까닭: 부팅이 ensureToken/checkStaff 의 await fetch 에서 멈추는데
+   타임아웃이 없어서 catch 로도 안 떨어진다. 8초로 끊고 화면에 말한다. */
+const SB_WAIT_MS = 8000;
+function sbTimed(p, ms){
+  return Promise.race([ p, new Promise(function(_, rej){ setTimeout(function(){ rej(new Error('SB_TIMEOUT')); }, ms || SB_WAIT_MS); }) ]);
+}
+function sbIsTimeout(e){ return String((e && e.message) || '') === 'SB_TIMEOUT'; }
+function dbDownShow(on){
+  try{ const e = document.getElementById('db-down'); if(e) e.style.display = on ? 'block' : 'none'; }catch(x){}
+}
 async function initAuth(){
   if(shipApprToken()){ renderShipApprPage(shipApprToken()); return; }   // 📧 고객 배송비 승인 페이지 (무로그인)
   if(pchkIsEmpMode()){ pchkEmpBoot(); return; }   // 🔒 무로그인 직원 촬영 모드 (#check) — 로그인 건너뜀
@@ -5021,8 +5042,16 @@ async function initAuth(){
   loadSess();
   if(SESS){
     /* SESSMAIL-v1 - 권한을 보기 전에 주소·userId 를 서버 값으로 맞춘다 */
-    try{ await ensureToken(); await sessSyncEmail(); if(await checkStaff()){ enterApp(); return; } }catch(e){}
-    SESS = null; saveSess();
+    try{
+      await sbTimed((async()=>{ await ensureToken(); await sessSyncEmail(); })());
+      if(await sbTimed(checkStaff())){ enterApp(); return; }
+      SESS = null; saveSess();
+    }catch(e){
+      /* BLANKFIX-1 - 시간 초과면 세션을 지우지 않는다. 서버가 돌아오면
+         새로고침 한 번으로 그대로 들어가야 한다. 진짜 권한/열쇠 문제일 때만 지운다. */
+      if(sbIsTimeout(e)) dbDownShow(true);
+      else { SESS = null; saveSess(); }
+    }
   }
   $('login-page').style.display = 'flex';
   setTimeout(()=>{ const f=$('auth-email'); if(f) f.focus(); }, 150);
