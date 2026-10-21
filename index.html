@@ -314,7 +314,7 @@ body.po-dragging{user-select:none;}
   </span>
   <select id="lang-sel" onchange="setLang(this.value)" style="font-size:11px;padding:3px 6px;border-radius:5px;border:none;background:#1d3f66;color:#fff;"><option value="ko">한국어</option><option value="en">English</option><option value="es">Español</option></select>
   <button id="wide-btn" class="btn btn-sm" onclick="toggleWide()" title="화면 넓게 / 좁게 — 기본은 넓게 (이 브라우저에만 저장돼)" style="padding:2px 8px;font-size:10px;background:#1d3f66;color:#cfe0f2;border-color:#2b5384;">↔ Wide</button>
-  <span id="app-ver" style="font-size:10px;color:#9fb8d4;">v1308</span>
+  <span id="app-ver" style="font-size:10px;color:#9fb8d4;">v1309</span>
 </div>
 <script>
 // ↔ 넓게 보기 — 브라우저마다 따로 저장 (v793)
@@ -352,6 +352,14 @@ try{ applyWide(localStorage.getItem('psx_wide') !== '0'); }catch(e){ applyWide(t
       <div style="font-weight:800;color:#b91c1c;font-size:12.5px;margin-bottom:4px;">&#9888; The database is not responding</div>
       <div style="font-size:11.5px;color:#7f1d1d;line-height:1.5;">Your data is safe on the server. This is not a problem with your computer. Please wait a few minutes and try again.</div>
       <button class="btn" id="db-down-btn" style="width:100%;justify-content:center;margin-top:9px;font-size:12px;padding:7px;" onclick="location.reload()">Try again</button>
+      <div style="margin-top:10px;border-top:1px solid #fca5a5;padding-top:9px;">
+        <div style="font-size:11px;color:#7f1d1d;line-height:1.5;margin-bottom:6px;">Still down after a few minutes? Enter the restart word below. A restart takes about 4 minutes and does not delete anything.</div>
+        <div style="display:flex;gap:6px;">
+          <input class="fi" id="db-rs-pw" type="password" placeholder="restart word" autocomplete="off" style="flex:1;font-size:12px;padding:6px;" onkeydown="if(event.key===&#39;Enter&#39;)dbRestartGo()">
+          <button class="btn" id="db-rs-btn" style="font-size:12px;padding:6px 10px;white-space:nowrap;" onclick="dbRestartGo()">Restart database</button>
+        </div>
+        <div id="db-rs-msg" style="font-size:11px;margin-top:6px;line-height:1.5;min-height:14px;color:#7f1d1d;"></div>
+      </div>
     </div>
     <div id="auth-err" style="color:var(--bad);font-size:12px;min-height:18px;margin:10px 0 6px;"></div>
     <button class="btn btn-primary" id="auth-btn" style="width:100%;justify-content:center;font-size:13px;padding:10px;" onclick="doLogin()">Log in →</button>
@@ -5034,6 +5042,53 @@ function sbTimed(p, ms){
 function sbIsTimeout(e){ return String((e && e.message) || '') === 'SB_TIMEOUT'; }
 function dbDownShow(on){
   try{ const e = document.getElementById('db-down'); if(e) e.style.display = on ? 'block' : 'none'; }catch(x){}
+}
+/* RESTARTBTN-1 (v1309) - 빨간 칸의 재시작 버튼.
+   누르면 db-watch 워커한테 물어본다. 세 겹의 보호막은 전부 워커 쪽에 있다
+     1) 암호 2) 정말 죽었는지 워커가 다시 확인 3) 10분 쿨다운
+   화면은 판정을 하지 않는다 - 두 군데서 판정하면 반드시 어긋난다. */
+const DBW_URL = 'https://db-watch.hjbae.workers.dev';
+let _dbRsPoll = 0;
+function dbRsMsg(t, colour){
+  try{ const e = document.getElementById('db-rs-msg'); if(e){ e.textContent = t; e.style.color = colour || '#7f1d1d'; } }catch(x){}
+}
+async function dbRestartGo(){
+  const i = document.getElementById('db-rs-pw'), b = document.getElementById('db-rs-btn');
+  const pw = i ? String(i.value || '').trim() : '';
+  if(!pw){ dbRsMsg('Enter the restart word first.'); return; }
+  if(b){ b.disabled = true; b.textContent = 'Working...'; }
+  dbRsMsg('Asking the server...');
+  try{
+    const r = await fetch(DBW_URL + '/restart', { method:'POST', body: pw });
+    const j = await r.json();
+    dbRsMsg(j.msg || (j.ok ? 'Restart started.' : 'Could not restart.'), j.ok ? '#15803d' : '#b91c1c');
+    if(j.ok) dbRestartWatch();
+  }catch(e){
+    dbRsMsg('Could not reach the restart service. Please call the office.', '#b91c1c');
+  }
+  if(b){ b.disabled = false; b.textContent = 'Restart database'; }
+  if(i) i.value = '';
+}
+/* 살아나면 알아서 새로고침한다 - 직원이 Try again 을 계속 누르지 않아도 되게.
+   15초마다 10분까지만 본다 (그 뒤로는 사람이 볼 일이다) */
+function dbRestartWatch(){
+  if(_dbRsPoll) return;
+  let n = 0;
+  _dbRsPoll = setInterval(async function(){
+    n++;
+    if(n > 40){ clearInterval(_dbRsPoll); _dbRsPoll = 0; return; }
+    try{
+      const r = await fetch(DBW_URL + '/check', { cache:'no-store' });
+      const j = await r.json();
+      if(j && j.ok){
+        clearInterval(_dbRsPoll); _dbRsPoll = 0;
+        dbRsMsg('The database is back. Reloading...', '#15803d');
+        setTimeout(function(){ location.reload(); }, 1200);
+      } else {
+        dbRsMsg('Still restarting... (' + (n * 15) + ' seconds)');
+      }
+    }catch(e){}
+  }, 15000);
 }
 async function initAuth(){
   if(shipApprToken()){ renderShipApprPage(shipApprToken()); return; }   // 📧 고객 배송비 승인 페이지 (무로그인)
@@ -11574,10 +11629,10 @@ function payReqGuardPaint(){
       box.style.display = 'block';
       box.innerHTML = '<div style="background:#fef2f2;border:1px solid #fca5a5;border-radius:8px;'
         + 'padding:9px 11px;font-size:11.5px;color:#991b1b;line-height:1.6;">'
-        + '<b>\u26a0 Print the invoice first \u2014 ' + bad.map(b => esc(b.wh)).join(', ')
-        + ' has no invoice number.</b><br>'
+        + '<b>\u26a0 No invoice number yet \u2014 ' + bad.map(b => esc(b.wh)).join(', ')
+        + '.</b><br>'
         + 'The customer would get a payment request with a blank invoice number. '
-        + 'Print it (that is when the number comes out), or set that line to 0.</div>';
+        + 'Press Get invoice number on this order in Invoice To Do, or set that line to 0.</div>';
     } else { box.style.display = 'none'; box.innerHTML = ''; }
   }
   const btn = document.getElementById('pr-go');
@@ -11588,7 +11643,7 @@ function payReqGuardPaint(){
     btn.style.borderColor = lock ? '#cbd5e1' : payReqGoColor();
     btn.style.color       = lock ? '#94a3b8' : '#fff';
     btn.style.cursor      = lock ? 'not-allowed' : '';
-    btn.title = lock ? 'Print the invoice first - it has no number yet' : '';
+    btn.title = lock ? 'No invoice number yet - press Get invoice number in Invoice To Do' : '';
   }
 }
 /* PAYDO-1 - 이 거래처는 **보통 카드로 내는** 거래처인가 (💳 Card on File 또는 🌐 Website).
@@ -12280,7 +12335,7 @@ async function payReqOrderSend(base, mode){
   /* PAYGUARD-1 - 화면 잠금이 어떤 이유로 풀려 있어도 여기서 멈춘다 */
   const _bad = payReqNoInv();
   if(_bad.length){ payReqGuardPaint();
-    showToast('\u26A0 Print the invoice first - ' + _bad.map(b=>b.wh).join(', ') + ' has no invoice number'); return; }
+    showToast('\u26A0 No invoice number yet - ' + _bad.map(b=>b.wh).join(', ') + ' (press Get invoice number in Invoice To Do)'); return; }
   if(!em || em.indexOf('@') < 0){ showToast('\u26A0 Enter the customer email'); return; }
   /* NOPOP-1 - 브라우저 팝업을 없앴다. 창에 이미 다 보인다. */
   /* 자리를 바꾼 창에서는 아무것도 「열지」 않는다 - 글자를 맞춘다 */
@@ -12462,7 +12517,7 @@ async function payReqSend(base, wh, mode){
   if(amt > bal + 0.005){ showToast('\u26A0 That is more than the balance (' + payReqMoney(bal) + ')'); return; }
   /* PAYGUARD-1 - 번호 없는 인보이스로는 안 나간다 (메일에 빈칸으로 찍힌다) */
   if(!String(iv.invNo||'').trim()){ payReqGuardPaint();
-    showToast('\u26A0 Print the invoice first - it has no invoice number yet'); return; }
+    showToast('\u26A0 No invoice number yet - press Get invoice number in Invoice To Do'); return; }
   if(!em || em.indexOf('@') < 0){ showToast('\u26A0 Enter the customer email'); return; }
   /* NOPOP-1 - 브라우저 팝업을 없앴다. 창에 이미 다 보인다. */
   if(btn){ btn.disabled = true;
@@ -49827,6 +49882,50 @@ async function invNpPrintOne(base, wh){
   invNpRender();
   if(typeof renderKpi==='function') renderKpi();
 }
+/* INVNUM-1 - 번호만 준다. 인쇄도 메일도 안 한다.
+   ⭐⭐ 번호를 꺼내는 길은 여전히 `invNoClaim` 하나다 - 두 번 눌러도 같은 번호가 나오고
+      금고(inv_seq)를 두 번 열지 않는다. 여기서 새로 세지 않는 것이 핵심이다.
+   ⚠ `printed` 를 찍지 않는다. 찍으면 줄이 목록에서 빠져 회계가 영영 모른다 -
+     그게 2026-10-21 에 하윤이 잡아낸 바로 그 사고다. */
+/* INVNUM-1 - 체크한 줄 전부에 번호를 준다. 인쇄도 메일도 안 한다.
+   ⚠ 하나씩 차례로 받는다 - 한꺼번에 쏘면 금고(inv_seq)를 동시에 열어 번호가 엉킨다.
+   ⚠ 실패한 줄을 조용히 넘기지 않는다. 몇 개가 안 됐는지 사람이 알아야 다시 누른다. */
+async function invNpGetNoSelected(){
+  const picked = [...document.querySelectorAll('.invnp-cb')].filter(c=>c.checked)
+    .map(c=>({ base: c.dataset.base || '', wh: c.dataset.wh || '' }))
+    .filter(p=>p.base && p.wh);
+  if(!picked.length){ showToast('\u26a0 Nothing is checked'); return; }
+  const bNo = document.getElementById('invnp-getno');
+  if(bNo){ bNo.disabled = true; bNo.textContent = 'Working...'; }
+  let got = 0, had = 0; const bad = [];
+  for(const p of picked){
+    try{
+      const res = await invNoClaim(p.base, p.wh);
+      if(res && res.reused) had++; else got++;
+    }catch(e){
+      const rec = (typeof savedCache!=='undefined' ? savedCache : []).find(s=>s.base===p.base) || {};
+      bad.push(((rec.meta&&rec.meta.cust)||'') + ' PO ' + ((rec.meta&&rec.meta.po)||'') + ' ' + p.wh);
+    }
+  }
+  if(bNo){ bNo.disabled = false; bNo.textContent = '\u0023 Issue numbers'; }
+  try{ invNpRefresh(); }catch(e){ try{ invNpRender(); }catch(x){} }
+  if(typeof renderKpi==='function') renderKpi();
+  if(bad.length)
+    alert('\u26a0 ' + bad.length + ' invoice(s) got NO number \u2014 nothing was printed or emailed for them:\n\n'
+      + bad.join('\n') + '\n\nPress Issue numbers again, or open the order.');
+  showToast('\ud83e\uddfe ' + got + ' number(s) issued'
+    + (had ? (' \u00b7 ' + had + ' already had one') : '')
+    + (bad.length ? (' \u00b7 ' + bad.length + ' failed') : '')
+    + ' \u2014 nothing printed, nothing emailed.');
+}
+async function invNpGetNo(base, wh){
+  let res = null;
+  try{ res = await invNoClaim(base, wh); }
+  catch(e){ invNoFail(e, 'invoice number'); return; }
+  showToast('\ud83e\uddfe Invoice ' + res.no + (res.reused ? ' (already had one)' : '') + ' \u2014 number issued. Nothing printed, nothing emailed.');
+  try{ invNpRefresh(); }catch(e){ try{ invNpRender(); }catch(x){} }
+  if(typeof renderKpi==='function') renderKpi();
+}
 /* 주소를 고치면 그 오더에 저장해 둔다 - 다음에 또 안 쳐도 되게 */
 async function invNpEmailSave(base, val){
   const rec = savedCache.find(s=>s.base===base); if(!rec) return;
@@ -49876,6 +49975,11 @@ function invNpRowsHtml(){
         + (r.printed ? 'Email the invoice, packing list and your PO to this address'
                      : 'Send it now, before printing \u2014 the invoice takes its number as it goes out. Erika still needs to print it for MAS 200.')
         + '">\ud83d\udce7 Email</button>';
+    /* INVNUM-1 - 번호가 없는 줄에서는 이 단추 하나만 보인다.
+       누르면 Print 와 Payment 가 나온다 (아래 r.invNo 갈래). */
+    const numBtn = r.hold
+      ? '<button class="btn btn-sm" disabled style="padding:3px 10px;font-size:10.5px;background:#f1f5f9;color:#94a3b8;border-color:#e2e8f0;font-weight:800;white-space:nowrap;cursor:not-allowed;" title="Credit Hold \u2014 this order must be approved first">\u0023 Get invoice number</button>'
+      : '<button class="btn btn-sm" style="padding:3px 10px;font-size:10.5px;background:#c2410c;color:#fff;border-color:#c2410c;font-weight:800;white-space:nowrap;" onclick="invNpGetNo(\'' + eb + '\',\'' + ew + '\')" title="Give this invoice its number. Nothing is printed and nothing is emailed. Print and Payment appear after this.">\u0023 Get invoice number</button>';
     const noEm = !String(r.email||'').includes('@');
     return '<div style="display:flex;align-items:center;gap:10px;padding:9px 12px;border-bottom:1px solid #f1f5f9;font-size:12.5px;' + (r.printed ? 'background:#f6feff;' : '') + '">'
       + lead
@@ -49895,7 +49999,7 @@ function invNpRowsHtml(){
       /* INVDOVIEW-1 - 번호를 누르면 그 인보이스가 이 목록 **위에** 뜬다 (읽기 전용).
          History 칸의 번호와 **같은 함수·같은 모양**이다 - 두 칸이 달라 보이면 안 된다. */
       + (r.invNo ? '<button onclick="invHistOpen(\'' + eb + '\',\'' + ew + '\')" title="Open this invoice (read-only)" style="font-family:Consolas,monospace;font-size:10.5px;font-weight:800;color:#0e7490;min-width:58px;text-align:left;background:none;border:0;padding:0;cursor:pointer;text-decoration:underline;text-underline-offset:2px;">' + esc(r.invNo) + '</button>'
-                 : '<span style="font-family:Consolas,monospace;font-size:10.5px;font-weight:700;color:#cbd5e1;min-width:58px;" title="No invoice number yet \u2014 it gets one when you print">no #</span>')
+                 : '<span style="font-family:Consolas,monospace;font-size:10.5px;font-weight:700;color:#cbd5e1;min-width:58px;" title="No invoice number yet \u2014 press Get invoice number">no #</span>')
       + '<span style="font-family:Consolas,monospace;font-weight:700;width:86px;text-align:right;">' + money + '</span>'
       /* ═══ PAYDO-1 - 인쇄한 그 자리에서 바로 결제 요청 ═══
          [stated] 하윤: "invoice to do 에 print 누르면 payment requset 나오게도 하자
@@ -49924,14 +50028,14 @@ function invNpRowsHtml(){
              동의 + 저장카드가 **둘 다** 있으면 이 줄에서 바로 긁는 단추를 준다.
              ⚠ 누르면 창이 열리고 거기서 **확인창 한 번**으로 끝난다 (바로 안 긁힌다).
              ⚠ 금액은 **오더 전액**이다 - 줄의 금액(`r.amt`)이 아니다 (payReqOrderTotal). */
-          : (r.printed && payReqSelfFirst(r.cust) && (payReqOrderTotal(r.base) > 0.005)
+          : (r.invNo && payReqSelfFirst(r.cust) && (payReqOrderTotal(r.base) > 0.005)
           ? '<button class="btn btn-sm" style="padding:3px 10px;font-size:10.5px;white-space:nowrap;font-weight:800;background:#047857;color:#fff;border-color:#047857;" onclick="payReqOrder(\'' + eb + '\')" title="'
             + esc(String(r.cust || '')) + ' let us charge their card \u00b7\u00b7\u00b7'
             + esc(payReqCardTail(r.cust)) + '. Press to charge this whole order, '
             + invNpMoney(payReqOrderTotal(r.base))
             + ' \u2014 you get one confirmation first.">\u{1F4B3} Charge '
             + invNpMoney(payReqOrderTotal(r.base)) + '</button>'
-          : (r.printed
+          : (r.invNo
           ? (r.payLinkAt
               ? '<button class="btn btn-sm" style="padding:3px 10px;font-size:10.5px;white-space:nowrap;font-weight:800;background:#f0fdf4;color:#15803d;border-color:#86efac;" onclick="payReqOrder(\'' + eb + '\')" title="'
                 /* PAYSELF-2 - 우리가 낸 건은 「보냈다」 가 아니다 */
@@ -49950,7 +50054,9 @@ function invNpRowsHtml(){
                              : 'This customer is not set up to pay by card. You can still send a link - press to open it.')
                 + '">\ud83d\udcb3 Payment</button>')
           : '')))
-      + prBtn + mailBtn
+      /* INVNUM-1 - 번호가 나오기 전에는 Print 도 Email 도 없다. 단추 하나만 보여서
+         무엇을 먼저 눌러야 하는지 생각할 필요가 없게 한다. */
+      + (r.invNo ? (prBtn + mailBtn) : numBtn)
       + '</div>';
   }).join('');
 }
@@ -49979,6 +50085,7 @@ function invNpCount(){
   const tot = boxes.length;
   if(all){ all.checked = tot>0 && n===tot; all.indeterminate = n>0 && n<tot; }
   const btn = document.getElementById('invnp-print'); if(btn) btn.disabled = !n;
+  const bNo = document.getElementById('invnp-getno'); if(bNo) bNo.disabled = !n;   /* INVNUM-1 */
   // 고른 것 합계 — 얼마어치 인쇄하는지 바로 보이게 (v831)
   const sum = picked.reduce((a,c)=>a+(Number(c.dataset.amt)||0), 0);
   const sEl = document.getElementById('invnp-sum'); if(sEl) sEl.textContent = invNpMoney(sum);
@@ -50294,11 +50401,12 @@ function invNpOpen(){
     +   '<span style="margin-left:auto;display:flex;gap:8px;align-items:center;">'
     +     '<span style="font-size:11.5px;color:#9a3412;font-weight:700;"><b id="invnp-n">0</b> to print</span>'
     +     '<span id="invnp-sum" style="font-family:Consolas,monospace;font-size:14px;font-weight:900;color:#065f46;background:#ecfdf5;border:1px solid #a7f3d0;border-radius:7px;padding:2px 11px;" title="Total of the invoices you have checked">$0.00</span>'
+    +     '<button class="btn btn-sm" id="invnp-getno" style="background:#c2410c;border-color:#c2410c;color:#fff;font-weight:800;" onclick="invNpGetNoSelected()" title="Gives every checked invoice its number in one go. Nothing is printed and nothing is emailed.">\u0023 Issue numbers</button>'
     +     '<button class="btn btn-sm btn-primary" id="invnp-print" style="background:#065f46;border-color:#065f46;font-weight:800;" onclick="invNpPrint()" title="Prints every checked invoice in one go. Only invoices that have not been printed yet can be checked.">🖨 Print selected</button>'
     +   '</span></div>'
     + '<div id="invnp-body" style="overflow-y:auto;flex:1;"></div>'
     + '<div id="invnp-foot" style="padding:7px 12px;border-top:1px solid #fed7aa;background:#fffbeb;font-size:12px;font-family:Consolas,monospace;color:#78350f;text-align:right;"></div>'
-    + '<div id="invnp-note" style="padding:8px 12px;border-top:1px solid var(--border);font-size:10.5px;color:#64748b;">Printing gives the invoice its number and turns the order <b>Complete</b> — same as printing it on its own. 🔒 Credit Hold cannot be printed until it is approved.<br>Only invoices printed here are chased for the email — ones raised in MAS 200 before are not listed.</div>'
+    + '<div id="invnp-note" style="padding:8px 12px;border-top:1px solid var(--border);font-size:10.5px;color:#64748b;"><b># Get invoice number</b> gives the invoice its number without printing or emailing anything — the order stays on this list so accounting still prints it. Printing turns the order <b>Complete</b>. 🔒 Credit Hold cannot be printed until it is approved.<br>Only invoices printed here are chased for the email — ones raised in MAS 200 before are not listed.</div>'
     + '<div id="invnp-hnote" style="display:none;padding:8px 12px;border-top:1px solid var(--border);font-size:10.5px;color:#64748b;">A day appears once its invoices are <b>both printed and emailed</b> — the date is when the second of the two finished. Click a day to see every invoice in it. 🏦 HANA is the part of that day that was sent on the factor file.</div>'
     + '</div>';
   document.body.appendChild(div);
