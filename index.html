@@ -314,7 +314,7 @@ body.po-dragging{user-select:none;}
   </span>
   <select id="lang-sel" onchange="setLang(this.value)" style="font-size:11px;padding:3px 6px;border-radius:5px;border:none;background:#1d3f66;color:#fff;"><option value="ko">한국어</option><option value="en">English</option><option value="es">Español</option></select>
   <button id="wide-btn" class="btn btn-sm" onclick="toggleWide()" title="화면 넓게 / 좁게 — 기본은 넓게 (이 브라우저에만 저장돼)" style="padding:2px 8px;font-size:10px;background:#1d3f66;color:#cfe0f2;border-color:#2b5384;">↔ Wide</button>
-  <span id="app-ver" style="font-size:10px;color:#9fb8d4;">v1310</span>
+  <span id="app-ver" style="font-size:10px;color:#9fb8d4;">v1311</span>
 </div>
 <script>
 // ↔ 넓게 보기 — 브라우저마다 따로 저장 (v793)
@@ -49097,6 +49097,16 @@ function recStatus(s){
   /* IT-1 - IT 만 있는 오더도 BACK ORDER 가 아니다. 물건은 있고 트럭 위에 있을 뿐이다. */
   if(!whs.length && (s.whs||[]).includes('IT') && !(s.whs||[]).includes('BO') && !(s.whs||[]).includes('NA'))
     return { label: '🚚 IN TRANSIT', color:'#9a3412', bg:'#ffedd5' };
+  /* SPLITOFF-1 - BO/NA 를 처리해서 줄이 **전부** 새 오더로 빠져나간 원본.
+     줄도 창고도 없는데 Back Order 라고 하면 아직 기다리는 것처럼 보인다.
+     ⚠ `_processed` 도장이 있을 때만이다 - 도장 없이 빈 오더는 여전히 Back Order 다. */
+  if(!whs.length && !(s.lines||[]).length && s.meta && s.meta._processed && Object.keys(s.meta._processed).length){
+    const _to = Object.keys(s.meta._processed)
+      .map(function(k){ return (s.meta._processed[k]||{}).to || ''; })
+      .filter(Boolean);
+    return { label: '\u2699 Split off' + (_to.length ? (' \u2192 ' + _to.join(', ')) : ''),
+             color:'#475569', bg:'#e2e8f0', splitOff:true };
+  }
   if(!whs.length) return { label: t('st_bo'), color:'#b91c1c', bg:'#fee2e2' };
   const _locker = !!(s.meta && s.meta.lockerStock);
   const plDone = whs.filter(w=>(s.pl && s.pl[w] && s.pl[w].savedAt) || _locker).length;
@@ -51036,7 +51046,7 @@ function savedBlindToggle(ev, base){
   const card = ev.currentTarget;
   if(card) card.classList.toggle('blind-off', !!window._blindOff[base]);
 }
-function recIsDone(s){ const st=recStatus(s); return st.cancelled || st.label === t('st_complete'); }
+function recIsDone(s){ const st=recStatus(s); /* SPLITOFF-1 - 깃발을 읽기만 한다. 판정은 recStatus 한 군데뿐이다 */ return st.cancelled || st.splitOff || st.label === t('st_complete'); }
 let readyOnly = false;
 function isReadyToShip(s){
   return (s.whs||[]).some(w=>s.pl && s.pl[w] && s.pl[w]._completed && plFutureDate(s, w));
@@ -51063,7 +51073,7 @@ async function processFromWh(base, srcWh, target){
   const sfx = srcWh==='BO' ? '-B' : '-N';
   let childBase = base + sfx, n = 2;
   while(savedCache.find(s=>s.base===childBase)) childBase = base + sfx + (n++);
-  if(!confirm((srcWh==='BO'?'⛔ Back Order':'✖ N/A') + ' ' + q.toLocaleString() + ' pcs → create separate order ' + childBase + ' (ships from ' + target + ')\n\nThe original order stays as-is; the new one goes through Pull Request → Packing List → Invoice as usual. Continue?')) return;
+  if(!confirm((srcWh==='BO'?'⛔ Back Order':'✖ N/A') + ' ' + q.toLocaleString() + ' pcs → create separate order ' + childBase + ' (ships from ' + target + ')\n\nThese lines LEAVE the original order (if nothing else is left there it is marked Split off); the new one goes through Pull Request → Packing List → Invoice as usual. Continue?')) return;
   const childLines = JSON.parse(JSON.stringify(mv)).map(l=>({ ...l, wh: target }));
   const cMeta = { ...(rec.meta||{}) };
   delete cMeta._modified; delete cMeta._printed; delete cMeta._processed;
