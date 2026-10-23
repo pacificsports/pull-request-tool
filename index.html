@@ -314,7 +314,7 @@ body.po-dragging{user-select:none;}
   </span>
   <select id="lang-sel" onchange="setLang(this.value)" style="font-size:11px;padding:3px 6px;border-radius:5px;border:none;background:#1d3f66;color:#fff;"><option value="ko">한국어</option><option value="en">English</option><option value="es">Español</option></select>
   <button id="wide-btn" class="btn btn-sm" onclick="toggleWide()" title="화면 넓게 / 좁게 — 기본은 넓게 (이 브라우저에만 저장돼)" style="padding:2px 8px;font-size:10px;background:#1d3f66;color:#cfe0f2;border-color:#2b5384;">↔ Wide</button>
-  <span id="app-ver" style="font-size:10px;color:#9fb8d4;">v1322</span>
+  <span id="app-ver" style="font-size:10px;color:#9fb8d4;">v1323</span>
 </div>
 <script>
 // ↔ 넓게 보기 — 브라우저마다 따로 저장 (v793)
@@ -10717,8 +10717,11 @@ function openPLInner(base){
     const _uwLabel = _isRev ? null : upsForWh(rec, w);   // 창고별/레거시 모두 지원 — 이 창고에서 만든 UPS 라벨 (REV 문서는 자기 트래킹을 직접 넣는다)
     if(!_tr.length && _uwLabel && (_uwLabel.tracking||[]).length){
       _tr = _uwLabel.tracking.slice();
-      _via = 'UPS';
-      _method = ({'03':'Ground','12':'3rd Day','02':'2nd Day','13':'Next Day','01':'Next Day'})[_uwLabel.service] || _method;
+      /* FXLBL-1 - 여기도 lblViaMethod 를 쓴다 (예전엔 UPS 표가 따로 박혀 있어서
+         FedEx 라벨이면 Via 가 UPS 로 적혔다) */
+      const _vm0 = lblViaMethod(_uwLabel.service);
+      _via = _vm0.via || 'UPS';
+      _method = _vm0.method || _method;
     }
     plDrafts[w] = { custEmail:i.custEmail||((rec.meta&&rec.meta.custEmail)||'')||custPlEmailFor(rec.meta&&rec.meta.cust), serial:i.serial||(_isRev ? (nextSerial(_pw) + '-R' + revNumOf(w)) : nextSerial(w)), via:_via, method:_method, freightCo:i.freightCo||'', trackings:(_tr.length?_tr:['']), date:i.date||((rec.meta&&rec.meta.futureShip)||'')||todayStr(), note:i.note||'', lines: baseLines, files: Array.isArray(i.files)?JSON.parse(JSON.stringify(i.files)):[], sendPl: (function(){ try{ if(webPoOf(rec)) return true; }catch(e){} return !!i.sendPl; })() };
     const iv = (rec.inv && rec.inv[w]) || {};
@@ -18037,6 +18040,59 @@ const UPS_SERVICES = [
   {code:'13', name:'UPS Next Day Air Saver'},
   {code:'01', name:'UPS Next Day Air'}
 ];
+/* ═══ FXLBL-1 - FedEx 라벨 ═══
+   워커 `/ship` 은 UPS `/label` 과 **답 모양이 같다** → 택배사만 갈아끼우면 된다. */
+const FEDEX_SHIP_URL = 'https://fedex.hjbae.workers.dev/ship';
+/* ⚠⚠ 이것을 안 보내면 FedEx 기본값(`^POI`)으로 와서 라벨 오른쪽·아래가 잘린다.
+   FedEx 가 2차 라벨 검증을 바로 그 이유로 반려했다 (2026-10-22). 절대 빼지 말 것. */
+const FEDEX_LABEL_ORIENT = 'BOTTOM_EDGE_OF_TEXT_FIRST';
+const FEDEX_SERVICES = [
+  {code:'FEDEX_GROUND',        name:'FedEx Ground'},
+  {code:'FEDEX_EXPRESS_SAVER', name:'FedEx Express Saver (3 day)'},
+  {code:'FEDEX_2_DAY',         name:'FedEx 2Day'},
+  {code:'FEDEX_2_DAY_AM',      name:'FedEx 2Day A.M.'},
+  {code:'STANDARD_OVERNIGHT',  name:'FedEx Standard Overnight'},
+  {code:'PRIORITY_OVERNIGHT',  name:'FedEx Priority Overnight'},
+  {code:'FIRST_OVERNIGHT',     name:'FedEx First Overnight'}
+];
+function lblCarrier(){ return window._lblCarrier === 'fedex' ? 'fedex' : 'ups'; }
+function lblServices(){ return lblCarrier() === 'fedex' ? FEDEX_SERVICES : UPS_SERVICES; }
+function lblDefSvc(c){ return (c || lblCarrier()) === 'fedex' ? 'FEDEX_GROUND' : '03'; }
+function lblSvcName(code){
+  const c = String(code||'');
+  const hit = UPS_SERVICES.concat(FEDEX_SERVICES).find(x=>x.code === c);
+  return hit ? hit.name : c;
+}
+/* ⭐⭐⭐ FXLBL-1 - 「어느 택배사 · 무슨 속도」 를 적는 자리는 **여기 하나다.**
+   예전에는 서비스→속도 표가 패킹리스트 다시 그리는 곳과 라벨 저장하는 곳 **두 군데**에
+   박혀 있었다. 같은 판정을 두 군데 적으면 반드시 어긋난다. */
+function lblViaMethod(service){
+  const s2 = String(service || '');
+  const U = {'03':'Ground','12':'3rd Day','02':'2nd Day','13':'Next Day','01':'Next Day'};
+  if(U[s2]) return { via:'UPS', method:U[s2] };
+  const F = { FEDEX_GROUND:'Ground', FEDEX_EXPRESS_SAVER:'3rd Day', FEDEX_2_DAY:'2nd Day',
+              FEDEX_2_DAY_AM:'2nd Day A.M.', STANDARD_OVERNIGHT:'Next Day',
+              PRIORITY_OVERNIGHT:'Next Day', FIRST_OVERNIGHT:'Next Day' };
+  if(F[s2]) return { via:'FEDEX', method:F[s2] };
+  return { via:'', method:'' };
+}
+function lblIsFedexSvc(code){ return lblViaMethod(code).via === 'FEDEX'; }
+/* FXLBL-1 - 택배사를 바꾼다. 서비스·포장·청구방식을 그 택배사가 할 수 있는 것으로 맞춘다. */
+function lblSetCarrier(c){
+  const c2 = (c === 'fedex') ? 'fedex' : 'ups';
+  if(lblCarrier() === c2) return;
+  window._lblCarrier = c2;
+  window._lblService = lblDefSvc(c2);
+  if(c2 === 'fedex'){
+    /* FedEx 는 UPS 규격 포장이 없다 → 우리 박스로 되돌린다 (치수가 있어야 맞는다) */
+    try{ (_lblBoxes||[]).forEach(b=>{ if(b) b.pkg = '02'; }); }catch(e){}
+    /* 워커에 third party billing 이 아직 없다 → 우리 계정 청구로 되돌린다 */
+    if(window._lblBillMode === 'receiver') window._lblBillMode = 'shipper';
+  }
+  try{ lblSyncBoxes(); }catch(e){}
+  try{ lblRender(); }catch(e){}
+  try{ lblAutoEst(); }catch(e){}
+}
 let _lblBase='', _lblRec=null, _lblBoxes=[], _lblResult=null;
 let _shipHandling=null;   // 서버 저장된 박스당 핸들링($). null이면 기본값(UPS_HANDLING_PER_BOX) 사용
 /* ⚠⚠ Number(null) 은 NaN 이 아니라 **0** 이다 (2026-09-22).
@@ -18216,9 +18272,14 @@ async function openLabelModal(base, forceWh){
   if(combine) await lblLoadBoxesCombined(base, whs);   // 두 창고 박스 합쳐서 로드
   else await lblLoadBoxes(base, window._lblOrigin);   // 출발창고(SC/CA)에 해당하는 박스만 로드
   // 서비스 기본값: 기존 라벨 > 패킹리스트 Method > Ground
+  /* FXLBL-1 - ⭐ 창을 열 때 **택배사를 반드시 정한다.** 안 하면 앞 오더에서 FedEx 를
+     골랐던 것이 그대로 눌러붙어서, UPS 로 보낼 오더가 FedEx 로 나간다.
+     이미 만든 라벨이 있으면 그 라벨의 택배사가 1순위다 (과거 기록을 바꾸지 않는다). */
+  window._lblCarrier = (_lblResult && (_lblResult.carrier === 'fedex' || lblIsFedexSvc(_lblResult.service))) ? 'fedex' : 'ups';
   const _M2S = {'Ground':'03','3rd Day':'12','2nd Day':'02','Next Day':'01'};
-  let _svc = (_lblResult&&_lblResult.service) || '03';
-  try{ if(typeof plBase!=='undefined' && plBase===base){ const pd=plDrafts[window._lblOrigin]; if(pd && pd.method && _M2S[pd.method]) _svc=_M2S[pd.method]; } }catch(e){}
+  let _svc = (_lblResult&&_lblResult.service) || lblDefSvc();
+  /* ⚠ 패킹리스트 Method 로 서비스를 고르는 것은 UPS 일 때만 (표가 UPS 코드다) */
+  try{ if(lblCarrier()==='ups' && typeof plBase!=='undefined' && plBase===base){ const pd=plDrafts[window._lblOrigin]; if(pd && pd.method && _M2S[pd.method]) _svc=_M2S[pd.method]; } }catch(e){}
   window._lblService = _svc;
   window._lblTest = false;
   const bill0 = custUpsFor(rec.meta.cust);
@@ -18295,7 +18356,8 @@ function lblRender(){
   const originBtns = window._lblLock
     ? `<div style="padding:8px 13px;border-radius:8px;background:${isCombine?'#b45309':(origin==='SC'?'#1d4ed8':'#c2410c')};color:#fff;font-weight:800;font-size:13px;display:inline-block;">${isCombine?'Eastvale, CA · combined ('+(esc(_cwhs.join('+'))||'SC+CA')+')':(origin==='SC'?'Sumter, SC':'Eastvale, CA')}</div>`
     : ['SC','CA'].map(w=>`<button class="btn btn-sm" onclick="lblSetOrigin('${w}')" style="${origin===w?'background:'+(w==='SC'?'#1d4ed8':'#c2410c')+';color:#fff;border-color:'+(w==='SC'?'#1d4ed8':'#c2410c')+';':''}">${w==='SC'?'Sumter, SC':'Eastvale, CA'}</button>`).join('');
-  const svcOpts = UPS_SERVICES.map(s=>`<option value="${s.code}"${window._lblService===s.code?' selected':''}>${s.name}</option>`).join('');
+  /* FXLBL-1 - 고른 택배사의 서비스만 보여준다 */
+  const svcOpts = lblServices().map(s=>`<option value="${s.code}"${window._lblService===s.code?' selected':''}>${s.name}</option>`).join('');
   const boxRows = _lblBoxes.map((b,i)=>{
     /* UPS 규격 포장이면 치수는 UPS 가 정해 놓았다 — 그 줄의 크기 칸은 잠근다 (v960) */
     const _pk = String(b.pkg||'02'), _own = upsPackDims(_pk);
@@ -18307,7 +18369,7 @@ function lblRender(){
     return `<div style="display:flex;flex-wrap:wrap;gap:5px;align-items:center;margin-bottom:6px;">
     <span style="font-family:Consolas,monospace;font-size:11px;color:#64748b;min-width:20px;">#${i+1}</span>
     ${(isCombine&&b.src)?`<span style="font-size:9px;font-weight:800;color:#fff;background:${b.src==='SC'?'#1d4ed8':'#c2410c'};border-radius:5px;padding:1px 5px;">${esc(b.src)}</span>`:''}
-    <select class="fi lbl-pkg" data-i="${i}" onchange="lblPkgChange(${i},this.value)" title="UPS packaging — UPS-supplied packaging has fixed dimensions, so the size boxes are locked" style="font-size:11px;padding:4px;width:186px;${_own?'':'background:#ecfeff;font-weight:700;color:#0e7490;'}">${UPS_PACKAGING.map(p=>`<option value="${p.code}"${_pk===p.code?' selected':''}>${esc(p.name+upsPackNote(p.code))}</option>`).join('')}</select>
+    <select class="fi lbl-pkg" data-i="${i}"${lblCarrier()==='fedex'?' disabled':''} onchange="lblPkgChange(${i},this.value)" title="UPS packaging — UPS-supplied packaging has fixed dimensions, so the size boxes are locked" style="font-size:11px;padding:4px;width:186px;${_own?'':'background:#ecfeff;font-weight:700;color:#0e7490;'}">${UPS_PACKAGING.map(p=>`<option value="${p.code}"${_pk===p.code?' selected':''}>${esc(p.name+upsPackNote(p.code))}</option>`).join('')}</select>
     ${_bad?`<span title="UPS refuses this packaging with the service selected above. Switch the service to 2nd Day Air or Next Day Air, or use our own box." style="font-size:9.5px;font-weight:800;color:#b45309;background:#fffbeb;border:1px solid #fcd34d;border-radius:5px;padding:1px 5px;white-space:nowrap;">⚠ not with ${esc(_svcName)}</span>`:''}
     <select class="fi lbl-preset" data-i="${i}" onchange="lblPreset(${i},this.value)" style="font-size:11px;padding:4px;width:120px;${_own?'':'opacity:.35;'}"${_lock}><option value="">✏️ Use your own size</option>${BOX_PRESETS.map((p,pi)=>`<option value="${pi}"${b.name===p.n?' selected':''}>${esc(p.n)}</option>`).join('')}</select>
     ${_dim('lbl-l', b.l, 'L', 46)}${_dim('lbl-w', b.w, 'W', 46)}${_dim('lbl-h', b.h, 'H', 46)}
@@ -18373,6 +18435,13 @@ function lblRender(){
         </div>
       </div>
       <div style="display:flex;gap:10px;align-items:flex-end;">
+        <div style="flex:none;"><div style="font-size:11px;font-weight:800;color:#0f2a4a;margin-bottom:5px;">CARRIER</div>
+          <div style="display:flex;gap:6px;">
+            ${[['ups','🚚 UPS','#5b3a1e'],['fedex','📦 FedEx','#4d148c']].map(function(x){
+              const on = lblCarrier() === x[0];
+              return `<button class="btn btn-sm" onclick="lblSetCarrier('${x[0]}')" style="${on?('background:'+x[2]+';color:#fff;border-color:'+x[2]+';font-weight:800;'):'font-weight:600;'}white-space:nowrap;">${x[1]}</button>`;
+            }).join('')}
+          </div></div>
         <div style="flex:1;"><div style="font-size:11px;font-weight:800;color:#0f2a4a;margin-bottom:5px;">SERVICE</div>
           <select class="fi" id="lbl-service" onchange="window._lblService=this.value;lblSyncBoxes();lblRender();lblAutoEst()" style="font-size:12px;">${svcOpts}</select></div>
         <label style="display:flex;align-items:center;gap:6px;font-size:11px;font-weight:700;color:#b45309;white-space:nowrap;padding-bottom:8px;cursor:pointer;" title="Test mode uses UPS CIE (test) — labels are NOT billable/shippable. Website rates are unaffected.">
@@ -18518,8 +18587,12 @@ function lblDelBox(i){ lblSyncBoxes(); _lblBoxes.splice(i,1); if(!_lblBoxes.leng
 async function lblCreate(){
   const rec = _lblRec; if(!rec) return;
   /* UPS 규격 포장(Letter/Pak/Express Box…)은 치수가 정해져 있다 — 무게만 있으면 된다 (v960) */
-  const boxes = lblReadBoxes().filter(b=> b.wt>0 && (!upsPackDims(b.pkg) || (b.l>0 && b.w>0 && b.h>0)));
-  if(!boxes.length){ showToast('⚠ Enter the weight (and size, for your own boxes)'); return; }
+  /* FXLBL-1 - FedEx 는 규격 포장이 없다 → 치수를 반드시 요구한다 */
+  const _fx = lblCarrier() === 'fedex';
+  const boxes = _fx
+    ? lblReadBoxes().filter(b=> b.wt>0 && b.l>0 && b.w>0 && b.h>0)
+    : lblReadBoxes().filter(b=> b.wt>0 && (!upsPackDims(b.pkg) || (b.l>0 && b.w>0 && b.h>0)));
+  if(!boxes.length){ showToast(_fx ? '⚠ FedEx needs weight AND size on every box' : '⚠ Enter the weight (and size, for your own boxes)'); return; }
   const shipTo = {
     name: ($('lbl-name').value||'').trim(),
     company: rec.meta.cust||'',
@@ -18555,20 +18628,45 @@ async function lblCreate(){
   const bacct = String(window._lblUpsAcct||'').trim().toUpperCase();
   const bzip = String(window._lblUpsZip||'').trim();
   if(bmode==='receiver' && !bacct){ showToast('⚠ Enter the customer UPS Account #'); return; }
-  const btn = $('lbl-create-btn'); if(btn){ btn.disabled=true; btn.textContent='⏳ Contacting UPS...'; }
+  /* FXLBL-1 - 🔴 FedEx 는 거래처 계정 청구가 아직 안 된다 (워커에 그 길이 없다).
+     조용히 우리 계정으로 긁지 않는다 - 멈추고 왜 안 되는지 말한다. */
+  if(_fx && bmode === 'receiver'){
+    alert('⛔ FedEx cannot bill the customer\u2019s account yet.\n\n'
+      + 'Only our own FedEx account works for now.\n\n'
+      + '→ Use UPS for a customer-account shipment, or switch billing to our account.');
+    return;
+  }
+  const btn = $('lbl-create-btn'); if(btn){ btn.disabled=true; btn.textContent = _fx ? '⏳ Contacting FedEx...' : '⏳ Contacting UPS...'; }
   try{
-    const r = await fetch(UPS_LABEL_URL, {
-      method:'POST', headers:wkHdr(),
-      body: JSON.stringify({
-        origin: window._lblShipFrom||window._lblOrigin, service: window._lblService||'03',
-        shipTo, packages: boxes.map(upsPkgOut),
-        billing: { mode:bmode, account:bacct, zip:bzip },
-        reference: (rec.meta.po||rec.base||'').slice(0,35),
-        test: !!window._lblTest
-      })
-    });
+    /* FXLBL-1 - 묻는 곳과 몸통만 갈린다. 답을 받은 뒤는 아래가 전부 그대로다. */
+    const _ref = (rec.meta.po||rec.base||'').slice(0,35);
+    const r = _fx
+      ? await fetch(FEDEX_SHIP_URL, {
+          method:'POST', headers:{'Content-Type':'application/json'},
+          body: JSON.stringify({
+            origin: window._lblShipFrom||window._lblOrigin, service: window._lblService||'FEDEX_GROUND',
+            shipTo: Object.assign({}, shipTo, { country:'US' }),
+            packages: boxes.map(b=>({ l:Number(b.l)||0, w:Number(b.w)||0, h:Number(b.h)||0, wt:Number(b.wt)||0 })),
+            reference: _ref,
+            labelType: 'ZPLII',
+            labelOrient: FEDEX_LABEL_ORIENT,   /* ⚠⚠ 빼면 라벨이 잘린다 */
+            test: !!window._lblTest
+          })
+        })
+      : await fetch(UPS_LABEL_URL, {
+          method:'POST', headers:wkHdr(),
+          body: JSON.stringify({
+            origin: window._lblShipFrom||window._lblOrigin, service: window._lblService||'03',
+            shipTo, packages: boxes.map(upsPkgOut),
+            billing: { mode:bmode, account:bacct, zip:bzip },
+            reference: _ref,
+            test: !!window._lblTest
+          })
+        });
     const j = await r.json();
-    if(!j.ok){ showToast('❌ '+(j.error||'UPS label failed')); if(btn){ btn.disabled=false; btn.textContent='🏷 Create label'; } return; }
+    if(!j.ok){ showToast('❌ '+(j.error||((_fx?'FedEx':'UPS')+' label failed')));
+      try{ if(j.detail) console.warn('[FXLBL-1] label detail', j.detail); }catch(e){}
+      if(btn){ btn.disabled=false; btn.textContent='🏷 Create label'; } return; }
     const cost = j.cost || {};
     const ourCost = (cost.negotiated!=null ? cost.negotiated : cost.published);   // 우리 실제 지불액(협상요율)
     const listCost = (cost.published!=null ? cost.published : cost.negotiated);   // UPS 정가
@@ -18582,7 +18680,8 @@ async function lblCreate(){
     // 우리 계정(shipper)로 보낼 때만 인보이스에 청구 (고객 계정이면 고객이 직접 UPS에 지불, free면 우리가 부담) — 정가 + 핸들링
     const billShip = (_webNow!=null) ? _webNow
                    : ((!isFree && j.billing==='shipper' && listCost!=null) ? Math.round((Math.ceil(listCost*100)/100 + handling)*100)/100 : 0);
-    _lblResult = { tracking:j.tracking||[], labels:j.labels||[], service:j.service||window._lblService,
+    _lblResult = { carrier:(_fx?'fedex':'ups'),   /* FXLBL-1 */
+      tracking:j.tracking||[], labels:j.labels||[], service:j.service||window._lblService,
       origin:window._lblOrigin, shipFrom:window._lblShipFrom||window._lblOrigin, billing:(isFree?'free':(_webNow!=null?'web':j.billing)), test:!!j.test, shipmentId:j.shipmentId||null,
       cost, ourCost, listCost, boxCount, handling, billShip,
       at:new Date().toISOString(), by:(SESS&&SESS.email)||'' };
@@ -18613,7 +18712,8 @@ async function lblSaveTracking(){
   let store = rec.meta._ups || {};
   // 레거시 평면 _ups → 창고별 키로 변환
   if((store.tracking||store.shipmentId) && store.origin && !(store.SC||store.CA)){ const o=store.origin; store = { [o]: {...store} }; }
-  store[_lblResult.origin] = { tracking:_lblResult.tracking, labels:_lblResult.labels||[], service:_lblResult.service, origin:_lblResult.origin, shipFrom:_lblResult.shipFrom||_lblResult.origin,
+  store[_lblResult.origin] = { carrier:_lblResult.carrier||'ups',   /* FXLBL-1 */
+    tracking:_lblResult.tracking, labels:_lblResult.labels||[], service:_lblResult.service, origin:_lblResult.origin, shipFrom:_lblResult.shipFrom||_lblResult.origin,
     billing:_lblResult.billing, shipmentId:_lblResult.shipmentId||null,
     cost:_lblResult.cost||null, ourCost:_lblResult.ourCost!=null?_lblResult.ourCost:null,
     listCost:_lblResult.listCost!=null?_lblResult.listCost:null, boxCount:_lblResult.boxCount||null, handling:_lblResult.handling||0,
@@ -18624,8 +18724,9 @@ async function lblSaveTracking(){
     const i = savedCache.findIndex(s=>s.base===rec.base); if(i>=0) savedCache[i]=rec;
     // 패킹리스트가 이 창고로 열려있으면 tracking#·Via·Method 바로 채워넣기
     try{ if(typeof plBase!=='undefined' && plBase===rec.base && plDrafts[_lblResult.origin]){
-      const S2M={'03':'Ground','12':'3rd Day','02':'2nd Day','13':'Next Day','01':'Next Day'};
-      const pd=plDrafts[_lblResult.origin]; pd.via='UPS'; if(S2M[_lblResult.service]) pd.method=S2M[_lblResult.service];
+      /* FXLBL-1 - 택배사·속도는 lblViaMethod 한 곳에서만 정한다 */
+      const _vm = lblViaMethod(_lblResult.service);
+      const pd=plDrafts[_lblResult.origin]; if(_vm.via) pd.via=_vm.via; if(_vm.method) pd.method=_vm.method;
       pd.trackings=(_lblResult.tracking&&_lblResult.tracking.length)?_lblResult.tracking.slice():pd.trackings;
       if(typeof renderPL==='function' && plWh===_lblResult.origin) renderPL();
     } }catch(e){}
