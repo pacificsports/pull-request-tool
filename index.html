@@ -314,7 +314,7 @@ body.po-dragging{user-select:none;}
   </span>
   <select id="lang-sel" onchange="setLang(this.value)" style="font-size:11px;padding:3px 6px;border-radius:5px;border:none;background:#1d3f66;color:#fff;"><option value="ko">한국어</option><option value="en">English</option><option value="es">Español</option></select>
   <button id="wide-btn" class="btn btn-sm" onclick="toggleWide()" title="화면 넓게 / 좁게 — 기본은 넓게 (이 브라우저에만 저장돼)" style="padding:2px 8px;font-size:10px;background:#1d3f66;color:#cfe0f2;border-color:#2b5384;">↔ Wide</button>
-  <span id="app-ver" style="font-size:10px;color:#9fb8d4;">v1324</span>
+  <span id="app-ver" style="font-size:10px;color:#9fb8d4;">v1325</span>
 </div>
 <script>
 // ↔ 넓게 보기 — 브라우저마다 따로 저장 (v793)
@@ -5043,6 +5043,17 @@ async function loadPackedMap(){
   }catch(e){}
 }
 function packReady(base, wh){ return !!(window._packedMap && window._packedMap[base] && window._packedMap[base][wh]); }
+/* PICFX-1 - `pr_pack.via` 는 세 값만 쓴다. ⭐ 여기 한 곳에서만 정한다.
+   [stated] 하윤: "psflowx.com/pic에도 fedex option도 넣어주고"
+   ⚠ 「소포냐 팔레트냐」(`!== 'LTL'`) 와 「어느 택배사냐」 는 **다른 축**이다. 섞지 말 것. */
+function packViaNorm(v){
+  const t = String(v == null ? '' : v).toUpperCase().trim();
+  if(t === 'LTL') return 'LTL';
+  if(t === 'FEDEX' || t === 'FX') return 'FEDEX';
+  return 'UPS';
+}
+function packViaName(v){ const t = packViaNorm(v); return t === 'FEDEX' ? 'FedEx' : (t === 'LTL' ? 'LTL' : 'UPS'); }
+function packViaIcon(v){ return packViaNorm(v) === 'LTL' ? '🚛' : (packViaNorm(v) === 'FEDEX' ? '📦' : '🏷'); }
 function packVia(base, wh){ const m=window._packedMap && window._packedMap[base] && window._packedMap[base][wh]; return (m && typeof m==='object') ? String(m.via||'').toUpperCase() : ''; }
 /* BLANKFIX-1 - DB 가 응답을 안 하면 영원히 기다리지 않는다.
    2026-09-25 와 2026-10-20 에 같은 사고가 났고 두 번 다 직원 눈에는
@@ -18074,12 +18085,17 @@ function lblRowPair(s, w, only, forceWh){
   const car = has ? lblCarrierOf(uw) : '';
   const sw = (s.whs||[]).filter(x=>x==='SC'||x==='CA');
   const ready = comb ? sw.some(x=>packReady(s.base, x)) : packReady(s.base, w);
+  /* PICFX-1 - 창고가 /pic 에서 고른 택배사. 'UPS'/'FEDEX' 면 그쪽 단추에만 • 를 찍는다
+     (아직 라벨이 없을 때만 - 라벨이 있으면 ✓ 가 이긴다) */
+  let _picked = '';
+  try{ const _pv = packVia(s.base, comb ? 'CA' : w);
+       if(_pv === 'FEDEX') _picked = 'fedex'; else if(_pv === 'UPS') _picked = 'ups'; }catch(e){}
   const tail = comb ? (' \u00b7 from CA' + (sw.length>1 ? (' (' + sw.join('+') + ')') : ''))
                     : (only ? '' : (' ' + w));
   const mk = function(cc, name, color){
     const mine = (car === cc);
     const sty = mine ? ('background:' + color + ';color:#fff;border-color:' + color + ';font-weight:800;')
-              : ((ready && !car) ? 'background:#b45309;color:#fff;border-color:#b45309;'
+              : ((ready && !car && (!_picked || _picked === cc)) ? 'background:#b45309;color:#fff;border-color:#b45309;'
                                  : 'background:#fff;color:#94a3b8;border-color:#e2e8f0;');
     const tip = mine ? (name.replace(/^[^ ]+ /, '') + ' label created')
               : (car ? ('This shipment already has a ' + (car === 'fedex' ? 'FedEx' : 'UPS') + ' label')
@@ -18088,7 +18104,7 @@ function lblRowPair(s, w, only, forceWh){
     return '<button class="btn btn-sm" style="' + sty + '" onclick="openLabelModal(\''
       + esc(s.base) + '\',\'' + (comb ? 'COMBINE' : w) + '\',\'' + cc + '\')" title="'
       + esc(tip + (comb ? '' : (' (' + w + ')'))) + '">' + name + tail
-      + (mine ? ' \u2713' : ((ready && !car) ? ' \u2022' : '')) + '</button>';
+      + (mine ? ' \u2713' : ((ready && !car && (!_picked || _picked === cc)) ? ' \u2022' : '')) + '</button>';
   };
   return mk('ups', '🏷 UPS', '#166534') + mk('fedex', '📦 FedEx', '#4d148c');
 }
@@ -20948,6 +20964,7 @@ function pchkPackSelBar(){
     <span style="margin-left:auto;display:flex;gap:8px;flex-wrap:wrap;">
       <button onclick="pchkLtlBatch('LTL')" style="background:#22c55e;color:#fff;border:none;border-radius:10px;padding:12px 18px;font-size:16px;font-weight:800;">🚛 Pack as LTL ▸</button>
       <button onclick="pchkLtlBatch('UPS')" title="Combine these POs into shared boxes and send by UPS" style="background:#a16207;color:#fff;border:none;border-radius:10px;padding:12px 18px;font-size:16px;font-weight:800;">📦 Pack as UPS ▸</button>
+      <button onclick="pchkLtlBatch('FEDEX')" title="Combine these POs into shared boxes and send by FedEx" style="background:#4d148c;color:#fff;border:none;border-radius:10px;padding:12px 18px;font-size:16px;font-weight:800;">📦 Pack as FedEx ▸</button>
     </span>
     <button onclick="pchkPackSelClear()" style="background:transparent;color:#e5e7eb;border:1px solid #6b7280;border-radius:10px;padding:12px 14px;font-size:14px;font-weight:700;">Clear</button>
   </div>`;
@@ -21351,14 +21368,16 @@ function pchkExpectedHtml(base, wh){
     ${scanHdr}${rowsHtml}</div>`;
 }
 async function pchkLtlBatch(mode){
-  const M=(String(mode||'LTL').toUpperCase()==='UPS')?'UPS':'LTL';
+  const M=packViaNorm(mode);   /* PICFX-1 */
+  const _par = (M !== 'LTL');  /* PICFX-1 - UPS.FedEx 는 둘 다 소포다 */
   window._packMode=M;
   const wh=window._packWh||'SC';
   const bases=Object.keys(window._packSel||{});
   if(!bases.length){ showToast('⚠ Select at least one order'); return; }
   const ov=pchkEmpEl();
-  const hdr=(M==='UPS')?`📦 UPS Batch (combined) — ${wh} · ${bases.length} PO`:`🚛 LTL Batch — ${wh} · ${bases.length} PO`;
-  ov.innerHTML=`<div style="background:${M==='UPS'?'#78350f':'#374151'};color:#fff;padding:14px 16px;display:flex;align-items:center;gap:10px;position:sticky;top:0;z-index:5;"><button onclick="pchkPackOpen()" style="background:rgba(255,255,255,.2);color:#fff;border:none;border-radius:8px;padding:6px 11px;font-size:13px;font-weight:700;">← Orders</button><span style="font-size:17px;font-weight:800;">${hdr}</span></div>
+  /* PICFX-1 - 모양은 _par, 이름은 M */
+  const hdr=(_par)?`📦 ${packViaName(M)} Batch (combined) — ${wh} · ${bases.length} PO`:`🚛 LTL Batch — ${wh} · ${bases.length} PO`;
+  ov.innerHTML=`<div style="background:${_par?'#78350f':'#374151'};color:#fff;padding:14px 16px;display:flex;align-items:center;gap:10px;position:sticky;top:0;z-index:5;"><button onclick="pchkPackOpen()" style="background:rgba(255,255,255,.2);color:#fff;border:none;border-radius:8px;padding:6px 11px;font-size:13px;font-weight:700;">← Orders</button><span style="font-size:17px;font-weight:800;">${hdr}</span></div>
   <div style="flex:1;background:#f1f5f9;padding:16px 14px;"><div id="ltl-wrap" style="max-width:560px;margin:0 auto;"><div style="color:#94a3b8;font-size:13px;padding:20px;text-align:center;">Loading box counts…</div></div></div>`;
   // 기존 pr_pack(있으면 우선) + pcs 기반 박스 추정(pack_est RPC · anon 접근 가능)
   let packMap={}, estMap={};
@@ -21386,7 +21405,7 @@ async function pchkLtlBatch(mode){
   const lead=(window._ltlRows||[])[0];
   const leadPack=lead?packMap[lead.base]:null;
   window._upsBoxes=(leadPack && Array.isArray(leadPack.boxes)) ? leadPack.boxes.map(b=>({name:b.name||'', l:+b.l||0, w:+b.w||0, h:+b.h||0, wt:+b.wt||0})) : [];
-  if(M==='UPS' && window._upsBoxes.length) window._upsTotal=window._upsBoxes.length;
+  if(_par && window._upsBoxes.length) window._upsTotal=window._upsBoxes.length;
   pchkLtlRender();
 }
 function pchkLtlAssignText(){
@@ -21431,13 +21450,14 @@ function pchkLtlDim(i,field,val){ window._ltlPalletDims=window._ltlPalletDims||[
 function pchkLtlRender(){
   const el=document.getElementById('ltl-wrap'); if(!el) return;
   const rows=window._ltlRows||[];
-  const M=(window._packMode==='UPS')?'UPS':'LTL';
+  const M=packViaNorm(window._packMode);   /* PICFX-1 */
+  const _par = (M !== 'LTL');
   const est=rows.reduce((s,r)=>s+(Number(r.boxes)||0),0);
   // 📦 UPS 는 PO를 합쳐 박스를 줄이므로 PO별 칸은 참고용(읽기 전용)이고 "실제 나가는 총 박스"만 입력받는다 (v775)
-  const poBox=(r,i)=> M==='UPS'
+  const poBox=(r,i)=> _par
     ? `<span title="System estimate if this PO shipped on its own — combining will usually come out lower" style="width:78px;font-size:17px;padding:9px 0;border:2px dashed #e2e8f0;border-radius:9px;text-align:center;font-weight:800;color:#94a3b8;background:#f8fafc;">${Number(r.boxes)||0}</span>`
     : `<input type="number" inputmode="numeric" min="0" value="${r.boxes}" onchange="pchkLtlSet(${i},this.value)" style="width:78px;font-size:18px;padding:9px;border:2px solid #cbd5e1;border-radius:9px;text-align:center;font-weight:800;">`;
-  const totalBlock = M==='UPS'
+  const totalBlock = _par
     ? `<div style="background:#78350f;color:#fff;border-radius:12px;padding:14px 16px;margin-bottom:12px;">
         <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;">
           <span style="font-size:14px;font-weight:700;">📦 Boxes actually going out<br><span style="font-size:11px;font-weight:400;color:#fde68a;">after combining these ${rows.length} PO into shared boxes</span></span>
@@ -21461,13 +21481,13 @@ function pchkLtlRender(){
         <span style="margin-left:auto;font-size:24px;font-weight:900;" id="ltl-total">${est.toLocaleString()}</span>
         <span style="font-size:13px;margin-left:6px;">boxes</span>
       </div>`;
-  const palletBlock = M==='UPS' ? '' : `<div style="background:#fff;border-radius:12px;padding:12px 14px;margin-bottom:12px;">
+  const palletBlock = _par ? '' : `<div style="background:#fff;border-radius:12px;padding:12px 14px;margin-bottom:12px;">
     <label style="display:flex;align-items:center;gap:10px;font-size:14px;font-weight:800;color:#0f2a4a;">🎚 Total pallets
       <input type="number" min="0" inputmode="numeric" value="${window._ltlPallets||''}" onchange="pchkLtlSetPallets(this.value)" placeholder="0" style="width:80px;font-size:18px;padding:8px;border:2px solid #cbd5e1;border-radius:9px;text-align:center;font-weight:800;"></label>
     <div id="ltl-pallet-dims" style="margin-top:${(window._ltlPallets||0)>0?'10px':'0'};">${pchkLtlPalletDimsHtml()}</div>
   </div>`;
   el.innerHTML=`<div style="background:#fff;border-radius:12px;padding:6px 4px;margin-bottom:12px;">
-    ${M==='UPS'?`<div style="font-size:11.5px;color:#92400e;background:#fffbeb;border:1px solid #fde68a;border-radius:8px;padding:7px 10px;margin:4px 8px 8px;line-height:1.4;">📦 The per-PO numbers below are <b>estimates for reference</b> — enter the real combined box count further down.</div>`:''}
+    ${_par?`<div style="font-size:11.5px;color:#92400e;background:#fffbeb;border:1px solid #fde68a;border-radius:8px;padding:7px 10px;margin:4px 8px 8px;line-height:1.4;">📦 The per-PO numbers below are <b>estimates for reference</b> — enter the real combined box count further down.</div>`:''}
     ${rows.map((r,i)=>`<div style="padding:11px 12px;border-bottom:1px solid #f1f5f9;">
       <div style="display:flex;align-items:center;gap:10px;">
       <div style="flex:1;min-width:0;"><div style="font-size:14px;font-weight:800;color:#0f2a4a;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">${esc(r.cust||'—')}</div><div style="font-size:11.5px;color:#64748b;">PO ${esc(r.po||'—')}${r.wasSaved?'':' · <span style="color:#b45309;">est</span>'}</div></div>
@@ -21483,9 +21503,9 @@ function pchkLtlRender(){
   </div>
   <div style="font-size:11px;color:#64748b;text-align:center;margin-bottom:12px;">둘 다 이 ${rows.length}개 PO 와 대조돼 — 세는 방법만 달라</div>
   <div style="margin-bottom:8px;">${pchkNamePicker()}</div>
-  <button onclick="pchkLtlBatchSave()" id="ltl-save" style="width:100%;background:${M==='UPS'?'#a16207':'#16a34a'};color:#fff;border:none;border-radius:12px;padding:16px;font-size:17px;font-weight:800;">💾 Save &amp; create bulk shipment</button>
+  <button onclick="pchkLtlBatchSave()" id="ltl-save" style="width:100%;background:${_par?'#a16207':'#16a34a'};color:#fff;border:none;border-radius:12px;padding:16px;font-size:17px;font-weight:800;">💾 Save &amp; create bulk shipment</button>
   <div id="ltl-msg" style="font-size:12.5px;font-weight:700;height:16px;text-align:center;margin-top:6px;"></div>`;
-  if(M==='UPS') pchkUpsBoxesRender();
+  if(_par) pchkUpsBoxesRender();
 }
 function pchkUpsCmpText(){
   const est=(window._ltlRows||[]).reduce((s,r)=>s+(Number(r.boxes)||0),0);
@@ -21530,7 +21550,8 @@ async function bulkFindPending(wh, mode, bases){
 }
 async function pchkLtlBatchSave(){
   const wh=window._packWh||'SC'; const rows=window._ltlRows||[]; const msg=document.getElementById('ltl-msg'); const btn=document.getElementById('ltl-save');
-  const M=(window._packMode==='UPS')?'UPS':'LTL';   // 📦 UPS = 여러 PO를 합쳐 박스를 줄여 보내는 배치 (v775)
+  const M=packViaNorm(window._packMode);   /* PICFX-1 */
+  const _par = (M !== 'LTL');   // 📦 소포(UPS.FedEx) = 여러 PO를 합쳐 박스를 줄여 보내는 배치 (v775)
   /* ⚠ 거래처가 섞인 묶음 (v978).
      묶음 하나는 팔레트 수도 하나, 총 박스도 하나로 저장된다. 그런데 LTL BOL 은
      **받는 곳마다** 따로 나가고, UPS 배치는 아예 박스를 같이 담는다 —
@@ -21542,8 +21563,8 @@ async function pchkLtlBatchSave(){
   const _custs = Object.keys(_byCust);
   if(_custs.length > 1){
     const lines = _custs.map(c=>'   · ' + c + ' — ' + _byCust[c].po + ' PO · ' + _byCust[c].box + ' box').join('\n');
-    const why = (M==='UPS')
-      ? 'UPS 배치는 여러 PO 를 **같은 박스에 합쳐** 보냅니다. 받는 곳이 다르면 한 박스에 담을 수 없습니다.'
+    const why = (_par)
+      ? packViaName(M) + ' 배치는 여러 PO 를 **같은 박스에 합쳐** 보냅니다. 받는 곳이 다르면 한 박스에 담을 수 없습니다.'
       : 'LTL BOL 은 **받는 곳마다 따로** 나갑니다. 한 묶음에 두 곳을 넣으면 어느 팔레트가 누구 건지 남지 않습니다.';
     if(!confirm('⚠ 이 묶음에 거래처가 ' + _custs.length + '곳입니다.\n\n' + lines + '\n\n' + why
         + '\n\n거래처별로 따로 만드는 것을 권합니다 — 취소하고 한 거래처씩 골라 주세요.\n\n그래도 한 묶음으로 저장할까요?')) {
@@ -21554,25 +21575,25 @@ async function pchkLtlBatchSave(){
   if(btn){ btn.disabled=true; btn.textContent='Saving…'; }
   const now=new Date().toISOString();
   // UPS 는 PO별 박스수가 정의되지 않으므로(박스를 공유) PO별로는 추정치를 남기고, 합친 실제 박스는 bulk shipment 에 기록한다
-  const upsBoxes=(M==='UPS')?(window._upsBoxes||[]):[];
+  const upsBoxes=(_par)?(window._upsBoxes||[]):[];
   const leadBase=(rows[0]||{}).base;   // 🏷 UPS 라벨용 박스 규격은 첫 PO 에만 저장 (핸들링비 중복 방지)
   /* 🎚 묶음의 팔레트는 pr_bulkship 한 곳에만 적는다 — PO 별 pr_pack 행에 남아 있던
      예전 (오더 하나짜리) 팔레트 값은 지운다. 안 그러면 같은 오더에 팔레트가 두 군데 남는다 (v983). */
-  const payload=rows.map(r=>({ base:r.base, wh, via:M, cust:r.cust||null, po:r.po||null, total_boxes:Number(r.boxes)||0, boxes:(M==='UPS'&&r.base===leadBase)?upsBoxes:[], pallets:null, pallet_dims:null, updated_by:_pchkWho||null, updated_at:now }));
+  const payload=rows.map(r=>({ base:r.base, wh, via:M, cust:r.cust||null, po:r.po||null, total_boxes:Number(r.boxes)||0, boxes:(_par&&r.base===leadBase)?upsBoxes:[], pallets:null, pallet_dims:null, updated_by:_pchkWho||null, updated_at:now }));
   try{
     const _n=await picRpc('pic_pack_upsert', { rows_in: payload });   /* v1068 */
     if(!(Number(_n) > 0)) throw new Error('packing save refused (' + _n + ')');
     const estTot=rows.reduce((s,x)=>s+(Number(x.boxes)||0),0);
-    const tot = M==='UPS' ? (window._upsTotal!=null?Number(window._upsTotal)||0:estTot) : estTot;
-    const nPal = M==='UPS' ? 0 : (Number(window._ltlPallets)||0);
+    const tot = _par ? (window._upsTotal!=null?Number(window._upsTotal)||0:estTot) : estTot;
+    const nPal = _par ? 0 : (Number(window._ltlPallets)||0);
     // 🚛/📦 Bulk Shipment 하나 생성 → 매니저 쪽 Bulk Shipment Pending 에 뜸 (ref 접두어로 LTL/UPS 구분)
     const bulkRef=M+'-'+new Date().toISOString().slice(2,10).replace(/-/g,'')+'-'+Math.random().toString(36).slice(2,6).toUpperCase();
     const bulk={ ref:bulkRef, wh, status:'PENDING',
       pos:rows.map(r=>({base:r.base,cust:r.cust||'',po:r.po||'',boxes:Number(r.boxes)||0})),
       total_boxes:tot, pallets:nPal,
       // UPS 는 팔레트가 없으므로 이 칸에 실제 박스 목록(규격·무게)을 담는다
-      pallet_dims: M==='UPS' ? upsBoxes : (window._ltlPalletDims||[]).slice(0,nPal),
-      note: M==='UPS' ? ('UPS combined — '+tot+' box(es) actually shipped; '+estTot+' if sent separately; labels on PO '+((rows[0]||{}).po||'')) : null,
+      pallet_dims: _par ? upsBoxes : (window._ltlPalletDims||[]).slice(0,nPal),
+      note: _par ? (packViaName(M) + ' combined — '+tot+' box(es) actually shipped; '+estTot+' if sent separately; labels on PO '+((rows[0]||{}).po||'')) : null,
       created_by:_pchkWho||null };
     /* 🔁 같은 묶음을 두 번 만들지 않는다 (v871).
        실제로 이런 일이 있었다: 같은 PO 두 개짜리 UPS 배치가 6분 사이에 두 번 생겼다.
@@ -21605,8 +21626,8 @@ async function pchkLtlBatchSave(){
       if(btn){ btn.disabled=false; btn.textContent='💾 Save & create bulk shipment'; } return; }
     if(msg){ msg.style.color='#16a34a'; msg.innerHTML= updated
       ? '✅ 이미 있던 묶음 <b>'+esc(dup.same.ref)+'</b> 을 최신 내용으로 고쳤습니다 — 새로 만들지 않았습니다.<br>'+rows.length+' PO · '+tot+' box(es).'
-      : (M==='UPS'
-        ? '✅ UPS batch created — '+rows.length+' PO combined into '+tot+' box(es).<br>Manager can review it in <b>📦 Bulk Shipments</b>.'
+      : (_par
+        ? '✅ ' + packViaName(M) + ' batch created — '+rows.length+' PO combined into '+tot+' box(es).<br>Manager can review it in <b>📦 Bulk Shipments</b>.'
         : '✅ Bulk shipment created — '+rows.length+' PO · '+tot+' boxes · '+nPal+' pallet(s).<br>Manager can review it in <b>📦 Bulk Shipments</b>.'); }
     try{ scanKeepDrop(rows.map(r=>String(r.base))); }catch(e){}   // 💾 묶음까지 저장했으면 찍어둔 건 끝 (v984)
     window._packSel={};
@@ -23175,10 +23196,11 @@ async function scanStartSelected(){
   bases.forEach(b=>{ scanExpOrder(b, wh).forEach(e=>{
     const k = scanKeyOf(e.style, e.color, e.size);
     (m[k] = m[k] || {style:e.style, color:e.color, size:e.size, qty:0}).qty += e.qty; }); });
-  const M = (window._packMode==='UPS') ? 'UPS' : 'LTL';
+  const M = packViaNorm(window._packMode);   /* PICFX-1 */
+  const _par = (M !== 'LTL');
   const info = window._packRowInfo || {};
   _scan = { mode:'PO', id:bases.join(','), ref:bases.length+' PO', wh, back:'BATCH',
-    title:(M==='UPS'?'📦 UPS':'🚛 LTL')+' · '+bases.length+' PO · '+wh,
+    title:(_par?('📦 ' + packViaName(M)):'🚛 LTL')+' · '+bases.length+' PO · '+wh,
     bases: bases.map(b=>{ const row=(window._ltlRows||[]).find(x=>String(x.base)===String(b))||{};
       return { base:b, po:row.po||(info[b]||{}).po||'', cust:row.cust||(info[b]||{}).cust||'' }; }),
     unit:'pcs', exp:Object.values(m), seen:new Map(), manual:{}, pbox:new Map() };
@@ -25717,12 +25739,12 @@ async function pchkPackEdit(base, cust, po, wh){
   _packPallets=''; _packPalDims=[];   // 🎚 v983
   // 이 창고(base+wh)의 기존 저장분 로드
   try{ const j=await picRpc('pic_pack_get', { p_wh: _packBoxWh, p_bases: [String(base)] });   /* v1068 */
-    if(Array.isArray(j)&&j[0]){ _packBoxes=Array.isArray(j[0].boxes)?j[0].boxes:[]; _packTotal=(j[0].total_boxes!=null?String(j[0].total_boxes):''); _packVia=(j[0].via==='LTL'?'LTL':'UPS');
+    if(Array.isArray(j)&&j[0]){ _packBoxes=Array.isArray(j[0].boxes)?j[0].boxes:[]; _packTotal=(j[0].total_boxes!=null?String(j[0].total_boxes):''); _packVia=packViaNorm(j[0].via);   /* PICFX-1 */
     _packPallets=(j[0].pallets!=null?String(j[0].pallets):''); _packPalDims=Array.isArray(j[0].pallet_dims)?j[0].pallet_dims:[]; } }catch(e){}
   window._ltlLines=await pchkFetchLines([base]);   // 📋 기대 내용 (v769)
   pchkPackRender();
 }
-function pchkPackSetVia(v){ const t=document.getElementById('pack-total'); if(t) _packTotal=t.value; _packVia=(v==='LTL'?'LTL':'UPS'); pchkPackRender(); }
+function pchkPackSetVia(v){ const t=document.getElementById('pack-total'); if(t) _packTotal=t.value; _packVia=packViaNorm(v); pchkPackRender(); }   /* PICFX-1 */
 /* ═══════════ 🎚 오더 하나짜리 LTL — 팔레트 (v983) ═══════════
    묶음(LTL batch) 화면에는 팔레트 칸이 있는데 오더 하나짜리 Pack 화면에는 없었다.
    같은 LTL 로 나가는데 한쪽만 팔레트를 못 적으면, BOL 을 만들 때 매니저가
@@ -25792,7 +25814,11 @@ function pchkPackRender(){
         ${pchkExpectedHtml(_packBase, _packBoxWh)}
         <div style="font-size:12px;font-weight:800;color:#0f2a4a;margin:11px 0 6px;">How is this shipping?</div>
         <div style="display:flex;gap:8px;">
-          <button onclick="pchkPackSetVia('UPS')" style="flex:1;padding:12px;border-radius:10px;border:2px solid ${!isLtl?'#7c2d12':'#cbd5e1'};background:${!isLtl?'#7c2d12':'#fff'};color:${!isLtl?'#fff':'#64748b'};font-size:15px;font-weight:800;">🏷 UPS</button>
+          ${/* PICFX-1 - 택배사 둘 + LTL. 고른 것만 색이 찬다 */''}
+          ${[['UPS','🏷 UPS','#7c2d12'],['FEDEX','📦 FedEx','#4d148c']].map(function(x){
+            const on = packViaNorm(_packVia) === x[0];
+            return `<button onclick="pchkPackSetVia('${x[0]}')" style="flex:1;padding:12px;border-radius:10px;border:2px solid ${on?x[2]:'#cbd5e1'};background:${on?x[2]:'#fff'};color:${on?'#fff':'#64748b'};font-size:15px;font-weight:800;">${x[1]}</button>`;
+          }).join('')}
           <button onclick="pchkPackSetVia('LTL')" style="flex:1;padding:12px;border-radius:10px;border:2px solid ${isLtl?'#374151':'#cbd5e1'};background:${isLtl?'#374151':'#fff'};color:${isLtl?'#fff':'#64748b'};font-size:15px;font-weight:800;">🚛 LTL</button>
         </div>
         <label style="display:flex;align-items:center;gap:10px;margin-top:14px;font-size:13px;font-weight:800;color:#0f2a4a;">Number of boxes
@@ -26071,7 +26097,7 @@ async function pchkPackSave(){
     if(!(Number(_n) > 0)) throw new Error('packing save refused (' + _n + ')');
     const _linked = await packLinkBoxes();   // 📦 스캔한 박스번호를 이 오더에 붙여둔다 (v865)
     try{ scanKeepDrop([_packBase]); }catch(e){}   // 💾 포장까지 저장했으면 찍어둔 건 끝 (v984)
-    if(msg){msg.style.color='#16a34a';msg.textContent=(_packVia==='LTL'?('✅ Saved — '+(total||0)+' box(es)'+(nPal>0?' on '+nPal+' pallet(s)':'')+', LTL.'):'✅ Saved — manager can print the UPS label.')
+    if(msg){msg.style.color='#16a34a';msg.textContent=(_packVia==='LTL'?('✅ Saved — '+(total||0)+' box(es)'+(nPal>0?' on '+nPal+' pallet(s)':'')+', LTL.'):('✅ Saved — manager can print the ' + packViaName(_packVia) + ' label.'))   /* PICFX-1 */
       + (_linked>0 ? ' · QR '+_linked+'박스 연결됨' : '');}
     if(btn){btn.disabled=false;btn.textContent='💾 Save packing';}
     setTimeout(pchkPackOpen, 900);
@@ -51887,7 +51913,8 @@ function laneReadyLegs(){
       if(invPr) return;
       // 배송방식이 UPS/LTL로 지정된(직원이 그 방식으로 준비한) 오더만 레인 집계 — via 미지정/기타는 제외
       const via = (typeof packVia==='function') ? String(packVia(s.base, w)||'').toUpperCase() : '';
-      if(via!=='UPS' && via!=='LTL') return;
+      /* PICFX-1 - FEDEX 도 센다. 안 넣으면 FedEx 로 포장한 오더가 레인에서 통째로 사라진다 */
+      if(via!=='UPS' && via!=='FEDEX' && via!=='LTL') return;
       const isLtl = via==='LTL';
       const uw = s.meta && s.meta._ups && s.meta._ups[w];
       const hasLabel = uw && (uw.tracking||[]).length>0;
