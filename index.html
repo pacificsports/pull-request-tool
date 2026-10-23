@@ -314,7 +314,7 @@ body.po-dragging{user-select:none;}
   </span>
   <select id="lang-sel" onchange="setLang(this.value)" style="font-size:11px;padding:3px 6px;border-radius:5px;border:none;background:#1d3f66;color:#fff;"><option value="ko">한국어</option><option value="en">English</option><option value="es">Español</option></select>
   <button id="wide-btn" class="btn btn-sm" onclick="toggleWide()" title="화면 넓게 / 좁게 — 기본은 넓게 (이 브라우저에만 저장돼)" style="padding:2px 8px;font-size:10px;background:#1d3f66;color:#cfe0f2;border-color:#2b5384;">↔ Wide</button>
-  <span id="app-ver" style="font-size:10px;color:#9fb8d4;">v1318</span>
+  <span id="app-ver" style="font-size:10px;color:#9fb8d4;">v1319</span>
 </div>
 <script>
 // ↔ 넓게 보기 — 브라우저마다 따로 저장 (v793)
@@ -39578,6 +39578,12 @@ async function trBuilderOpen(existingId, route){
         <button class="btn" onclick="trManualLine()">+ Add manual line</button>
         <span id="ship-palbtns" style="display:inline-flex;gap:10px;flex-wrap:wrap;">${trSrcAutoPallet(_shipRoute)?'':trAddPalletBtns()}</span>
         ${trOrderShipOK(_shipRoute)?`<button class="btn" style="background:#7b1fa2;color:#fff;border-color:#7b1fa2;" onclick="trOrderShipOpen()" title="${trOrderShipToCust(_shipRoute)?'Load a customer order onto this truck. It rides as designated — never added to stock — and you still press ✅ Complete on the order itself when the truck takes it.':'Load Ship-from-CA order boxes onto this truck — they ride as designated and stay routed to their own order at '+esc(trKindShort(trDstKind(_shipRoute)))+'; they are never added to its stock'}">🚚 ${trOrderShipLabel(_shipRoute)}</button>`:''}
+        ${(trOrderShipOK(_shipRoute) && trIsMultiRoute(_shipRoute)) ? (function(){
+          /* OSDIRECT-1 - [stated] 하윤: "ship from CA orders처럼 direct ship from SC 버튼을
+             하나 따로 만들어줘". multi 길에서만 낸다 - 다른 길에서는 못 싣는다. */
+          const _dn = oshipCount('direct');
+          return `<button class="btn" style="background:${_dn ? '#be123c' : '#fff'};color:${_dn ? '#fff' : '#be123c'};border-color:#be123c;font-weight:${_dn ? '800' : '600'};" onclick="trOrderShipOpen('direct')" title="Load orders marked \u{1F3E0} Direct ship from SC. They ride straight from SC to the customer\u2019s own address \u2014 never added to stock. If this truck does not stop there yet, loading one adds the stop.">\u{1F3E0} Direct-from-SC Orders${_dn ? (' (' + _dn + ')') : ''}</button>`;
+        })() : ''}
         <span style="margin-left:auto;font-size:11px;color:var(--text2);">📦 <b id="ship-pallet-count">0</b> pallet(s) · <b id="ship-line-count">0</b> line(s) · <b id="ship-box-count">0</b> box(es) · <b id="ship-pcs-count">0</b> pcs</span>
       </div>
       <div id="ship-pallets" style="display:flex;flex-direction:column;gap:10px;"></div>
@@ -41069,17 +41075,53 @@ async function trSplitPallet(pid){
   showToast('✂ ' + p.label + ' → ' + newRef);
   await trBuilderOpen(newId, _shipRoute);     /* 뗀 것을 바로 보여준다 — 확인 팝업을 하나 더 띄우지 않는다 */
 }
+/* SHIPSAFE-1 - TRANSFER 로 빼 놓은 박스를 원래 bin 으로 되돌린다.
+   ⚠ 되돌릴 bin 을 모르면 **조용히 넘기지 않는다.** 그 박스는 선반에서도 트럭에서도
+      안 보이는 상태로 남으므로, 몇 장이 어디 떠 있는지 사람에게 말해야 한다. */
+async function trUnstageBoxes(ids, bin){
+  const list = (ids || []).slice();
+  if(!list.length) return true;
+  const back = String(bin || '').trim().toUpperCase();
+  if(!back){
+    try{ alert('\u26d4 ' + list.length + ' box(es) are stuck in TRANSFER.\n\n'
+      + 'They were taken out of their bin for this truck, but the truck could not be saved\n'
+      + 'and the system does not know which bin they came from.\n\n'
+      + '\u2192 Tell the office. They show up in neither the bin nor the truck until someone puts them back.'); }catch(e){}
+    return false;
+  }
+  try{
+    await trPatchBoxes(list, { loc: back });
+    const idSet = new Set(list);
+    bxStore.forEach(b=>{ if(idSet.has(b.id)) b.loc = back; });
+  }catch(e){
+    try{ alert('\u26d4 ' + list.length + ' box(es) are stuck in TRANSFER.\n\n'
+      + 'Putting them back in bin ' + back + ' failed (' + ((e && e.message) || e) + ').\n\n'
+      + '\u2192 Tell the office \u2014 they show up in neither the bin nor the truck until someone puts them back.'); }catch(e2){}
+    return false;
+  }
+  return true;
+}
 async function _trAddLine(pid, line){
   const shipId = await _trEnsureRow(); if(!shipId) return false;
-  if(!line.is_manual && (line.ids||[]).length){
-    try{ await trPatchBoxes(line.ids, {loc:'TRANSFER'}); }   // 원래 bin에서 빠져 TRANSFER bin으로 (SC 재고엔 유지) — v682
+  /* SHIPSAFE-1 - 팔레트를 **재고를 건드리기 전에** 찾는다. 예전에는 박스를 TRANSFER 로
+     빼 놓은 뒤에 여기서 return false 가 날 수 있었다 - 그러면 박스가 길을 잃는다. */
+  const p = _shipPallets.find(x=>x.id===pid); if(!p) return false;
+  const staged = (!line.is_manual && (line.ids||[]).length) ? (line.ids||[]).slice() : [];
+  if(staged.length){
+    try{ await trPatchBoxes(staged, {loc:'TRANSFER'}); }   // 원래 bin에서 빠져 TRANSFER bin으로 (SC 재고엔 유지) — v682
     catch(e){ showToast('⚠ Stock staging failed'); return false; }
-    const idSet = new Set(line.ids);
+    const idSet = new Set(staged);
     bxStore.forEach(b=>{ if(idSet.has(b.id)) b.loc = 'TRANSFER'; });
   }
-  const p = _shipPallets.find(x=>x.id===pid); if(!p) return false;
   p.lines.push(line);
-  await trSaveDraftLines();
+  /* SHIPSAFE-1 - 저장이 거부되면(낡은 창 등) **박스를 원래 bin 으로 되돌린다.**
+     예전에는 이 결과를 버려서, 재고는 선반에서 빠졌는데 트럭에는 안 적힌 박스가 남았다. */
+  const _ok = await trSaveDraftLines();
+  if(!_ok){
+    try{ p.lines.pop(); }catch(e){}
+    if(staged.length) await trUnstageBoxes(staged, String(line.bin||''));
+    return false;
+  }
   return true;
 }
 // 여러 line 을 한 번에 처리 — 예약 PATCH 와 draft 저장을 묶어서 왕복을 line 수만큼 하지 않는다
@@ -41095,8 +41137,24 @@ async function _trAddLinesBulk(items){
     bxStore.forEach(b=>{ if(idSet.has(b.id)) b.loc = 'TRANSFER'; });
   }
   let ok = 0;
-  items.forEach(it=>{ const p = _shipPallets.find(x=>x.id===it.pid); if(p){ p.lines.push(it.line); ok++; } });
-  await trSaveDraftLines();
+  const _put = [];                                   /* SHIPSAFE-1 - 되돌리려면 무엇을 넣었는지 알아야 한다 */
+  items.forEach(it=>{ const p = _shipPallets.find(x=>x.id===it.pid); if(p){ p.lines.push(it.line); _put.push({p:p, line:it.line}); ok++; } });
+  /* SHIPSAFE-1 - 저장이 거부되면 넣은 줄을 다 빼고, 박스를 **각자 원래 bin 으로** 되돌린다.
+     한 번에 여러 bin 에서 왔으니 bin 별로 묶어서 돌린다. */
+  const _ok = await trSaveDraftLines();
+  if(!_ok){
+    _put.slice().reverse().forEach(x=>{
+      try{ const i = x.p.lines.indexOf(x.line); if(i >= 0) x.p.lines.splice(i, 1); }catch(e){}
+    });
+    const byBin = {};
+    items.forEach(it=>{
+      const l = it.line; if(!l || l.is_manual) return;
+      const k = String(l.bin||'').trim().toUpperCase();
+      (byBin[k] = byBin[k] || []).push.apply(byBin[k], (l.ids||[]));
+    });
+    for(const k of Object.keys(byBin)) await trUnstageBoxes(byBin[k], k);
+    return 0;
+  }
   return ok;
 }
 /* ═══ DELLINE-1 - 이미 선반으로 돌아간 박스를 다시 옮기지 않는다 ═══
@@ -43612,9 +43670,25 @@ function trLkCustMatch(){
   try{ return String(localStorage.getItem('tr_lk_cust_match')||'').trim().toUpperCase() || 'MELMARC'; }
   catch(e){ return 'MELMARC'; }
 }
-async function trOrderShipOpen(){
+/* OSDIRECT-1 - 지금 어느 단추로 연 목록인가. '' = Ship-from-CA 쪽, 'direct' = Direct-from-SC 쪽.
+   ⭐ 판정(trOrderShipEligible)은 하나다 - 여기서는 **보여줄 것만** 가른다. */
+function oshipSplit(list, mode){
+  const want = (String(mode||'') === 'direct');
+  return (list||[]).filter(function(r){
+    let d = false;
+    try{ d = !!recDirectSC(r); }catch(e){}
+    return d === want;
+  });
+}
+/* OSDIRECT-1 - 그 단추가 몇 건을 들고 있나 (단추 글자에 괄호로 붙는다) */
+function oshipCount(mode){
+  try{ return oshipSplit(trOrderShipEligible(), mode).length; }catch(e){ return 0; }
+}
+async function trOrderShipOpen(mode){
   await _trEnsureRow();   // 트럭 행 생성(저장되게)
-  const elig = trOrderShipEligible();
+  /* OSDIRECT-1 - 단추마다 제 목록을 본다. 판정은 아래 한 번만 돈다 */
+  window._oshipMode = (String(mode||'') === 'direct') ? 'direct' : '';
+  const elig = oshipSplit(trOrderShipEligible(), window._oshipMode);
   let packMap={};
   if(elig.length){
     try{
@@ -43656,8 +43730,10 @@ async function trOrderShipOpen(){
     </label>`;
   }).join('') : (trOrderShipToCust(_shipRoute)
       ? `<div style="color:#94a3b8;font-size:12.5px;padding:14px;text-align:center;">No ${esc(trLkCustMatch())} order is waiting with SC boxes. (Orders already marked Complete are not listed.)</div>`
-      : '<div style="color:#94a3b8;font-size:12.5px;padding:14px;text-align:center;">No order is waiting with SC boxes. Turn on 🚚 Ship from CA on an order (with SC boxes packed) first'
-        + (trOrderShipWants().lk ? ', or pack the SC part of a ' + esc(trLkCustMatch()) + ' order' : '') + '.</div>');
+      : (window._oshipMode === 'direct'
+        ? '<div style="color:#94a3b8;font-size:12.5px;padding:14px;text-align:center;">No order is marked 🏠 <b>Direct ship from SC</b> yet. Turn it on with the 🏠 button on the order row — the order needs SC boxes and must not be Complete.</div>'
+        : '<div style="color:#94a3b8;font-size:12.5px;padding:14px;text-align:center;">No order is waiting with SC boxes. Turn on 🚚 Ship from CA on an order (with SC boxes packed) first'
+        + (trOrderShipWants().lk ? ', or pack the SC part of a ' + esc(trLkCustMatch()) + ' order' : '') + '.</div>'));
   /* MSORDER-v1 - 「새 팔레트」도 정차지마다 따로 준다 - 안 그러면 마지막 정차지로 생긴다
      MSORD2-v1 - 차례도 카드와 같게 (`trPalRenderOrder`). ⚠ value 는 저장 이름표 그대로 */
   /* OSCAONLY-1 - 목록은 체크 상태에 따라 다시 그려진다 (`oshipSyncPal`). 처음 그림은 아래에서. */
@@ -43669,7 +43745,7 @@ async function trOrderShipOpen(){
              : '<option value="__new__">+ New pallet</option>');
   d.innerHTML=`<div style="background:#fff;border-radius:12px;width:520px;max-width:95vw;max-height:88vh;overflow-y:auto;box-shadow:0 20px 60px rgba(0,0,0,.35);">
     <div style="background:#7b1fa2;color:#fff;padding:12px 16px;font-weight:800;display:flex;justify-content:space-between;align-items:center;">
-      <span>🚚 ${trOrderShipLabel(_shipRoute)} → load on this truck</span>
+      <span>${window._oshipMode === 'direct' ? '🏠 Direct-from-SC Orders' : '🚚 ' + trOrderShipLabel(_shipRoute)} → load on this truck</span>
       <button onclick="document.getElementById('modal-oship').remove()" style="background:none;border:none;color:#fff;font-size:18px;cursor:pointer;">✕</button></div>
     <div style="padding:14px 16px;">
       <div style="font-size:11.5px;color:#64748b;margin-bottom:10px;">${trOrderShipToCust(_shipRoute)
