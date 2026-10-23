@@ -314,7 +314,7 @@ body.po-dragging{user-select:none;}
   </span>
   <select id="lang-sel" onchange="setLang(this.value)" style="font-size:11px;padding:3px 6px;border-radius:5px;border:none;background:#1d3f66;color:#fff;"><option value="ko">한국어</option><option value="en">English</option><option value="es">Español</option></select>
   <button id="wide-btn" class="btn btn-sm" onclick="toggleWide()" title="화면 넓게 / 좁게 — 기본은 넓게 (이 브라우저에만 저장돼)" style="padding:2px 8px;font-size:10px;background:#1d3f66;color:#cfe0f2;border-color:#2b5384;">↔ Wide</button>
-  <span id="app-ver" style="font-size:10px;color:#9fb8d4;">v1319</span>
+  <span id="app-ver" style="font-size:10px;color:#9fb8d4;">v1320</span>
 </div>
 <script>
 // ↔ 넓게 보기 — 브라우저마다 따로 저장 (v793)
@@ -39573,10 +39573,15 @@ async function trBuilderOpen(existingId, route){
         </div>
       </div>
       <div id="ship-scan"></div>
-      <div style="display:flex;gap:10px;margin-bottom:12px;flex-wrap:wrap;align-items:center;">
+      <div style="margin-bottom:12px;display:flex;flex-direction:column;gap:8px;">
+        <!-- OSBAR-1 1줄 - 비어 있는 것을 **더하는** 단추 -->
+        <div style="display:flex;gap:10px;flex-wrap:wrap;align-items:center;">
+          <button class="btn" onclick="trManualLine()">+ Add manual line</button>
+          <span id="ship-palbtns" style="display:inline-flex;gap:10px;flex-wrap:wrap;">${trSrcAutoPallet(_shipRoute)?'':trAddPalletBtns()}</span>
+        </div>
+        <!-- OSBAR-1 2줄 - 물건.오더를 **싣는** 단추 -->
+        <div style="display:flex;gap:10px;flex-wrap:wrap;align-items:center;">
         <button class="btn" style="background:#1565c0;color:#fff;border-color:#1565c0;" onclick="trScOpen()">${trSrcIsSpec(_shipRoute)?('🏭 Pick from '+trKindShort(trSrcKind(_shipRoute))):('📦 Pick from '+trSrcKind(_shipRoute)+' Inventory')}</button>
-        <button class="btn" onclick="trManualLine()">+ Add manual line</button>
-        <span id="ship-palbtns" style="display:inline-flex;gap:10px;flex-wrap:wrap;">${trSrcAutoPallet(_shipRoute)?'':trAddPalletBtns()}</span>
         ${trOrderShipOK(_shipRoute)?`<button class="btn" style="background:#7b1fa2;color:#fff;border-color:#7b1fa2;" onclick="trOrderShipOpen()" title="${trOrderShipToCust(_shipRoute)?'Load a customer order onto this truck. It rides as designated — never added to stock — and you still press ✅ Complete on the order itself when the truck takes it.':'Load Ship-from-CA order boxes onto this truck — they ride as designated and stay routed to their own order at '+esc(trKindShort(trDstKind(_shipRoute)))+'; they are never added to its stock'}">🚚 ${trOrderShipLabel(_shipRoute)}</button>`:''}
         ${(trOrderShipOK(_shipRoute) && trIsMultiRoute(_shipRoute)) ? (function(){
           /* OSDIRECT-1 - [stated] 하윤: "ship from CA orders처럼 direct ship from SC 버튼을
@@ -39585,6 +39590,7 @@ async function trBuilderOpen(existingId, route){
           return `<button class="btn" style="background:${_dn ? '#be123c' : '#fff'};color:${_dn ? '#fff' : '#be123c'};border-color:#be123c;font-weight:${_dn ? '800' : '600'};" onclick="trOrderShipOpen('direct')" title="Load orders marked \u{1F3E0} Direct ship from SC. They ride straight from SC to the customer\u2019s own address \u2014 never added to stock. If this truck does not stop there yet, loading one adds the stop.">\u{1F3E0} Direct-from-SC Orders${_dn ? (' (' + _dn + ')') : ''}</button>`;
         })() : ''}
         <span style="margin-left:auto;font-size:11px;color:var(--text2);">📦 <b id="ship-pallet-count">0</b> pallet(s) · <b id="ship-line-count">0</b> line(s) · <b id="ship-box-count">0</b> box(es) · <b id="ship-pcs-count">0</b> pcs</span>
+        </div>
       </div>
       <div id="ship-pallets" style="display:flex;flex-direction:column;gap:10px;"></div>
       <div id="ship-orderbox"></div>
@@ -43557,11 +43563,26 @@ function trOrderShipWants(route){
 /* DIRECTSC-1 - 이 오더가 이 트럭의 어느 거래처 정차지로 가나. 없으면 빈 글자.
    ⭐ osOrderKind 와 **같은 견줌**(custKey) 을 쓴다 - 다르면 실을 수는 있는데
      팔레트가 엉뚱한 정차지에 붙는다. */
+/* OSDSTOP-2 - ⭐⭐⭐ 트럭이 서는 곳은 **물건이 가는 주소**다, 송장의 거래처 이름이 아니다.
+   [stated] 하윤: "거래처가 보내달라는 곳이 나와야지"
+   실측: Liquid Graphics 오더 넷의 ship-to 는 전부 **United Wash and Dye**(염색집)다.
+   한 거래처가 염색집.창고.매장으로 따로 보내달라고 하는 것이 보통이다.
+   ⚠ 「보낼 곳」을 읽는 자리는 여기 하나뿐이어야 한다 - 두 군데서 읽으면 어긋난다. */
+function osShipToName(rec){
+  const m = (rec && rec.meta) || {};
+  return String(m.shipName || m.cust || '').trim();
+}
+function osShipToKey(rec){
+  const n = osShipToName(rec);
+  return n ? trStopCustKey(n) : '';
+}
 function trCuStopForOrder(rec, wants){
   try{
     const list = (wants && wants.cu) || [];
     if(!list.length || !recDirectSC(rec)) return '';
-    const c = custKey(String((rec.meta||{}).cust||''));
+    /* OSDSTOP-2 - 예전에는 `meta.cust` 로 견뎌서 **이미 있는 정차지를 못 찾았다.**
+       그래서 같은 주소에 정차지가 둘 생길 뻔했다. */
+    const c = custKey(osShipToName(rec));
     if(!c) return '';
     return list.find(function(k2){ return custKey(trStopCustName(k2)) === c; }) || '';
   }catch(e){ return ''; }
@@ -43616,7 +43637,7 @@ function trOrderShipEligible(){
        「Direct from SC 를 켰는데 왜 안 보이지」 가 됐다. */
     if(trIsMultiRoute(_shipRoute) && recDirectSC(r)){
       if(((r.pl||{}).SC||{})._completed) return false;
-      const _nk = trStopCustKey(String((r.meta||{}).cust||''));
+      const _nk = osShipToKey(r);          /* OSDSTOP-2 - 보낼 곳(ship-to) 으로 */
       if(_nk && _nk !== 'CU:'){
         _kind[r.base] = _nk;
         _newStop[r.base] = 1;
@@ -43722,7 +43743,7 @@ async function trOrderShipOpen(mode){
     const nPal=Math.max(1, (packMap[r.base]||{}).pals||1);
     return `<label style="display:flex;align-items:center;gap:10px;padding:9px 11px;border:1px solid #e5e7eb;border-radius:9px;margin-bottom:7px;cursor:pointer;">
       <input type="checkbox" class="oship-cb" onchange="oshipSyncPal()" data-base="${esc(r.base)}" data-cust="${esc(String(r.meta.cust||'').replace(/"/g,''))}" data-po="${esc(String(r.meta.po||'').replace(/"/g,''))}" data-boxes="${bx}" data-pcs="${scPcs}" checked style="width:16px;height:16px;">
-      <div style="flex:1;min-width:0;"><div style="font-weight:800;color:#0f2a4a;">${esc(r.meta.cust||'—')}${(_msOn && (window._oshipKind||{})[r.base]) ? ` <span style="font-size:10px;font-weight:800;color:#6d28d9;background:#f3e8ff;border-radius:20px;padding:2px 7px;vertical-align:1px;" title="Belongs at the ${esc(trStopName((window._oshipKind||{})[r.base]))} stop">${esc(trStopPfx((window._oshipKind||{})[r.base]))}</span>` : ''}${(window._oshipNewStop||{})[r.base] ? ` <span style="font-size:10px;font-weight:800;color:#166534;background:#dcfce7;border-radius:20px;padding:2px 7px;vertical-align:1px;" title="This truck does not stop at this customer yet \u2014 loading this order adds the stop, using the ship-to address on the order.">+ new stop</span>` : ''}</div><div style="font-size:11px;color:#64748b;">PO ${esc(r.meta.po||'—')} · SC ${scPcs.toLocaleString()} pcs</div></div>
+      <div style="flex:1;min-width:0;"><div style="font-weight:800;color:#0f2a4a;">${esc(r.meta.cust||'—')}${(_msOn && (window._oshipKind||{})[r.base]) ? ` <span style="font-size:10px;font-weight:800;color:#6d28d9;background:#f3e8ff;border-radius:20px;padding:2px 7px;vertical-align:1px;" title="Belongs at the ${esc(trStopName((window._oshipKind||{})[r.base]))} stop">${esc(trStopPfx((window._oshipKind||{})[r.base]))}</span>` : ''}${(window._oshipNewStop||{})[r.base] ? ` <span style="font-size:10px;font-weight:800;color:#166534;background:#dcfce7;border-radius:20px;padding:2px 7px;vertical-align:1px;white-space:nowrap;" title="This truck does not stop at this customer yet \u2014 loading this order adds the stop, using the ship-to address on the order.">+ new stop</span>` : ''}</div><div style="font-size:11px;color:#64748b;">PO ${esc(r.meta.po||'—')} · SC ${scPcs.toLocaleString()} pcs</div></div>
       ${packed?`<span style="font-size:11px;font-weight:800;color:#16a34a;background:#dcfce7;border-radius:20px;padding:3px 10px;">📦 ${bx} box</span>`:`<span style="font-size:11px;font-weight:800;color:#b45309;background:#fff7ed;border-radius:20px;padding:3px 10px;" title="Estimated from pcs — SC hasn't packed boxes yet. Edit on the pallet if needed.">≈ ${bx} box (est)</span>`}
       <span style="display:flex;align-items:center;gap:4px;font-size:10.5px;font-weight:800;color:#7b1fa2;white-space:nowrap;" title="How many pallets this order takes up. 2 or more gives this order its own pallets and splits the boxes between them.">on
         <input type="number" class="oship-np" min="1" max="20" value="${nPal}" onclick="event.stopPropagation();" style="width:48px;font-size:13px;padding:3px 4px;text-align:center;font-weight:800;border:1.5px solid #d8b4fe;border-radius:6px;">
@@ -43751,7 +43772,10 @@ async function trOrderShipOpen(mode){
       <div style="font-size:11.5px;color:#64748b;margin-bottom:10px;">${trOrderShipToCust(_shipRoute)
         ? 'Orders packed in SC that go out on <b>this</b> truck. They ride as <b>designated</b> — <b>never added to stock</b> at the far end, because on arrival they belong to the customer.'
           + '<br><span style="color:#b45309;font-weight:700;">✅ This does NOT mark them shipped.</span> Press <b>✅ Complete</b> on the order\'s SC Packing List when the truck actually takes it — that is what emails the customer, opens the box QR and starts the invoice.'
-        : 'These orders are packed in SC and flagged to ship from CA. Check the ones on <b>this</b> truck — they ride as <b>designated</b>: routed to their own order at <b>' + esc(trKindShort(trDstKind(_shipRoute))) + '</b>, never added to its stock.'}</div>
+        : (window._oshipMode === 'direct'
+          /* OSDSTOP-1 - Direct 갈래는 CA 를 안 거친다. 다른 갈래의 말을 쓰면 안 된다. */
+          ? 'These orders are packed in SC and marked 🏠 <b>Direct ship from SC</b>. They ride straight from SC to the customer’s own address and come off at <b>that</b> stop — never into stock. If this truck does not stop there yet, loading one <b>adds the stop</b> from the ship-to on the order.'
+          : 'These orders are packed in SC and flagged to ship from CA. Check the ones on <b>this</b> truck — they ride as <b>designated</b>: routed to their own order at <b>' + esc(trKindShort(trDstKind(_shipRoute))) + '</b>, never added to its stock.')}</div>
       ${(_msOn && trOrderShipWants().ca && trOrderShipWants().lk)
         ? `<div style="font-size:11.5px;color:#6d28d9;background:#faf5ff;border:1px solid #ddd6fe;border-radius:8px;padding:8px 10px;margin-bottom:10px;">📍 This truck makes several stops. <b>The pallet decides where an order comes off</b> — put ${esc(trLkCustMatch())} orders on an <b>MC</b> pallet and Ship-from-CA orders on a <b>CA</b> pallet.</div>`
         : ''}
@@ -43796,14 +43820,6 @@ async function trOrderShipAdd(){
       + '\nand must not share one document.'
       + '\n\n→ Turn 🚚 Ships from CA OFF on those orders first.\n\nLoad them anyway?')) return;
   }
-  let pal=String((document.getElementById('oship-pallet')||{}).value||'');
-  if(pal.indexOf('__new__')===0){
-    /* MSORDER-v1 - `__new__2` 면 정차지 2 짜리 팔레트를 만든다 */
-    const _ni = pal.slice(7);
-    await trAddPallet(_ni==='' ? undefined : Number(_ni));
-    pal=_shipPallets[_shipPallets.length-1].label;
-  }
-  if(!pal){ pal=(_shipPallets[0]||{}).label||'Pallet 1'; }
   _shipMeta=_shipMeta||{}; _shipMeta.orderShip=_shipMeta.orderShip||[];
   /* DIRECTSC-2 - 고른 오더 중에 이 트럭이 아직 서지 않는 거래처가 있으면 **여기서 정차지를 만든다.**
      [stated] 하윤: "그냥 우리가 ship from CA처럼 direct from SC도 우리가 팔렛에 추가할수있어야지"
@@ -43816,7 +43832,7 @@ async function trOrderShipAdd(){
       const b2 = c.getAttribute('data-base');
       const r2 = (savedCache||[]).find(function(x){ return x.base === b2; });
       if(!r2 || !recDirectSC(r2)) return;
-      const k2 = trStopCustKey(String((r2.meta||{}).cust||''));
+      const k2 = osShipToKey(r2);          /* OSDSTOP-2 - 보낼 곳(ship-to) 으로 */
       if(!k2 || k2 === 'CU:' || _have.indexOf(k2) >= 0) return;
       if(_need.indexOf(k2) < 0) _need.push(k2);
       _shipMeta.stopAddr = _shipMeta.stopAddr || {};
@@ -43839,6 +43855,22 @@ async function trOrderShipAdd(){
       showToast('\u{1F3E0} Stop added \u2014 ' + _need.map(function(k2){ return trStopCustName(k2); }).join(' \u00b7 '));
     }
   }
+  /* OSDSTOP-1 - ⭐ 팔레트는 **정차지를 만든 다음에** 만든다. 거꾸로 하면 새 팔레트가
+     아직 없는 정차지를 못 가리킨다 (예전엔 이 줄들이 위에 있었다). */
+  let pal=String((document.getElementById('oship-pallet')||{}).value||'');
+  if(pal.indexOf('__newk__')===0){
+    /* OSDSTOP-1 - 방금 생긴 거래처 정차지. 번호가 아니라 **열쇠**로 찾는다 */
+    const _sk = pal.slice(8);
+    const _si = trStopsOf({meta:_shipMeta}).indexOf(_sk);
+    await trAddPallet(_si >= 0 ? _si : undefined);
+    pal=_shipPallets[_shipPallets.length-1].label;
+  } else if(pal.indexOf('__new__')===0){
+    /* MSORDER-v1 - `__new__2` 면 정차지 2 짜리 팔레트를 만든다 */
+    const _ni = pal.slice(7);
+    await trAddPallet(_ni==='' ? undefined : Number(_ni));
+    pal=_shipPallets[_shipPallets.length-1].label;
+  }
+  if(!pal){ pal=(_shipPallets[0]||{}).label||'Pallet 1'; }
   /* ═══ OSSPLIT-1 - 오더 하나가 팔레트 여러 장을 먹는다 ═══
      한 장이면 예전 그대로 위에서 고른 팔레트에 얹는다. 두 장 이상이면 **그 오더 몫으로**
      새 팔레트를 그만큼 만들고 박스·장수를 고르게 나눈다. 정차지는 그 오더가 내릴 곳으로
@@ -43946,14 +43978,19 @@ function oshipPalOptsHtml(){
   const st = trIsMultiRoute(_shipRoute) ? trStopsOf({meta:_shipMeta}) : [];
   const on = st.length >= 2;
   const ks = new Set();
+  const pend = [];   /* OSDSTOP-1 - 이 트럭에 **아직 없는** 정차지 (실으면 거기서 생긴다) */
   try{ document.querySelectorAll('#modal-oship .oship-cb:checked').forEach(c=>{
-    const k = osOrderKind(c.getAttribute('data-base')); if(k) ks.add(k); }); }catch(e){}
+    const k = osOrderKind(c.getAttribute('data-base'));
+    if(k){ ks.add(k); if(st.indexOf(k) < 0 && pend.indexOf(k) < 0) pend.push(k); } }); }catch(e){}
   const okKind = k => !on || !ks.size || ks.has(k);
   let opts = trPalRenderOrder()
     .filter(p=>{ if(!on) return true; const k = osPalKind(p.label); return !k || okKind(k); })
     .map(p=>`<option value="${esc(p.label)}">${esc(on ? trPalDisp(_D, p.label) : p.label)}</option>`).join('');
   opts += on ? st.map((k,i)=> okKind(k) ? `<option value="__new__${i}">+ New ${esc(trStopName(k))} pallet</option>` : '').join('')
-             : '<option value="__new__">+ New pallet</option>';
+             : (pend.length ? '' : '<option value="__new__">+ New pallet</option>');
+  /* OSDSTOP-1 - 아직 없는 정차지는 **번호가 아니라 열쇠로** 넘긴다. 번호(`__new__2`)는
+     정차지가 생기기 전과 후에 뜻이 달라져서 엉뚱한 문 앞에 붙는다. */
+  opts += pend.map(k=>`<option value="__newk__${esc(k)}">+ New ${esc(trStopName(k))} pallet (new stop)</option>`).join('');
   return opts;
 }
 function oshipSyncPal(){
@@ -43963,9 +44000,22 @@ function oshipSyncPal(){
   if(keep && [...sel.options].some(o=>o.value===keep)) sel.value = keep;
 }
 function osOrderKind(base){
+  /* OSDSTOP-1 - ⭐⭐⭐ 내릴 곳을 정하는 판정은 `trOrderShipEligible` **하나뿐이다.**
+     여기는 그 답(`window._oshipKind`)을 **읽기만** 한다.
+     [stated] 하윤: "direct from SC는 pallet 지정하는데 저렇케 CA가 나오면 안되지"
+     🔴 그전까지 이 함수가 처음부터 다시 판정했고, Direct-from-SC 오더는 그 거래처
+        정차지가 **아직 없어서** 못 찾고 맨 끝의 'CA' 로 떨어졌다. 창이 CA 팔레트를
+        보여준 것이 그 때문이다. 같은 판정을 두 군데 적으면 반드시 어긋난다. */
+  try{
+    const _k0 = (window._oshipKind || {})[base];
+    if(_k0) return String(_k0);
+  }catch(e){}
   const rec = ((typeof savedCache!=='undefined' && savedCache) || []).find(r=>r && r.base===base);
   if(!rec) return '';
-  const c = String(((rec.meta)||{}).cust||'').toUpperCase();
+  /* OSDSTOP-2 - `_directSC` 오더는 **보낼 곳(ship-to)** 으로 견준다 (trCuStopForOrder 와 같게).
+     ⚠ 그 밖의 갈래는 예전처럼 거래처 이름으로 - 다른 갈래의 동작을 건드리지 않는다. */
+  let c = String(((rec.meta)||{}).cust||'').toUpperCase();
+  try{ if(recDirectSC(rec)) c = osShipToName(rec).toUpperCase(); }catch(e){}
   /* CUSTOP-1 - 이 트럭에 **그 거래처 집 앞** 정차지가 있으면 거기서 내린다.
      사람이 고를 일이 아니다 - 오더가 답을 안다. */
   try{
