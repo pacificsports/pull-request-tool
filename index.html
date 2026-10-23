@@ -314,7 +314,7 @@ body.po-dragging{user-select:none;}
   </span>
   <select id="lang-sel" onchange="setLang(this.value)" style="font-size:11px;padding:3px 6px;border-radius:5px;border:none;background:#1d3f66;color:#fff;"><option value="ko">한국어</option><option value="en">English</option><option value="es">Español</option></select>
   <button id="wide-btn" class="btn btn-sm" onclick="toggleWide()" title="화면 넓게 / 좁게 — 기본은 넓게 (이 브라우저에만 저장돼)" style="padding:2px 8px;font-size:10px;background:#1d3f66;color:#cfe0f2;border-color:#2b5384;">↔ Wide</button>
-  <span id="app-ver" style="font-size:10px;color:#9fb8d4;">v1314</span>
+  <span id="app-ver" style="font-size:10px;color:#9fb8d4;">v1315</span>
 </div>
 <script>
 // ↔ 넓게 보기 — 브라우저마다 따로 저장 (v793)
@@ -9835,6 +9835,54 @@ async function pcFetchRowFresh(k){
   }catch(e){}
   return null;
 }
+/* POSIB-1 - 낱장 되돌리기에서 형제 오더의 몫을 뺀다.
+   ⚠ 되돌리기(음수) 방향만 줄인다. 더 깎는 쪽(양수)은 손대지 않는다.
+   ⚠ 0 을 넘어 양수로 뒤집지 않는다 - 형제 몫이 더 커도 멈출 뿐이다.
+   ⚠ 같은 판정을 두 군데 적으면 반드시 어긋나므로 여기 한 군데에만 적는다. */
+function pcSibDelta(key, delta, sib){
+  if(!(delta < 0) || !sib || !sib.loose) return delta;
+  const n = Number(sib.loose[key]) || 0;
+  if(!n) return delta;
+  return Math.min(0, delta + n);
+}
+/* POSIB-1 - 같은 PO 번호를 쓰는 **다른 오더**가 요구하는 양.
+   재고 장부 도장은 PO 하나뿐이다 (pr_boxes.out_po = 'PO n' / pr_pcmoves.note = 'PO n ...').
+   그래서 BO 를 갈라내 오더가 두 장이 되면 서로 상대의 물건을 "남는 것" 으로 본다.
+   되돌리기에서 이만큼을 빼 준다. 형제가 없으면 전부 빈 객체라 예전과 똑같이 돈다.
+   ⚠ 읽기만 한다. 아무것도 쓰지 않는다. */
+async function poSiblingNeed(poN, myBase){
+  const out = { full:{}, loose:{}, bases:[] };
+  const p = String(poN||'').trim();
+  if(!p) return out;
+  /* 내가 누군지 모르면 형제도 가릴 수 없다. 그대로 빈 값을 돌려 **예전 동작**으로 간다.
+     (자기 자신을 형제로 세면 되돌리기가 조용히 전부 막힌다 - 그쪽이 훨씬 나쁘다) */
+  if(!String(myBase||'').trim()) return out;
+  try{
+    const r = await sbFetch('/rest/v1/pr_orders?deleted_at=is.null&select=base,lines&meta->>po=eq.'
+                            + encodeURIComponent(p));
+    if(!r.ok) return out;
+    const rows = await r.json();
+    rows.forEach(o=>{
+      if(String(o.base||'') === String(myBase||'')) return;
+      out.bases.push(String(o.base||''));
+      (o.lines||[]).forEach(L=>{
+        const wh = String(L.wh||'SC').trim().toUpperCase()||'SC';
+        if(wh!=='SC' && wh!=='CA') return;
+        const bc = boxCalc(L);
+        if(bc.full){
+          const k = wh + '|' + bxK(bxStyleFor(L), bxBaseColor(bxColorFor(L)), L.size);
+          out.full[k] = (out.full[k]||0) + bc.full;
+        }
+        if(bc.loose){
+          const k = bxStyleFor(L)+'|'+bxColorFor(L)+'|'+String(L.size||'').trim().toUpperCase()
+                    + (wh==='CA' ? '|CA' : '') + (L.useB ? '|B' : '');
+          out.loose[k] = (out.loose[k]||0) + bc.loose;
+        }
+      });
+    });
+  }catch(e){}
+  return out;
+}
 let _invSyncChain = Promise.resolve();
 /* ═══ 저장 전 재고 미리보기 (v1100) ═══
    [stated] 하윤: "pc room 이랑 full box 지정을 해서 save했는데 이거를 바꿔야 할때
@@ -9855,6 +9903,9 @@ async function invPlanOnSave(rec, existing){
     const r = await sbFetch('/rest/v1/pr_boxes?select=id,style,color,size,pcs,loc,wh&status=eq.OUT&out_po=eq.'+encodeURIComponent(po));
     if(r.ok) outRows = await r.json();
   }catch(e){}
+  /* POSIB-1 - 같은 PO 를 쓰는 형제 오더가 쓰고 있는 몫 (되돌리기에서만 뺀다) */
+  const sib = await poSiblingNeed(poN, rec.base);
+  out.sib = { bases: sib.bases.slice(), boxes: 0, pcs: 0 };
   const need = {};
   (rec.lines||[]).forEach(L=>{
     const wh = String(L.wh||'SC').trim().toUpperCase()||'SC';
@@ -9894,7 +9945,11 @@ async function invPlanOnSave(rec, existing){
                        n:diff-take.length });
   });
   Object.keys(have).forEach(key=>{
-    const excess = have[key].length - (need[key] ? need[key].n : 0);
+    /* POSIB-1 - 형제 오더가 쓰는 박스는 "남는 것" 이 아니다 */
+    const _sibN = Number(sib.full[key]) || 0;
+    const _mine = need[key] ? need[key].n : 0;
+    if(_sibN) out.sib.boxes += Math.max(0, Math.min(_sibN, have[key].length - _mine));
+    const excess = have[key].length - _mine - _sibN;
     if(excess <= 0) return;
     const back = have[key].slice(-excess);
     const b0 = back[0]||{};
@@ -9948,7 +10003,12 @@ async function invPlanOnSave(rec, existing){
     const isB = parts.includes('B');
     const whv = parts.includes('CA') ? 'CA' : 'SC';
     const baseline = isB ? (prevSnap[key]||0) : (poFetched ? alreadyDeducted(st,col,sz,whv) : (prevSnap[key]||0));
-    const delta = (cur[key]||0) - baseline;
+    let delta = (cur[key]||0) - baseline;
+    /* POSIB-1 - 되돌리려는 낱장 중 형제 오더가 쓰고 있는 몫은 되돌리지 않는다 (되돌리기 방향만) */
+    if(delta < 0){
+      const _sibL = Number(sib.loose[key]) || 0;
+      if(_sibL){ const kept = Math.min(_sibL, -delta); out.sib.pcs += kept; delta += kept; }
+    }
     if(!delta) continue;
     let row = null;
     try{ row = await pcFetchRowFresh(pcKey(st, col, whv)); }catch(e){}
@@ -10021,6 +10081,18 @@ function openSavePlan(info){
         <table width="100%" cellpadding="0" cellspacing="0" style="border-collapse:collapse;font-size:12.5px;border:1px solid #e2e8f0;border-radius:6px;overflow:hidden;">${body}</table>
       </div>` : '';
 
+    /* POSIB-1 - 같은 PO 를 쓰는 다른 오더가 있으면 그 사실과 지켜 준 수량을 적는다.
+       이 줄이 없으면 "왜 CA 가 목록에 없지" 를 아무도 알 수 없다. */
+    const sibNote = (function(){
+      const sb = p && p.sib; if(!sb || !(sb.bases||[]).length) return '';
+      const kept = [];
+      if(sb.boxes) kept.push('<b>' + nm(sb.boxes) + '</b> full box(es)');
+      if(sb.pcs) kept.push('<b>' + nm(sb.pcs) + '</b> loose pcs');
+      return `<div style="background:#eff6ff;border:1.5px solid #93c5fd;border-radius:7px;padding:9px 13px;margin-bottom:13px;font-size:12.5px;color:#1e3a8a;line-height:1.6;">
+        \u24d8 This PO is shared with <b>${sb.bases.map(esc2).join('</b>, <b>')}</b> \u2014 one stock ledger, two orders.
+        ${kept.length ? ('What that order still needs is <b>left alone</b>: ' + kept.join(' and ') + ' are not put back here.')
+                      : 'Nothing of that order is touched here.'}</div>`;
+    })();
     const nothing = p && !p.full.length && !p.pc.length;
     const div = document.createElement('div');
     div.id = 'modal-saveplan';
@@ -10032,6 +10104,7 @@ function openSavePlan(info){
       </div>
       <div style="overflow-y:auto;flex:1;padding:15px 18px;background:#f8fafc;">
         ${pulled ? `<div style="background:#fff7ed;border:1.5px solid #fdba74;border-radius:7px;padding:10px 13px;margin-bottom:13px;font-size:12.5px;color:#7c2d12;line-height:1.6;">${pulled}</div>` : ''}
+        ${sibNote}
         ${(invRows||shortRows) ? `<div style="background:#fffbeb;border:1.5px solid #f59e0b;border-radius:7px;padding:10px 13px;margin-bottom:13px;">${invRows}${shortRows}</div>` : ''}
         ${box('FULL BOX', fullRows, '')}
         ${box('PC ROOM \u2014 loose pieces', pcRows, '')}
@@ -10072,6 +10145,8 @@ async function _invSyncOnSaveInner(rec){
        저장이 끝나면 Put Back Request 로 뽑아 준다. (v931) */
     const pb = { full: [], loose: [] };
     // ── 풀박스: 라인별 필요 수량 vs 이미 차감된 수량 ──
+    /* POSIB-1 - 같은 PO 를 쓰는 형제 오더의 몫. 되돌리기에서만 뺀다 (미리보기와 같은 함수) */
+    const sib = await poSiblingNeed(poN, rec.base);
     const need = {};
     (rec.lines||[]).forEach(L=>{
       const wh = String(L.wh||'SC').trim().toUpperCase()||'SC';
@@ -10115,7 +10190,8 @@ async function _invSyncOnSaveInner(rec){
       if(take.length < diff) shortMsg.push('['+wh+'] '+st+' '+String(L.color).toUpperCase()+' '+String(L.size).toUpperCase()+' short '+(diff-take.length));
     }
     for(const key of Object.keys(have)){
-      const excess = have[key].length - (need[key] ? need[key].n : 0);
+      /* POSIB-1 - 형제 오더가 쓰는 박스는 돌려놓지 않는다 */
+      const excess = have[key].length - (need[key] ? need[key].n : 0) - (Number(sib.full[key]) || 0);
       if(excess <= 0) continue;
       const back = have[key].slice(-excess);
       await bxPatch(back.map(b=>b.id), {status:'IN', out_at:null, out_by:null, out_po:null});
@@ -10179,7 +10255,7 @@ async function _invSyncOnSaveInner(rec){
       const p2 = k2.split('|');
       const isB2 = p2.includes('B'), wh2 = p2.includes('CA') ? 'CA' : 'SC';
       const b2 = isB2 ? (prev[k2]||0) : (poFetched ? alreadyDeducted(p2[0], p2[1], p2[2], wh2) : (prev[k2]||0));
-      _dlt[k2] = (cur[k2]||0) - b2;
+      _dlt[k2] = pcSibDelta(k2, (cur[k2]||0) - b2, sib);   /* POSIB-1 */
     });
     const _vrMoved = (st2, col2, sz2, wh2, isB2) => {
       const me = _vrBare(col2);
@@ -10219,7 +10295,7 @@ async function _invSyncOnSaveInner(rec){
         const whv = parts.includes('CA') ? 'CA' : 'SC';
         // baseline: A-grade는 DB 기준 이미-차감량(중복 방지), B-grade는 기존 스냅샷 유지. DB 조회 실패 시 스냅샷 폴백.
         const baseline = isB ? (prev[key]||0) : (poFetched ? alreadyDeducted(st,col,sz,whv) : (prev[key]||0));
-        const delta = (cur[key]||0) - baseline;
+        const delta = pcSibDelta(key, (cur[key]||0) - baseline, sib);   /* POSIB-1 */
         if(!delta) continue;
         const k = pcKey(st, col, whv);
         let row = await pcFetchRowFresh(k) || pcStore.find(x=>x.k===k);
