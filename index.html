@@ -314,7 +314,7 @@ body.po-dragging{user-select:none;}
   </span>
   <select id="lang-sel" onchange="setLang(this.value)" style="font-size:11px;padding:3px 6px;border-radius:5px;border:none;background:#1d3f66;color:#fff;"><option value="ko">한국어</option><option value="en">English</option><option value="es">Español</option></select>
   <button id="wide-btn" class="btn btn-sm" onclick="toggleWide()" title="화면 넓게 / 좁게 — 기본은 넓게 (이 브라우저에만 저장돼)" style="padding:2px 8px;font-size:10px;background:#1d3f66;color:#cfe0f2;border-color:#2b5384;">↔ Wide</button>
-  <span id="app-ver" style="font-size:10px;color:#9fb8d4;">v1317</span>
+  <span id="app-ver" style="font-size:10px;color:#9fb8d4;">v1318</span>
 </div>
 <script>
 // ↔ 넓게 보기 — 브라우저마다 따로 저장 (v793)
@@ -43531,6 +43531,7 @@ function trOrderShipEligible(){
   /* MSORDER-v1 - multi 는 CA 갈래와 LK 갈래가 **섞일 수 있다** */
   const _want = trOrderShipWants();
   const _kind = {};
+  const _newStop = {};        /* DIRECTSC-2 - 실으면 정차지가 새로 생기는 오더 */
   let _oshipHid = 0;
   const out = (savedCache||[]).filter(r=>{
     if(cur.has(r.base)) return false;
@@ -43552,6 +43553,18 @@ function trOrderShipEligible(){
       _kind[r.base] = _cu;
       return true;
     }
+    /* DIRECTSC-2 - 정차지가 아직 없어도 **목록에는 나온다.** 실으면 그때 정차지가 생긴다
+       (trOrderShipAdd 가 그 오더의 ship-to 로 만든다). 예전에는 여기서 말없이 빠져서
+       「Direct from SC 를 켰는데 왜 안 보이지」 가 됐다. */
+    if(trIsMultiRoute(_shipRoute) && recDirectSC(r)){
+      if(((r.pl||{}).SC||{})._completed) return false;
+      const _nk = trStopCustKey(String((r.meta||{}).cust||''));
+      if(_nk && _nk !== 'CU:'){
+        _kind[r.base] = _nk;
+        _newStop[r.base] = 1;
+        return true;
+      }
+    }
     if(!_want.ca){
       /* [stated] "3rd party (CA)로 가는 오더는 MELMARC 오더 밖에 없으니까" (v1081).
          이 트럭은 그 거래처 문 앞으로만 간다 — 다른 거래처 오더를 실으면 엉뚱한 곳에
@@ -43565,7 +43578,7 @@ function trOrderShipEligible(){
     _kind[r.base] = 'CA';
     return true;
   });
-  try{ window._oshipHidden = _oshipHid; window._oshipKind = _kind; }catch(e){}
+  try{ window._oshipHidden = _oshipHid; window._oshipKind = _kind; window._oshipNewStop = _newStop; }catch(e){}
   return out;
 }
 /* 이 트럭이 거래처 문 앞으로 가나 (= 실린 오더가 도착하면 거래처 물건이 되나)
@@ -43635,7 +43648,7 @@ async function trOrderShipOpen(){
     const nPal=Math.max(1, (packMap[r.base]||{}).pals||1);
     return `<label style="display:flex;align-items:center;gap:10px;padding:9px 11px;border:1px solid #e5e7eb;border-radius:9px;margin-bottom:7px;cursor:pointer;">
       <input type="checkbox" class="oship-cb" onchange="oshipSyncPal()" data-base="${esc(r.base)}" data-cust="${esc(String(r.meta.cust||'').replace(/"/g,''))}" data-po="${esc(String(r.meta.po||'').replace(/"/g,''))}" data-boxes="${bx}" data-pcs="${scPcs}" checked style="width:16px;height:16px;">
-      <div style="flex:1;min-width:0;"><div style="font-weight:800;color:#0f2a4a;">${esc(r.meta.cust||'—')}${(_msOn && (window._oshipKind||{})[r.base]) ? ` <span style="font-size:10px;font-weight:800;color:#6d28d9;background:#f3e8ff;border-radius:20px;padding:2px 7px;vertical-align:1px;" title="Belongs at the ${esc(trStopName((window._oshipKind||{})[r.base]))} stop">${esc(trStopPfx((window._oshipKind||{})[r.base]))}</span>` : ''}</div><div style="font-size:11px;color:#64748b;">PO ${esc(r.meta.po||'—')} · SC ${scPcs.toLocaleString()} pcs</div></div>
+      <div style="flex:1;min-width:0;"><div style="font-weight:800;color:#0f2a4a;">${esc(r.meta.cust||'—')}${(_msOn && (window._oshipKind||{})[r.base]) ? ` <span style="font-size:10px;font-weight:800;color:#6d28d9;background:#f3e8ff;border-radius:20px;padding:2px 7px;vertical-align:1px;" title="Belongs at the ${esc(trStopName((window._oshipKind||{})[r.base]))} stop">${esc(trStopPfx((window._oshipKind||{})[r.base]))}</span>` : ''}${(window._oshipNewStop||{})[r.base] ? ` <span style="font-size:10px;font-weight:800;color:#166534;background:#dcfce7;border-radius:20px;padding:2px 7px;vertical-align:1px;" title="This truck does not stop at this customer yet \u2014 loading this order adds the stop, using the ship-to address on the order.">+ new stop</span>` : ''}</div><div style="font-size:11px;color:#64748b;">PO ${esc(r.meta.po||'—')} · SC ${scPcs.toLocaleString()} pcs</div></div>
       ${packed?`<span style="font-size:11px;font-weight:800;color:#16a34a;background:#dcfce7;border-radius:20px;padding:3px 10px;">📦 ${bx} box</span>`:`<span style="font-size:11px;font-weight:800;color:#b45309;background:#fff7ed;border-radius:20px;padding:3px 10px;" title="Estimated from pcs — SC hasn't packed boxes yet. Edit on the pallet if needed.">≈ ${bx} box (est)</span>`}
       <span style="display:flex;align-items:center;gap:4px;font-size:10.5px;font-weight:800;color:#7b1fa2;white-space:nowrap;" title="How many pallets this order takes up. 2 or more gives this order its own pallets and splits the boxes between them.">on
         <input type="number" class="oship-np" min="1" max="20" value="${nPal}" onclick="event.stopPropagation();" style="width:48px;font-size:13px;padding:3px 4px;text-align:center;font-weight:800;border:1.5px solid #d8b4fe;border-radius:6px;">
@@ -43716,6 +43729,40 @@ async function trOrderShipAdd(){
   }
   if(!pal){ pal=(_shipPallets[0]||{}).label||'Pallet 1'; }
   _shipMeta=_shipMeta||{}; _shipMeta.orderShip=_shipMeta.orderShip||[];
+  /* DIRECTSC-2 - 고른 오더 중에 이 트럭이 아직 서지 않는 거래처가 있으면 **여기서 정차지를 만든다.**
+     [stated] 하윤: "그냥 우리가 ship from CA처럼 direct from SC도 우리가 팔렛에 추가할수있어야지"
+     주소는 그 오더의 ship-to 그대로다 - 거래처 명부에는 안 쓴다 (이 트럭에만 쓰는 주소).
+     \u26a0 4개 한도를 넘으면 조용히 빠뜨리지 않고 멈춘다 - 반쯤 실린 트럭이 더 나쁘다. */
+  if(trIsMultiRoute(_shipRoute)){
+    const _have = trStopsOf({meta:_shipMeta});
+    const _need = [];
+    cbs.forEach(function(c){
+      const b2 = c.getAttribute('data-base');
+      const r2 = (savedCache||[]).find(function(x){ return x.base === b2; });
+      if(!r2 || !recDirectSC(r2)) return;
+      const k2 = trStopCustKey(String((r2.meta||{}).cust||''));
+      if(!k2 || k2 === 'CU:' || _have.indexOf(k2) >= 0) return;
+      if(_need.indexOf(k2) < 0) _need.push(k2);
+      _shipMeta.stopAddr = _shipMeta.stopAddr || {};
+      if(!_shipMeta.stopAddr[k2]){
+        const m2 = r2.meta || {};
+        _shipMeta.stopAddr[k2] = { cust: String(m2.cust||''), name: String(m2.shipName || m2.cust || ''),
+          addr: String(m2.shipAddr||''), city: String(m2.shipCity||''),
+          state: String(m2.shipState||'').toUpperCase(), zip: String(m2.shipZip||''), note: '' };
+      }
+    });
+    if(_need.length){
+      const _room = 4 - _have.length;
+      if(_need.length > _room){
+        alert('\u26a0 One truck carries 4 stops at most.\n\n'
+          + _need.length + ' new customer stop(s) are needed for the orders you picked, but there is room for '
+          + Math.max(0, _room) + '.\n\nLoad fewer customers on this truck, or start another one.');
+        return;
+      }
+      _need.forEach(function(k2){ trStopAdd(k2); });
+      showToast('\u{1F3E0} Stop added \u2014 ' + _need.map(function(k2){ return trStopCustName(k2); }).join(' \u00b7 '));
+    }
+  }
   /* ═══ OSSPLIT-1 - 오더 하나가 팔레트 여러 장을 먹는다 ═══
      한 장이면 예전 그대로 위에서 고른 팔레트에 얹는다. 두 장 이상이면 **그 오더 몫으로**
      새 팔레트를 그만큼 만들고 박스·장수를 고르게 나눈다. 정차지는 그 오더가 내릴 곳으로
@@ -51908,6 +51955,16 @@ function kpiOpenOrders(rushOnly, onlyWh){
       함수를 본다 - 두 군데에 적으면 알약은 「보내기」 인데 눌러보니 다른 데로 가는 일이 생긴다. */
 function cmNextStep(ret){
   const rc = (ret && ret.received) || {};
+  /* CMSTEP-1 - 「받았다」고 확정하기 전에는 다음 일이 **bin 이 아니다.** 넣을 장수가
+     아직 어디에도 없어서 returnStockOpen 이 raStockReady 로 막는다 - 알약이 'needs a bin'
+     이라고 해 놓고 누르면 'Confirm receipt 먼저' 라고 꾸중하는 막다른 길이 됐다.
+     v1294 RSARRIVE-1 이 📦 Return Stock 큐에서 고친 바로 그 판정인데 이 알약만 빠져 있었다.
+     ⚠ 여기 한 군데서만 판정한다 - 누르는 자리(cmDoneGo)가 이 key 를 그대로 본다. */
+  if(!(ret && ret.received)){
+    return (ret && ret.status === 'arrived')
+      ? { key:'recv', label:'\u2713 confirm receipt', color:'#166534', bg:'#f0fdf4' }
+      : { key:'wait', label:'\u23f3 waiting for the goods', color:'#92400e', bg:'#fffbeb' };
+  }
   /* REPLACED-1 - 교체 건은 보낼 크레딧 메모가 없다. 남은 일은 재고뿐이다.
      ⚠ 이 줄이 없으면 「✉ send to customer」 가 떠서, 눌러도 낼 종이가 없다. */
   if(raIsReplace(ret)){
@@ -51946,6 +52003,9 @@ function cmDoneGo(base, ra){
   const ret=recReturns(rec).find(r=>r.ra===ra); if(!ret) return;
   const m=document.getElementById('modal-kpiret'); if(m) m.remove();
   const step = cmNextStep(ret);
+  /* CMSTEP-1 - 알약이 말한 그 일을 할 수 있는 창으로 데려간다 (꾸중만 하지 않는다) */
+  if(step.key === 'recv'){ try{ openReturnReceive(base, ra); return; }catch(e){} }
+  if(step.key === 'wait'){ try{ openReturnDetail(base, ra); return; }catch(e){} }
   if(step.key === 'stock'){ try{ returnStockOpen(base, ra); return; }catch(e){} }
   try{ openCreditMemo(base, ra); }catch(e){}
 }
