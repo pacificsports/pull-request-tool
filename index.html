@@ -314,7 +314,7 @@ body.po-dragging{user-select:none;}
   </span>
   <select id="lang-sel" onchange="setLang(this.value)" style="font-size:11px;padding:3px 6px;border-radius:5px;border:none;background:#1d3f66;color:#fff;"><option value="ko">한국어</option><option value="en">English</option><option value="es">Español</option></select>
   <button id="wide-btn" class="btn btn-sm" onclick="toggleWide()" title="화면 넓게 / 좁게 — 기본은 넓게 (이 브라우저에만 저장돼)" style="padding:2px 8px;font-size:10px;background:#1d3f66;color:#cfe0f2;border-color:#2b5384;">↔ Wide</button>
-  <span id="app-ver" style="font-size:10px;color:#9fb8d4;">v1320</span>
+  <span id="app-ver" style="font-size:10px;color:#9fb8d4;">v1321</span>
 </div>
 <script>
 // ↔ 넓게 보기 — 브라우저마다 따로 저장 (v793)
@@ -44048,6 +44048,121 @@ function osNewPallet(sIdx){
   _shipPallets.push(p);
   return p;
 }
+/* OSPSPLIT-1 - 이 오더 줄이 Direct-from-SC 건인가 (머리글 문구를 가르는 데 쓴다) */
+function osRowIsDirect(o){
+  try{ if(o && trIsCustStop(o.kind)) return true; }catch(e){}
+  try{
+    const r = ((typeof savedCache!=='undefined' && savedCache) || []).find(x=>x && x.base === String(o && o.base));
+    if(r) return !!recDirectSC(r);
+  }catch(e){}
+  return false;
+}
+/* OSPSPLIT-1 - 한 오더의 PART 번호를 **통째로 다시 매긴다.**
+   ⚠ `rid`(base#n) 는 끌어 옮기기.지우기가 쓰는 신원이다 - 조각이 늘거나 줄면
+      한 번에 다시 써야 어긋나지 않는다. 한 조각만 남으면 꼬리를 뗀다. */
+function osRenumberParts(base){
+  const all = ((_shipMeta && _shipMeta.orderShip) || []);
+  const arr = all.filter(o=>String(o.base) === String(base));
+  const n = arr.length;
+  /* ⭐ PART 번호는 **트럭에 놓인 차례**(팔레트 차례)로 매긴다 - 종이와 눈이 같아야 한다.
+     ⚠ `all` 의 차례는 안 건드린다 - 번호만 정한다. */
+  const ord = {};
+  try{ trPalRenderOrder().forEach(function(p, i){ ord[p.label] = i; }); }catch(e){}
+  const _ix = o => (ord[o.pallet] === undefined ? 9999 : ord[o.pallet]);
+  arr.sort(function(a, b){ return (_ix(a) - _ix(b)) || (all.indexOf(a) - all.indexOf(b)); });
+  arr.forEach(function(o, i){
+    if(n > 1){ o.part = i + 1; o.parts = n; o.rid = String(base) + '#' + (i + 1); }
+    else { delete o.part; delete o.parts; o.rid = String(base); }
+  });
+}
+/* OSPSPLIT-1 - 그 정차지에서 **진짜 비어 있는** 팔레트 (줄도 없고 오더도 없는 것).
+   하윤이 미리 만들어 둔 빈 팔레트를 먼저 쓰려고 본다 - 새로 만들면 번호가 또 늘어난다. */
+function osEmptyPalletsAt(stopIdx, want){
+  const used = {};
+  ((_shipMeta && _shipMeta.orderShip) || []).forEach(o=>{ if(o && o.pallet) used[o.pallet] = 1; });
+  const st = trIsMultiRoute(_shipRoute) ? trStopsOf({meta:_shipMeta}) : [];
+  const out = [];
+  trPalRenderOrder().forEach(function(p){
+    if(out.length >= want) return;
+    if((p.lines || []).length) return;
+    if(used[p.label]) return;
+    if(st.length){
+      const i = trPalStopIdxDisp({meta:_shipMeta, pallets:_shipPallets}, p);
+      if(Number(i) !== Number(stopIdx)) return;
+    }
+    out.push(p.label);
+  });
+  return out;
+}
+/* OSPSPLIT-1 - 이 몫이 내리는 정차지 번호. 오더가 아는 값이 1순위, 없으면 지금 얹힌 팔레트. */
+function osRowStopIdx(o){
+  try{
+    const st = trIsMultiRoute(_shipRoute) ? trStopsOf({meta:_shipMeta}) : [];
+    if(!st.length) return -1;
+    const k = (o && o.kind) || osOrderKind(o && o.base) || '';
+    const i = k ? st.indexOf(k) : -1;
+    if(i >= 0) return i;
+    const p0 = (_shipPallets || []).find(p=>p && p.label === (o && o.pallet));
+    if(p0) return Number(trPalStopIdxDisp({meta:_shipMeta, pallets:_shipPallets}, p0));
+  }catch(e){}
+  return -1;
+}
+/* OSPSPLIT-1 - 「몇 장으로 나눌까」 묻는 작은 창. ⚠ prompt() 를 쓰지 않는다. */
+function osSplitOpen(rid){
+  const o = osFindRid(rid); if(!o) return;
+  const ex = document.getElementById('modal-ossplit'); if(ex) ex.remove();
+  const sIdx = osRowStopIdx(o);
+  const free = osEmptyPalletsAt(sIdx, 99);
+  const _D = { meta:_shipMeta, pallets:_shipPallets };
+  const _on = trIsMultiRoute(_shipRoute) && trStopsOf({meta:_shipMeta}).length >= 2;
+  const d = document.createElement('div'); d.id = 'modal-ossplit';
+  d.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,.5);z-index:380;display:flex;align-items:center;justify-content:center;';
+  d.onclick = e=>{ if(e.target === d) d.remove(); };
+  d.innerHTML = `<div style="background:#fff;border-radius:12px;width:430px;max-width:94vw;box-shadow:0 20px 60px rgba(0,0,0,.35);">
+    <div style="background:#a21caf;color:#fff;padding:12px 16px;font-weight:800;display:flex;justify-content:space-between;align-items:center;">
+      <span>✂ Split these boxes over more pallets</span>
+      <button onclick="document.getElementById('modal-ossplit').remove()" style="background:none;border:none;color:#fff;font-size:18px;cursor:pointer;">✕</button></div>
+    <div style="padding:14px 16px;">
+      <div style="font-size:12.5px;color:#0f2a4a;font-weight:800;margin-bottom:3px;">${esc(o.cust||'—')} · PO ${esc(o.po||'—')}</div>
+      <div style="font-size:11.5px;color:#64748b;margin-bottom:11px;">This piece now has <b>${Number(o.boxes)||0}</b> box(es) · ${(Number(o.pcs)||0).toLocaleString()} pcs on <b>${esc(_on ? trPalDisp(_D, o.pallet) : (o.pallet||'—'))}</b>.</div>
+      <div style="display:flex;align-items:center;gap:9px;padding:9px 11px;background:#fdf4ff;border:1px solid #f0abfc;border-radius:8px;">
+        <span style="font-size:12px;font-weight:800;color:#a21caf;white-space:nowrap;">Split into</span>
+        <input type="number" id="ossplit-n" min="2" max="20" value="2" style="width:62px;font-size:14px;padding:4px 6px;text-align:center;font-weight:800;border:1.5px solid #e9d5ff;border-radius:6px;">
+        <span style="font-size:12px;font-weight:800;color:#a21caf;">pallet(s)</span>
+      </div>
+      <div style="font-size:11.5px;color:#64748b;margin-top:10px;">The boxes and pcs are split evenly — the <b>totals do not change</b>.
+        ${free.length ? ('Empty pallets at this stop are used first (<b>' + free.map(x=>esc(_on ? trPalDisp(_D, x) : x)).join(', ') + '</b>), then new ones are made.')
+                      : 'New pallets are made at this stop.'}</div>
+    </div>
+    <div style="padding:0 16px 15px;display:flex;gap:8px;justify-content:flex-end;">
+      <button class="btn btn-sm" onclick="document.getElementById('modal-ossplit').remove()">Cancel</button>
+      <button class="btn btn-sm" style="background:#a21caf;color:#fff;border-color:#a21caf;font-weight:800;" onclick="osSplitDo('${esc(osRid(o))}')">✂ Split</button>
+    </div></div>`;
+  document.body.appendChild(d);
+}
+/* OSPSPLIT-1 - 실제로 쪼갠다. ⭐ 총 박스.장수는 변하지 않는다. */
+async function osSplitDo(rid){
+  const o = osFindRid(rid); if(!o) return;
+  const n = Math.max(2, Math.min(20, parseInt((document.getElementById('ossplit-n')||{}).value, 10) || 2));
+  const bxs = osSplitN(Number(o.boxes)||0, n);
+  const pcs = osSplitN(Number(o.pcs)||0, n);
+  const sIdx = osRowStopIdx(o);
+  const reuse = osEmptyPalletsAt(sIdx, n - 1);
+  const labs = [o.pallet];
+  for(let i = 1; i < n; i++) labs.push(reuse[i-1] || osNewPallet(sIdx).label);
+  o.boxes = bxs[0]; o.pcs = pcs[0];
+  const at = _shipMeta.orderShip.indexOf(o);
+  const made = [];
+  for(let i = 1; i < n; i++) made.push(Object.assign({}, o, { boxes:bxs[i], pcs:pcs[i], pallet:labs[i] }));
+  _shipMeta.orderShip.splice(at + 1, 0, ...made);
+  osRenumberParts(o.base);
+  trOsSyncStops();          /* 오더만 실린 팔레트는 줄이 없다 - palletStop 을 맞춰야 서류가 맞는다 */
+  const m = document.getElementById('modal-ossplit'); if(m) m.remove();
+  if(_shipId){ try{ await trPatchRec(_shipId, {meta:_shipMeta}); }catch(e){} }
+  trRenderPallets();
+  if(typeof trBarUpd === 'function') trBarUpd();
+  try{ showToast('✂ ' + n + ' pallet(s) · ' + bxs.join(' + ') + ' box'); }catch(e){}
+}
 function trOrderShipDel(rid){
   if(!_shipMeta||!Array.isArray(_shipMeta.orderShip)) return;
   _shipMeta.orderShip=_shipMeta.orderShip.filter(o=>osRid(o)!==String(rid));
@@ -44065,11 +44180,17 @@ function trOrderShipRowsForPallet(label){
   const arr=((_shipMeta&&_shipMeta.orderShip)||[]).filter(o=>o.pallet===label);
   if(!arr.length) return '';
   return `<div style="border-top:2px dashed #f0abfc;background:#fdf4ff;">
-    <div style="padding:5px 12px;font-size:10.5px;font-weight:800;color:#a21caf;">🚚 SHIP-FROM-CA ORDER BOXES ON THIS PALLET — routed to order at CA (not CA stock)</div>
+    <div style="padding:5px 12px;font-size:10.5px;font-weight:800;color:#a21caf;">${arr.every(osRowIsDirect)
+      /* OSPSPLIT-1b - Direct 건은 CA 를 안 거친다. 그 줄에 CA 얘기를 쓰면 안 된다. */
+      ? '🏠 DIRECT-FROM-SC ORDER BOXES ON THIS PALLET — they come off at this stop (never into stock)'
+      : (arr.some(osRowIsDirect)
+        ? '📦 ORDER BOXES ON THIS PALLET — designated to their own orders (never into stock)'
+        : '🚚 SHIP-FROM-CA ORDER BOXES ON THIS PALLET — routed to order at CA (not CA stock)')}</div>
     ${arr.map(o=>`<div style="display:flex;align-items:center;gap:9px;padding:5px 12px;border-top:1px dashed #f5d0fe;">
       <span draggable="true" ondragstart="trOsDragStart(event,'${esc(osRid(o))}')" ondragend="trOsDragEnd()" title="Drag to another pallet" style="cursor:grab;color:#c084fc;font-size:13px;font-weight:900;user-select:none;flex:none;">⠿</span>
       <div style="flex:1;min-width:0;"><b style="color:#0f2a4a;font-size:12px;">${esc(o.cust||'—')}</b>${(Number(o.parts)>1)?` <span style="font-size:10px;font-weight:900;color:#fff;background:#a21caf;border-radius:20px;padding:1px 8px;" title="This order is split over ${Number(o.parts)} pallets">PART ${Number(o.part)||1} OF ${Number(o.parts)}</span>`:''} <span style="font-size:11px;color:#64748b;">PO ${esc(o.po||'—')} · ${(o.pcs||0).toLocaleString()} pcs</span></div>
       <label style="font-size:10px;color:#7b1fa2;font-weight:800;display:flex;align-items:center;gap:4px;">boxes <input type="number" min="0" value="${o.boxes||0}" onchange="trOrderShipEditBoxes('${esc(osRid(o))}',this.value)" style="width:56px;font-size:12px;padding:3px 5px;text-align:center;font-weight:800;border:1px solid #e9d5ff;border-radius:6px;"></label>
+      <button onclick="osSplitOpen('${esc(osRid(o))}')" style="border:1px solid #f0abfc;background:#fff;color:#a21caf;cursor:pointer;font-weight:800;font-size:11px;border-radius:6px;padding:3px 8px;white-space:nowrap;" title="Split these boxes over more pallets — the totals do not change">✂ Split</button>
       <button onclick="trOrderShipDel('${esc(osRid(o))}')" style="border:none;background:none;color:#e53935;cursor:pointer;font-weight:800;" title="Remove from truck">✕</button>
     </div>`).join('')}</div>`;
 }
