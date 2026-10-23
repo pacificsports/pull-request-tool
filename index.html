@@ -314,7 +314,7 @@ body.po-dragging{user-select:none;}
   </span>
   <select id="lang-sel" onchange="setLang(this.value)" style="font-size:11px;padding:3px 6px;border-radius:5px;border:none;background:#1d3f66;color:#fff;"><option value="ko">한국어</option><option value="en">English</option><option value="es">Español</option></select>
   <button id="wide-btn" class="btn btn-sm" onclick="toggleWide()" title="화면 넓게 / 좁게 — 기본은 넓게 (이 브라우저에만 저장돼)" style="padding:2px 8px;font-size:10px;background:#1d3f66;color:#cfe0f2;border-color:#2b5384;">↔ Wide</button>
-  <span id="app-ver" style="font-size:10px;color:#9fb8d4;">v1321</span>
+  <span id="app-ver" style="font-size:10px;color:#9fb8d4;">v1322</span>
 </div>
 <script>
 // ↔ 넓게 보기 — 브라우저마다 따로 저장 (v793)
@@ -36526,7 +36526,12 @@ function trBarHtml(){
             ? `<button class="btn btn-sm btn-primary" style="background:#7b1fa2;border-color:#7b1fa2;font-weight:800;" onclick="trShipped3P('${r.id}')" title="The truck picked it up — move each pallet into its H bin and close this shipment">🚚 Depart</button>`
             : `<button class="btn btn-sm btn-primary" style="background:#7b1fa2;border-color:#7b1fa2;font-weight:800;" onclick="trPostFromList('${r.id}')" title="The truck left — mark this shipment In Transit. Receive it here when it arrives.">🚚 Depart</button>`);
       const oBoxes = oShip.reduce((s,o)=>s+(Number(o.boxes)||0),0);
-      const ordersLine = oShip.length ? `<div style="font-size:11px;color:#6d28d9;margin-top:4px;background:#faf5ff;border:1px solid #ddd6fe;border-radius:7px;padding:5px 10px;">🧾 <b>+ ${oShip.length} customer order${oShip.length>1?'s':''} also on this truck</b> <span style="color:#7c3aed;">(${oBoxes} box)</span>: ${oShip.map(o=>esc(o.cust||o.po||'Order')+(o.po?` <span style="color:#a78bfa;font-weight:700;">${esc(o.po)}</span>`:'')+(o.boxes?` · ${o.boxes} box`:'')).join(' &nbsp;|&nbsp; ')} <span style="color:#a78bfa;font-weight:600;">— prepped at SC, route to their order after receiving at ${esc(trKindShort(rt.dest))}</span></div>` : '';
+      /* OSCOUNT-1 - 몫이 아니라 **오더**를 센다 */
+      const _og = osGroupByOrder(oShip);
+      const _ogDirN = _og.filter(function(g){ try{ return osRowIsDirect(g); }catch(e){ return false; } }).length;
+      const ordersLine = _og.length ? `<div style="font-size:11px;color:#6d28d9;margin-top:4px;background:#faf5ff;border:1px solid #ddd6fe;border-radius:7px;padding:5px 10px;">🧾 <b>+ ${_og.length} customer order${_og.length>1?'s':''} also on this truck</b> <span style="color:#7c3aed;">(${oBoxes} box)</span>: ${_og.map(g=>esc(g.cust||g.po||'Order')+(g.po?` <span style="color:#a78bfa;font-weight:700;">${esc(g.po)}</span>`:'')+(g.boxes?` · ${g.boxes} box`:'')+(g.pals.length>1?` <span style="color:#a78bfa;font-weight:600;">· ${g.pals.length} pallets</span>`:'')).join(' &nbsp;|&nbsp; ')} <span style="color:#a78bfa;font-weight:600;">— ${_ogDirN === _og.length ? 'prepped at SC, dropped at their own stop (never into stock)'
+          : (_ogDirN ? 'prepped at SC, designated to their own orders (never into stock)'
+                     : ('prepped at SC, route to their order after receiving at ' + esc(trKindShort(rt.dest))))}</span></div>` : '';
       return `<div style="padding:6px 0;border-top:1px solid #ede9fe;">
         <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;font-size:12px;">
         <b style="font-family:Consolas,monospace;color:#7b1fa2;cursor:pointer;text-decoration:underline;" onclick="${r.status==='LOADING'?`trBuilderOpen('${r.id}')`:`trView('${r.id}')`}" title="Open">${esc(r.ref||'(no #)')}</b>
@@ -44030,6 +44035,24 @@ function osOrderKind(base){
   }catch(e){}
   return 'CA';
 }
+/* OSCOUNT-1 - `orderShip` 은 **몫(part)마다 한 줄**이다. 오더 수를 세려면 묶어야 한다.
+   [stated] 하윤: "이게 order를 split했다고 10가지 오더는 아니잖아. 그냥 저기는 오더 5개가
+            들어가있다가 맞는거지."
+   ⭐ 세는 자리가 둘 이상이면 **반드시 이 함수를 쓸 것** - 두 군데서 따로 세면 어긋난다. */
+function osGroupByOrder(list){
+  const out = [], by = {};
+  (list || []).filter(Boolean).forEach(function(o){
+    const k = String(o.base || o.rid || o.po || '');
+    if(!by[k]){ by[k] = { base:k, cust:o.cust||'', po:o.po||'', kind:o.kind||'', boxes:0, pcs:0, pals:[], n:0 }; out.push(by[k]); }
+    const g = by[k];
+    g.boxes += Number(o.boxes) || 0;
+    g.pcs   += Number(o.pcs)   || 0;
+    g.n++;
+    if(!g.kind && o.kind) g.kind = o.kind;
+    if(o.pallet && g.pals.indexOf(o.pallet) < 0) g.pals.push(o.pallet);
+  });
+  return out;
+}
 function osFindRid(rid){ return ((_shipMeta&&_shipMeta.orderShip)||[]).find(x=>osRid(x)===String(rid)); }
 /* 박스/장수를 팔레트 수만큼 고르게 나눈다. 남는 것은 앞쪽 팔레트에 하나씩. */
 function osSplitN(total, n){
@@ -44351,9 +44374,9 @@ async function trRecvOpen(id){
         <div><b>Seal:</b> ${esc(M.seal||'—')}</div>
         <div style="margin-left:auto;font-size:11px;background:#fff;padding:3px 10px;border-radius:10px;border:1px solid #a7f3d0;">📦 <b>${_trRecvPallets.length}</b> pallet(s) · <b>${lines.length}</b> line(s) · <b>${totP.toLocaleString()}</b> pcs · <b>${totB}</b> box(es)</div>
       </div>
-      ${(function(){ const _os=(Array.isArray(M.orderShip)?M.orderShip.filter(Boolean):[]); if(!_os.length) return ''; const _ob=_os.reduce((s,o)=>s+(Number(o.boxes)||0),0), _op=_os.reduce((s,o)=>s+(Number(o.pcs)||0),0); return `<div style="margin-bottom:10px;padding:10px 14px;background:#faf5ff;border:1px solid #ddd6fe;border-radius:8px;font-size:12px;color:#6d28d9;">
-        <div style="font-weight:800;margin-bottom:5px;">🧾 + ${_os.length} customer order${_os.length>1?'s':''} also on this truck <span style="font-weight:600;color:#7c3aed;">(${_ob} box · ${_op.toLocaleString()} pcs — prepped at SC, NOT warehouse stock; route to their order)</span></div>
-        <div style="display:flex;flex-direction:column;gap:2px;">${_os.map(o=>`<div>• <b>${esc(o.cust||'—')}</b> <span style="color:#a78bfa;font-weight:700;">${esc(o.po||'')}</span> — ${(Number(o.boxes)||0)} box · ${(Number(o.pcs)||0).toLocaleString()} pcs${o.pallet?` <span style="color:#9ca3af;">(${esc(o.pallet)})</span>`:''}</div>`).join('')}</div></div>`; })()}
+      ${(function(){ const _os=(Array.isArray(M.orderShip)?M.orderShip.filter(Boolean):[]); if(!_os.length) return ''; const _ob=_os.reduce((s,o)=>s+(Number(o.boxes)||0),0), _op=_os.reduce((s,o)=>s+(Number(o.pcs)||0),0); const _og=osGroupByOrder(_os);   /* OSCOUNT-1 - 몫이 아니라 오더를 센다 */ return `<div style="margin-bottom:10px;padding:10px 14px;background:#faf5ff;border:1px solid #ddd6fe;border-radius:8px;font-size:12px;color:#6d28d9;">
+        <div style="font-weight:800;margin-bottom:5px;">🧾 + ${_og.length} customer order${_og.length>1?'s':''} also on this truck <span style="font-weight:600;color:#7c3aed;">(${_ob} box · ${_op.toLocaleString()} pcs — prepped at SC, NOT warehouse stock; route to their order)</span></div>
+        <div style="display:flex;flex-direction:column;gap:2px;">${_og.map(g=>`<div>• <b>${esc(g.cust||'—')}</b> <span style="color:#a78bfa;font-weight:700;">${esc(g.po||'')}</span> — ${g.boxes} box · ${g.pcs.toLocaleString()} pcs${g.pals.length?` <span style="color:#9ca3af;">(${esc(g.pals.join(', '))})</span>`:''}</div>`).join('')}</div></div>`; })()}
       <datalist id="trr-ca-bins">${caLocs.map(L=>'<option value="'+esc(L)+'">').join('')}</datalist>
       <datalist id="trr-h-bins">${hLocs.map(L=>'<option value="'+esc(L)+'">').join('')}</datalist>
       <div style="margin-bottom:8px;display:flex;gap:8px;align-items:center;flex-wrap:wrap;">
