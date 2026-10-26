@@ -314,7 +314,7 @@ body.po-dragging{user-select:none;}
   </span>
   <select id="lang-sel" onchange="setLang(this.value)" style="font-size:11px;padding:3px 6px;border-radius:5px;border:none;background:#1d3f66;color:#fff;"><option value="ko">한국어</option><option value="en">English</option><option value="es">Español</option></select>
   <button id="wide-btn" class="btn btn-sm" onclick="toggleWide()" title="화면 넓게 / 좁게 — 기본은 넓게 (이 브라우저에만 저장돼)" style="padding:2px 8px;font-size:10px;background:#1d3f66;color:#cfe0f2;border-color:#2b5384;">↔ Wide</button>
-  <span id="app-ver" style="font-size:10px;color:#9fb8d4;">v1327</span>
+  <span id="app-ver" style="font-size:10px;color:#9fb8d4;">v1328</span>
 </div>
 <script>
 // ↔ 넓게 보기 — 브라우저마다 따로 저장 (v793)
@@ -18359,8 +18359,16 @@ async function openLabelModal(base, forceWh, carrier){
   window._lblBillMode = (_lblResult&&_lblResult.billing)
     || (_wp0!=null ? 'web' : null)
     || bill0.mode || 'shipper';
-  window._lblUpsAcct = bill0.account || '';
-  window._lblUpsZip = bill0.zip || '';
+  /* FXBILL-1 - 채워 넣는 번호는 **그 택배사 것**이어야 한다.
+     UPS 번호를 FedEx 칸에 넣으면 FedEx 가 거절하거나, 더 나쁘게는 남의 계정에 달린다. */
+  if(lblCarrier() === 'fedex'){
+    const _fxb = (function(){ try{ return custFedexFor(rec.meta.cust); }catch(e){ return { account:'' }; } })();
+    window._lblUpsAcct = (_fxb && _fxb.account) || '';
+    window._lblUpsZip = '';
+  } else {
+    window._lblUpsAcct = bill0.account || '';
+    window._lblUpsZip = bill0.zip || '';
+  }
   lblRender();
   if(rec.meta && rec.meta._shipApproval && rec.meta._shipApproval.status==='pending'){
     lblApprRefresh(base).then(()=>{ if(document.getElementById('modal-upslabel')) lblRender(); });
@@ -18386,17 +18394,20 @@ function lblRender(){
       <div style="font-size:11px;font-weight:800;color:${lblCarColor()};margin-bottom:6px;">💳 BILLING — who pays ${lblCarName()}?</div>
       <div style="display:flex;gap:7px;flex-wrap:wrap;">
         ${_bBtn('shipper','OUR ' + lblCarName() + ' # · charge invoice')}
-        ${/* FXLBLTXT-1 - 🔴 FedEx 는 거래처 계정 청구가 아직 안 된다 → **고를 수 없게 한다.**
-             고를 수 있으면 언젠가 눌리고, 눌리면 막다른 길이 된다. */''}
-        ${lblCarrier()==='fedex' ? '' : _bBtn('receiver',"Customer's UPS #")}
+        ${/* FXBILL-1 (v1328) - 이제 FedEx 도 거래처 계정으로 청구된다 (워커 107b0a22).
+             번호 없이 보내면 워커가 400 으로 막으므로 조용히 우리 계정에 달릴 일은 없다. */''}
+        ${_bBtn('receiver',"Customer's " + lblCarName() + " #")}
         ${_bBtn('free','🎁 Free shipping')}
         ${_webPaid!=null ? _bBtn('web','🌐 WEBSITE · paid') : ''}
       </div>
       ${bmode==='web' ? `<div style="font-size:10.5px;color:#15803d;margin-top:6px;font-weight:700;">🌐 The customer already paid <b>$${Number(_webPaid).toFixed(2)}</b> on the website — the invoice freight will be <b>exactly this amount</b> (no handling). The label still ships on our ${lblCarName()} account.</div>`
       : bmode==='receiver' ? `
         <div style="display:flex;gap:7px;margin-top:8px;">
-          <input class="fi" id="lbl-ups-acct" value="${esc(window._lblUpsAcct||'')}" oninput="window._lblUpsAcct=this.value.toUpperCase();this.value=this.value.toUpperCase();" placeholder="Customer UPS Account #" style="font-size:12px;flex:1.4;text-transform:uppercase;">
-          <input class="fi" id="lbl-ups-zip" value="${esc(window._lblUpsZip||'')}" oninput="window._lblUpsZip=this.value;" placeholder="UPS acct ZIP" style="font-size:12px;flex:1;">
+          ${/* FXBILL-1 - FedEx 계정 번호는 숫자다 (대문자로 안 바꾼다), 그리고 ZIP 을 안 쓴다 */''}
+          ${lblCarrier()==='fedex'
+            ? `<input class="fi" id="lbl-ups-acct" value="${esc(window._lblUpsAcct||'')}" oninput="window._lblUpsAcct=this.value.replace(/[^0-9]/g,'');this.value=window._lblUpsAcct;" placeholder="Customer FedEx Account #" inputmode="numeric" style="font-size:12px;flex:1;">`
+            : `<input class="fi" id="lbl-ups-acct" value="${esc(window._lblUpsAcct||'')}" oninput="window._lblUpsAcct=this.value.toUpperCase();this.value=this.value.toUpperCase();" placeholder="Customer UPS Account #" style="font-size:12px;flex:1.4;text-transform:uppercase;">
+               <input class="fi" id="lbl-ups-zip" value="${esc(window._lblUpsZip||'')}" oninput="window._lblUpsZip=this.value;" placeholder="UPS acct ZIP" style="font-size:12px;flex:1;">`}
         </div>
         <div style="font-size:10.5px;color:#64748b;margin-top:4px;">Prefilled from the customer. Edit here if it changed — the new value is saved back to the customer automatically.</div>`
       : bmode==='free' ? `<div style="font-size:10.5px;color:#15803d;margin-top:6px;font-weight:700;">🎁 Free shipping — ships on our ${lblCarName()} account, but <b>NO freight is added to the invoice</b>. Pacific Sports absorbs the cost.</div>`
@@ -18703,15 +18714,7 @@ async function lblCreate(){
   const bmode = window._lblBillMode==='receiver' ? 'receiver' : 'shipper';
   const bacct = String(window._lblUpsAcct||'').trim().toUpperCase();
   const bzip = String(window._lblUpsZip||'').trim();
-  if(bmode==='receiver' && !bacct){ showToast('⚠ Enter the customer UPS Account #'); return; }
-  /* FXLBL-1 - 🔴 FedEx 는 거래처 계정 청구가 아직 안 된다 (워커에 그 길이 없다).
-     조용히 우리 계정으로 긁지 않는다 - 멈추고 왜 안 되는지 말한다. */
-  if(_fx && bmode === 'receiver'){
-    alert('⛔ FedEx cannot bill the customer\u2019s account yet.\n\n'
-      + 'Only our own FedEx account works for now.\n\n'
-      + '→ Use UPS for a customer-account shipment, or switch billing to our account.');
-    return;
-  }
+  if(bmode==='receiver' && !bacct){ showToast('⚠ Enter the customer ' + lblCarName() + ' Account #'); return; }
   const btn = $('lbl-create-btn'); if(btn){ btn.disabled=true; btn.textContent = _fx ? '⏳ Contacting FedEx...' : '⏳ Contacting UPS...'; }
   try{
     /* FXLBL-1 - 묻는 곳과 몸통만 갈린다. 답을 받은 뒤는 아래가 전부 그대로다. */
@@ -18726,6 +18729,10 @@ async function lblCreate(){
             reference: _ref,
             labelType: 'ZPLII',
             labelOrient: FEDEX_LABEL_ORIENT,   /* ⚠⚠ 빼면 라벨이 잘린다 */
+            /* FXBILL-1 - 누가 FedEx 에 돈을 내나. receiver 면 번호가 꼭 같이 가야 한다
+               (번호가 없으면 워커가 400 으로 막는다 - 그게 맞는 동작이다) */
+            billing: bmode,
+            billAccount: (bmode === 'receiver') ? bacct : '',
             test: !!window._lblTest
           })
         })
@@ -18766,15 +18773,27 @@ async function lblCreate(){
     if(!j.test) try{
       const ck = custKey(rec.meta.cust);
       const cur = custStore[ck] || {}; const pu = cur.ups || {};
-      const newUps = { mode:bmode,
-        account: bmode==='receiver' ? bacct : (pu.account||''),
-        zip: bmode==='receiver' ? bzip : (pu.zip||'') };
-      if((pu.mode||'shipper')!==newUps.mode || (pu.account||'')!==newUps.account || (pu.zip||'')!==newUps.zip){
-        cur.name = cur.name || rec.meta.cust; cur.ups = newUps;
-        await saveCustomer(ck, cur);
+      /* FXBILL-1 - 🔴 여기가 위험했다: FedEx 번호를 `ups.account` 에 덮어쓰면
+         거래처의 UPS 설정이 망가진다 (ZIP 까지 날아간다). 택배사별로 제 칸에 쓴다.
+         ⚠ 청구 방식(mode)은 두 택배사가 같이 쓰는 값이라 늘 ups.mode 에 적는다. */
+      let _chg = false;
+      if((pu.mode||'shipper') !== bmode){
+        cur.ups = { mode:bmode, account:(pu.account||''), zip:(pu.zip||'') }; _chg = true;
       }
+      if(bmode==='receiver'){
+        if(_fx){
+          const pf = cur.fedex || {};
+          if((pf.account||'') !== bacct){ cur.fedex = { account: bacct }; _chg = true; }
+        } else {
+          const u2 = cur.ups || { mode:bmode, account:'', zip:'' };
+          if((u2.account||'')!==bacct || (u2.zip||'')!==bzip){
+            cur.ups = { mode:bmode, account:bacct, zip:bzip }; _chg = true;
+          }
+        }
+      }
+      if(_chg){ cur.name = cur.name || rec.meta.cust; await saveCustomer(ck, cur); }
     }catch(e){}
-    showToast('✅ UPS label created — '+(j.tracking||[]).length+' tracking #');
+    showToast('✅ ' + lblCarName() + ' label created — '+(j.tracking||[]).length+' tracking #');
     lblRender();
     lblPrint();   // 만들자마자 바로 Zebra로 인쇄 시도
   }catch(e){
@@ -48340,7 +48359,7 @@ function openCustUps(name){
           <div></div>
         </div>
         <div style="font-size:11px;color:#b45309;background:#fffbeb;border:1px solid #fde68a;border-radius:7px;padding:7px 9px;margin-top:9px;line-height:1.45;">
-          ⚠ The FedEx number is <b>saved here</b>, but FedEx labels cannot bill a customer account yet — use UPS for those. It will start working as soon as that is wired up.</div>
+          ✓ Both numbers work on labels now — pick <b>Customer's UPS #</b> or <b>Customer's FedEx #</b> in the label window and the carrier bills them directly.</div>
       </div>
       <div id="cups-msg" style="font-size:12px;color:#b91c1c;font-weight:700;height:14px;"></div>
     </div>
