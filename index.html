@@ -314,7 +314,7 @@ body.po-dragging{user-select:none;}
   </span>
   <select id="lang-sel" onchange="setLang(this.value)" style="font-size:11px;padding:3px 6px;border-radius:5px;border:none;background:#1d3f66;color:#fff;"><option value="ko">한국어</option><option value="en">English</option><option value="es">Español</option></select>
   <button id="wide-btn" class="btn btn-sm" onclick="toggleWide()" title="화면 넓게 / 좁게 — 기본은 넓게 (이 브라우저에만 저장돼)" style="padding:2px 8px;font-size:10px;background:#1d3f66;color:#cfe0f2;border-color:#2b5384;">↔ Wide</button>
-  <span id="app-ver" style="font-size:10px;color:#9fb8d4;">v1328</span>
+  <span id="app-ver" style="font-size:10px;color:#9fb8d4;">v1329</span>
 </div>
 <script>
 // ↔ 넓게 보기 — 브라우저마다 따로 저장 (v793)
@@ -17055,6 +17055,38 @@ function upsPkgOut(b){
    ═══════════════════════════════════════════════════════════════════════ */
 const UPSAD_TBL = 'pr_ups_adhoc';
 const UPSAD_SVC = [['03','Ground'],['12','3 Day Select'],['02','2nd Day Air'],['13','Next Day Air Saver'],['01','Next Day Air']];
+/* UADFX-1 - FedEx 서비스. 이름은 UPSAD_SVC 와 같은 말투(짧게)로 맞춘다.
+   ⚠ GROUND_HOME_DELIVERY 는 집 주소용 Ground 다 (FXHOME-1 참고) */
+const UADFX_SVC = [['FEDEX_GROUND','Ground'],['GROUND_HOME_DELIVERY','Home Delivery (residential)'],
+  ['FEDEX_EXPRESS_SAVER','Express Saver (3 day)'],['FEDEX_2_DAY','2Day'],['FEDEX_2_DAY_AM','2Day A.M.'],
+  ['STANDARD_OVERNIGHT','Standard Overnight'],['PRIORITY_OVERNIGHT','Priority Overnight'],
+  ['FIRST_OVERNIGHT','First Overnight']];
+/* ⭐⭐⭐ 택배사에 따라 갈리는 것은 **전부 여기서** 나온다. 두 군데 적으면 어긋난다. */
+function uadCar(){ return (_upsAd && _upsAd.carrier === 'fedex') ? 'fedex' : 'ups'; }
+function uadCarName(){ return uadCar() === 'fedex' ? 'FedEx' : 'UPS'; }
+function uadCarColor(){ return uadCar() === 'fedex' ? '#4d148c' : '#7c2d12'; }
+function uadSvcList(){ return uadCar() === 'fedex' ? UADFX_SVC : UPSAD_SVC; }
+function uadDefSvc(c){ return (c || uadCar()) === 'fedex' ? 'FEDEX_GROUND' : '03'; }
+/* 이름 찾기는 두 목록을 다 본다 - 기록 목록에 두 택배사가 섞여 있다 */
+function uadSvcName(code){
+  const hit = UPSAD_SVC.concat(UADFX_SVC).find(x => x[0] === String(code));
+  return hit ? hit[1] : String(code || '?');
+}
+/* ⭐ 기록 줄의 택배사는 **서비스 코드로** 안다 - UPS 는 두 자리 숫자, FedEx 는 글자.
+   그래서 pr_ups_adhoc 에 컬럼을 새로 안 만들어도 된다. */
+function uadCarOf(code){ return /^\d{2}$/.test(String(code || '')) ? 'ups' : 'fedex'; }
+function uadCarNameOf(code){ return uadCarOf(code) === 'fedex' ? 'FedEx' : 'UPS'; }
+function uadSetCarrier(c){
+  const car = (c === 'fedex') ? 'fedex' : 'ups';
+  if(!_upsAd || _upsAd.carrier === car || _upsAd.res) return;
+  upsAdSync();                       /* 사람이 치던 값을 먼저 담는다 */
+  _upsAd.carrier = car;
+  _upsAd.service = uadDefSvc(car);
+  _upsAd.rate = null; _upsAd.rateErr = ''; _upsAd.rateBusy = false; _upsAd.fx = null;
+  _upsAdRateSig = '';                /* 택배사가 바뀌었으니 캐시를 버린다 */
+  upsAdRender();
+  upsAdRateSoon();
+}
 /* UPSAD-v3 (2026-09-23) - 우리가 실제로 쓰는 박스 치수.
    [stated] 하윤: "우리 sample box사이즈는 13x11x2이야"
    UPS 포장 코드에는 이런 것이 없다. UPS 에게는 늘 02(우리 박스) + 치수를 보내고
@@ -17138,7 +17170,7 @@ async function upsAdMyBoxDel(i){
 let _upsAd = null;
 
 function upsAdBlank(){
-  return { origin:'SC', service:'03', billMode:'shipper', acct:'', bzip:'',
+  return { origin:'SC', carrier:'ups', service:'03', billMode:'shipper', acct:'', bzip:'',   /* UADFX-1 */
            ref:'', memo:'', cust:'',
            to:{ name:'', comp:'', a1:'', a2:'', city:'', state:'', zip:'', phone:'' },
            boxes:[{ l:12, w:10, h:6, wt:5, pkg:'02' }],
@@ -17221,19 +17253,20 @@ function upsAdProblems(){
      그래서 이 함수는 상태만 읽는다. 화면 칸을 먼저 읽어야 하는 곳에서만
      직접 upsAdSync() 를 부른다 (upsAdRate / upsAdCreate). */
   const p = [], t = _upsAd.to;
-  if(!String(_upsAd.ref||'').trim()) p.push('Reference — the UPS invoice shows this. Without it nobody can tell what this 1Z was.');
+  if(!String(_upsAd.ref||'').trim()) p.push('Reference — the ' + uadCarName() + ' invoice shows this. Without it nobody can tell what this shipment was.');
   if(!String(t.name||'').trim())  p.push('Ship to — name');
   if(!String(t.a1||'').trim())    p.push('Ship to — address');
   if(!String(t.city||'').trim())  p.push('Ship to — city');
   if(!/^[A-Z]{2}$/.test(String(t.state||'').trim())) p.push('Ship to — state (2 letters)');
   if(!/^\d{5}(-\d{4})?$/.test(String(t.zip||'').trim())) p.push('Ship to — ZIP (5 digits)');
   if(_upsAd.billMode==='receiver' && !String(_upsAd.acct||'').trim())
-    p.push('Customer UPS Account # — needed when the receiver pays');
+    p.push('Customer ' + uadCarName() + ' Account # — needed when the receiver pays');   /* UADFX-1 */
   _upsAd.boxes.forEach((b,i)=>{
     const n = 'Box ' + (i+1);
     if(!(Number(b.wt)>0)) p.push(n + ' — weight');
     if(upsPackDims(b.pkg) && !(Number(b.l)>0 && Number(b.w)>0 && Number(b.h)>0)) p.push(n + ' — L x W x H');
-    if(!upsPackOkFor(b.pkg, _upsAd.service)) p.push(n + ' — UPS does not accept ' + upsPackName(b.pkg) + ' on this service');
+    /* UADFX-1 - ⚠ 이건 **UPS 규격 포장 규칙**이다. FedEx 코드에 대고 돌리면 우리 박스를 거절한다 */
+    if(uadCar() === 'ups' && !upsPackOkFor(b.pkg, _upsAd.service)) p.push(n + ' — UPS does not accept ' + upsPackName(b.pkg) + ' on this service');
   });
   return p;
 }
@@ -17281,15 +17314,17 @@ async function upsAdRate(opts){
   _upsAd.fx = null;            /* FEDEXQ-1 - 값이 바뀌었으니 옛 FedEx 금액은 버린다 */
   upsAdEstPaint();
   try{
-    const r = await fetch(UPS_LABEL_URL.replace('/label','/rates'),
-      { method:'POST', headers:wkHdr(), body:JSON.stringify(B.body) });
+    /* UADFX-1 - 고른 택배사에게 묻는다. 묻는 몸통은 둘이 같다 (fedex 워커가 UPS /rates 모양을 따른다) */
+    const _url = (uadCar() === 'fedex') ? FEDEX_RATE_URL : UPS_LABEL_URL.replace('/label','/rates');
+    const r = await fetch(_url, { method:'POST', headers:wkHdr(), body:JSON.stringify(B.body) });
     const j = await r.json();
     if(my !== _upsAdRateReq) return;             /* 더 최근 요청이 있으면 이 대답은 버린다 */
     if(j && j.error){ _upsAd.rate = null; _upsAd.rateErr = String(j.error).slice(0,90); }
     else {
-      const sv = ((j && j.services) || []).filter(s=>UPSAD_SVC.some(x=>x[0]===s.code));
+      const _list = uadSvcList();
+      const sv = ((j && j.services) || []).filter(s=>_list.some(x=>x[0]===s.code));
       _upsAd.rate = sv.length ? { services:sv, wt:B.wt, boxes:B.boxes, origin:_upsAd.origin } : null;
-      _upsAd.rateErr = sv.length ? '' : 'UPS gave no price for this address';
+      _upsAd.rateErr = sv.length ? '' : (uadCarName() + ' gave no price for this address');
     }
   }catch(e){
     if(my !== _upsAdRateReq) return;
@@ -17337,7 +17372,7 @@ function upsAdEstPaint(){
   const money = n => '$' + Number(n||0).toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2});
   const sel = document.getElementById('uad-svc');
   if(sel) Array.prototype.forEach.call(sel.options, o=>{
-    const base = (UPSAD_SVC.find(x=>x[0]===o.value) || ['', o.value])[1];
+    const base = uadSvcName(o.value);   /* UADFX-1 */
     const s = upsAdRateFor(o.value);
     o.textContent = base + (s ? ('   ' + money(s.total)) : '');
   });
@@ -17347,7 +17382,7 @@ function upsAdEstPaint(){
   if(A.rateBusy){ el.innerHTML = wrap('#f8fafc','#e5e7eb','#6b7280','⏳ Asking UPS for prices...'); return; }
   if(A.rateErr){
     el.innerHTML = wrap('#fef2f2','#fecaca','#991b1b',
-      '<b>❌ UPS price not available</b> — ' + esc(A.rateErr)
+      '<b>❌ ' + uadCarName() + ' price not available</b> — ' + esc(A.rateErr)
       + ' <button class="btn btn-sm" onclick="upsAdRateRefresh()" style="margin-left:8px;font-size:11px;font-weight:700;">↻ Try again</button>');
     return;
   }
@@ -17357,19 +17392,17 @@ function upsAdEstPaint(){
     return '<div onclick="upsAdSvcPick(\'' + s.code + '\')" style="display:flex;align-items:center;gap:8px;cursor:pointer;'
       + 'padding:4px 7px;border-radius:5px;' + (on ? 'background:#dbeafe;font-weight:800;' : '') + '">'
       + '<span style="width:14px;">' + (on ? '✓' : '') + '</span>'
-      + '<span style="flex:1;">' + esc((UPSAD_SVC.find(x=>x[0]===s.code)||['',s.code])[1]) + '</span>'
+      + '<span style="flex:1;">' + esc(uadSvcName(s.code)) + '</span>'
       + '<span style="font-variant-numeric:tabular-nums;">' + money(s.total) + '</span>'
       + '<span style="opacity:.7;font-size:11px;font-weight:600;width:100px;text-align:right;">list ' + money(s.list!=null?s.list:s.total) + '</span>'
       + '</div>';
   }).join('');
-  /* FEDEXQ-1 - UPS 네모 **아래에** FedEx 한 줄. 막혔으면 빈 글자라 아무것도 안 붙는다. */
-  const fxLine = fxEstHtml(A.fx);
+  /* UADFX-1 - 요금은 고른 택배사 것이다. 그래서 「UPS price」 라고 박아두지 않는다.
+     ⚠ FEDEXQ-1 때 아래에 붙이던 참고 줄은 뺐다 - 이제 FedEx 를 고르면 이 칸 자체가 FedEx 요금이다. */
   el.innerHTML = wrap('#eff6ff','#bfdbfe','#1d4ed8',
-    '<div style="font-weight:800;margin-bottom:3px;">💵 UPS price — ' + A.rate.boxes + ' box(es), '
+    '<div style="font-weight:800;margin-bottom:3px;">💵 ' + uadCarName() + ' price — ' + A.rate.boxes + ' box(es), '
     + A.rate.wt + ' lb, from ' + esc(A.rate.origin)
-    + ' <span style="font-weight:600;opacity:.75;">(click a line to choose)</span></div>' + rows)
-    + (fxLine ? ('<div style="margin:-4px 0 10px;padding:0 12px;font-size:12px;">' + fxLine
-        + ' <span style="color:#94a3b8;font-size:10.5px;">(quote only — FedEx labels are not turned on yet)</span></div>') : '');
+    + ' <span style="font-weight:600;opacity:.75;">(click a line to choose)</span></div>' + rows);
 }
 
 function upsAdShipTo(){
@@ -17388,7 +17421,7 @@ async function upsAdCreate(){
   const p = upsAdProblems();
   if(p.length){ showToast('⚠ ' + p.length + ' thing(s) still missing'); upsAdRender(); return; }
   const t = upsAdShipTo(), n = _upsAd.boxes.length;
-  const svc = (UPSAD_SVC.find(x=>x[0]===_upsAd.service)||['','?'])[1];
+  const svc = uadSvcName(_upsAd.service);
   const bill = _upsAd.billMode==='receiver'
       ? ('RECEIVER pays — their UPS account ' + _upsAd.acct)
       : 'WE pay (our UPS account)';
@@ -17401,20 +17434,37 @@ async function upsAdCreate(){
      (svc / bill / t / n 은 아래 기록과 화면 문구에서 계속 쓴다) */
   void svc; void bill;
   const btn = document.getElementById('uad-create');
-  if(btn){ btn.disabled=true; btn.textContent='⏳ Contacting UPS...'; }
+  if(btn){ btn.disabled=true; btn.textContent='⏳ Contacting ' + uadCarName() + '...'; }
   try{
-    const r = await fetch(UPS_LABEL_URL, {
+    /* UADFX-1 - 묻는 곳과 몸통만 갈린다. 답을 받은 뒤는 아래가 전부 그대로다
+       (fedex 워커가 UPS /label 과 **같은 모양**으로 답한다). */
+    const _fx = uadCar() === 'fedex';
+    const _acct = String(_upsAd.acct||'').trim();
+    const r = _fx
+      ? await fetch(FEDEX_SHIP_URL, {
+          method:'POST', headers:wkHdr(),
+          body: JSON.stringify({ origin:_upsAd.origin, service:_upsAd.service,
+            shipTo: Object.assign({}, t, { country:'US' }),
+            packages: upsAdPkgs().map(b=>({ l:Number(b.l)||0, w:Number(b.w)||0, h:Number(b.h)||0, wt:Number(b.wt)||0 })),
+            reference: String(_upsAd.ref||'').trim().slice(0,35),
+            labelType: 'ZPLII',
+            labelOrient: FEDEX_LABEL_ORIENT,   /* ⚠⚠ 빼면 라벨이 잘린다 */
+            billing: _upsAd.billMode,
+            billAccount: (_upsAd.billMode === 'receiver') ? _acct : '',
+            test: !!_upsAd.test })
+        })
+      : await fetch(UPS_LABEL_URL, {
       method:'POST', headers:wkHdr(),
       body: JSON.stringify({ origin:_upsAd.origin, service:_upsAd.service,
         shipTo: t, packages: upsAdPkgs(),
-        billing: { mode:_upsAd.billMode, account:String(_upsAd.acct||'').trim().toUpperCase(),
+        billing: { mode:_upsAd.billMode, account:_acct.toUpperCase(),
                    zip:String(_upsAd.bzip||'').trim() },
         reference: String(_upsAd.ref||'').trim().slice(0,35),
         test: !!_upsAd.test })
     });
     const j = await r.json();
     if(!j || !j.ok){
-      showToast('❌ ' + ((j&&j.error) || 'UPS label failed'));
+      showToast('❌ ' + ((j&&j.error) || (uadCarName() + ' label failed')));
       if(btn){ btn.disabled=false; btn.textContent='🏷 Create label'; }
       return;
     }
@@ -17429,7 +17479,7 @@ async function upsAdCreate(){
     if(!j.test) await upsAdSave();        /* 테스트는 저장하지 않는다 */
     showToast(j.test ? '🧪 Test label made (nothing saved)' : ('🏷 ' + (j.tracking||[]).length + ' label(s) created'));
   }catch(e){
-    showToast('❌ UPS failed — ' + String(e.message||e).slice(0,60));
+    showToast('❌ ' + uadCarName() + ' failed — ' + String(e.message||e).slice(0,60));
   }
   upsAdRender();
 }
@@ -17578,7 +17628,7 @@ async function upsAdSendOne(to, subject, html, pdfB64, fileName){
 async function upsAdMailFor(rec, to, opts){
   opts = opts || {};
   const trk = (rec.tracking||[]).filter(Boolean);
-  const svcName = (UPSAD_SVC.find(x=>x[0]===rec.service)||['','?'])[1];
+  const svcName = uadSvcName(rec.service);
   const rows = trk.map((t,i)=>'<tr style="background:' + (i % 2 ? '#faf9f5' : '#fdfdfb') + ';">'
       + psmTd('Box ' + (i+1)) + psmTd(psmTrackLinks([t], 'UPS')) + '</tr>').join('');
   let pdf = null;
@@ -17622,7 +17672,13 @@ async function upsAdMailFor(rec, to, opts){
 
 /* 워커에 취소를 보내고 DB 에 도장을 찍는다. 부르기 전에 사람에게 물어봐야 한다. */
 async function upsAdVoidFor(rec){
-  const r = await fetch(UPS_LABEL_URL.replace('/label','/void'), { method:'POST', headers:wkHdr(),
+  /* UADFX-1 - 그 줄이 어느 택배사 것인지는 **서비스 코드**로 안다.
+     ⚠ FedEx 취소는 추적번호로 한다 (shipmentId 가 아니다). */
+  const _fx = uadCarOf(rec.service) === 'fedex';
+  const r = _fx
+    ? await fetch(FEDEX_SHIP_URL.replace('/ship','/void'), { method:'POST', headers:wkHdr(),
+        body: JSON.stringify({ tracking:(rec.tracking||[])[0] || '' }) })
+    : await fetch(UPS_LABEL_URL.replace('/label','/void'), { method:'POST', headers:wkHdr(),
     body: JSON.stringify({ shipmentId:rec.shipmentId, tracking:rec.tracking }) });
   const j = await r.json();
   if(!j || !j.ok) throw new Error((j && j.error) || 'Void failed');
@@ -17633,7 +17689,7 @@ async function upsAdVoidFor(rec){
   return at;
 }
 function upsAdVoidAsk(rec){
-  return confirm('Void this UPS shipment?\n\n' + (rec.tracking||[]).join(', ')
+  return confirm('Void this ' + uadCarNameOf(rec.service) + ' shipment?\n\n' + (rec.tracking||[]).join(', ')
     + '\n\nThe label becomes unusable. Throw away any printed copy.');
 }
 
@@ -17797,7 +17853,7 @@ function upsAdHistHtml(){
       + td(esc(dt) + '<div style="font-size:10px;color:#9ca3af;">' + esc(String(r.created_by||'').split('@')[0]) + '</div>', 'white-space:nowrap;')
       + td('<b>' + esc(r.reference||'') + '</b>' + (r.memo ? ('<div style="font-size:10.5px;color:#6b7280;">' + esc(r.memo) + '</div>') : ''))
       + td(esc(st.name||r.customer||'') + '<div style="font-size:10.5px;color:#6b7280;">' + esc([st.city, st.state, st.zip].filter(Boolean).join(' ')) + '</div>')
-      + td(esc(r.origin||'') + ' \u00b7 ' + esc((UPSAD_SVC.find(x=>x[0]===r.service)||['','?'])[1])
+      + td(esc(r.origin||'') + ' \u00b7 ' + esc(uadCarNameOf(r.service) + ' ' + uadSvcName(r.service))
           + '<div style="font-size:10.5px;color:#6b7280;">' + r.box_count + ' box(es) \u00b7 ' + (r.bill_mode==='receiver'?'receiver pays':'we pay') + '</div>', 'white-space:nowrap;')
       + td(trk + (vd ? '<div style="font-size:10.5px;font-weight:800;color:#b91c1c;">VOIDED</div>' : '')
           + (r.emailed_to ? ('<div style="font-size:10px;color:#059669;font-weight:700;">\u2713 ' + esc(r.emailed_to) + '</div>') : ''))
@@ -17837,8 +17893,8 @@ function upsAdOpen(){
   d.id = 'modal-upsad';
   d.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,.55);z-index:130;display:flex;align-items:center;justify-content:center;';
   d.innerHTML = '<div id="upsad-card" style="background:#fff;border-radius:12px;width:820px;max-width:96vw;max-height:92vh;display:flex;flex-direction:column;box-shadow:0 20px 60px rgba(0,0,0,.35);">'
-    + '<div style="background:#7c2d12;color:#fff;border-radius:12px 12px 0 0;padding:12px 18px;font-weight:800;display:flex;justify-content:space-between;align-items:center;">'
-    + '\u{1F4E6} UPS Label — no order <span style="font-weight:600;font-size:11.5px;opacity:.85;">samples · returns · supplies</span>'
+    + '<div id="uad-head" style="background:#7c2d12;color:#fff;border-radius:12px 12px 0 0;padding:12px 18px;font-weight:800;display:flex;justify-content:space-between;align-items:center;">'
+    + '<span id="uad-head-t">\u{1F4E6} UPS Label — no order</span> <span style="font-weight:600;font-size:11.5px;opacity:.85;">samples · returns · supplies</span>'
     + '<button onclick="document.getElementById(\'modal-upsad\').remove()" style="background:none;border:none;color:#fff;font-size:18px;cursor:pointer;">✕</button></div>'
     + '<div id="upsad-body" style="overflow-y:auto;flex:1;padding:14px 18px;"></div></div>';
   document.body.appendChild(d);
@@ -17849,6 +17905,13 @@ function upsAdOpen(){
 function upsAdRender(){
   const box = document.getElementById('upsad-body'); if(!box || !_upsAd) return;
   const A = _upsAd, R = A.res;
+  /* UADFX-1 - 창 머리도 택배사를 따라간다 (FedEx = 보라) */
+  try{
+    const _hd = document.getElementById('uad-head');
+    const _ht = document.getElementById('uad-head-t');
+    if(_hd) _hd.style.background = uadCarColor();
+    if(_ht) _ht.textContent = (uadCar()==='fedex' ? '\u{1F4E6} FedEx' : '\u{1F69A} UPS') + ' Label \u2014 no order';
+  }catch(e){}
   /* UPSAD-v6 - 📋 Completed 탭. 여기서 바로 갈라져 나간다 (아래 새 라벨 화면은 그대로) */
   if(_upsAdTab === 'done'){ box.innerHTML = upsAdTabBar() + upsAdHistHtml(); return; }
   const inp = (id, v, ph, w) => '<input id="' + id + '" class="fi" value="' + esc(String(v==null?'':v))
@@ -17858,6 +17921,9 @@ function upsAdRender(){
   const lb = t => '<div style="font-size:9.5px;font-weight:800;color:#9ca3af;letter-spacing:.05em;text-transform:uppercase;margin:0 0 1px 2px;">' + t + '</div>';
   const ob = w => '<button class="btn btn-sm" onclick="upsAdOrigin(\'' + w + '\')" style="font-weight:800;'
     + (A.origin===w ? 'background:#7c2d12;border-color:#7c2d12;color:#fff;' : '') + '">' + w + '</button>';
+  /* UADFX-1 - 택배사 단추. 창을 연 뒤에도 바꿀 수 있다 (라벨이 나온 뒤에는 잠긴다) */
+  const cb = (c,t) => '<button class="btn btn-sm" onclick="uadSetCarrier(\'' + c + '\')" style="font-weight:800;font-size:12px;'
+    + (uadCar()===c ? ('background:' + uadCarColor() + ';border-color:' + uadCarColor() + ';color:#fff;') : '') + '">' + t + '</button>';
   const bb = (m,t) => '<button class="btn btn-sm" onclick="upsAdBill(\'' + m + '\')" style="font-weight:700;font-size:11.5px;'
     + (A.billMode===m ? 'background:#0f2a4a;border-color:#0f2a4a;color:#fff;' : '') + '">' + t + '</button>';
   const cl = upsAdCustList();
@@ -17874,11 +17940,14 @@ function upsAdRender(){
         + _upsAdMyBox.map((m,mi)=>'<option value="my:' + mi + '"' + (myAt===mi?' selected':'') + '>'
             + esc('📐 ' + m.n + '  ' + m.l + 'x' + m.w + 'x' + m.h) + '</option>').join('')
         + '</optgroup><optgroup label="UPS PACKAGING">' : '';
-    const pkgs = myPkgs + UPS_PACKAGING.map(p=>'<option value="' + p.code + '"'
+    /* UADFX-1 - FedEx 는 우리 박스로만 보낸다 → UPS 규격 포장(Letter/Pak/Express Box…)을 안 띄운다 */
+    const _packList = (uadCar() === 'fedex') ? UPS_PACKAGING.filter(p=>p.code === '02' || p.code === '02L') : UPS_PACKAGING;
+    const pkgs = myPkgs + _packList.map(p=>'<option value="' + p.code + '"'
         + ((myAt < 0 && String(b.pkg)===p.code) ? ' selected' : '') + '>'
-      + esc(p.name + upsPackNote(p.code)) + '</option>').join('') + (myPkgs ? '</optgroup>' : '');
-    const warn = upsPackOkFor(b.pkg, A.service) ? '' :
-      '<div style="font-size:10.5px;color:#b91c1c;font-weight:700;">⚠ UPS declines this packaging on ' + esc((UPSAD_SVC.find(x=>x[0]===A.service)||['','?'])[1]) + '</div>';
+      + esc(p.name + (uadCar() === 'fedex' ? '' : upsPackNote(p.code))) + '</option>').join('') + (myPkgs ? '</optgroup>' : '');
+    /* UADFX-1 - ⚠ 이건 **UPS 규격 포장 규칙**이다. FedEx 서비스 코드에 대고 돌리면 틀린 경고가 뜬다 */
+    const warn = (uadCar() === 'ups' && !upsPackOkFor(b.pkg, A.service)) ?
+      '<div style="font-size:10.5px;color:#b91c1c;font-weight:700;">⚠ UPS declines this packaging on ' + esc(uadSvcName(A.service)) + '</div>' : '';
     return '<tr><td style="padding:4px 3px;font-weight:800;color:#7c2d12;font-size:11.5px;">' + (i+1) + '</td>'
       + '<td style="padding:4px 3px;"><select id="uad-pkg' + i + '" class="fi" onchange="upsAdPkgChange(' + i + ',this.value)" style="font-size:11.5px;padding:4px 5px;max-width:230px;">' + pkgs + '</select>' + warn + '</td>'
       + '<td style="padding:4px 3px;">' + num('l',b.l) + '</td><td style="padding:4px 3px;">' + num('w',b.w) + '</td>'
@@ -17928,7 +17997,7 @@ function upsAdRender(){
       + (R.test ? '🧪 TEST label — not a real shipment, nothing saved' : '🏷 Label created') + (R.voided?' · VOIDED':'') + '</div>'
       + '<div style="margin-top:6px;font-family:Consolas,monospace;font-size:12.5px;font-weight:800;">' + (R.tracking||[]).map(t=>esc(t)).join('<br>') + '</div>'
       + '<div style="margin-top:6px;font-size:11.5px;color:#374151;">' + R.boxCount + ' box(es) · from ' + esc(R.origin)
-      + ' · ' + esc((UPSAD_SVC.find(x=>x[0]===R.service)||['','?'])[1])
+      + ' · ' + esc(uadCarNameOf(R.service) + ' ' + uadSvcName(R.service))
       + ' · billed to ' + esc(R.billing==='receiver'?'receiver':'us')
       + (R.ourCost!=null ? (' · our cost $' + Number(R.ourCost).toFixed(2)) : '') + '</div>'
       + '<div style="margin-top:10px;display:flex;gap:7px;flex-wrap:wrap;">'
@@ -17960,9 +18029,12 @@ function upsAdRender(){
   box.innerHTML = upsAdTabBar() +
     '<div style="display:flex;gap:16px;align-items:flex-end;flex-wrap:wrap;">'
     + '<div><div style="font-size:10.5px;font-weight:800;color:#6b7280;letter-spacing:.06em;">SHIP FROM</div><div style="display:flex;gap:5px;margin-top:3px;">' + ob('SC') + ob('CA') + '</div></div>'
+    /* UADFX-1 - 택배사 고르는 칸. SHIP FROM 바로 옆이라 「어디서 · 누구로」 가 한눈에 보인다 */
+    + '<div><div style="font-size:10.5px;font-weight:800;color:#6b7280;letter-spacing:.06em;">CARRIER</div><div style="display:flex;gap:5px;margin-top:3px;">'
+    + cb('ups','\u{1F69A} UPS') + cb('fedex','\u{1F4E6} FedEx') + '</div></div>'
     + '<div><div style="font-size:10.5px;font-weight:800;color:#6b7280;letter-spacing:.06em;">SERVICE</div>'
     + '<select id="uad-svc" class="fi" onchange="upsAdSync();upsAdRender();" style="font-size:12px;padding:5px 7px;margin-top:3px;">'
-    + UPSAD_SVC.map(s=>'<option value="' + s[0] + '"' + (A.service===s[0]?' selected':'') + '>' + s[1] + '</option>').join('') + '</select></div>'
+    + uadSvcList().map(s=>'<option value="' + s[0] + '"' + (A.service===s[0]?' selected':'') + '>' + s[1] + '</option>').join('') + '</select></div>'   /* UADFX-1 */
     + '<div><div style="font-size:10.5px;font-weight:800;color:#6b7280;letter-spacing:.06em;">WHO PAYS</div><div style="display:flex;gap:5px;margin-top:3px;">'
     + bb('shipper','We pay') + bb('receiver','Receiver pays') + '</div></div>'
     + '<label style="display:flex;align-items:center;gap:5px;font-size:11.5px;font-weight:700;color:#5b21b6;cursor:pointer;">'
@@ -18001,7 +18073,7 @@ function upsAdRender(){
     + savePane
 
     + '<div style="margin-top:14px;display:grid;grid-template-columns:1fr 1fr;gap:8px;">'
-    + '<div><div style="font-size:10.5px;font-weight:800;color:#b45309;letter-spacing:.06em;">REFERENCE * — shows on the UPS invoice</div>'
+    + '<div><div style="font-size:10.5px;font-weight:800;color:#b45309;letter-spacing:.06em;">REFERENCE * — shows on the ' + uadCarName() + ' invoice</div>'
     + inp('uad-ref',A.ref,'e.g. SAMPLE 8368 to Aftco') + '</div>'
     + '<div><div style="font-size:10.5px;font-weight:800;color:#6b7280;letter-spacing:.06em;">MEMO (kept in our records only)</div>'
     + inp('uad-memo',A.memo,'why this box is going out') + '</div></div>'
@@ -18011,7 +18083,7 @@ function upsAdRender(){
     /* UPSAD-v5 - [stated] 하윤: "create label버튼 오른쪽으로 옮겨주고" */
     + (R ? '' : '<div style="margin-top:14px;display:flex;gap:8px;align-items:center;justify-content:space-between;">'
       + '<span style="font-size:11px;color:#9ca3af;">⚠ This does not touch inventory.</span>'
-      + '<button class="btn btn-sm" id="uad-create" onclick="upsAdCreate()" style="background:#7c2d12;border-color:#7c2d12;color:#fff;font-weight:800;">🏷 Create label</button></div>')
+      + '<button class="btn btn-sm" id="uad-create" onclick="upsAdCreate()" style="background:' + uadCarColor() + ';border-color:' + uadCarColor() + ';color:#fff;font-weight:800;">' + (uadCar()==='fedex'?'📦':'🏷') + ' Create label</button></div>')
     + resHtml;
 
   /* UPSAD-v2 - 단추 없이 저절로 요금이 뜨게 한다.
