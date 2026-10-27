@@ -314,7 +314,7 @@ body.po-dragging{user-select:none;}
   </span>
   <select id="lang-sel" onchange="setLang(this.value)" style="font-size:11px;padding:3px 6px;border-radius:5px;border:none;background:#1d3f66;color:#fff;"><option value="ko">한국어</option><option value="en">English</option><option value="es">Español</option></select>
   <button id="wide-btn" class="btn btn-sm" onclick="toggleWide()" title="화면 넓게 / 좁게 — 기본은 넓게 (이 브라우저에만 저장돼)" style="padding:2px 8px;font-size:10px;background:#1d3f66;color:#cfe0f2;border-color:#2b5384;">↔ Wide</button>
-  <span id="app-ver" style="font-size:10px;color:#9fb8d4;">v1335</span>
+  <span id="app-ver" style="font-size:10px;color:#9fb8d4;">v1336</span>
 </div>
 <script>
 // ↔ 넓게 보기 — 브라우저마다 따로 저장 (v793)
@@ -8130,6 +8130,11 @@ function printCreditMemo(base, ra){
     return;
   }
   printDocHtml(buildCreditMemoHtml(rec, ret), ret.received.cm);
+  /* CMTAB-1 - 여기서 뽑아도 📝 Credit Memo 할 일 목록에서 빠져야 한다.
+     ⚠ 도장을 찍는 곳은 `cmMarkPrinted` 하나다 - 두 길이 따로 찍으면 한쪽만 사라진다. */
+  try{ cmMarkPrinted(base, ra).then(function(){
+    if(window._invNpTab === 'cm' && document.getElementById('invnp-body')) invNpRender();
+  }); }catch(e){}
 }
 // ═══ 📚 발행된 Credit Memo 이력 (v773) ═══
 // 내용은 원래부터 오더 레코드(meta._returns[].received)에 저장돼 있었지만, 그 오더를 찾아가야만 볼 수 있었다.
@@ -8147,12 +8152,147 @@ function cmAllMemos(){
         pcs: (Number(rc.restockTotal)||0) + (Number(rc.failedTotal)||0),
         po: (rec.meta&&rec.meta.po)||'', cust: cust,
         custKey: (typeof custCanon==='function') ? custCanon(cust) : String(cust||'').trim().toUpperCase(),
-        emailed: !!rc.cmEmailedAt
+        emailed: !!rc.cmEmailedAt,
+        /* CMTAB-1 - 📝 Credit Memo 할 일 칸이 쓰는 칸들.
+           ⭐ 줄을 모으는 곳은 이 함수 하나다 - 새로 긁지 않고 여기에 더했다 */
+        printed: !!rc.cmPrintedAt,
+        printedAt: rc.cmPrintedAt || '',
+        emailedAt: rc.cmEmailedAt || '',
+        wh: String((r.lines && r.lines[0] && (r.lines[0].toWh || r.lines[0].wh)) || ''),
+        kind: (typeof raIsFrt === 'function' && raIsFrt(r)) ? 'freight'
+            : ((typeof raIsAdj === 'function' && raIsAdj(r)) ? 'allowance' : 'return')
       });
     });
   });
   out.sort((a,b)=>String(b.at).localeCompare(String(a.at)));   // 최신순
   return out;
+}
+/* ═══ CMTAB-1 (v1336) - 📝 Credit Memo 할 일 ═══
+   [stated] 하윤: "여기 history 옆에 Credit Memo도 만들어줘. 그래야 우리가 프린트를 해서 mas 200에 넣지"
+   ⚠⚠ 기준선: 이 날짜보다 **전에 발행된** 크레딧 메모는 안 쫓는다. 프린트 도장이 오늘 생겼으므로
+      옛 메모는 전부 「안 찍었다」로 보일 것이고, 그건 사실이 아니다 (RAREP-2 와 같은 자리). */
+const CM_TODO_FROM = '2026-10-27';
+/* ⭐ 「아직 할 일이 남았나」 판정은 여기 한 군데. 알약 숫자·목록·인쇄가 전부 이걸 본다 */
+function cmTodoRows(){
+  let all = [];
+  try{ all = cmAllMemos() || []; }catch(e){ all = []; }
+  return all.filter(function(m){
+    if(String(m.at || '').slice(0, 10) < CM_TODO_FROM) return false;   /* 옛 것은 안 쫓는다 */
+    return !m.printed || !m.emailed;
+  });
+}
+function cmTodoCount(){ try{ return cmTodoRows().length; }catch(e){ return 0; } }
+/* 프린트 도장 - **이 함수 하나**가 찍는다 (묶음 인쇄와 크레딧 메모 창이 같이 쓴다) */
+async function cmMarkPrinted(base, ra){
+  const rec = (savedCache || []).find(function(s2){ return s2.base === base; });
+  if(!rec) return false;
+  const ret = recReturns(rec).find(function(r){ return r.ra === ra; });
+  if(!ret || !ret.received) return false;
+  if(ret.received.cmPrintedAt) return true;                            /* 이미 찍혀 있다 */
+  const now = new Date().toISOString();
+  ret.received.cmPrintedAt = now;
+  ret.received.cmPrintedBy = (SESS && SESS.email) || '';
+  rec.meta = rec.meta || {};
+  rec.meta._returns = recReturns(rec).map(function(x){ return x.ra === ra ? ret : x; });
+  try{
+    await sbFetch('/rest/v1/pr_orders?base=eq.' + encodeURIComponent(base),
+      { method:'PATCH', headers:{ Prefer:'return=minimal' },
+        body: JSON.stringify({ meta: rec.meta, updated_at: now }) });
+    return true;
+  }catch(e){
+    /* ⚠ 종이는 이미 나갔다 - 되돌리지 않는다. 대신 조용히 넘어가지 않게 말한다 */
+    showToast('\u26a0 Printed, but the print mark did not save \u2014 ' + ra);
+    return false;
+  }
+}
+/* 체크한 것을 한 묶음으로 인쇄하고 도장을 찍는다 */
+async function cmPrintSelected(){
+  const picks = [].slice.call(document.querySelectorAll('.cmnp-cb:checked'))
+    .map(function(c){ return { base:c.dataset.base, ra:c.dataset.ra }; });
+  if(!picks.length){ showToast('\u{1F4DD} Check at least one credit memo to print'); return; }
+  const btn = document.getElementById('cmnp-print');
+  if(btn){ btn.disabled = true; btn.textContent = 'Preparing\u2026'; }
+  const docs = [], done = [];
+  try{
+    picks.forEach(function(p){
+      const rec = (savedCache || []).find(function(s2){ return s2.base === p.base; }); if(!rec) return;
+      const ret = recReturns(rec).find(function(r){ return r.ra === p.ra; }); if(!ret) return;
+      if(typeof cmIssued === 'function' && !cmIssued(ret)) return;      /* CMGUARD-1 */
+      let html = '';
+      try{ html = buildCreditMemoHtml(rec, ret); }catch(e){ html = ''; }
+      if(!html) return;
+      docs.push(html); done.push(p);
+    });
+    if(!docs.length){ showToast('\u{1F4DD} Nothing was printed'); return; }
+    printDocHtml(docs.join('<div style="page-break-before:always;break-before:page;"></div>'), 'CREDIT MEMOS');
+    for(const p of done){ await cmMarkPrinted(p.base, p.ra); }
+    showToast('\u{1F4DD} ' + docs.length + ' credit memo(s) printed');
+  }finally{
+    const b2 = document.getElementById('cmnp-print');
+    if(b2){ b2.disabled = false; b2.textContent = '\u{1F5A8} Print selected'; }
+    if(window._invNpTab === 'cm') invNpRender();
+    if(typeof renderSaved === 'function') renderSaved();
+  }
+}
+function cmToggleAll(on){
+  document.querySelectorAll('.cmnp-cb').forEach(function(c){ c.checked = !!on; });
+  cmNpCount();
+}
+function cmNpCount(){
+  const picks = document.querySelectorAll('.cmnp-cb:checked');
+  let sum = 0;
+  picks.forEach(function(c){ sum += Number(c.dataset.amt) || 0; });
+  const n = document.getElementById('cmnp-n'); if(n) n.textContent = picks.length;
+  const t = document.getElementById('cmnp-sum'); if(t) t.textContent = invNpMoney(Math.round(sum*100)/100);
+}
+function cmKindChip(k){
+  if(k === 'freight')   return '<span style="font-size:9.5px;font-weight:900;background:#eff6ff;border:1px solid #bfdbfe;color:#1e3a8a;border-radius:20px;padding:1px 7px;white-space:nowrap;">\u{1F69A} SHIPPING</span>';
+  if(k === 'allowance') return '<span style="font-size:9.5px;font-weight:900;background:#fff7ed;border:1px solid #fed7aa;color:#7c2d12;border-radius:20px;padding:1px 7px;white-space:nowrap;">\u{1F4B2} PRICE</span>';
+  return '<span style="font-size:9.5px;font-weight:900;background:#fff1f2;border:1px solid #fecdd3;color:#be123c;border-radius:20px;padding:1px 7px;white-space:nowrap;">\u21a9 RETURN</span>';
+}
+function cmNpRowsHtml(){
+  const rows = cmTodoRows();
+  if(!rows.length) return '<div style="padding:26px;text-align:center;color:#94a3b8;font-size:12.5px;">'
+    + '\u{1F389} Every credit memo is printed and emailed \u2014 nothing left to do.</div>';
+  const td = 'padding:6px 9px;border-bottom:1px solid #f1f5f9;';
+  return '<table style="width:100%;border-collapse:collapse;font-size:11.5px;">'
+    + '<thead><tr style="background:#f8fafc;color:#64748b;font-size:10px;text-transform:uppercase;letter-spacing:.06em;">'
+    +   '<th style="' + td + 'width:28px;"></th>'
+    +   '<th style="' + td + 'text-align:left;">Credit memo #</th>'
+    +   '<th style="' + td + 'text-align:left;">Customer</th>'
+    +   '<th style="' + td + 'text-align:left;">PO</th>'
+    +   '<th style="' + td + 'text-align:left;">Type</th>'
+    +   '<th style="' + td + 'text-align:right;">Amount</th>'
+    +   '<th style="' + td + 'text-align:center;">Printed</th>'
+    +   '<th style="' + td + 'text-align:center;">Emailed</th></tr></thead><tbody>'
+    + rows.map(function(m){
+        const dt = String(m.at || '').slice(0, 10);
+        return '<tr>'
+          + '<td style="' + td + 'text-align:center;">'
+          +   (m.printed
+                ? '<span style="color:#cbd5e1;" title="Already printed">\u2713</span>'
+                : '<input type="checkbox" class="cmnp-cb" data-base="' + esc(m.base) + '" data-ra="' + esc(m.ra) + '"'
+                  + ' data-amt="' + (Number(m.amt)||0) + '" checked onchange="cmNpCount()" style="width:15px;height:15px;accent-color:#7c2d12;cursor:pointer;">')
+          + '</td>'
+          + '<td style="' + td + 'font-family:Consolas,monospace;">'
+          +   '<button onclick="openCreditMemo(\'' + esc(m.base) + '\',\'' + esc(m.ra) + '\')" title="Open this credit memo \u2014 print / email"'
+          +   ' style="font-family:Consolas,monospace;font-size:11.5px;font-weight:800;color:#7c2d12;background:none;border:0;padding:0;cursor:pointer;text-decoration:underline;text-underline-offset:2px;">'
+          +   esc(m.cm) + '</button>'
+          +   '<div style="font-size:9.5px;color:#94a3b8;">' + esc(dt) + (m.wh ? (' \u00b7 ' + esc(m.wh)) : '') + '</div>'
+          + '</td>'
+          + '<td style="' + td + 'font-weight:700;color:#0f172a;">' + esc(m.cust || '') + '</td>'
+          + '<td style="' + td + 'font-family:Consolas,monospace;">' + esc(m.po || '\u2014') + '</td>'
+          + '<td style="' + td + '">' + cmKindChip(m.kind) + '</td>'
+          + '<td style="' + td + 'text-align:right;font-family:Consolas,monospace;font-weight:800;color:#be123c;">\u2212' + invNpMoney(m.amt) + '</td>'
+          + '<td style="' + td + 'text-align:center;">' + (m.printed
+                ? '<span style="color:#166534;font-weight:900;" title="' + esc(String(m.printedAt).slice(0,16).replace("T"," ")) + '">\u2713</span>'
+                : '<span style="color:#b91c1c;font-weight:800;">needs print</span>') + '</td>'
+          + '<td style="' + td + 'text-align:center;">' + (m.emailed
+                ? '<span style="color:#166534;font-weight:900;" title="' + esc(String(m.emailedAt).slice(0,16).replace("T"," ")) + '">\u2713</span>'
+                : '<button class="btn btn-sm" style="font-size:10px;padding:1px 7px;font-weight:800;color:#1d4ed8;border-color:#bfdbfe;" onclick="openCreditMemo(\'' + esc(m.base) + '\',\'' + esc(m.ra) + '\')" title="Open it and press \u{1F4E7} Email to customer">\u2709 send</button>') + '</td>'
+          + '</tr>';
+      }).join('')
+    + '</tbody></table>';
 }
 function cmHistHtml(base, ra, mode){
   const rec=(savedCache||[]).find(s=>s.base===base);
@@ -51250,6 +51390,8 @@ function invNpRefresh(){
 function invNpRender(){
   const body = document.getElementById('invnp-body'); if(!body) return;
   if(window._invNpTab === 'hist'){ body.innerHTML = invHistHtml(); return; }
+  /* CMTAB-1 */
+  if(window._invNpTab === 'cm'){ body.innerHTML = cmNpRowsHtml(); cmNpCount(); return; }
   body.innerHTML = invNpRowsHtml();
   invNpCount();
 }
@@ -51514,15 +51656,24 @@ function invHistHtml(){
   }).join('') + '';
 }
 function invNpTab(which){
-  const hist = (which === 'hist');
-  window._invNpTab = hist ? 'hist' : 'todo';
-  const bar = document.getElementById('invnp-bar'); if(bar) bar.style.display = hist ? 'none' : 'flex';
-  const foot = document.getElementById('invnp-foot'); if(foot) foot.style.display = hist ? 'none' : '';
-  const note = document.getElementById('invnp-note'); if(note) note.style.display = hist ? 'none' : '';
-  const hnote = document.getElementById('invnp-hnote'); if(hnote) hnote.style.display = hist ? '' : 'none';
-  ['todo','hist'].forEach(t=>{
+  /* CMTAB-1 - 칸이 셋이 되었다: todo / cm / hist */
+  const w = (which === 'hist' || which === 'cm') ? which : 'todo';
+  window._invNpTab = w;
+  const show = function(id, on){ const e = document.getElementById(id); if(e) e.style.display = on ? '' : 'none'; };
+  const bar = document.getElementById('invnp-bar'); if(bar) bar.style.display = (w === 'todo') ? 'flex' : 'none';
+  const cbar = document.getElementById('invnp-cmbar'); if(cbar) cbar.style.display = (w === 'cm') ? 'flex' : 'none';
+  show('invnp-foot', w === 'todo');
+  show('invnp-note', w === 'todo');
+  show('invnp-hnote', w === 'hist');
+  show('invnp-cmnote', w === 'cm');
+  /* CMTAB-1 - 빈 인보이스 번호 경고는 인보이스 쪽 일이다. 크레딧 메모 칸에서는 자리만 먹는다
+     (To Do 칸에서는 그대로 보인다 - 없애는 게 아니라 이 칸에서만 접는다) */
+  try{ const g = document.getElementById('invnp-gap');
+       if(g && w === 'cm'){ g.dataset.cmhid = '1'; g.style.display = 'none'; }
+       else if(g && g.dataset.cmhid === '1'){ delete g.dataset.cmhid; g.style.display = (g.innerHTML ? '' : 'none'); } }catch(e){}
+  ['todo','cm','hist'].forEach(t=>{
     const b = document.getElementById('invnp-tab-' + t); if(!b) return;
-    const on = (t === (hist ? 'hist' : 'todo'));
+    const on = (t === w);
     b.style.background = on ? '#fff' : 'transparent';
     b.style.color = on ? '#9a3412' : '#fed7aa';
     b.style.fontWeight = on ? '900' : '700';
@@ -51540,6 +51691,7 @@ function invNpOpen(){
     +   '<div style="font-weight:400;font-size:10.5px;opacity:.92;">Each invoice needs BOTH: printed for MAS 200, and emailed to the customer. A row leaves this list when both are done.</div>'
     +   '<div style="display:flex;gap:4px;margin-top:8px;">'
     +     '<button id="invnp-tab-todo" onclick="invNpTab(\'todo\')" style="border:none;border-radius:7px 7px 0 0;padding:5px 14px;font-size:12px;font-weight:900;cursor:pointer;background:#fff;color:#9a3412;">\u{1F4CB} To Do</button>'
+    +     '<button id="invnp-tab-cm" onclick="invNpTab(\'cm\')" style="border:none;border-radius:7px 7px 0 0;padding:5px 14px;font-size:12px;font-weight:700;cursor:pointer;background:transparent;color:#fed7aa;" title="Credit memos that still need printing for MAS 200 or emailing to the customer">\u{1F4DD} Credit Memo<span id="invnp-tab-cm-n" style="margin-left:6px;font-size:10px;font-weight:900;background:#fff;color:#c2410c;border-radius:20px;padding:0 6px;"></span></button>'
     +     '<button id="invnp-tab-hist" onclick="invNpTab(\'hist\')" style="border:none;border-radius:7px 7px 0 0;padding:5px 14px;font-size:12px;font-weight:700;cursor:pointer;background:transparent;color:#fed7aa;" title="Days where the invoices are finished - printed and emailed">\u{1F558} History</button>'
     +   '</div></div>'
     + '<div id="invnp-gap" style="display:none;padding:8px 12px;background:#fef2f2;border-bottom:1px solid #fecaca;font-size:11px;color:#991b1b;line-height:1.5;"></div>'
@@ -51552,14 +51704,29 @@ function invNpOpen(){
     +     '<button class="btn btn-sm" id="invnp-getno" style="background:#c2410c;border-color:#c2410c;color:#fff;font-weight:800;" onclick="invNpGetNoSelected()" title="Gives every checked invoice its number in one go. Nothing is printed and nothing is emailed.">\u0023 Issue numbers</button>'
     +     '<button class="btn btn-sm btn-primary" id="invnp-print" style="background:#065f46;border-color:#065f46;font-weight:800;" onclick="invNpPrint()" title="Prints every checked invoice in one go. Only invoices that have not been printed yet can be checked.">🖨 Print selected</button>'
     +   '</span></div>'
+    + '<div id="invnp-cmbar" style="display:none;align-items:center;gap:10px;padding:8px 12px;background:#fdf4ff;border-bottom:1px solid #e9d5ff;">'
+    +   '<label style="display:flex;align-items:center;gap:7px;font-size:12px;font-weight:800;color:#7c2d12;cursor:pointer;">'
+    +     '<input type="checkbox" id="cmnp-all" checked style="width:16px;height:16px;accent-color:#7c2d12;" onchange="cmToggleAll(this.checked)"> Select all to print</label>'
+    +   '<span style="margin-left:auto;display:flex;gap:8px;align-items:center;">'
+    +     '<span style="font-size:11.5px;color:#7c2d12;font-weight:700;"><b id="cmnp-n">0</b> to print</span>'
+    +     '<span id="cmnp-sum" style="font-family:Consolas,monospace;font-size:14px;font-weight:900;color:#be123c;background:#fff1f2;border:1px solid #fecdd3;border-radius:7px;padding:2px 11px;" title="Total of the credit memos you have checked">$0.00</span>'
+    +     '<button class="btn btn-sm btn-primary" id="cmnp-print" style="background:#7c2d12;border-color:#7c2d12;font-weight:800;" onclick="cmPrintSelected()" title="Prints every checked credit memo in one go and marks it printed">\u{1F5A8} Print selected</button>'
+    +   '</span></div>'
     + '<div id="invnp-body" style="overflow-y:auto;flex:1;"></div>'
     + '<div id="invnp-foot" style="padding:7px 12px;border-top:1px solid #fed7aa;background:#fffbeb;font-size:12px;font-family:Consolas,monospace;color:#78350f;text-align:right;"></div>'
     + '<div id="invnp-note" style="padding:8px 12px;border-top:1px solid var(--border);font-size:10.5px;color:#64748b;"><b># Get invoice number</b> gives the invoice its number without printing or emailing anything — the order stays on this list so accounting still prints it. Printing turns the order <b>Complete</b>. 🔒 Credit Hold cannot be printed until it is approved.<br>Only invoices printed here are chased for the email — ones raised in MAS 200 before are not listed.</div>'
+    + '<div id="invnp-cmnote" style="display:none;padding:8px 12px;border-top:1px solid var(--border);font-size:10.5px;color:#64748b;">A credit memo leaves this list once it is <b>both printed for MAS 200 and emailed to the customer</b> \u2014 the same rule as the invoices. Click the number to open it (print / email live there). \u2709 send opens it on the email button.<br>Credit memos issued before 10/27/2026 are not chased here \u2014 the print mark starts from that day.</div>'
     + '<div id="invnp-hnote" style="display:none;padding:8px 12px;border-top:1px solid var(--border);font-size:10.5px;color:#64748b;">A day appears once its invoices are <b>both printed and emailed</b> — the date is when the second of the two <b>first</b> finished. Sending the same invoice again does not move it to another day; it gets a ↻ resent note instead. Click a day to see every invoice in it. 🏦 HANA is the part of that day that was sent on the factor file.</div>'
     + '</div>';
   document.body.appendChild(div);
   if(typeof initModalDrag==='function') initModalDrag(div);
   window._invNpTab = 'todo';
+  /* CMTAB-1 - 칸 이름 옆 숫자. ⭐ 목록과 **같은 함수**를 센다 */
+  try{
+    const _cn = cmTodoCount();
+    const _ce = document.getElementById('invnp-tab-cm-n');
+    if(_ce) _ce.textContent = _cn ? String(_cn) : '';
+  }catch(e){}
   invNpRender();
   try{ invSeqGapPaint(); }catch(e){}   /* INVSEQ-1 - 빈 번호가 있으면 맨 위에 빨간 줄 */
 }
