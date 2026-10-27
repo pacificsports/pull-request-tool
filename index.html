@@ -314,7 +314,7 @@ body.po-dragging{user-select:none;}
   </span>
   <select id="lang-sel" onchange="setLang(this.value)" style="font-size:11px;padding:3px 6px;border-radius:5px;border:none;background:#1d3f66;color:#fff;"><option value="ko">한국어</option><option value="en">English</option><option value="es">Español</option></select>
   <button id="wide-btn" class="btn btn-sm" onclick="toggleWide()" title="화면 넓게 / 좁게 — 기본은 넓게 (이 브라우저에만 저장돼)" style="padding:2px 8px;font-size:10px;background:#1d3f66;color:#cfe0f2;border-color:#2b5384;">↔ Wide</button>
-  <span id="app-ver" style="font-size:10px;color:#9fb8d4;">v1334</span>
+  <span id="app-ver" style="font-size:10px;color:#9fb8d4;">v1335</span>
 </div>
 <script>
 // ↔ 넓게 보기 — 브라우저마다 따로 저장 (v793)
@@ -14582,6 +14582,14 @@ function openMemoModal(){
   /* FRTCM-1 - 이 인보이스에 실린 운임. frtCalc 가 상한으로 쓴다.
      ⚠ 화면 칸과 계산이 **같은 값**을 봐야 한다 - 그래서 창을 열 때 한 번만 읽어 둔다 */
   window._frtHave = Math.round((Number(iv.freight) || 0) * 100) / 100;
+  /* FRTCM-2 - [stated] 하윤: "invoice에 당연히 shipping charge가 없는게 우리가 거래처 ups를 사용했거든"
+     거래처 계정으로 보내면 운임이 우리 인보이스에 안 실린다 (택배사가 거래처에게 직접 청구).
+     그 건도 돌려줘야 하므로 상한을 나눈다:
+       · 운임이 실려 있으면 -> 그 운임 (더 주려면 가격 조정 쪽이 맞다)
+       · 0 이면            -> 인보이스 총액 (오타 방어용 천장일 뿐이다) */
+  window._frtMax = window._frtHave > 0
+    ? window._frtHave
+    : Math.round((Number(invTotalOf(iv, rec, plWh)) || 0) * 100) / 100;
   window._frtAmt = 0; window._frtWarn = '';
   const ex = document.getElementById('modal-memo'); if(ex) ex.remove();
   window._memoFile = null; window._memoLines = null;
@@ -14660,7 +14668,7 @@ function openMemoModal(){
     <!-- FRTCM-1 - 운임만 돌려주기 (번호·종이·메일이 다 나간다) -->
     <div id="memo-frt" style="display:none;padding:12px 16px;max-height:64vh;overflow-y:auto;">
       <div style="background:#eff6ff;border:1px solid #bfdbfe;border-radius:8px;padding:9px 12px;margin-bottom:11px;font-size:11.5px;color:#1e3a8a;line-height:1.55;">
-        Credits the <b>shipping charge</b> on this invoice &mdash; no goods come back, no unit price changes and
+        Credits a <b>shipping charge</b> back to the customer &mdash; no goods come back, no unit price changes and
         <b>stock is not touched</b>. A credit memo number is taken, the memo can be printed, and it is emailed to the customer.
       </div>
       <div style="display:flex;align-items:flex-end;gap:12px;flex-wrap:wrap;margin-bottom:10px;">
@@ -14668,7 +14676,16 @@ function openMemoModal(){
           <div id="frt-have" style="font-family:Consolas,monospace;font-size:17px;font-weight:900;color:#0f172a;padding:6px 2px;">$${Number(iv.freight||0).toFixed(2)}</div></div>
         <div class="ff" style="min-width:170px;"><label>Credit this amount</label>
           <input class="fi num" id="frt-amt" type="number" step="0.01" min="0" value="${Number(iv.freight||0) > 0 ? Number(iv.freight||0).toFixed(2) : ''}" placeholder="0.00" oninput="frtCalc()" style="width:150px;font-weight:900;font-size:16px;text-align:center;"></div>
-        <button class="btn btn-sm" style="background:#1e3a8a;color:#fff;border-color:#1e3a8a;font-weight:800;" onclick="frtAll()" title="Credit the whole shipping charge">All of it →</button>
+        ${Number(iv.freight||0) > 0
+          ? `<button class="btn btn-sm" style="background:#1e3a8a;color:#fff;border-color:#1e3a8a;font-weight:800;" onclick="frtAll()" title="Credit the whole shipping charge">All of it →</button>`
+          : ''}
+      ${/* FRTCM-2 - 운임이 0 인 것은 버그가 아니다. 왜 0 인지, 그래도 왜 돌려줄 수 있는지 적어 준다.
+             [stated] 하윤: "우리가 거래처 ups를 사용했거든 ... 우리가 $165불을 돌려줘서
+                            우리가 free shipping 한걸로 해주겠다고 하는거잖아" */''}
+      ${Number(iv.freight||0) > 0 ? '' : `<div style="background:#fffbeb;border:1px solid #fcd34d;border-radius:8px;padding:8px 11px;margin-bottom:10px;font-size:11.5px;color:#92400e;line-height:1.55;">
+          ⚠ <b>No shipping on this invoice</b> &mdash; this order went out on the customer's own carrier account,
+          so the carrier billed them directly. Type what they were charged and we credit it back, which makes the
+          shipping free for them. <span style="color:#b45309;">Cap: the invoice total.</span></div>`}
       </div>
       <div class="ff" style="margin-bottom:9px;"><label>Reason (printed on the credit memo)</label>
         <input class="fi" id="frt-note" value="Shipping charge credit" placeholder="Shipping charge credit"></div>
@@ -14801,6 +14818,8 @@ function adjCalc(){
 function frtCalc(){
   const inp = document.getElementById('frt-amt');
   const have = Math.round((Number((window._frtHave != null) ? window._frtHave : 0)) * 100) / 100;
+  /* FRTCM-2 - 상한. 운임이 안 실린 건(거래처 계정 발송)은 인보이스 총액이 천장이다 */
+  const cap = Math.round((Number((window._frtMax != null) ? window._frtMax : have)) * 100) / 100;
   const raw = String((inp && inp.value) == null ? '' : inp.value).trim();
   let amt = 0, warn = '';
   if(!raw) warn = 'Type the amount to credit.';
@@ -14810,8 +14829,10 @@ function frtCalc(){
     else {
       amt = Math.round(n * 100) / 100;
       if(!(amt > 0)) warn = 'The credit comes to $0.00.';
-      else if(!(have > 0)) warn = 'There is no shipping charge on this invoice to credit.';
-      else if(amt > have + 0.004) warn = 'More than the shipping on this invoice ($' + have.toFixed(2) + ').';
+      else if(!(cap > 0)) warn = 'There is nothing on this invoice to credit against.';
+      else if(amt > cap + 0.004) warn = (have > 0)
+        ? ('More than the shipping on this invoice ($' + have.toFixed(2) + ').')
+        : ('More than the whole invoice ($' + cap.toFixed(2) + ') — check the amount.');
     }
   }
   if(inp){ inp.style.borderColor = warn ? '#dc2626' : ''; inp.style.background = warn ? '#fef2f2' : ''; }
@@ -14836,7 +14857,9 @@ async function frtIssue(base, wh){
   const note = String(((document.getElementById('frt-note')||{}).value) || '').trim() || 'Shipping charge credit';
   /* 돈이 나가는 일이다 - 숫자를 글자로 다시 보여주고 확인받는다 */
   if(!confirm('Issue a credit memo for the shipping charge?\n\n'
-    + '  Shipping on invoice   $' + r.have.toFixed(2) + '\n'
+    + (r.have > 0
+        ? ('  Shipping on invoice   $' + r.have.toFixed(2) + '\n')
+        : '  Shipping on invoice   none (billed to the customer carrier account)\n')
     + '  CREDIT                $' + r.amt.toFixed(2) + '\n\n'
     + 'A credit memo number will be taken and written to our books.\n'
     + 'No goods are returned - stock is NOT changed.')) return;
@@ -14878,7 +14901,8 @@ async function frtIssue(base, wh){
     return;
   }
   logHist(base, '\u{1F69A} Shipping charge credit memo ' + cmNo + ' issued — $' + r.amt.toFixed(2)
-    + ' of $' + r.have.toFixed(2) + ' (' + note + ')');
+    + (r.have > 0 ? (' of $' + r.have.toFixed(2)) : ' (no freight on the invoice — customer carrier account)')
+    + ' (' + note + ')');
   const m = document.getElementById('modal-memo'); if(m) m.remove();
   renderSaved();
   showToast('✅ Credit memo ' + cmNo + ' issued — $' + r.amt.toFixed(2) + ' shipping');
