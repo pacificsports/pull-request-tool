@@ -314,7 +314,7 @@ body.po-dragging{user-select:none;}
   </span>
   <select id="lang-sel" onchange="setLang(this.value)" style="font-size:11px;padding:3px 6px;border-radius:5px;border:none;background:#1d3f66;color:#fff;"><option value="ko">한국어</option><option value="en">English</option><option value="es">Español</option></select>
   <button id="wide-btn" class="btn btn-sm" onclick="toggleWide()" title="화면 넓게 / 좁게 — 기본은 넓게 (이 브라우저에만 저장돼)" style="padding:2px 8px;font-size:10px;background:#1d3f66;color:#cfe0f2;border-color:#2b5384;">↔ Wide</button>
-  <span id="app-ver" style="font-size:10px;color:#9fb8d4;">v1338</span>
+  <span id="app-ver" style="font-size:10px;color:#9fb8d4;">v1339</span>
 </div>
 <script>
 // ↔ 넓게 보기 — 브라우저마다 따로 저장 (v793)
@@ -2127,6 +2127,14 @@ function refreshRow(i){
     st.style.borderColor = l.style ? '' : '#facc15';
   }
   if(de && document.activeElement !== de && de.value !== String(l.desc||'')) de.value = l.desc||'';
+  /* PRICE3-1 - 단가 칸도 다시 그린다. 전에는 여기서 손을 안 댓어서
+     3.10 으로 고쳐도 밑에 붙은 경고 표가 그대로 남아 있었다.
+     ⚠ 치는 중이면 건드리지 않는다 (다른 칸들과 같은 규칙). */
+  const ptd = $('prc-td-'+i);
+  if(ptd){
+    const pin = ptd.querySelector('input');
+    if(!(pin && document.activeElement === pin)) ptd.innerHTML = priceCellHtml(l, i);
+  }
   // 구성(SIDE SEAM / TUB) 칩 — 설명·스타일·색이 바뀌면 뜻이 달라지므로 같이 다시 그린다 (v852)
   const vc=$('vchip-'+i); if(vc) vc.innerHTML = varChip(l) + skuChip(l, i);
   pcPulseSync(i);   // PC Room 부족 깜빡임도 같이 갱신 (v915)
@@ -2724,9 +2732,28 @@ function priceWarnFor(l){
   if(p < ref.min - 0.005) return ref;
   return null;
 }
+/* ═══ PRICE3-1 (v1339) - 센트보다 잔 단가를 Open/Edit 에서 숨기지 않는다 ═══
+   [stated] 하윤: "3.103이면 3개가 다 보여야 우리가 고치지.
+            open/edit 누르고 들어가니까 3.10으로만 표시 되어있던데"
+   🔴 `price2` 가 늘 `toFixed(2)` 라 3.103 이 칸에 **3.10** 으로 보였다.
+      거기에 3.10 을 다시 쳐도 값이 같아서 `onchange` 가 안 뜨고,
+      그러면 `updLine` 이 안 불려 저장된 3.103 이 그대로 남았다 - **고칠 길이 없었다.**
+      (Viatran PO 19025 의 8368 Black L: 581 x 3.103 = 1,802.84. 사장님이 말한 대로
+       거래처 PO 에 적혀 온 값이다 - 인보이스 계산은 맞았다)
+   ⭐ 고침: 센트로 나누어지지 않는 값은 **있는 그대로** 보여주고, 칸 밑에 표를 달아둔다.
+   ⚠ 정상값(센트 단위)은 전처럼 3.10 처럼 두 자리로 보인다 - 그 화면은 한 글자도 안 바뀜다.
+   ⚠ 값을 반올림하지 **않는다**. 일부러 3자리로 쓴 가격일 수도 있고,
+      돈을 조용히 바꾸는 것은 우리가 할 일이 아니다 - 보여주고 사람이 정한다. */
+function priceOddCents(v){
+  const n = Number(v);
+  if(!isFinite(n) || !n) return false;
+  return Math.abs(n * 100 - Math.round(n * 100)) > 1e-9;
+}
 function price2(v){
   const n = parseFloat(String(v).replace(/[^0-9.\-]/g,''));
-  return isNaN(n) ? '' : n.toFixed(2);
+  if(isNaN(n)) return '';
+  if(priceOddCents(n)) return String(Math.round(n * 1e6) / 1e6);
+  return n.toFixed(2);
 }
 function priceCellHtml(l, i){
   const pw = priceWarnFor(l);
@@ -2751,6 +2778,17 @@ function priceCellHtml(l, i){
     s += '<div title="' + esc(tip) + '" style="font-size:9.5px;font-weight:800;color:#b91c1c;line-height:1.25;margin-top:2px;white-space:nowrap;letter-spacing:-.2px;">'
        + '\u25BC ' + shortPct.toFixed(1) + '%'
        + '<span style="font-weight:700;color:#dc7070;"> \u00b7 $' + pw.min.toFixed(2) + '</span></div>';
+  }
+  /* PRICE3-1 - 센트보다 잔 단가는 칸 밑에 말해준다.
+     빨간 최저가 경고(pw)와 같이 뜨는 것까지 허용한다 - 둘은 다른 얼길이다. */
+  if(priceOddCents(l.price)){
+    const _op = Number(l.price);
+    const _ot = 'This unit price is finer than a cent - $' + String(Math.round(_op * 1e6) / 1e6)
+      + ', not $' + _op.toFixed(2) + '.'
+      + '\nIt came in this way from the PO. The invoice bills qty x this exact number.'
+      + '\nType the price you want here and press Tab to fix it.';
+    s += '<div title="' + esc(_ot) + '" style="font-size:9.5px;font-weight:800;color:#b45309;line-height:1.25;margin-top:2px;white-space:nowrap;letter-spacing:-.2px;">'
+       + '\u26a0 not a round cent</div>';
   }
   return s;
 }
@@ -2831,7 +2869,7 @@ function renderTable(){
       <td class="tl"><input class="tl" value="${esc(l.color)}" onchange="updLine(${i},'color',this.value)" style="min-width:110px;"><div id="vchip-${i}" style="margin-top:2px;display:flex;gap:3px;flex-wrap:wrap;">${varChip(l)}${skuChip(l,i)}</div></td>
       <td><input value="${esc(l.size)}" oninput="this.value=this.value.toUpperCase()" onchange="updLine(${i},'size',this.value)" style="min-width:45px;max-width:70px;text-transform:uppercase;"></td>
       <td><input class="num" value="${l.qty||''}" onchange="updLine(${i},'qty',this.value)" style="max-width:80px;"></td>
-      <td>${priceCellHtml(l,i)}</td>
+      <td id="prc-td-${i}">${priceCellHtml(l,i)}</td>
       <td><input id="ppb-${i}" class="num" value="${l.ppb||DEFAULT_PPB}" onchange="updLine(${i},'ppb',this.value)" style="max-width:65px;"></td>
       <td id="fb-${i}" style="font-family:Consolas,monospace;white-space:nowrap;">${fbCellInner(l,b,i)}</td>
       <td id="ls-${i}" style="font-family:Consolas,monospace;color:${b.loose?'#d97706':'#9ca3af'};white-space:nowrap;">${looseCellInner(l,b,i)}</td>
@@ -2849,6 +2887,33 @@ function renderTable(){
   renderFoot();
   pcPulseSync();
 }
+/* ═══ PRICE3-1 - 센트로 나누어지지 않는 단가를 가진 줄들 ═══
+   칸 밑의 표는 그 줄을 볼 때만 보인다. 줄이 30개면 못 본채 지나간다 -
+   그래서 밑줄에서 **몇 줄이 그런지 + 어느 줄인지**를 한 번 더 말해준다.
+   ⚠ 막지는 않는다. 일부러 3자리로 쓴 가격일 수도 있고, 돈을 조용히 바꾸는 것은
+      우리가 할 일이 아니다. 보여주고 사람이 정한다.
+   ⭐ 라이브 실측 2026-10-28: 오더 809건 중 걸리는 줄은 **1개** (Viatran PO 19025
+      의 8368 Black L = 3.103). 잔소리가 될 일은 없다. */
+function priceOddLines(){
+  const out = [];
+  (poLines||[]).forEach(function(l, i){
+    if(priceOddCents(l.price)) out.push({ i:i, style:l.style, color:l.color, size:l.size, price:Number(l.price) });
+  });
+  return out;
+}
+function priceOddFootHtml(){
+  const odd = priceOddLines();
+  if(!odd.length) return '';
+  const names = odd.slice(0, 4).map(function(o){
+    return esc([o.style, o.color, o.size].filter(Boolean).join(' ')) + ' $' + String(Math.round(o.price * 1e6) / 1e6);
+  }).join('  \u00b7  ');
+  const more = odd.length > 4 ? ('  \u00b7 +' + (odd.length - 4) + ' more') : '';
+  return '<span title="' + esc('The PO gave a unit price that is not a round cent. The invoice bills qty x that exact number, '
+      + 'so the total will not match qty x the price you see rounded. Fix it in the PRICE box if it is a typo.')
+    + '" style="font-size:11px;font-weight:800;color:#b45309;letter-spacing:-.2px;">'
+    + '\u26a0 ' + odd.length + (odd.length === 1 ? ' line is' : ' lines are')
+    + ' priced finer than a cent \u2014 ' + names + more + '</span>';
+}
 function renderFoot(){
   const tot = poLines.reduce((a,l)=>{const b=boxCalc(l);a.q+=l.qty||0;a.f+=b.full;a.l+=b.loose;a.amt+=(l.qty||0)*(l.price||0);return a;},{q:0,f:0,l:0,amt:0});
   $('lines-foot').innerHTML = poLines.length ? `<tr class="totrow">
@@ -2862,7 +2927,8 @@ function renderFoot(){
 
   const sum = {};
   poLines.forEach(l=>{ sum[l.wh]=(sum[l.wh]||0)+(l.qty||0); });
-  $('wh-summary').innerHTML = WH_LIST.filter(w=>sum[w]).map(w=>`<span class="chip chip-${w}">${w} ${sum[w].toLocaleString()} pcs</span>`).join('');
+  $('wh-summary').innerHTML = WH_LIST.filter(w=>sum[w]).map(w=>`<span class="chip chip-${w}">${w} ${sum[w].toLocaleString()} pcs</span>`).join('')
+    + priceOddFootHtml();
   syncWhAll();
 }
 
