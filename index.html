@@ -314,7 +314,7 @@ body.po-dragging{user-select:none;}
   </span>
   <select id="lang-sel" onchange="setLang(this.value)" style="font-size:11px;padding:3px 6px;border-radius:5px;border:none;background:#1d3f66;color:#fff;"><option value="ko">한국어</option><option value="en">English</option><option value="es">Español</option></select>
   <button id="wide-btn" class="btn btn-sm" onclick="toggleWide()" title="화면 넓게 / 좁게 — 기본은 넓게 (이 브라우저에만 저장돼)" style="padding:2px 8px;font-size:10px;background:#1d3f66;color:#cfe0f2;border-color:#2b5384;">↔ Wide</button>
-  <span id="app-ver" style="font-size:10px;color:#9fb8d4;">v1347</span>
+  <span id="app-ver" style="font-size:10px;color:#9fb8d4;">v1348</span>
 </div>
 <script>
 // ↔ 넓게 보기 — 브라우저마다 따로 저장 (v793)
@@ -51533,15 +51533,22 @@ async function invNpSend(base, wh, btnId){
      ⚠ 다만 되돌릴 수 없는 두 경우에는 그대로 묻는다:
         · 아직 안 뽑았다  -> 이 발송이 송장 번호를 가져간다
         · 이미 나갔다     -> 거래처 회계가 같은 인보이스를 두 장으로 잡는다 */
-  if(_noYet || _already || _payWait){
+  /* PAYGATE-1 - [stated] 하윤 "물어보지 말고" -> 줄에서는 **묻지 않고 막는다.**
+     ⚠ 단추가 이미 잠겨 있으니 평소엔 여기까지 오지 않는다. 다른 길로 불렸을 때
+        조용히 메일이 나가는 것만 막는 안전망이다. */
+  if(_payWait){
+    alert('\ud83d\udd12 Waiting for this payment'
+      + (_iv.payLinkAt ? ('\n   Payment link sent ' + String(_iv.payLinkAt).slice(0,10)) : '')
+      + '\n\nRecord the payment first and this unlocks by itself.'
+      + '\nIf you must send it now, open the invoice and use the Email button there.');
+    return;
+  }
+  if(_noYet || _already){
     if(!confirm('\ud83d\udce7 Send this invoice?\n\n   ' + ((rec&&rec.meta&&rec.meta.cust)||'') + '  PO ' + ((rec&&rec.meta&&rec.meta.po)||'')
       + '\n   ' + wh + '  $' + Number(amt).toFixed(2)
       + (_iv.invNo ? ('\n   Invoice # ' + _iv.invNo) : '')
       + '\n\n\u2192 ' + to.join(', ')
       + (_noYet ? '\n\n\u26a0 It has not been printed yet \u2014 sending now gives it its invoice number.\n   It stays on this list until somebody prints it for MAS 200.' : '')
-      + (_payWait ? ('\n\n\u26a0 WE ARE STILL WAITING FOR THIS MONEY'
-                  + (_iv.payLinkAt ? ('\n   Payment link sent ' + String(_iv.payLinkAt).slice(0,10)) : '')
-                  + '\n   Nothing has been received yet.') : '')
       + (_already ? '\n\n\u26a0 THIS INVOICE ALREADY WENT OUT' + (invSentAt(rec||{}, wh) ? (' on ' + String(invSentAt(rec||{}, wh)).slice(0,10)) : '')
                   + '.\n   Sending it again means the customer has two copies of the same invoice.' : '')
     )) return;
@@ -51651,14 +51658,29 @@ function invNpRowsHtml(){
        ⓘ 그래서 프린트 전에도 메일을 보낼 수 있게 열어 뒀다 (보내는 순간 번호가 붙는다).
        ⓘ 다시 보내야 하면 인보이스 화면에서 보낸다 - 이 줄에서는 일부러 못 하게 둔다. */
     const _who = String(r.sentBy||'').split('@')[0];
+    /* ═══ PAYGATE-1 (v1348) - 돈을 받아야 하는 건은 **잠근다** ═══
+       [stated] 하윤: "물어보지 말고 이멜 보내는 버튼을 ... inactive 해놓았다가 received 되면 active"
+       [stated] 하윤: "term주는 거는 그대로 가고 돈 받아야하는 거래처들은 저런식 으로"
+       ⭐ 문지기는 `invPayWaiting` (결제 링크를 보냈고 아직 못 받음) - 조건 주는 건은 안 걸린다.
+       ⚠ 빠져나갈 길은 인보이스 화면의 📧 단추 하나다 (INVCC-1 과 같은 집 규칙).
+       ⚠ 돈이 들어와 `검 Received` 가 되면 이 단추는 **저절로** 살아난다 - 따로 풀 것이 없다. */
+    const _payLock = !r.sentAt && !!r.needPay;
     const mailBtn = r.sentAt
       ? '<span style="display:inline-flex;align-items:center;gap:5px;background:#f0fdf4;border:1px solid #86efac;border-radius:7px;padding:3px 9px;font-size:10px;font-weight:800;color:#15803d;white-space:nowrap;"'
         + ' title="Already emailed to ' + esc(r.sentTo||'the customer') + ' \u2014 do not send it again. Just print it.">'
         + '\u2713 emailed' + (_who ? ' \u00b7 ' + esc(_who) : '') + ' \u00b7 ' + esc(String(r.sentAt).slice(0,10)) + '</span>'
+      : (_payLock
+      ? '<button class="btn btn-sm" id="invnp-mail-lock-' + id + '" disabled style="padding:3px 10px;font-size:10.5px;background:#f8fafc;color:#94a3b8;border-color:#e2e8f0;font-weight:800;white-space:nowrap;cursor:not-allowed;" title="'
+        + esc('Waiting for this payment'
+            + (r.payLinkAt ? (' \u2014 payment link sent ' + String(r.payLinkAt).slice(0,10)) : '')
+            + (r.payLinkTo ? (' to ' + r.payLinkTo) : '')
+            + '. The invoice email unlocks by itself once the payment is recorded. '
+            + 'If you must send it now, open the invoice and use the Email button there.')
+        + '">\ud83d\udd12 Email</button>'
       : '<button class="btn btn-sm" id="invnp-mail-' + id + '" style="padding:3px 10px;font-size:10.5px;background:#0e7490;color:#fff;border-color:#0e7490;font-weight:800;white-space:nowrap;" onclick="invNpSend(\'' + eb + '\',\'' + ew + '\',\'' + id + '\')" title="'
         + (r.printed ? 'Email the invoice, packing list and your PO to this address'
                      : 'Send it now, before printing \u2014 the invoice takes its number as it goes out. Erika still needs to print it for MAS 200.')
-        + '">\ud83d\udce7 Email</button>';
+        + '">\ud83d\udce7 Email</button>');
     /* INVNUM-1 - 번호가 없는 줄에서는 이 단추 하나만 보인다.
        누르면 Print 와 Payment 가 나온다 (아래 r.invNo 갈래). */
     const numBtn = r.hold
