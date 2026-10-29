@@ -314,7 +314,7 @@ body.po-dragging{user-select:none;}
   </span>
   <select id="lang-sel" onchange="setLang(this.value)" style="font-size:11px;padding:3px 6px;border-radius:5px;border:none;background:#1d3f66;color:#fff;"><option value="ko">한국어</option><option value="en">English</option><option value="es">Español</option></select>
   <button id="wide-btn" class="btn btn-sm" onclick="toggleWide()" title="화면 넓게 / 좁게 — 기본은 넓게 (이 브라우저에만 저장돼)" style="padding:2px 8px;font-size:10px;background:#1d3f66;color:#cfe0f2;border-color:#2b5384;">↔ Wide</button>
-  <span id="app-ver" style="font-size:10px;color:#9fb8d4;">v1346</span>
+  <span id="app-ver" style="font-size:10px;color:#9fb8d4;">v1347</span>
 </div>
 <script>
 // ↔ 넓게 보기 — 브라우저마다 따로 저장 (v793)
@@ -12144,6 +12144,25 @@ function payRecv(rec, wh){
     return { amt: Math.round(paid * 100) / 100, at: at };
   }catch(e){ return null; }
 }
+/* ═══ PAYWAIT-1 (v1347) - 돈을 달라고 해놓고 아직 못 받았나 ═══
+   [stated] 하윤: "보통 내가 돈 받으면 receive 뜨고 인보이스 이멜 보내게 누르는데"
+   ⭐⭐⭐ 이 판정을 보는 곳은 셋이고 **전부 이 함수를 부른다**:
+     · 🧾 Invoice To Do 목록이 줄을 남길지 (`_needPay`)
+     · 그 줄의 호박색 알약
+     · Email 단추가 물을지 (NOPOP-1 의 세 번째 예외)
+   ⚠ **결제 링크를 보낸 건만** 따진다 (`payLinkAt`). 안 보낸 건은 조건(Net 30/60)대로
+      나중에 들어오는 돈이라 목록에 남으면 안 된다.
+   ⚠ 「다 받았나」 는 `payRecv` 가 판정한다 - 화면의 초록 `검 Received` 알약과 같은 함수다.
+   ⚠ 우리가 사무실에서 직접 긁은 건(`payLinkSelf`)도 똑같이 본다 - 긁었는데 결제가 안
+      붙었으면 그것도 「못 받은 것」이다. */
+function invPayWaiting(rec, wh){
+  try{
+    const iv = ((rec && rec.inv) || {})[wh];
+    if(!iv || !iv.savedAt) return false;
+    if(!iv.payLinkAt) return false;
+    return !payRecv(rec, wh);
+  }catch(e){ return false; }
+}
 /* ═══ PPHOLD-1 (v1293) - 돈을 먼저 받는 거래처 ═══
    [stated] 하윤: "돈도 아직 안받았는데 우리가 complete누르면 거래처에 Order Shipped
    이멜이 가는거니까" / "prepay 거래처는 complete 눌렀을때 order shipped 이멜이
@@ -20100,7 +20119,13 @@ async function sendInvoiceEmail(){
   if(!toList.length){ showToast('⚠ Enter the customer email'); return; }
   const d = invDocData();
   const tot = (d.lines||[]).reduce((a,l)=>a+(Number(l.qty)||0)*(Number(l.price)||0),0) + (Number(d.freight)||0);
-  if(!confirm('📧 Send the invoice?\n→ ' + toList.join(', ') + '\n\nAmount: $' + tot.toFixed(2))) return;
+  /* PAYWAIT-1 - 같은 판정 함수를 여기서도 읽는다 (두 군데에 따로 적지 않는다) */
+  const _pw = (typeof invPayWaiting === 'function') && invPayWaiting(rec, plWh);
+  const _pwAt = String((((rec.inv||{})[plWh])||{}).payLinkAt || '').slice(0,10);
+  if(!confirm('📧 Send the invoice?\n→ ' + toList.join(', ') + '\n\nAmount: $' + tot.toFixed(2)
+    + (_pw ? ('\n\n\u26a0 WE ARE STILL WAITING FOR THIS MONEY'
+             + (_pwAt ? ('\n   Payment link sent ' + _pwAt) : '')
+             + '\n   Nothing has been received yet.') : ''))) return;
   showToast('📧 Sending invoice...');
   try{
     // 발송 = 발행: 번호 부여 + 저장 + 초록
@@ -51205,7 +51230,11 @@ function invNpList(){
       const _sent = _si.at;
       const _needPrint = !iv.printed;
       const _needMail = !!iv.printedAt && !_sent;
-      if(!_needPrint && !_needMail) return;
+      /* PAYWAIT-1 - 세 번째 할 일. 인쇄도 발송도 끝났지만 **돈을 기다리는** 줄은 남는다.
+         🔴 Grandstand PO 306203: 10/28 에 인쇄·발송이 끝나 줄이 빠졌는데 $1,333.05 가
+            한 푼도 안 들어와 있었다. 「보냈다」 와 「받았다」 는 다른 일이다. */
+      const _needPay = invPayWaiting(s, w);
+      if(!_needPrint && !_needMail && !_needPay) return;
       const amt = invNpAmt(s, w);
       if(!pl && _locker && !(amt > 0)) return;            // 줄도 금액도 없으면 청구할 게 없다
       out.push({ base:s.base, wh:w, po:(s.meta&&s.meta.po)||'', cust:(s.meta&&s.meta.cust)||'',
@@ -51219,6 +51248,8 @@ function invNpList(){
                  recv: (typeof payRecv==='function' ? payRecv(s, w) : null),
                  locker:_locker,
                  printed:!!iv.printed, printedAt:iv.printedAt||'', sentAt:_sent,
+                 /* PAYWAIT-1 - 이 줄이 **돈 때문에만** 남아 있나 (알약을 그 때만 띄운다) */
+                 needPay:_needPay, payOnly:(!_needPrint && !_needMail && _needPay),
                  sentBy:_si.by, sentTo:_si.to,
                  /* ═══ INVEM-1 - 받는 주소는 **거래처 카드가 master** ═══
                     🔴 2026-10-01 실측: T-Shirt Tycoon 카드에는 `bianca@ , ap@` 두 개가 적혀 있는데
@@ -51492,6 +51523,9 @@ async function invNpSend(base, wh, btnId){
   const _iv = (rec && rec.inv && rec.inv[wh]) || {};
   const _noYet = !String(_iv.invNo||'').trim();
   const _already = !!invSentAt(rec||{}, wh);
+  /* PAYWAIT-1 - 세 번째 예외. [stated] 하윤: "보통 내가 돈 받으면 receive 뜨고
+     인보이스 이멜 보내게 누르는데" -> 돈을 기다리는 중이면 한 번 묻는다. */
+  const _payWait = (typeof invPayWaiting === 'function') && invPayWaiting(rec||{}, wh);
   /* ═══ NOPOP-1 - 보통 때는 안 묻는다 ═══
      [stated] 하윤: "email 누르면 저 팝업뜨는데 저거 필요있나? 누를때마다 뜰꺼고
      그럼 보낼때마다 누르는것도 일이잖아"
@@ -51499,12 +51533,15 @@ async function invNpSend(base, wh, btnId){
      ⚠ 다만 되돌릴 수 없는 두 경우에는 그대로 묻는다:
         · 아직 안 뽑았다  -> 이 발송이 송장 번호를 가져간다
         · 이미 나갔다     -> 거래처 회계가 같은 인보이스를 두 장으로 잡는다 */
-  if(_noYet || _already){
+  if(_noYet || _already || _payWait){
     if(!confirm('\ud83d\udce7 Send this invoice?\n\n   ' + ((rec&&rec.meta&&rec.meta.cust)||'') + '  PO ' + ((rec&&rec.meta&&rec.meta.po)||'')
       + '\n   ' + wh + '  $' + Number(amt).toFixed(2)
       + (_iv.invNo ? ('\n   Invoice # ' + _iv.invNo) : '')
       + '\n\n\u2192 ' + to.join(', ')
       + (_noYet ? '\n\n\u26a0 It has not been printed yet \u2014 sending now gives it its invoice number.\n   It stays on this list until somebody prints it for MAS 200.' : '')
+      + (_payWait ? ('\n\n\u26a0 WE ARE STILL WAITING FOR THIS MONEY'
+                  + (_iv.payLinkAt ? ('\n   Payment link sent ' + String(_iv.payLinkAt).slice(0,10)) : '')
+                  + '\n   Nothing has been received yet.') : '')
       + (_already ? '\n\n\u26a0 THIS INVOICE ALREADY WENT OUT' + (invSentAt(rec||{}, wh) ? (' on ' + String(invSentAt(rec||{}, wh)).slice(0,10)) : '')
                   + '.\n   Sending it again means the customer has two copies of the same invoice.' : '')
     )) return;
@@ -51627,6 +51664,16 @@ function invNpRowsHtml(){
     const numBtn = r.hold
       ? '<button class="btn btn-sm" disabled style="padding:3px 10px;font-size:10.5px;background:#f1f5f9;color:#94a3b8;border-color:#e2e8f0;font-weight:800;white-space:nowrap;cursor:not-allowed;" title="Credit Hold \u2014 this order must be approved first">\u0023 Get invoice number</button>'
       : '<button class="btn btn-sm" style="padding:3px 10px;font-size:10.5px;background:#c2410c;color:#fff;border-color:#c2410c;font-weight:800;white-space:nowrap;" onclick="invNpGetNo(\'' + eb + '\',\'' + ew + '\')" title="Give this invoice its number. Nothing is printed and nothing is emailed. Print and Payment appear after this.">\u0023 Get invoice number</button>';
+    /* PAYWAIT-1 - 인쇄도 발송도 끝났는데 줄이 남아 있으면 **왜 남았는지** 적어 준다.
+       안 적으면 「다 했는데 왜 안 없어지지」 가 된다. */
+    const payPill = r.payOnly
+      ? '<span style="display:inline-flex;align-items:center;gap:5px;background:#fffbeb;border:1px solid #fcd34d;border-radius:7px;padding:3px 9px;font-size:10px;font-weight:800;color:#92400e;white-space:nowrap;"'
+        + ' title="' + esc('We asked for this money'
+            + (r.payLinkAt ? (' on ' + String(r.payLinkAt).slice(0,10)) : '')
+            + (r.payLinkTo ? (' (' + r.payLinkTo + ')') : '')
+            + ' and nothing has come in yet. The invoice is printed and emailed - this row stays until the payment is recorded.')
+        + '">💵 waiting for payment</span>'
+      : '';
     const noEm = !String(r.email||'').includes('@');
     return '<div style="display:flex;align-items:center;gap:10px;padding:9px 12px;border-bottom:1px solid #f1f5f9;font-size:12.5px;' + (r.printed ? 'background:#f6feff;' : '') + '">'
       + lead
@@ -51648,6 +51695,7 @@ function invNpRowsHtml(){
       + (r.invNo ? '<button onclick="invHistOpen(\'' + eb + '\',\'' + ew + '\')" title="Open this invoice (read-only)" style="font-family:Consolas,monospace;font-size:10.5px;font-weight:800;color:#0e7490;min-width:58px;text-align:left;background:none;border:0;padding:0;cursor:pointer;text-decoration:underline;text-underline-offset:2px;">' + esc(r.invNo) + '</button>'
                  : '<span style="font-family:Consolas,monospace;font-size:10.5px;font-weight:700;color:#cbd5e1;min-width:58px;" title="No invoice number yet \u2014 press Get invoice number">no #</span>')
       + '<span style="font-family:Consolas,monospace;font-weight:700;width:86px;text-align:right;">' + money + '</span>'
+      + payPill
       /* ═══ PAYDO-1 - 인쇄한 그 자리에서 바로 결제 요청 ═══
          [stated] 하윤: "invoice to do 에 print 누르면 payment requset 나오게도 하자
                          거기서 바로 요청할수있게"
@@ -52162,8 +52210,12 @@ async function printBatchInvoices(pairsIn){
     /* INVDO-1 - `printedAt` = 「이 인보이스는 psflowx 에서 우리가 뽑았다」 는 표시다.
        ⚠⚠ 이 표시가 있는 것만 「메일 보냈나」 를 따진다. 예전 MAS 200 인보이스에는 이게
           없으니 목록에 영영 안 들어온다 - 날짜 기준이 필요 없어지는 이유가 이것이다. */
+    /* PRINTBY-1 (v1347) - 누가 뽑았는지 남긴다. [stated] 하윤이 「Print 는 누가 눌렀는지
+       기록이 안 남는다」 를 보고 물었다. ⚠ 처음 뽑은 사람을 덮지 않는다 (printedAt 과 같은 규칙). */
     rec.inv[wh] = { ...iv, savedAt: iv.savedAt || new Date().toISOString(), auto: false, printed: true,
-                    printedAt: iv.printedAt || new Date().toISOString(), lines: lines, freight: Number(iv.freight)||0 };
+                    printedAt: iv.printedAt || new Date().toISOString(),
+                    printedBy: iv.printedBy || ((typeof SESS !== 'undefined' && SESS && SESS.email) || ''),
+                    lines: lines, freight: Number(iv.freight)||0 };
     /* ⚠ PL 이 없으면 날짜도 없다 — 인보이스에 빈 날짜가 찍히지 않게 오더 날짜로 메운다 */
     const d = { ...pld, lines: lines, date: pld.date || (rec.meta && rec.meta.date) || todayStr(),
                 freight: Number(iv.freight)||0, invNo: iv.invNo, termType: iv.termType||'', termDays: iv.termDays||0 };
