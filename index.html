@@ -314,7 +314,7 @@ body.po-dragging{user-select:none;}
   </span>
   <select id="lang-sel" onchange="setLang(this.value)" style="font-size:11px;padding:3px 6px;border-radius:5px;border:none;background:#1d3f66;color:#fff;"><option value="ko">한국어</option><option value="en">English</option><option value="es">Español</option></select>
   <button id="wide-btn" class="btn btn-sm" onclick="toggleWide()" title="화면 넓게 / 좁게 — 기본은 넓게 (이 브라우저에만 저장돼)" style="padding:2px 8px;font-size:10px;background:#1d3f66;color:#cfe0f2;border-color:#2b5384;">↔ Wide</button>
-  <span id="app-ver" style="font-size:10px;color:#9fb8d4;">v1351</span>
+  <span id="app-ver" style="font-size:10px;color:#9fb8d4;">v1352</span>
 </div>
 <script>
 // ↔ 넓게 보기 — 브라우저마다 따로 저장 (v793)
@@ -598,6 +598,8 @@ try{ applyWide(localStorage.getItem('psx_wide') !== '0'); }catch(e){ applyWide(t
       <button class="btn btn-sm" id="cm-sort-az" onclick="cmSort='az';renderCustomers();">A-Z</button>
       <button class="btn btn-sm" id="cm-sort-sales" onclick="cmSort='sales';renderCustomers();">💰 Total Sales</button>
       <button class="btn btn-sm" style="background:#7c2d12;color:#fff;border-color:#7c2d12;font-weight:700;" onclick="cmAgingOpen()">📒 A/R Aging</button>
+      <!-- CUSTLINK-1 - 가격표와 안 이어진 거래처를 **보이게** 한다 (조용히 쌓이지 않게) -->
+      <span id="cm-imslink" style="display:inline-flex;gap:6px;align-items:center;"></span>
       <button class="btn btn-sm btn-primary" onclick="openAddCustomer()">＋ Add Customer</button>
     </div>
     <div id="cust-body"><div class="muted">Loading...</div></div>
@@ -49072,8 +49074,68 @@ function cmDetailPane(name){
     + (cmOpenAR===name ? '<div style="margin-top:10px;border:1.5px solid #cbd5e1;border-radius:10px;background:#f8fafc;">'+custARDetailHtml(name)+'</div>' : '')
     + '</div>';
 }
+/* ═══ CUSTLINK-1 (v1352) - 거래처 카드 <-> 가격표 줄(customers) 연결 상태 ═══
+   [stated] 하윤: "처음부터 잘 짜야돼"
+   ⚠ 이름 판정은 앱이 이미 쓰는 `_imsNorm` 만 쓴다 - 새 규칙을 만들면 두 군데가 어긋난다. */
+function custImsScan(){
+  const out = { linked:0, linkable:[], prOnly:0, imsOnly:[] };
+  const list = (typeof _imsCustList !== 'undefined' && _imsCustList) ? _imsCustList : null;
+  if(!list) return null;                       /* 아직 안 읽었으면 아무 말도 안 한다 */
+  const byId = {}; list.forEach(function(c){ byId[String(c.id)] = c; });
+  const byNorm = {}; list.forEach(function(c){ byNorm[_imsNorm(c.name)] = c; });
+  const usedIds = {};
+  Object.keys(custStore || {}).forEach(function(k){
+    const cs = custStore[k]; const nm = cs && cs.name;
+    if(!nm) return;
+    const id = cs.imsId ? String(cs.imsId) : '';
+    if(id && byId[id]){ out.linked++; usedIds[id] = 1; return; }
+    const hit = byNorm[_imsNorm(nm)];
+    if(hit && !id){ out.linkable.push({ k:k, name:nm, id:hit.id, ims:hit.name }); }
+    else out.prOnly++;
+  });
+  out.linkable.forEach(function(x){ usedIds[String(x.id)] = 1; });
+  out.imsOnly = list.filter(function(c){ return !usedIds[String(c.id)]; })
+                    .map(function(c){ return c.name; });
+  return out;
+}
+/* 머리줄 딱지 - 안 이어진 것이 있을 때만 뜬다 (없으면 조용하다) */
+function custImsBadge(){
+  const el = document.getElementById('cm-imslink'); if(!el) return;
+  const s0 = custImsScan();
+  if(!s0){ el.innerHTML = ''; return; }
+  const n = s0.linkable.length, m = s0.imsOnly.length;
+  if(!n && !m){ el.innerHTML = ''; return; }
+  el.innerHTML =
+    (n ? ('<button class="btn btn-sm" style="background:#0e7490;color:#fff;border-color:#0e7490;font-weight:700;"'
+          + ' onclick="custImsLinkAll()" title="These customers have a price sheet row with the same name, but nobody has opened it yet so they are not tied together.">'
+          + '\u{1F517} Link ' + n + ' price sheet' + (n>1?'s':'') + '</button>') : '')
+    + (m ? ('<span style="font-size:10.5px;color:#92400e;background:#fffbeb;border:1px solid #fcd34d;'
+          + 'border-radius:7px;padding:3px 8px;" title="' + esc(s0.imsOnly.slice(0,12).join(' \u00b7 '))
+          + '">' + m + ' price sheet' + (m>1?'s':'') + ' with no customer card</span>') : '');
+}
+/* 🔗 이름이 **똑같은** 것만 한꺼번에 잇는다. 짐작으로 잇지 않는다. */
+async function custImsLinkAll(){
+  const s0 = custImsScan();
+  if(!s0 || !s0.linkable.length){ showToast('Nothing to link'); return; }
+  const lines = s0.linkable.slice(0, 15).map(function(x){ return '  \u2022 ' + x.name; }).join('\n');
+  if(!confirm('Tie ' + s0.linkable.length + ' customer(s) to the price sheet row with the same name?\n\n'
+      + lines + (s0.linkable.length > 15 ? ('\n  ... and ' + (s0.linkable.length-15) + ' more') : '')
+      + '\n\nAfter this they show their own contract prices on the website.')) return;
+  let ok = 0, bad = 0;
+  for(const x of s0.linkable){
+    try{
+      const cs = Object.assign({}, custStore[x.k] || {});
+      cs.name = cs.name || x.name; cs.imsId = x.id;
+      const r = await saveCustomer(x.k, cs);
+      if(r) ok++; else bad++;
+    }catch(e){ bad++; }
+  }
+  showToast('\u{1F517} ' + ok + ' linked' + (bad ? (' \u00b7 ' + bad + ' failed') : ''));
+  renderCustomers();
+}
 function renderCustomers(){
   custCreditReset();   /* CREDIT-1 */
+  try{ custImsBadge(); }catch(e){}   /* CUSTLINK-1 */
   const el = $('cust-body'); if(!el) return;
   /* 공용 customers 표(=MAS 번호가 사는 곳)를 한 번만 읽어 온다 (v1000) */
   if(!_imsCustList && typeof loadImsCustomers==='function'){ loadImsCustomers().then(()=>{ if($('cust-body')) renderCustomers(); }); }
@@ -49380,9 +49442,18 @@ async function saveAddCustomer(){
   const em = ($('ac-email').value||'').trim(); if(em) cur.email = em;
   const tt = $('ac-terms').value; if(tt) cur.termType = tt;
   const lim = parseFloat(($('ac-limit').value||'').replace(/,/g,'')); if(lim) cur.creditLimit = lim;
+  /* CUSTLINK-1 - 이름이 **똑같은** 가격표 줄이 이미 있으면 바로 이어 준다.
+     ⚠ 비슷한 이름은 안 잇는다 - 짐작으로 이으면 남의 가격표를 보게 된다. */
+  try{
+    if(!cur.imsId){
+      const list = (typeof loadImsCustomers === 'function') ? await loadImsCustomers() : [];
+      const hit = (list || []).find(function(c){ return _imsNorm(c.name) === _imsNorm(name); });
+      if(hit) cur.imsId = hit.id;
+    }
+  }catch(e){}
   await saveCustomer(k, cur);
   document.getElementById('modal-addcust').remove();
-  showToast('✅ ' + name + ' added — enter Address/Ship To with ✎');
+  showToast('✅ ' + name + ' added' + (cur.imsId ? ' \u{1F517} price sheet linked' : '') + ' — enter Address/Ship To with ✎');
   renderCustomers();
 }
 // 📒 전체 거래처 A/R Aging 리포트 (v380)
