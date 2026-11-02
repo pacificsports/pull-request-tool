@@ -314,7 +314,7 @@ body.po-dragging{user-select:none;}
   </span>
   <select id="lang-sel" onchange="setLang(this.value)" style="font-size:11px;padding:3px 6px;border-radius:5px;border:none;background:#1d3f66;color:#fff;"><option value="ko">한국어</option><option value="en">English</option><option value="es">Español</option></select>
   <button id="wide-btn" class="btn btn-sm" onclick="toggleWide()" title="화면 넓게 / 좁게 — 기본은 넓게 (이 브라우저에만 저장돼)" style="padding:2px 8px;font-size:10px;background:#1d3f66;color:#cfe0f2;border-color:#2b5384;">↔ Wide</button>
-  <span id="app-ver" style="font-size:10px;color:#9fb8d4;">v1354</span>
+  <span id="app-ver" style="font-size:10px;color:#9fb8d4;">v1355</span>
 </div>
 <script>
 // ↔ 넓게 보기 — 브라우저마다 따로 저장 (v793)
@@ -50256,6 +50256,139 @@ function custPsPrice(cust, style, size){
   return b == null ? null : Math.round((b + psUp(s))*100)/100;
 }
 let _psCust = '', _psGk = '', _psFilter = 'all', _psQ = '', _psTab = 'adult';
+/* ═══ PSHIST-1 (v1355) - 지난 오더에서 빠진 가격을 끌어온다 ═══
+   [stated] 하윤: "거래처마다 가격들 너가 오더들 보고 비워져있는게 있으면 채워줄수도 있지 않나?"
+   ⚠⚠ 이 표에서 「비었다」는 null 이 아니라 **0** 이다 (base_price 는 NOT NULL). */
+const PSH_LBL = { base_price:'XS-XL', price_2xl:'2XL', price_3xl:'3XL', price_4xl:'4XL', price_5xl:'5XL',
+  price_toddler:'TODDLER', price_juvy:'JUVY', price_youth:'YOUTH', price_2t:'KIDS 2T-5T' };
+const PSH_BIG = { '2XL':'price_2xl', '3XL':'price_3xl', '4XL':'price_4xl', '5XL':'price_5xl' };
+function pshNum(v){ const x = parseFloat(v); return (v==null || v==='' || isNaN(x)) ? null : x; }
+function pshHas(v){ const x = pshNum(v); return x !== null && x > 0; }   /* 0 은 「없음」이다 */
+/* 그 스타일의 그 사이즈는 가격표의 **어느 칸**에 들어가나 */
+function pshField(st, sz){
+  const cat = String(psMeta(st).cat || '').toLowerCase();
+  const s2 = String(sz || '').toUpperCase().trim();
+  if(cat.indexOf('toddler') >= 0) return 'price_toddler';
+  if(cat.indexOf('juvy') >= 0)    return 'price_juvy';
+  if(cat.indexOf('youth') >= 0)   return 'price_youth';
+  if(cat.indexOf('kid') >= 0)     return /^[2-5]T$/.test(s2) ? 'price_2t' : 'base_price';
+  return PSH_BIG[s2] || 'base_price';
+}
+/* 지금 열린 거래처의 지난 오더를 훑어 **제안 목록**을 만든다. 아무것도 안 쓴다. */
+function psHistScan(){
+  const ps = _imsPS[_psGk];
+  if(!ps || !_psGk || !Array.isArray(savedCache)) return [];
+  const valid = {};
+  [SAFE_MAP, PRICE_MAP, STYLE_MASTER].forEach(function(M){
+    Object.keys(M || {}).forEach(function(k){ valid[k] = 1; }); });
+  const seen = {};
+  savedCache.forEach(function(r){
+    const m = r.meta || {};
+    const nm = custCanon(m.cust); if(!nm) return;
+    if(custKey(custGroupName(nm)) !== _psGk) return;
+    const d = String(m.date || r.savedAt || '').slice(0, 10);
+    (r.whs || []).forEach(function(wh){
+      salesLines(r, wh).forEach(function(l){
+        const st = String(l.style || '').trim();
+        const p = Number(l.price) || 0;
+        if(!st || !valid[st] || !(p > 0)) return;
+        const f = pshField(st, l.size);
+        const key = st + '|' + f;
+        const c = seen[key] = seen[key] || { st:st, f:f, last:{ d:'', p:0 }, set:{} };
+        c.set[p.toFixed(2)] = 1;
+        if(d >= c.last.d) c.last = { d:d, p:p };
+      });
+    });
+  });
+  const out = [];
+  Object.keys(seen).forEach(function(key){
+    const c = seen[key];
+    const row = ps.rows[c.st];
+    if(row && pshHas(row[c.f])) return;              /* 이미 값이 있으면 건드리지 않는다 */
+    out.push({ st:c.st, f:c.f, p:Math.round(c.last.p*100)/100, d:c.last.d,
+      n:Object.keys(c.set).length, have:!!row });
+  });
+  /* 2XL~5XL 이 **기본가 + 표준 할증** 과 같으면 빼 버린다 - 적어 두면 사다리가 안 따라온다 */
+  const baseOf = {};
+  out.forEach(function(x){ if(x.f === 'base_price') baseOf[x.st] = x.p; });
+  return out.filter(function(x){
+    if(['price_2xl','price_3xl','price_4xl','price_5xl'].indexOf(x.f) < 0) return true;
+    let b = baseOf[x.st];
+    if(b == null){ const row = ps.rows[x.st]; b = row ? pshNum(row.base_price) : null; }
+    if(b == null || !(b > 0)) return true;
+    return Math.abs(x.p - (b + psUp(x.f.replace('price_','').toUpperCase()))) >= 0.005;
+  }).sort(function(a,b){ return a.st.localeCompare(b.st, undefined, {numeric:true}); });
+}
+function psHistBadge(){
+  const b = document.getElementById('ps-hist-btn'); if(!b) return;
+  let n = 0; try{ n = psHistScan().length; }catch(e){ n = 0; }
+  if(!n){ b.style.display = 'none'; return; }
+  b.style.display = '';
+  b.textContent = '\u{1F4DC} From orders (' + n + ')';
+}
+let _pshRows = [];
+function psHistOpen(){
+  let rows = [];
+  try{ rows = psHistScan(); }catch(e){ rows = []; }
+  if(!rows.length){ showToast('Nothing to pull from past orders'); return; }
+  _pshRows = rows;
+  const ex = document.getElementById('modal-pshist'); if(ex) ex.remove();
+  const div = document.createElement('div');
+  div.id = 'modal-pshist';
+  div.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,.55);z-index:140;display:flex;align-items:center;justify-content:center;';
+  const body = rows.map(function(x, i){
+    const warn = x.n > 1;
+    return '<tr>'
+      + '<td style="text-align:center;"><input type="checkbox" id="psh-' + i + '"' + (warn ? '' : ' checked')
+        + ' style="width:15px;height:15px;cursor:pointer;"></td>'
+      + '<td style="font-family:Consolas,monospace;font-weight:800;">' + esc(x.st) + '</td>'
+      + '<td class="tl" style="font-size:11.5px;color:#64748b;max-width:250px;">' + esc(psMeta(x.st).desc || '') + '</td>'
+      + '<td style="font-weight:700;font-size:11px;color:#1d4ed8;">' + esc(PSH_LBL[x.f] || x.f) + '</td>'
+      + '<td style="text-align:right;font-family:Consolas,monospace;font-weight:800;">$' + x.p.toFixed(2) + '</td>'
+      + '<td style="font-size:11px;color:#64748b;">' + esc(x.d) + '</td>'
+      + '<td style="font-size:11px;color:' + (warn ? '#b91c1c' : '#94a3b8') + ';">'
+        + (warn ? ('sold at ' + x.n + ' different prices \u2014 check this one') : (x.have ? '' : 'new line'))
+      + '</td></tr>';
+  }).join('');
+  div.innerHTML = '<div style="background:#fff;border-radius:12px;width:860px;max-width:95vw;max-height:88vh;display:flex;flex-direction:column;overflow:hidden;box-shadow:0 20px 60px rgba(0,0,0,.35);">'
+    + '<div style="background:#0f2a4a;color:#fff;padding:11px 16px;font-weight:800;">\u{1F4DC} From past orders — ' + esc(_psCust) + '</div>'
+    + '<div style="padding:10px 16px;font-size:12px;color:#475569;border-bottom:1px solid #e2e8f0;">'
+      + 'These are prices this customer actually paid. Only the empty cells are listed.<br>'
+      + '<b>Check what you want to keep</b> — a price put here becomes their standing price on the website.'
+    + '</div>'
+    + '<div style="overflow-y:auto;flex:1;padding:0 16px;"><table class="etbl" style="font-size:12px;">'
+      + '<thead style="position:sticky;top:0;z-index:2;"><tr><th style="width:36px;">'
+      + '<input type="checkbox" id="psh-all" onchange="psHistAll(this.checked)" style="width:14px;height:14px;"></th>'
+      + '<th>STYLE</th><th class="tl">DESCRIPTION</th><th>SIZE</th><th>PRICE</th><th>LAST SOLD</th><th class="tl"></th></tr></thead>'
+      + '<tbody>' + body + '</tbody></table></div>'
+    + '<div style="padding:10px 16px;display:flex;gap:8px;align-items:center;border-top:1px solid #e2e8f0;">'
+      + '<span id="psh-msg" style="font-size:12px;font-weight:700;color:#475569;"></span>'
+      + '<button class="btn btn-sm" style="margin-left:auto;" onclick="document.getElementById(\'modal-pshist\').remove()">Cancel</button>'
+      + '<button class="btn btn-sm" id="psh-go" style="background:#065f46;color:#fff;border-color:#065f46;font-weight:800;" onclick="psHistApply()">\u2713 Put the checked prices in</button>'
+    + '</div></div>';
+  document.body.appendChild(div);
+}
+function psHistAll(on){
+  _pshRows.forEach(function(x, i){ const c = document.getElementById('psh-' + i); if(c) c.checked = !!on; });
+}
+async function psHistApply(){
+  const pick = [];
+  _pshRows.forEach(function(x, i){ const c = document.getElementById('psh-' + i); if(c && c.checked) pick.push(x); });
+  if(!pick.length){ const m = document.getElementById('psh-msg'); if(m){ m.textContent = 'Nothing is checked.'; m.style.color = '#b91c1c'; } return; }
+  /* ⚠ 기본가를 **먼저** 넣는다 - psSet 은 base_price 를 바꾸면 2XL~5XL 덮어쓰기를 지운다 */
+  pick.sort(function(a, b){ return (a.f === 'base_price' ? 0 : 1) - (b.f === 'base_price' ? 0 : 1); });
+  const go = document.getElementById('psh-go');
+  if(go){ go.disabled = true; go.textContent = 'Working\u2026'; }
+  let ok = 0, bad = 0;
+  for(const x of pick){
+    try{ await psSet(x.st, x.f, x.p); ok++; }catch(e){ bad++; }
+  }
+  const el = document.getElementById('modal-pshist'); if(el) el.remove();
+  showToast('\u{1F4DC} ' + ok + ' price' + (ok === 1 ? '' : 's') + ' added from past orders'
+    + (bad ? (' · ' + bad + ' failed') : ''));
+  try{ renderPsSheet(); }catch(e){}
+  try{ psHistBadge(); }catch(e){}
+}
 async function openCustPrices(cust){
   _psCust = custGroupName(cust); _psGk = custKey(_psCust); _psFilter='all'; _psQ=''; _psTab='adult';
   const ex = document.getElementById('modal-cprice'); if(ex) ex.remove();
@@ -50287,6 +50420,8 @@ async function openCustPrices(cust){
     <div style="padding:8px 18px;display:flex;gap:8px;align-items:center;border-bottom:1px solid var(--border);">
       <button class="btn btn-sm" id="ps-tab-adult" onclick="_psTab='adult';renderPsSheet();">👕 Adults</button>
       <button class="btn btn-sm" id="ps-tab-kids" onclick="_psTab='kids';renderPsSheet();">👦 Kids</button>
+      <!-- PSHIST-1 - 지난 오더에서 빠진 가격을 끌어온다. 채울 게 없으면 안 보인다 -->
+      <button class="btn btn-sm" id="ps-hist-btn" style="display:none;background:#fffbeb;color:#92400e;border-color:#fcd34d;font-weight:800;" onclick="psHistOpen()" title="This customer has bought styles that have no price on this sheet. Pull the price they actually paid.">📜 From orders</button>
       <select class="fi" style="width:150px;font-size:12px;padding:5px 8px;margin-left:auto;" onchange="_psFilter=this.value;renderPsSheet();">
         <option value="all">All styles</option><option value="priced">Priced only</option><option value="on">Selected only</option></select>
       <input class="fi" placeholder="Search styles..." style="width:180px;font-size:12px;padding:5px 8px;" oninput="_psQ=this.value;renderPsSheet();">
@@ -50308,6 +50443,7 @@ async function openCustPrices(cust){
     const effs = Object.values(ps.rows).map(p=>p.effective_date).filter(Boolean).sort();
     const ef = document.getElementById('ps-eff-all'); if(ef && effs.length) ef.value = String(effs[effs.length-1]).slice(0,10);
     renderPsSheet();
+    try{ psHistBadge(); }catch(e){}   /* PSHIST-1 */
   }
   else {
     const list = await loadImsCustomers();
