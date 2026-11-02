@@ -314,7 +314,7 @@ body.po-dragging{user-select:none;}
   </span>
   <select id="lang-sel" onchange="setLang(this.value)" style="font-size:11px;padding:3px 6px;border-radius:5px;border:none;background:#1d3f66;color:#fff;"><option value="ko">한국어</option><option value="en">English</option><option value="es">Español</option></select>
   <button id="wide-btn" class="btn btn-sm" onclick="toggleWide()" title="화면 넓게 / 좁게 — 기본은 넓게 (이 브라우저에만 저장돼)" style="padding:2px 8px;font-size:10px;background:#1d3f66;color:#cfe0f2;border-color:#2b5384;">↔ Wide</button>
-  <span id="app-ver" style="font-size:10px;color:#9fb8d4;">v1352</span>
+  <span id="app-ver" style="font-size:10px;color:#9fb8d4;">v1353</span>
 </div>
 <script>
 // ↔ 넓게 보기 — 브라우저마다 따로 저장 (v793)
@@ -48990,6 +48990,7 @@ function cmDetailPane(name){
         + '<div style="font-size:11px;color:#64748b;margin-top:2px;">'
           + (mas ? '<b style="color:#0f766e;font-family:Consolas,monospace;">MAS '+esc(mas)+'</b>' : '<span style="color:#b45309;font-weight:700;">MAS # 없음</span>')
           + (cs.webCust ? ' · <b style="color:#0e7490;">🌐 Website</b>' : '')
+          + (function(){ try{ return custWebChip(cs); }catch(e){ return ''; } })()   /* CUSTWEB-1 */
           + (function(){ try{
               const kids = Object.keys(custStore||{}).filter(kk=>{ const c=custStore[kk]; return c && c.parent && custKey(c.parent)===custKey(name); })
                              .map(kk=>custStore[kk].name || kk);
@@ -49003,6 +49004,8 @@ function cmDetailPane(name){
       + '</div>'
       + '<div style="margin-left:auto;display:flex;gap:5px;flex-wrap:wrap;">'
         + '<button class="btn btn-sm" onclick="openCustPrices(\''+nm+'\')" title="This customer\'s price list">💲 Prices</button>'
+        /* CUSTWEB-1 - 가격표 바로 옆. 「자기 가격을 보게 한다」가 같은 일이다 */
+        + '<button class="btn btn-sm" style="background:#ecfeff;color:#0e7490;border-color:#a5f3fc;font-weight:800;" onclick="openCustWebLogin(\''+nm+'\')" title="Give this customer a login for the website so they see their own prices">🌐 Web Login</button>'
         + '<button class="btn btn-sm" onclick="openCustShipTos(\''+nm+'\')" title="Ship-to addresses">🚚 Ship To</button>'
         + '<button class="btn btn-sm" style="'+((custShipSet(cs))?'background:#7c2d12;color:#fff;border-color:#7c2d12;':'')+'" onclick="openCustUps(\''+nm+'\')" title="Carrier accounts &amp; who pays (UPS / FedEx)">🚚 Shipping</button>'
         + '<button class="btn btn-sm" onclick="printStatement(\''+nm+'\')" title="Print a statement">🖨 Statement</button>'
@@ -49077,6 +49080,142 @@ function cmDetailPane(name){
 /* ═══ CUSTLINK-1 (v1352) - 거래처 카드 <-> 가격표 줄(customers) 연결 상태 ═══
    [stated] 하윤: "처음부터 잘 짜야돼"
    ⚠ 이름 판정은 앱이 이미 쓰는 `_imsNorm` 만 쓴다 - 새 규칙을 만들면 두 군데가 어긋난다. */
+/* ═══ CUSTWEB-1 (v1353) - 거래처에 웹사이트 로그인을 준다 ═══
+   [stated] 하윤: "우리가 po로 받는 거래처가 새로 생기면 psflowx에 저장되면서 웹사이트 access도"
+   ⚠ 비밀번호는 우리가 정하지 않는다. 본인이 메일로 정한다.
+   ⚠ 가격표(customers)에 안 이어진 거래처는 보내지 않는다 - 자기 가격이 안 나온다. */
+const STAFF_ADMIN_URL = 'https://staff-admin.hjbae.workers.dev';
+let _webLogins = null;        /* {customer_id: [email,...]} / null 이면 아직 안 읽었다 */
+async function custWebLoadLogins(force){
+  if(_webLogins && !force) return _webLogins;
+  try{
+    const r = await sbFetch('/rest/v1/customer_applications?select=customer_id,status,email');
+    if(!r.ok) return null;                     /* ⚠ 실패를 0건으로 읽지 않는다 */
+    const rows = await r.json();
+    const m = {};
+    (rows||[]).forEach(function(x){
+      if(!x || !x.customer_id || x.status !== 'approved') return;
+      const k = String(x.customer_id);
+      (m[k] = m[k] || []).push(x.email || '');
+    });
+    _webLogins = m;
+    if(document.getElementById('cust-body')) renderCustomers();
+    return m;
+  }catch(e){ return null; }
+}
+/* 아직 안 읽었으면 null 을 준다 - 그때는 아무 말도 안 한다 (틀린 숫자를 띄우지 않는다) */
+function custWebEmails(cs){
+  if(!_webLogins || !cs || !cs.imsId) return null;
+  return _webLogins[String(cs.imsId)] || [];
+}
+function custWebChip(cs){
+  const li = custWebEmails(cs);
+  if(!li || !li.length) return '';
+  return ' · <b style="color:#15803d;" title="' + esc(li.join(' \u00b7 ')) + '">\u{1F511} web login ('
+    + li.length + ')</b>';
+}
+let _cwCust = '', _cwKey = '', _cwCid = '', _cwBusy = false;
+function cwMsg(t, kind){
+  const el = document.getElementById('cw-msg'); if(!el) return;
+  el.textContent = t || '';
+  el.style.color = kind === 'err' ? '#b91c1c' : (kind === 'ok' ? '#15803d' : '#475569');
+}
+async function openCustWebLogin(cust){
+  _cwCust = custGroupName(cust); _cwKey = custKey(_cwCust); _cwCid = ''; _cwBusy = false;
+  const cs = custStore[_cwKey] || {};
+  const ex = document.getElementById('modal-cweb'); if(ex) ex.remove();
+  const div = document.createElement('div');
+  div.id = 'modal-cweb';
+  div.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,.55);z-index:130;display:flex;align-items:center;justify-content:center;';
+  div.innerHTML = '<div style="background:#fff;border-radius:12px;width:470px;max-width:93vw;overflow:hidden;box-shadow:0 20px 60px rgba(0,0,0,.35);">'
+    + '<div style="background:#0e7490;color:#fff;padding:11px 16px;font-weight:800;">\u{1F310} Website Login — ' + esc(_cwCust) + '</div>'
+    + '<div style="padding:14px 16px;">'
+      + '<div id="cw-link" style="font-size:12px;color:#475569;padding-bottom:9px;border-bottom:1px solid #e2e8f0;">Checking the price sheet link…</div>'
+      + '<div id="cw-have" style="font-size:12px;padding:9px 0 0;"></div>'
+      + '<div class="ff" style="margin-top:10px;"><label>Their email</label>'
+        + '<input class="fi" id="cw-email" placeholder="buyer@theircompany.com" value="' + esc(custEmailClean(cs.email || '')) + '"></div>'
+      + '<div style="font-size:11.5px;color:#64748b;line-height:1.55;margin-top:9px;">'
+        + 'They get an email asking them to set their own password. We never set it.<br>'
+        + 'After that they log in at the website and see <b>their own contract prices</b>.'
+      + '</div>'
+      + '<div id="cw-msg" style="font-size:12px;font-weight:700;margin-top:10px;min-height:17px;"></div>'
+    + '</div>'
+    + '<div style="padding:0 16px 14px;display:flex;gap:8px;justify-content:flex-end;">'
+      + '<button class="btn btn-sm" onclick="document.getElementById(\'modal-cweb\').remove()">Close</button>'
+      + '<button class="btn btn-sm" id="cw-send" style="background:#0e7490;color:#fff;border-color:#0e7490;font-weight:800;" onclick="custWebSend()">\u{1F4E7} Send login invite</button>'
+    + '</div></div>';
+  document.body.appendChild(div);
+  /* 가격표 줄을 찾는다. imsCustomerFor 는 이름이 맞으면 조용히 이어 주기도 한다. */
+  let row = null;
+  try{ row = await imsCustomerFor(_cwCust); }catch(e){ row = null; }
+  const lk = document.getElementById('cw-link'); if(!lk) return;   /* 그새 닫혔으면 그만 */
+  if(row && row.id){
+    _cwCid = String(row.id);
+    lk.innerHTML = '\u{1F517} Price sheet: <b style="color:#0f766e;">' + esc(row.name || '')
+      + (row.customer_no ? (' <span style="font-family:Consolas,monospace;">' + esc(row.customer_no) + '</span>') : '') + '</b>';
+  }else{
+    lk.innerHTML = '<b style="color:#b91c1c;">This customer is not linked to a price sheet yet.</b>'
+      + '<br>Link it first with the \u{1F517} button, then come back — otherwise they would see website prices, not their own.';
+    const b = document.getElementById('cw-send'); if(b){ b.disabled = true; b.style.opacity = '.45'; }
+  }
+  /* 이미 로그인이 있는지 본다 (읽기만 한다) */
+  const em = (document.getElementById('cw-email').value || '').trim();
+  if(em) custWebCheck(em);
+  setTimeout(function(){ const el = document.getElementById('cw-email'); if(el && !el.value) el.focus(); }, 60);
+}
+async function custWebCheck(email){
+  const el = document.getElementById('cw-have'); if(!el) return;
+  el.textContent = '';
+  try{
+    await ensureToken();
+    const r = await fetch(STAFF_ADMIN_URL + '/customer/status', { method:'POST',
+      headers:{ 'Content-Type':'application/json', Authorization:'Bearer ' + SESS.token },
+      body: JSON.stringify({ email: email }) });
+    if(!r.ok) return;
+    const j = await r.json();
+    const el2 = document.getElementById('cw-have'); if(!el2) return;
+    if(!j || !j.has_login){ el2.innerHTML = '<span style="color:#64748b;">No website login for this email yet.</span>'; return; }
+    const mine = (j.rows||[]).filter(function(x){ return x.customer_id && String(x.customer_id) === _cwCid; });
+    const other = (j.rows||[]).filter(function(x){ return x.customer_id && String(x.customer_id) !== _cwCid; });
+    if(mine.length) el2.innerHTML = '<b style="color:#15803d;">\u2713 This email already has a login for this customer.</b>';
+    else if(other.length) el2.innerHTML = '<b style="color:#b45309;">\u26a0 This email already belongs to a different customer.</b>';
+    else el2.innerHTML = '<span style="color:#475569;">This email has a login, but it is not tied to any customer yet.</span>';
+  }catch(e){}
+}
+async function custWebSend(){
+  if(_cwBusy) return;
+  const em = ((document.getElementById('cw-email')||{}).value || '').trim();
+  if(!em || em.indexOf('@') < 0){ cwMsg('Enter their email address first.', 'err'); return; }
+  if(!_cwCid){ cwMsg('Link this customer to a price sheet first.', 'err'); return; }
+  const btn = document.getElementById('cw-send');
+  _cwBusy = true; if(btn){ btn.disabled = true; btn.textContent = 'Sending\u2026'; }
+  cwMsg('Sending\u2026');
+  try{
+    await ensureToken();
+    const r = await fetch(STAFF_ADMIN_URL + '/customer/invite', { method:'POST',
+      headers:{ 'Content-Type':'application/json', Authorization:'Bearer ' + SESS.token },
+      body: JSON.stringify({ email: em, customer_id: _cwCid, company_name: _cwCust,
+        redirect_to: 'https://pacific-sports-shop.pages.dev/reset-password.html' }) });
+    let j = null; try{ j = await r.json(); }catch(e){ j = null; }
+    if(!r.ok || !j || !j.ok){
+      cwMsg((j && j.error) ? j.error : ('Could not do it (error ' + r.status + ').'), 'err');
+      return;
+    }
+    if(j.mailed) cwMsg('\u2713 Done. ' + em + ' can now set a password from the email we just sent.', 'ok');
+    else cwMsg('\u2713 Access is set, but the email did not go out'
+      + (j.mail_error ? (' (' + j.mail_error + ')') : '')
+      + '. They can use Forgot password on the website instead.', 'err');
+    showToast('\u{1F310} ' + _cwCust + ' — website login set');
+    await custWebLoadLogins(true);
+    custWebCheck(em);
+  }catch(e){
+    cwMsg('Could not reach the server. Check the connection and try again.', 'err');
+  }finally{
+    _cwBusy = false;
+    const b = document.getElementById('cw-send');
+    if(b){ b.disabled = false; b.textContent = '\u{1F4E7} Send login invite'; }
+  }
+}
 function custImsScan(){
   const out = { linked:0, linkable:[], prOnly:0, imsOnly:[] };
   const list = (typeof _imsCustList !== 'undefined' && _imsCustList) ? _imsCustList : null;
@@ -49136,6 +49275,7 @@ async function custImsLinkAll(){
 function renderCustomers(){
   custCreditReset();   /* CREDIT-1 */
   try{ custImsBadge(); }catch(e){}   /* CUSTLINK-1 */
+  try{ custWebLoadLogins(); }catch(e){}   /* CUSTWEB-1 */
   const el = $('cust-body'); if(!el) return;
   /* 공용 customers 표(=MAS 번호가 사는 곳)를 한 번만 읽어 온다 (v1000) */
   if(!_imsCustList && typeof loadImsCustomers==='function'){ loadImsCustomers().then(()=>{ if($('cust-body')) renderCustomers(); }); }
@@ -49225,6 +49365,8 @@ function renderCustomers(){
         <td><input class="fi" value="${esc(em)}" placeholder="email" title="${esc(em)}" onchange="cmSet('${esc(k)}','email',this.value)" style="width:180px;font-size:11px;"></td>
         <td><input class="fi" value="${esc(custEmailClean(cs.plEmail||''))}" placeholder="same as invoice" title="Where the packing list email goes. Leave it blank and the invoice address is used." onchange="cmSet('${esc(k)}','plEmail',this.value)" style="width:180px;font-size:11px;"></td>
         <td style="white-space:nowrap;"><button class="btn btn-sm" onclick="openCustPrices('${esc(m.name)}')" title="Last selling prices by item for this customer">💲 Prices</button>
+          <!-- CUSTWEB-1 - Detail 카드와 **같은** 단추 -->
+          <button class="btn btn-sm" style="margin-left:4px;background:#ecfeff;color:#0e7490;border-color:#a5f3fc;font-weight:800;" onclick="openCustWebLogin('${esc(m.name)}')" title="Give this customer a login for the website so they see their own prices">🌐 Login${(()=>{ try{ const li=custWebEmails(cs); return (li&&li.length)?' ✓':''; }catch(e){ return ''; } })()}</button>
           <button class="btn btn-sm" style="margin-left:4px;${custShipSet(cs)?'background:#7c2d12;color:#fff;border-color:#7c2d12;':''}" onclick="openCustUps('${esc(m.name)}')" title="Carrier accounts &amp; who pays (UPS / FedEx) for this customer">🚚 Shipping</button>
           <label style="display:inline-flex;align-items:center;gap:4px;margin-left:6px;font-size:11px;font-weight:700;color:#0e7490;cursor:pointer;vertical-align:middle;" title="Website customer — new orders auto-check 🌐 Website Customer"><input type="checkbox" ${cs.webCust?'checked':''} onchange="cmSet('${esc(k)}','webCust',this.checked)" style="width:13px;height:13px;accent-color:#0e7490;cursor:pointer;">🌐 Website</label>
           <!-- PAYCARD-v1 - 조건과 따로. 「카드로 받는 거래처」 표시 -->
