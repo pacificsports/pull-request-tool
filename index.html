@@ -314,7 +314,7 @@ body.po-dragging{user-select:none;}
   </span>
   <select id="lang-sel" onchange="setLang(this.value)" style="font-size:11px;padding:3px 6px;border-radius:5px;border:none;background:#1d3f66;color:#fff;"><option value="ko">한국어</option><option value="en">English</option><option value="es">Español</option></select>
   <button id="wide-btn" class="btn btn-sm" onclick="toggleWide()" title="화면 넓게 / 좁게 — 기본은 넓게 (이 브라우저에만 저장돼)" style="padding:2px 8px;font-size:10px;background:#1d3f66;color:#cfe0f2;border-color:#2b5384;">↔ Wide</button>
-  <span id="app-ver" style="font-size:10px;color:#9fb8d4;">v1356</span>
+  <span id="app-ver" style="font-size:10px;color:#9fb8d4;">v1357</span>
 </div>
 <script>
 // ↔ 넓게 보기 — 브라우저마다 따로 저장 (v793)
@@ -6814,6 +6814,27 @@ function raIsFrt(r){ return !!(r && String(r.kind || '') === 'freight'); }
    [stated] 하윤: "수량을 덜 받았다고 하니까 그 수량만큰 credit memo를 줘야하거든"
    ⚠ 종이에 찍히는 것은 크레딧 메모 번호다. 이 SH- 은 우리끼리 쓰는 참조다. */
 function raIsShort(r){ return !!(r && String(r.kind || '') === 'short'); }
+/* BULKCM-1 (2026-11-04) - PO 여러 개를 한꺼번에 돌려받고 **크레딧 메모 한 장**으로 내는 건.
+   [stated] 하윤: "여러 PO를 한꺼번에 돌려받아서 그냥 각 사이즈 총수량을 credit memo해줘야
+     할때도 있는데 이것도 우리 시스템에서 가능한가?"
+   실측 2026-11-04: 반품 28건 중 같은 거래처 같은 날 PO 2개가 **5번**, 전부 T-Shirt Tycoon.
+     그때마다 크레딧 메모가 두 장씩 나갔다 (0265903+0265904 등).
+   \u26a0 물건은 **진짜로 돌아온다** - 그래서 가격조정/운임/short 와 달리
+     invStatus 는 'pending' 이고 지금 Return Stock 큐로 들어간다.
+   \u26a0 종이에 찍히는 것은 크레딧 메모 번호다. 이 MR- 은 우리끼리 쓰는 참조다. */
+function raIsBulk(r){ return !!(r && String(r.kind || '') === 'bulk'); }
+/* \u26a0 bulk 건끼리만 센다 (RA-/AL-/FR-/SH- 와 안 겹친다) */
+function bkGen(base, rec){
+  const n = recReturns(rec).filter(raIsBulk).length + 1;
+  return 'MR-' + base + (n>1?('-'+n):'');
+}
+/* 종이에 찍을 PO 목록. 한 줄로 길어지면 보기 나쁘니 글자수로 자른다. */
+function bkPoText(ret){
+  const ps = (ret && Array.isArray(ret.pos)) ? ret.pos.filter(Boolean) : [];
+  if(!ps.length) return '';
+  const t = ps.join(', ');
+  return t.length <= 64 ? t : (ps.slice(0, 4).join(', ') + ' +' + (ps.length - 4) + ' more');
+}
 /* REPLACED-1 - 교체품을 보내주고 받는 반품. 크레딧 메모가 **안 나간다.**
    [stated] 하윤: "return을 받기는 하는데 replacement를 해주고 받는거라서 credit memo가 필요없는데"
    ⭐ 판정은 RA 를 만들 때 한다 - 거래처에게 나가는 RA 메일이 거기서 약속을 하기 때문이다.
@@ -14996,7 +15017,9 @@ function memoHistRows(base){
     const note = sub === 'short'     ? (r.ra + ' — short shipment · ' + pcs.toLocaleString() + ' pcs')
                : sub === 'freight'   ? (r.ra + ' — shipping charge credit')
                : sub === 'allowance' ? (r.ra + ' — price adjustment')
-               : ('RA ' + r.ra + ' — return received');
+               : (raIsBulk(r)
+                   ? (r.ra + ' — multi-PO return · ' + ((r.pos && r.pos.length) || 1) + ' POs · ' + pcs.toLocaleString() + ' pcs')
+                   : ('RA ' + r.ra + ' — return received'));
     rows.push({ kind:'ra', sub:sub, wh:'', ref:rc.cm, ra:r.ra, at:rc.at||'', by:rc.by||'',
       amt:Number(rc.creditAmount)||0, note:note, lines:Array.isArray(rc.lines)?rc.lines:[], file:false });
   });
@@ -15092,11 +15115,32 @@ function openMemoModal(){
     <div style="padding:9px 16px 0;display:flex;gap:7px;flex-wrap:wrap;">
       <span id="memo-tab-adj" onclick="memoTab('adj')" style="cursor:pointer;font-size:11.5px;font-weight:800;border-radius:7px;padding:5px 13px;background:#7c2d12;color:#fff;border:1px solid #7c2d12;">💲 Price adjustment</span>
       <span id="memo-tab-sh" onclick="memoTab('sh')" style="cursor:pointer;font-size:11.5px;font-weight:800;border-radius:7px;padding:5px 13px;background:#fff;color:#64748b;border:1px solid #cbd5e1;">📦 Short shipment</span>
+      <span id="memo-tab-bk" onclick="memoTab('bk')" style="cursor:pointer;font-size:11.5px;font-weight:800;border-radius:7px;padding:5px 13px;background:#fff;color:#64748b;border:1px solid #cbd5e1;">\u{1F5C2} Multiple POs</span>
       <span id="memo-tab-frt" onclick="memoTab('frt')" style="cursor:pointer;font-size:11.5px;font-weight:800;border-radius:7px;padding:5px 13px;background:#fff;color:#64748b;border:1px solid #cbd5e1;">🚚 Shipping charge</span>
       <span id="memo-tab-mas" onclick="memoTab('mas')" style="cursor:pointer;font-size:11.5px;font-weight:800;border-radius:7px;padding:5px 13px;background:#fff;color:#64748b;border:1px solid #cbd5e1;">📎 Record a MAS 200 memo</span>
     </div>
 
     <!-- ══ ALLOW-1 · 가격 조정 (번호·종이·메일이 다 나간다) ══ -->
+    <!-- BULKCM-1 - PO 여러 개를 한 장으로 -->
+    <div id="memo-bk" style="display:none;padding:12px 16px;max-height:64vh;overflow-y:auto;">
+      <div style="background:#f5f3ff;border:1px solid #ddd6fe;border-radius:8px;padding:9px 12px;margin-bottom:11px;font-size:11.5px;color:#5b21b6;line-height:1.55;">
+        Pick <b>every PO</b> that came back in this shipment, then type the <b>total pieces per size</b>.
+        One credit memo number covers all of them.
+        The unit price is filled in from the <b>most recent PO you picked</b> &mdash; change it if you agreed on something else.
+        <b>The goods go to \u{1F4E6} Return Stock</b> so the warehouse can put them on a shelf.
+      </div>
+      <div style="font-size:11px;font-weight:800;color:#5b21b6;letter-spacing:.04em;margin-bottom:6px;">POs FROM THIS CUSTOMER &mdash; pick the ones that came back</div>
+      <div id="bk-pos" style="display:flex;flex-wrap:wrap;gap:6px;margin-bottom:11px;"></div>
+      <div id="bk-tbl" style="margin-bottom:11px;"></div>
+      <div class="ff" style="margin-bottom:9px;"><label>Reason (printed on the credit memo)</label>
+        <input class="fi" id="bk-note" value="Customer return" placeholder="Customer return"></div>
+      <div id="bk-msg" style="font-size:11.5px;font-weight:800;color:#b91c1c;min-height:16px;"></div>
+      <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;border-top:1px solid #e5e7eb;padding-top:10px;margin-top:4px;">
+        <span style="font-size:14px;font-weight:900;color:#5b21b6;">Total credit: <span id="bk-total" style="font-family:Consolas,monospace;">$0.00</span></span>
+        <span id="bk-pcs" style="font-size:11.5px;color:#64748b;font-weight:700;"></span>
+        <button class="btn btn-sm" id="bk-issue" disabled style="margin-left:auto;background:#5b21b6;color:#fff;border-color:#5b21b6;font-weight:800;" onclick="bkIssue('${esc(plBase)}','${esc(plWh)}')">\u{1F5C2} Issue Credit Memo</button>
+      </div>
+    </div>
     <div id="memo-adj" style="padding:12px 16px;max-height:64vh;overflow-y:auto;">
       <div style="background:#fff7ed;border:1px solid #fed7aa;border-radius:8px;padding:9px 12px;margin-bottom:11px;font-size:11.5px;color:#7c2d12;line-height:1.55;">
         Type the <b>agreed new price</b> on the lines you are adjusting. We credit the difference &times; the shipped quantity.
@@ -15256,7 +15300,8 @@ function memoTab(which){
   const off= {background:'#fff',color:'#64748b',border:'1px solid #cbd5e1'};
   /* FRTCM-1 - 칸이 셋이 되었다 */
   /* SHORTCM-1 - 칸이 넷이 되었다 */
-  [['adj','memo-adj'],['sh','memo-sh'],['frt','memo-frt'],['mas','memo-mas']].forEach(function(p){
+  /* BULKCM-1 - 칸이 다섯이 되었다 */
+  [['adj','memo-adj'],['sh','memo-sh'],['bk','memo-bk'],['frt','memo-frt'],['mas','memo-mas']].forEach(function(p){
     const tab = document.getElementById('memo-tab-'+p[0]);
     const pan = document.getElementById(p[1]);
     const sel = (p[0] === which);
@@ -15270,6 +15315,9 @@ function memoTab(which){
   /* SHORTCM-1 - 같은 까닭으로 여기도 한 번 돌린다. 지금은 칸이 비어 있으니 합계가 $0
      이고 단추가 잠겨 있는 것이 맞는 모습이지만, 그 판정을 shCalc 하나가 하게 둔다. */
   if(which === 'sh'){ try{ shCalc(); }catch(e){} }
+  /* BULKCM-1 - 이 칸은 열 때 **PO 목록부터 그린다** (창을 열 때 그리면 안 보이는 칸을
+     매번 계산하게 된다). 그리고 같은 까닭으로 bkCalc 를 한 번 돌린다. */
+  if(which === 'bk'){ try{ bkPaintPos(); }catch(e){} }
 }
 function adjApplyAll(){
   const v = String((document.getElementById('adj-all')||{}).value||'').trim();
@@ -15406,6 +15454,260 @@ function shCalc(){
   const bt = document.getElementById('sh-issue');
   if(bt) bt.disabled = !!warn || !lines.length || !(total > 0);
   return { lines: lines, total: total, pcs: pcs, warn: warn };
+}
+/* \u2550\u2550\u2550 BULKCM-1 - PO 여러 개 \u2192 크레딧 메모 한 장 \u2550\u2550\u2550
+   [stated] 하윤: "여러 PO를 한꺼번에 돌려받아서 그냥 각 사이즈 총수량을 credit memo해줘야 할때"
+   [stated] 하윤이 고른 단가 규칙: **제일 최근 PO 단가를 미리 채우고 고칠 수 있게**
+   \u2b50\u2b50\u2b50 ALLOW-1 / FRTCM-1 / SHORTCM-1 과 같은 수법 - 새 서류\u00b7새 메일\u00b7새 목록을
+      하나도 안 만든다. 같은 meta._returns 통에 kind:'bulk' 로 넣으면
+      번호\u00b7종이\u00b7메일\u00b7「나간 것」 목록이 그대로 돈다.
+   \u26a0\u26a0 다른 셋과 **딱 하나 다른 점**: 물건이 진짜로 돌아온다.
+      그래서 invStatus 는 'done' 이 아니라 **'pending'** 이고 \u{1F4E6} Return Stock 큐에 들어간다.
+      (REPLACED-1 에서 겪은 함정 - 크레딧만 내고 물건을 큐에 안 넣으면
+       창고에 물건이 서 있는데 아무 화면도 그걸 모른다.)
+   \u26a0 실측 2026-11-04: 받은 반품 3건 모두 A등급 전부 (B 0 \u00b7 Failed 0) 였다.
+      그래서 여기서는 등급을 묻지 않고 **받은 장수 전부를 A등급**으로 둔다.
+      전량 불량이면 창고가 Return Stock 창에서 「아무것도 안 올린다」로 닫을 수 있다. */
+let _bkPos = null;   /* 고른 오더들의 base (Set) */
+/* 이 거래처의 PO 후보. 같은 **브랜드 묶음**으로 본다 (custGroupName) */
+function bkCandidates(base){
+  const rec = (savedCache || []).find(function(x){ return x.base === base; });
+  if(!rec) return [];
+  const key = (typeof custGroupName === 'function')
+    ? custGroupName((rec.meta && rec.meta.cust) || '')
+    : String((rec.meta && rec.meta.cust) || '');
+  const out = [];
+  (savedCache || []).forEach(function(s2){
+    if(!s2 || !s2.meta) return;
+    const k2 = (typeof custGroupName === 'function') ? custGroupName(s2.meta.cust || '') : String(s2.meta.cust || '');
+    if(k2 !== key) return;
+    /* 나간 적이 있는 오더만 - 돌아올 물건이 있어야 한다 */
+    const shipped = (s2.whs || []).some(function(w){ return s2.pl && s2.pl[w] && s2.pl[w].savedAt; })
+      || (s2.lines || []).some(function(l){ return (Number(l.qty) || 0) > 0; });
+    if(!shipped) return;
+    out.push({ base: s2.base, po: String((s2.meta && s2.meta.po) || ''),
+               at: String((s2.meta && s2.meta.date) || ''), rec: s2 });
+  });
+  out.sort(function(a, b){ return String(b.at).localeCompare(String(a.at)) || String(b.base).localeCompare(String(a.base)); });
+  return out.slice(0, 24);
+}
+function bkPaintPos(){
+  const box = document.getElementById('bk-pos'); if(!box) return;
+  const list = bkCandidates(plBase);
+  if(!_bkPos){ _bkPos = new Set([plBase]); }
+  box.innerHTML = list.map(function(c){
+    const on = _bkPos.has(c.base);
+    return '<span class="bk-po" data-base="' + esc(c.base) + '" onclick="bkToggle(' + String.fromCharCode(39)
+      + esc(c.base) + String.fromCharCode(39) + ')"'
+      + ' style="cursor:pointer;font-size:11px;font-weight:800;border-radius:20px;padding:4px 11px;'
+      + (on ? 'background:#5b21b6;color:#fff;border:1px solid #5b21b6;' : 'background:#fff;color:#64748b;border:1px solid #cbd5e1;')
+      + '">' + (on ? '\u2713 ' : '') + 'PO ' + esc(c.po || c.base)
+      + (c.at ? ('<span style="font-weight:600;opacity:.75;"> \u00b7 ' + esc(String(c.at).slice(0, 10)) + '</span>') : '')
+      + '</span>';
+  }).join('') || '<span style="font-size:11.5px;color:#94a3b8;">No other POs found for this customer.</span>';
+  bkBuild();
+}
+function bkToggle(base){
+  if(!_bkPos) _bkPos = new Set([plBase]);
+  if(_bkPos.has(base)){
+    /* \u26a0 마지막 하나는 못 끈다 - 어느 오더에 붙일지 사라진다 */
+    if(_bkPos.size <= 1){ showToast('\u26a0 Pick at least one PO'); return; }
+    _bkPos.delete(base);
+  } else { _bkPos.add(base); }
+  bkPaintPos();
+}
+/* 고른 PO 들의 나간 줄을 스타일|색|사이즈|창고 로 합친다.
+   \u2b50 단가는 **제일 최근 PO** 것으로 (하윤이 고른 규칙) - 그래서 오래된 것부터 덮어쓴다. */
+function bkItems(){
+  if(!_bkPos) _bkPos = new Set([plBase]);
+  const picked = bkCandidates(plBase).filter(function(c){ return _bkPos.has(c.base); });
+  picked.sort(function(a, b){ return String(a.at).localeCompare(String(b.at)) || String(a.base).localeCompare(String(b.base)); });
+  const map = {};
+  picked.forEach(function(c){
+    const s2 = c.rec;
+    (s2.whs || []).filter(function(w){ return w === 'SC' || w === 'CA'; }).forEach(function(w){
+      const src = (s2.pl && s2.pl[w] && Array.isArray(s2.pl[w].lines) && s2.pl[w].lines.length)
+        ? s2.pl[w].lines : (s2.lines || []).filter(function(l){ return String(l.wh || '').toUpperCase() === w; });
+      src.forEach(function(l){
+        const q = Number(l.qty) || 0; if(!(q > 0)) return;
+        const k = [l.style || '', l.color || '', String(l.size || '').toUpperCase(), w].join('|');
+        const cur = map[k] || { style: l.style || '', desc: l.desc || '', color: l.color || '',
+          size: String(l.size || '').toUpperCase(), wh: w, qty: 0, price: 0,
+          ppb: Number(l.ppb) || DEFAULT_PPB, pos: [] };
+        cur.qty += q;
+        if(Number(l.price) > 0) cur.price = Number(l.price);   /* 최근 것이 이긴다 */
+        if(!cur.desc && l.desc) cur.desc = l.desc;
+        if(cur.pos.indexOf(c.po) < 0 && c.po) cur.pos.push(c.po);
+        map[k] = cur;
+      });
+    });
+  });
+  const items = Object.keys(map).map(function(k){ return map[k]; });
+  items.sort(function(a, b){
+    return String(a.style).localeCompare(String(b.style))
+      || String(a.color).localeCompare(String(b.color))
+      || bxSizeCmp(a.size, b.size); });
+  return items;
+}
+function bkBuild(){
+  const box = document.getElementById('bk-tbl'); if(!box) return;
+  const items = bkItems();
+  window._bkItems = items;
+  if(!items.length){
+    box.innerHTML = '<div style="padding:10px;color:#94a3b8;font-size:12px;">No shipped lines on the POs you picked.</div>';
+    bkCalc(); return;
+  }
+  box.innerHTML = '<div style="border:1px solid #e5e7eb;border-radius:8px;overflow:hidden;">'
+    + '<table style="width:100%;border-collapse:collapse;font-size:12px;"><thead><tr style="background:#f8fafc;">'
+    + ['STYLE','COLOR','SIZE','WH','SHIPPED','UNIT PRICE','RETURN QTY','CREDIT $']
+        .map(function(h, i){ return '<th style="padding:5px 6px;text-align:' + (i >= 4 ? 'right' : 'left')
+          + ';font-size:10.5px;color:' + (i === 5 || i === 6 ? '#5b21b6;font-weight:800' : '#64748b') + ';">' + h + '</th>'; }).join('')
+    + '</tr></thead><tbody>'
+    + items.map(function(x, i){
+        return '<tr>'
+          + '<td style="padding:4px 6px;font-weight:700;">' + esc(String(x.style)) + '</td>'
+          + '<td style="padding:4px 6px;">' + esc(String(x.color).toUpperCase()) + '</td>'
+          + '<td style="padding:4px 6px;font-weight:700;">' + esc(String(x.size)) + '</td>'
+          + '<td style="padding:4px 6px;"><span class="chip chip-' + esc(x.wh) + '" style="font-size:9px;padding:1px 6px;">' + esc(x.wh) + '</span></td>'
+          + '<td style="padding:4px 6px;font-family:Consolas,monospace;text-align:right;">' + x.qty.toLocaleString() + '</td>'
+          + '<td style="padding:4px 6px;text-align:right;"><input class="fi num bk-p" data-i="' + i + '" type="number" step="0.001" min="0" value="' + (Number(x.price) || 0).toFixed(3) + '" oninput="bkCalc()" style="width:86px;font-weight:800;text-align:right;"></td>'
+          + '<td style="padding:4px 6px;text-align:right;"><input class="fi num bk-q" data-i="' + i + '" type="number" step="1" min="0" max="' + x.qty + '" placeholder="0" oninput="bkCalc()" style="width:84px;font-weight:800;text-align:right;"></td>'
+          + '<td style="padding:4px 6px;font-family:Consolas,monospace;text-align:right;font-weight:800;color:#5b21b6;" id="bk-lt-' + i + '">\u2014</td>'
+          + '</tr>';
+      }).join('')
+    + '</tbody></table></div>';
+  bkCalc();
+}
+/* \u2b50\u2b50\u2b50 화면과 발행이 **이 함수 하나**를 같이 쓴다 (bkIssue 가 발행 직전에 다시 돌린다).
+   값을 보여주는 곳과 세는 곳이 따로면 반드시 어긋난다. */
+function bkCalc(){
+  const items = window._bkItems || [];
+  const lines = []; let total = 0, pcs = 0, warn = '';
+  document.querySelectorAll('#modal-memo .bk-q').forEach(function(inp){
+    const i = parseInt(inp.getAttribute('data-i'), 10);
+    const x = items[i]; if(!x) return;
+    const cell = document.getElementById('bk-lt-' + i);
+    const pin  = document.querySelector('#modal-memo .bk-p[data-i="' + i + '"]');
+    const raw  = String(inp.value == null ? '' : inp.value).trim();
+    inp.style.borderColor = ''; inp.style.background = '';
+    if(pin){ pin.style.borderColor = ''; pin.style.background = ''; }
+    if(!raw){ if(cell) cell.textContent = '\u2014'; return; }
+    const bad = function(msg, el){
+      const t = el || inp;
+      t.style.borderColor = '#dc2626'; t.style.background = '#fef2f2';
+      if(cell) cell.innerHTML = '<span style="color:#dc2626;font-weight:800;font-size:10.5px;">' + msg + '</span>';
+      warn = warn || msg;
+    };
+    const q = Number(raw);
+    if(!isFinite(q) || q < 0){ bad('not a quantity'); return; }
+    if(Math.round(q) !== q){ bad('whole pieces only'); return; }
+    if(q === 0){ if(cell) cell.textContent = '\u2014'; return; }
+    /* \u26a0 고른 PO 들에 나간 것보다 많이 돌려받을 수는 없다 - PO 를 하나 빠뜨린 것이다 */
+    if(q > x.qty){ bad('more than the ' + x.qty.toLocaleString() + ' shipped'); return; }
+    const price = Number(String((pin && pin.value) || '').trim());
+    if(!isFinite(price) || price < 0){ bad('not a price', pin); return; }
+    if(!(price > 0)){ bad('no price on this line', pin); return; }
+    const amt = Math.round(q * price * 100) / 100;
+    if(!(amt > 0)){ bad('credit is $0.00'); return; }
+    if(cell) cell.textContent = '$' + amt.toFixed(2);
+    lines.push({ style: x.style || '', desc: x.desc || '', color: x.color || '', size: x.size || '',
+                 qty: q, price: price, listPrice: Number(x.price) || 0, shipQty: x.qty,
+                 ppb: Number(x.ppb) || DEFAULT_PPB, wh: x.wh, toWh: x.wh,
+                 fromPos: (x.pos || []).slice() });
+    total = Math.round((total + amt) * 100) / 100;
+    pcs += q;
+  });
+  window._bkLines = lines.length ? lines : null;
+  window._bkTotal = total; window._bkPcs = pcs; window._bkWarn = warn;
+  const tt = document.getElementById('bk-total'); if(tt) tt.textContent = '$' + total.toFixed(2);
+  const po = _bkPos ? _bkPos.size : 0;
+  const pc = document.getElementById('bk-pcs');
+  if(pc) pc.textContent = pcs
+    ? ('\u00b7 ' + pcs.toLocaleString() + ' pcs back on ' + lines.length + (lines.length === 1 ? ' line' : ' lines')
+       + ' from ' + po + (po === 1 ? ' PO' : ' POs'))
+    : '';
+  const ms = document.getElementById('bk-msg');
+  if(ms) ms.textContent = warn ? ('\u26a0 ' + warn) : '';
+  const bt = document.getElementById('bk-issue');
+  if(bt) bt.disabled = !!warn || !lines.length || !(total > 0);
+  return { lines: lines, total: total, pcs: pcs, warn: warn };
+}
+async function bkIssue(base, wh){
+  const rec = savedCache.find(function(x){ return x.base === base; }); if(!rec) return;
+  const r = bkCalc();
+  if(r.warn){ alert('\u26a0 ' + r.warn); return; }
+  if(!r.lines.length){ alert('\u26a0 Type how many pieces came back on at least one line.'); return; }
+  if(!(r.total > 0)){ alert('\u26a0 The credit comes to $0.00 - nothing to issue.'); return; }
+  const note = String(((document.getElementById('bk-note')||{}).value) || '').trim() || 'Customer return';
+  /* 고른 PO 들 - 종이에 찍히고 레코드에도 남는다 */
+  const picked = bkCandidates(base).filter(function(c){ return _bkPos && _bkPos.has(c.base); });
+  /* \u26a0 bkCandidates 는 **최신순**이다. 종이와 기록에는 오래된 것부터 적는다 -
+     거래처 회계가 자기 장부 차례대로 맞춰 보기 때문이다. */
+  picked.sort(function(a, b){
+    return String(a.at).localeCompare(String(b.at)) || String(a.base).localeCompare(String(b.base)); });
+  const pos = picked.map(function(c){ return c.po || c.base; });
+  if(!pos.length){ alert('\u26a0 Pick at least one PO.'); return; }
+  /* 돈이 나가는 일이다 - 숫자를 글자로 다시 보여주고 확인받는다 */
+  const list = r.lines.map(function(l){
+    return '  ' + l.style + '  ' + String(l.color).toUpperCase() + '  ' + String(l.size).toUpperCase()
+      + '   ' + l.qty.toLocaleString() + ' pcs   @ $' + Number(l.price).toFixed(2)
+      + '   = $' + (Math.round(l.qty * l.price * 100) / 100).toFixed(2);
+  }).join('\n');
+  if(!confirm('Issue ONE credit memo for ' + pos.length + (pos.length === 1 ? ' PO' : ' POs') + '?\n\n'
+    + '  ' + pos.join(', ') + '\n\n' + list
+    + '\n\nTOTAL CREDIT   $' + r.total.toFixed(2) + '   (' + r.pcs.toLocaleString() + ' pcs)'
+    + '\n\nA credit memo number will be taken and written to our books.\n'
+    + 'The goods go to the ' + String.fromCharCode(55357) + String.fromCharCode(56550)
+    + ' Return Stock list so the warehouse can put them on a shelf.')) return;
+  const bt = document.getElementById('bk-issue');
+  if(bt){ bt.disabled = true; bt.textContent = 'Issuing...'; }
+  const undo = function(){ if(bt){ bt.disabled = false; bt.textContent = '\u{1F5C2} Issue Credit Memo'; } };
+  /* \u26a0 번호가 없으면 아무것도 만들지 않는다 (CMGUARD-1) */
+  let cmNo = '';
+  try{ cmNo = await nextInvNo(); }catch(e){ console.warn('[BULKCM-1] number failed', e); }
+  if(!cmNo){ undo(); alert('\u26a0 Could not take a credit memo number - nothing was issued. Try again.'); return; }
+  const by  = (SESS && SESS.email) || '';
+  const now = new Date().toISOString();
+  const em  = (rec.meta && rec.meta.custEmail) || custEmailFor(rec.meta && rec.meta.cust) || '';
+  /* \u26a0 받은 장수 전부를 A등급으로 둔다 (실측: 받은 반품 3건 모두 A등급뿐).
+     전량 불량이면 창고가 Return Stock 창에서 닫을 수 있다 (RSZERO-1). */
+  const rl = r.lines.map(function(l){
+    return Object.assign({}, l, { gradeA: l.qty, gradeB: 0, failed: 0, receivedQty: l.qty });
+  });
+  const ret = {
+    ra: bkGen(base, rec), kind: 'bulk',
+    pos: pos, bases: picked.map(function(c){ return c.base; }),
+    status: 'received', cmStatus: 'sent', invStatus: 'pending',
+    cm: cmNo, reason: note, reasons: [],
+    custEmail: em, cc: !!(rec.meta && rec.meta.cc),
+    lines: r.lines,
+    received: { at: now, by: by, cm: cmNo, creditAmount: r.total, lines: rl,
+                restockA: r.pcs, restockB: 0, failedTotal: 0, restockTotal: r.pcs, cmEmailedAt: '' },
+    createdAt: now, createdBy: by, emailedAt: null
+  };
+  const before = recReturns(rec).slice();
+  rec.meta = rec.meta || {};
+  rec.meta._returns = before.concat([ret]);
+  /* \u26a0\u26a0 `sbFetch` 는 Response 를 돌려준다 - HTTP 500 이어도 **안 던진다.**
+     try/catch 만 두면 서버가 거절해도 「냈다」고 말하고 창을 닫는다.
+     `sbSaveRow` 는 r.ok 와 **고쳐진 줄 수**까지 보고 던진다 (CMSAVE-1 정신). */
+  try{
+    await sbSaveRow('/rest/v1/pr_orders?base=eq.' + encodeURIComponent(base),
+      { meta: rec.meta, updated_at: now }, 'The credit memo');
+  }catch(e){
+    rec.meta._returns = before;          /* 저장이 안 됐으면 화면에도 남기지 않는다 */
+    undo();
+    alert('\u26a0 NOTHING was issued - ' + ((e && e.message) || e));
+    return;
+  }
+  logHist(base, 'Multi-PO return credit memo ' + cmNo + ' issued - $' + r.total.toFixed(2)
+    + ' (' + r.pcs.toLocaleString() + ' pcs, ' + pos.length + ' POs: ' + pos.join(', ') + ')');
+  const m = document.getElementById('modal-memo'); if(m) m.remove();
+  renderSaved();
+  try{ if(typeof renderKpi === 'function') renderKpi(); }catch(e){}
+  showToast('\u2705 Credit memo ' + cmNo + ' issued - $' + r.total.toFixed(2)
+    + ' (' + pos.length + ' POs)');
+  try{ openCreditMemo(base, ret.ra); }catch(e){}
 }
 async function shIssue(base, wh){
   const rec = savedCache.find(function(x){ return x.base === base; }); if(!rec) return;
@@ -16179,6 +16481,9 @@ function buildCreditMemoDoc(rec, ret){
   const isFrt = (typeof raIsFrt === 'function') ? raIsFrt(ret) : (String(ret.kind || '') === 'freight');
   /* SHORTCM-1 - 적게 보낸 건. CREDIT QTY 와 UNIT PRICE 는 반품과 같은 뜻이라 그대로 쓴다 */
   const isShort = (typeof raIsShort === 'function') ? raIsShort(ret) : (String(ret.kind || '') === 'short');
+  /* BULKCM-1 - PO 여러 개를 한 장으로 낸 건. 물건은 돌아왔으므로 RETURNED TO 는 그대로다. */
+  const isBulk = (typeof raIsBulk === 'function') ? raIsBulk(ret) : (String(ret.kind || '') === 'bulk');
+  const bulkPo = isBulk ? ((typeof bkPoText === 'function') ? bkPoText(ret) : '') : '';
 
   /* 사유 — 줄마다 다 같으면 표에 칸을 만들지 않고 표 위에 한 번만 적는다.
      ⚠ 예전 종이는 같은 문장을 다섯 줄에 다섯 번 찍었다. RA 메일도 같은 병이 있다(아직). */
@@ -16251,7 +16556,8 @@ function buildCreditMemoDoc(rec, ret){
   }).join('');
 
   let tfootHtml = '<tr class="ix-sum"><td class="tl" colspan="' + (NCOL - 3) + '">'
-      + (isShort ? 'Short shipment &middot; ' : (isFrt ? 'Shipping charge &middot; ' : (isAdj ? 'Price adjustment &middot; ' : 'Returned &middot; ')))
+      + (isShort ? 'Short shipment &middot; ' : (isFrt ? 'Shipping charge &middot; ' : (isAdj ? 'Price adjustment &middot; '
+          : (isBulk ? ('Returned from ' + ((ret.pos && ret.pos.length) || 1) + ' POs &middot; ') : 'Returned &middot; '))))
       + src.length + (src.length === 1 ? ' line' : ' lines') + '</td>'
     + '<td class="n">' + totQ.toLocaleString() + '</td><td></td>'
     + '<td class="n">' + money(total) + '</td></tr>'
@@ -16279,7 +16585,9 @@ function buildCreditMemoDoc(rec, ret){
         /* INVPO-v2 - 거래처 PO 를 여기로. 위 세 줄이 우리 번호, 틈 뒤가 거래처 번호다.
            [stated] 하윤: "credit memo도 customer PO 저기로 옮기자"
            ⚠ 아래 띠에서는 뺐다 - 같은 값이 두 곳에 있으면 안 된다. */
-        + '<div class="inv-meta-row gap"><span>Customer PO</span><span>' + esc(meta.po || '—') + '</span></div>'
+        /* BULKCM-1 - PO 여러 개를 한 장으로 낸 건은 **그 PO 를 전부** 적는다.
+           이 종이가 어느 PO 들을 덮는지가 거래처 회계에게 제일 중요한 참조다. */
+        + '<div class="inv-meta-row gap"><span>Customer PO</span><span>' + esc((isBulk && bulkPo) ? bulkPo : (meta.po || '—')) + '</span></div>'
       + '</div>'
     + '</div>'
     + '<div class="ix-addr' + (showRemit ? ' c3' : '') + '">'
@@ -16298,7 +16606,7 @@ function buildCreditMemoDoc(rec, ret){
     /* INVPO-v2 - CUSTOMER PO 는 오른쪽 위 칸으로 올라갔다. 여기선 뺀다.
        ⚠ 세 칸이 항상 나온다 - RA 번호·원래 오더·거래처는 이 종이에 늘 있다. */
     + '<div class="ix-bar c3">'
-      + '<div><div class="ix-lbl">' + (isShort ? 'SHORT SHIPMENT' : (isFrt ? 'FREIGHT CREDIT' : (isAdj ? 'ADJUSTMENT' : 'RA NO.'))) + '</div><div class="ix-val">' + esc(ret.ra || '—') + '</div></div>'
+      + '<div><div class="ix-lbl">' + (isShort ? 'SHORT SHIPMENT' : (isFrt ? 'FREIGHT CREDIT' : (isAdj ? 'ADJUSTMENT' : (isBulk ? 'MULTI-PO RETURN' : 'RA NO.')))) + '</div><div class="ix-val">' + esc(ret.ra || '—') + '</div></div>'
       + '<div><div class="ix-lbl">REF ORDER</div><div class="ix-val">' + esc(rec.base || '—') + '</div></div>'
       + '<div><div class="ix-lbl">CUSTOMER</div><div class="ix-val">' + esc(meta.cust || '—') + '</div></div>'
     + '</div>'
@@ -54906,7 +55214,10 @@ function renderSaved(){
       ${!recIsReplace(s) && (s.whs||[]).some(w=>s.pl && s.pl[w] && s.pl[w].savedAt) ? `<button class="btn btn-sm" style="color:#ea580c;border-color:#fdba74;" onclick="raOneOpen('${esc(s.base)}')" title="Customer return and/or defect replacement — one window: what comes back on top, what goes out below">↩ Return / Replace</button>` : ''}
       ${/* FRTCM-1 - 운임 크레딧도 반품 상세로 보내면 안 된다 (돌아온 물건이 없다) */''}
       ${/* SHORTCM-1 - 적게 보낸 건도 반품 상세로 보내면 안 된다 (돌아온 물건이 없다) */''}
-      ${recReturns(s).map(r=> raIsShort(r)
+      ${/* BULKCM-1 - PO 여러 개짜리 반품도 크레딧 메모 창으로 보낸다 (반품 상세는 PO 하나짜리 화면이다) */''}
+      ${recReturns(s).map(r=> raIsBulk(r)
+        ? `<button class="btn btn-sm" style="background:#5b21b6;color:#fff;border-color:#5b21b6;font-weight:800;" onclick="openCreditMemo('${esc(s.base)}','${esc(r.ra)}')" title="Multi-PO return credit memo - print / email">\u{1F5C2} ${esc(retCmNo(r)||r.ra)}${(r.received&&r.received.cmEmailedAt)?' ✉':''}</button>`
+        : (raIsShort(r)
         ? `<button class="btn btn-sm" style="background:#0f766e;color:#fff;border-color:#0f766e;font-weight:800;" onclick="openCreditMemo('${esc(s.base)}','${esc(r.ra)}')" title="Short shipment credit memo — print / email">📦 ${esc(retCmNo(r)||r.ra)}${(r.received&&r.received.cmEmailedAt)?' ✉':''}</button>`
         : (raIsFrt(r)
         ? `<button class="btn btn-sm" style="background:#1e3a8a;color:#fff;border-color:#1e3a8a;font-weight:800;" onclick="openCreditMemo('${esc(s.base)}','${esc(r.ra)}')" title="Shipping charge credit memo — print / email">🚚 ${esc(retCmNo(r)||r.ra)}${(r.received&&r.received.cmEmailedAt)?' ✉':''}</button>`
@@ -54914,7 +55225,7 @@ function renderSaved(){
         /* ALLOW-1 - 가격 조정 건은 반품 상세 화면으로 보내면 안 된다 (돌아온 물건이 없다).
            누르면 바로 크레딧 메모 창 - 인쇄와 메일이 거기 있다. 딱지에는 **CM 번호**를 적는다. */
         ? `<button class="btn btn-sm" style="background:#7c2d12;color:#fff;border-color:#7c2d12;font-weight:800;" onclick="openCreditMemo('${esc(s.base)}','${esc(r.ra)}')" title="Price adjustment credit memo — print / email">💲 ${esc(retCmNo(r)||r.ra)}${(r.received&&r.received.cmEmailedAt)?' ✉':''}</button>`
-        : `<button class="btn btn-sm" style="background:${r.status==='received'?'#166534':'#ea580c'};color:#fff;border-color:${r.status==='received'?'#166534':'#ea580c'};font-weight:800;" onclick="openReturnDetail('${esc(s.base)}','${esc(r.ra)}')" title="View return details / email customer / cancel">↩ ${esc(r.ra)}${r.status==='received'?' ✓':''}</button>`))).join('')}
+        : `<button class="btn btn-sm" style="background:${r.status==='received'?'#166534':'#ea580c'};color:#fff;border-color:${r.status==='received'?'#166534':'#ea580c'};font-weight:800;" onclick="openReturnDetail('${esc(s.base)}','${esc(r.ra)}')" title="View return details / email customer / cancel">↩ ${esc(r.ra)}${r.status==='received'?' ✓':''}</button>`)))).join('')}
       <button class="btn btn-sm" onclick="loadSaved('${esc(s.base)}')">${t('open_edit')}</button>
       ${recCancelled(s)
         ? `<button class="btn btn-sm" style="background:#0f2a4a;color:#fff;border-color:#0f2a4a;font-weight:800;" onclick="printPutBack('${esc(s.base)}')" title="Reprint the sheet the staff walk around with">\u{1F5A8} Put Back Request</button>
