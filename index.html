@@ -314,7 +314,7 @@ body.po-dragging{user-select:none;}
   </span>
   <select id="lang-sel" onchange="setLang(this.value)" style="font-size:11px;padding:3px 6px;border-radius:5px;border:none;background:#1d3f66;color:#fff;"><option value="ko">한국어</option><option value="en">English</option><option value="es">Español</option></select>
   <button id="wide-btn" class="btn btn-sm" onclick="toggleWide()" title="화면 넓게 / 좁게 — 기본은 넓게 (이 브라우저에만 저장돼)" style="padding:2px 8px;font-size:10px;background:#1d3f66;color:#cfe0f2;border-color:#2b5384;">↔ Wide</button>
-  <span id="app-ver" style="font-size:10px;color:#9fb8d4;">v1355</span>
+  <span id="app-ver" style="font-size:10px;color:#9fb8d4;">v1356</span>
 </div>
 <script>
 // ↔ 넓게 보기 — 브라우저마다 따로 저장 (v793)
@@ -12678,6 +12678,7 @@ async function payReqOrder(base){
     <div style="padding:11px 18px;border-top:1px solid #e2e8f0;display:flex;gap:8px;">
       <button class="btn btn-sm" id="pr-copy" style="display:none;" onclick="payReqCopyLink()">\u{1F4CB} Copy link</button>
       ${webPaidShow(rec) ? `<button class="btn btn-sm" id="pr-webpaid" style="background:#ecfeff;color:#0e7490;border-color:#a5f3fc;font-weight:800;" onclick="payReqWebPaid('${esc(base)}')" title="This is a website order - the card was already charged when the order was placed. Record it as paid without sending a link.">\u{1F310} Paid on website</button>` : ''}
+      <button class="btn btn-sm" id="pr-ach" style="background:#f0fdf4;color:#15803d;border-color:#86efac;font-weight:800;" onclick="achOpen('${esc(base)}')" title="The customer paid by ACH or bank transfer. Record the REQUEST amount as received - no card is charged and no link is sent.">\u{1F3E6} Paid by ACH</button>
       ${payReqAltBtn(cust, `payReqOrderSend('${esc(base)}','self')`, `payReqOrderSend('${esc(base)}')`)}
       <button class="btn btn-sm" id="pr-cancel" style="margin-left:auto;" onclick="document.getElementById('modal-payreq').remove()">Cancel</button>
       <button class="btn btn-sm" id="pr-go" data-send="payReqOrderSend('${esc(base)}'${_payReqSelfFirst ? ",'self'" : ''})" style="background:${payReqGoColor()};color:#fff;border-color:${payReqGoColor()};font-weight:800;" onclick="payReqOrderSend('${esc(base)}'${_payReqSelfFirst ? ",'self'" : ''})">${payReqGoLabel()}</button>
@@ -14104,17 +14105,29 @@ const ANET_CLIENT_KEY = '9S9dzP4nBNaYQ82fVdvL8uV4F34xx6nzJK584a6vfg4srBCQQxkA5ZY
    ⚠ 같은 쪽지의 입금이 이미 있으면 **아무것도 안 한다** - 링크를 다시 보내도 두 번 안 적힌다.
    ⚠ 인보이스가 없는 창고에는 안 적는다 (payLinkStamp 와 같은 규칙).
    돌려주는 값: 'added' / 'already' / 'skip' */
-async function invAddWebMdse(base, wh, amt){
+/* === ACHPAY-1 (2026-11-04) - 인보이스에 입금 한 줄을 **더한다** ===
+   \u2b50\u2b50\u2b50 입금을 적는 속은 이 함수 **하나**다. 웹 물건값(invAddWebMdse)과
+      ACH(achSave)가 둘 다 이것을 부른다. 두 군데가 따로 적으면 한쪽만 되돌리기를
+      빼먹는 식으로 반드시 어긋난다.
+   \u26a0\u26a0 iv.paid 를 건드리지 않는다. 그 칸에는 카드 결제(거래번호 포함)가 살고,
+      덮어쓰면 그 기록이 날아간다 (markPaidWebsiteFor 가 그래서 위험하다).
+   \u26a0 저장이 안 되면 화면 사본도 되돌리고 **던진다**. 돈을 받았다고 적는 일이라
+      조용히 넘어가면 안 된다.
+   \u26a0 PostgREST 는 0줄을 고쳐도 200 을 준다 - 판정은 invRowChanged 가 한다.
+   \u26a0 인보이스 종이와 메일의 PAID 글자는 invPaidNote 가 이 note 를 그대로 쓴다.
+      그래서 note 는 사람이 읽을 말이어야 한다. */
+async function invAddPayment(base, wh, amt, note, atIso, hist){
   const n = Math.round((Number(amt) || 0) * 100) / 100;
   const W = String(wh == null ? '' : wh).trim();
-  if(!base || !W || !(n > 0)) return 'skip';
+  if(!base || !W) throw new Error('order/warehouse missing');
+  if(!(n > 0)) throw new Error('the amount is 0');
   const rec = (savedCache || []).find(function(s2){ return s2.base === base; });
   if(!rec) throw new Error('order not found');
   const iv = (rec.inv || {})[W];
-  if(!iv || !iv.savedAt) return 'skip';
+  if(!iv || !iv.savedAt) throw new Error('the invoice for ' + W + ' is not saved yet');
   iv.payments = Array.isArray(iv.payments) ? iv.payments : [];
-  if(iv.payments.some(function(p){ return String((p && p.note) || '').trim() === WEB_MDSE_NOTE; })) return 'already';
-  const row = { amt: n, at: new Date().toISOString(), by: (SESS && SESS.email) || '', note: WEB_MDSE_NOTE };
+  const row = { amt: n, at: atIso || new Date().toISOString(),
+                by: (SESS && SESS.email) || '', note: String(note == null ? '' : note).trim() };
   iv.payments.push(row);
   let r = null;
   try{
@@ -14126,9 +14139,23 @@ async function invAddWebMdse(base, wh, amt){
     /* 저장이 안 됐으면 화면 사본도 되돌린다 - 안 들어간 돈을 들어간 것처럼 들고 있으면 안 된다 */
     const i = iv.payments.indexOf(row);
     if(i >= 0) iv.payments.splice(i, 1);
-    throw new Error('the website amount could not be saved (' + ((r && r.status) || 'no reply') + ')');
+    throw new Error('the payment could not be saved (' + ((r && r.status) || 'no reply') + ')');
   }
-  logHist(base, 'Merchandise paid on website $' + n.toFixed(2) + ' \u2014 ' + W + ' (' + (iv.invNo || '') + ')');
+  logHist(base, hist || ('Payment recorded $' + n.toFixed(2) + ' \u2014 ' + W
+    + ' (' + (iv.invNo || '') + ')'));
+  return row;
+}
+async function invAddWebMdse(base, wh, amt){
+  const n = Math.round((Number(amt) || 0) * 100) / 100;
+  const W = String(wh == null ? '' : wh).trim();
+  if(!base || !W || !(n > 0)) return 'skip';
+  const rec = (savedCache || []).find(function(s2){ return s2.base === base; });
+  if(!rec) throw new Error('order not found');
+  const iv = (rec.inv || {})[W];
+  if(!iv || !iv.savedAt) return 'skip';
+  if((iv.payments || []).some(function(p){ return String((p && p.note) || '').trim() === WEB_MDSE_NOTE; })) return 'already';
+  await invAddPayment(base, W, n, WEB_MDSE_NOTE, null,
+    'Merchandise paid on website $' + n.toFixed(2) + ' \u2014 ' + W + ' (' + (iv.invNo || '') + ')');
   return 'added';
 }
 async function markPaidWebsiteFor(base, wh, amt){
@@ -14193,6 +14220,177 @@ async function payReqWebPaid(base){
   try{ const m = document.getElementById('modal-payreq'); if(m) m.remove(); }catch(e){}
   try{ invNpRefresh(); }catch(e){}
   try{ renderSaved(); }catch(e){}
+}
+/* === ACHPAY-1 (2026-11-04) - 결제요청 창의 Paid by ACH 단추 ===
+   [stated] 하윤: "여기에 paid by ach버튼도 달아줘.
+     거래처가 ach로 pay하면 돈 받은걸로 처리할수있게"
+   \u26a0 카드를 긁지 않는다. 메일도 한 통 안 나간다. 이미 들어온 돈을 장부에 적기만 한다.
+   \u2b50\u2b50\u2b50 금액을 적는 곳은 여전히 REQUEST 칸(.prq-amt) 하나뿐이다 - 여기서는 읽기만 한다.
+   \u2b50\u2b50\u2b50 번호 없는 인보이스 판정도 payReqNoInv 한 군데를 그대로 쓴다.
+   \u26a0\u26a0 돈은 invAddPayment(iv.payments[]) 로만 적는다 - markPaidWebsiteFor 는
+      iv.paid 를 통째로 덮어써서 카드 기록을 날린다.
+   \u26a0 창을 열 때 금액을 **찍어 둔다**(_achPicks). 보여 준 금액과 적는 금액을
+      따로 읽으면 반드시 어긋난다. */
+const ACH_NOTE = 'ACH';
+/* 인보이스에 찍힐 말. 참조번호가 있으면 'ACH #12345' */
+function achNote(ref){
+  const r = String(ref == null ? '' : ref).replace(/[^0-9A-Za-z#\-\/ ]/g, '')
+    .replace(/^#+/, '').trim().slice(0, 24).trim();
+  return r ? (ACH_NOTE + ' #' + r) : ACH_NOTE;
+}
+/* 그 컴퓨터의 오늘 (yyyy-mm-dd) */
+function achToday(){
+  const d = new Date(), p = function(n){ return (n < 10 ? '0' : '') + n; };
+  return d.getFullYear() + '-' + p(d.getMonth() + 1) + '-' + p(d.getDate());
+}
+/* 'yyyy-mm-dd' -> 그 날 **낮 12시**의 ISO.
+   \u26a0 자정으로 적으면 미국 시간대에서 하루 전 날짜로 보인다 (인보이스에 날짜가 찍힌다). */
+function achAtIso(ymd){
+  const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(String(ymd == null ? '' : ymd).trim());
+  if(!m) return null;
+  return new Date(Number(m[1]), Number(m[2]) - 1, Number(m[3]), 12, 0, 0).toISOString();
+}
+/* 이번에 ACH 로 받은 것으로 적을 줄. REQUEST 가 0 인 창고는 빠진다. */
+function achPicks(){
+  return payReqPicks().filter(function(p){ return p.amt > 0.005; });
+}
+/* 그 인보이스에 **이미** 적혀 있는 ACH 입금 - 두 번 적는 것을 눈으로 보고 막게 */
+function achPrior(rec, wh){
+  try{
+    const iv = ((rec && rec.inv) || {})[wh] || {};
+    return (iv.payments || []).filter(function(p){
+      return /^ACH\b/i.test(String((p && p.note) || '').trim());
+    });
+  }catch(e){ return []; }
+}
+let _achPicks = [];
+function achClose(){
+  try{ const m = document.getElementById('modal-ach'); if(m) m.remove(); }catch(e){}
+}
+function achOpen(base){
+  const rec = (savedCache || []).find(function(s2){ return s2.base === base; });
+  if(!rec){ showToast('\u26a0 Order not found'); return; }
+  /* Paid via website 가 켜진 줄이 있으면 **막는다.**
+     ACH 는 REQUEST 칸만 적으므로 웹에서 받은 물건값이 장부에 안 들어가
+     반만 적힌 인보이스가 남는다. 조용히 반만 적는 것이 가장 나쁘다.
+     [시험이 잡은 것] 그 줄은 REQUEST 가 0 이 되어 achPicks() 에서 아예 빠진다.
+        그래서 **거르기 전에**, REQUEST 가 아니라 물건값 칸을 보고 검사한다. */
+  const webOn = payReqPicks().filter(function(p){
+    return payReqWebOn(p.wh) && payReqWebMdse(p.wh) > 0.005; });
+  if(webOn.length){
+    try{ alert('\u26a0 Turn off \u{1F310} Paid via website first\n\n'
+      + webOn.map(function(p){ return p.wh; }).join(', ')
+      + ' is marked as paid on the website. Paid by ACH records the REQUEST column only, '
+      + 'so the website amount would be left off the invoice.\n\n'
+      + 'Use \u{1F310} Paid on website for that part, or turn the toggle off and record '
+      + 'the whole amount as ACH.'); }catch(e){}
+    return;
+  }
+  const picks = achPicks();
+  if(!picks.length){ showToast('\u26a0 Enter an amount first'); return; }
+  /* PAYGUARD-1 과 같은 판정 - 번호 없는 인보이스에는 입금을 붙일 수 없다 */
+  const bad = payReqNoInv();
+  if(bad.length){
+    try{ payReqGuardPaint(); }catch(e){}
+    showToast('\u26a0 No invoice number yet - press Get invoice number in Invoice To Do');
+    return;
+  }
+  _achPicks = picks;
+  const cust = (rec.meta && rec.meta.cust) || '';
+  const po = (rec.meta && rec.meta.po) || '';
+  const tot = picks.reduce(function(a, p){ return a + p.amt; }, 0);
+  const prior = [];
+  picks.forEach(function(p){
+    achPrior(rec, p.wh).forEach(function(x){
+      prior.push(p.wh + '  ' + payReqMoney(x.amt) + '  ' + String((x && x.note) || ACH_NOTE)
+        + (x && x.at ? ('  ' + String(x.at).slice(0, 10)) : ''));
+    });
+  });
+  achClose();
+  const div = document.createElement('div');
+  div.id = 'modal-ach';
+  div.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,.55);z-index:160;display:flex;align-items:center;justify-content:center;';
+  div.innerHTML = `<div style="background:#fff;border-radius:12px;width:430px;max-width:94vw;overflow:hidden;box-shadow:0 20px 60px rgba(0,0,0,.35);">
+    <div style="background:#14532d;color:#fff;padding:12px 18px;font-weight:800;display:flex;align-items:center;gap:8px;">
+      \u{1F3E6} Paid by ACH
+      <span style="margin-left:auto;font-size:11.5px;font-weight:400;color:#a7f3d0;">${esc(cust)}${po ? (' \u00b7 PO ' + esc(po)) : ''}</span>
+    </div>
+    <div style="padding:16px 18px;">
+      <table class="etbl" style="width:100%;font-size:12.5px;">
+        <thead><tr><th class="tl" style="width:50px;">FROM</th><th class="tl">INVOICE</th>
+          <th style="width:110px;text-align:right;">RECEIVED</th></tr></thead>
+        <tbody>${picks.map(p => `<tr>
+          <td class="tl"><span class="chip chip-${esc(p.wh)}" style="min-width:32px;text-align:center;">${esc(p.wh)}</span></td>
+          <td class="tl"><b style="color:#0f2a4a;">${esc(p.invNo)}</b></td>
+          <td style="text-align:right;font-family:Consolas,monospace;font-weight:800;">${payReqMoney(p.amt)}</td>
+        </tr>`).join('')}</tbody>
+        <tfoot><tr><td></td><td class="tl" style="text-align:right;font-weight:800;">TOTAL</td>
+          <td id="ach-total" style="text-align:right;font-family:Consolas,monospace;font-weight:900;font-size:14px;">${payReqMoney(tot)}</td></tr></tfoot>
+      </table>
+      ${prior.length ? `<div style="margin-top:9px;background:#fffbeb;border:1px solid #fcd34d;border-radius:8px;padding:9px 11px;font-size:11.5px;color:#92400e;line-height:1.6;">
+        <b>\u26a0 An ACH payment is already on record for this order.</b><br>${prior.map(x => esc(x)).join('<br>')}<br>Only record it again if this is a second, separate payment.</div>` : ''}
+      <div style="display:flex;gap:10px;flex-wrap:wrap;margin-top:12px;">
+        <div style="flex:0 0 150px;">
+          <label style="font-size:10.5px;font-weight:800;color:#64748b;letter-spacing:.05em;">DATE RECEIVED</label>
+          <input class="fi" type="date" id="ach-date" value="${esc(achToday())}" style="width:100%;font-size:12.5px;padding:6px 8px;">
+        </div>
+        <div style="flex:1;min-width:150px;">
+          <label style="font-size:10.5px;font-weight:800;color:#64748b;letter-spacing:.05em;">REFERENCE (optional)</label>
+          <input class="fi" id="ach-ref" placeholder="e.g. 884210" style="width:100%;font-size:12.5px;padding:6px 8px;">
+        </div>
+      </div>
+      <div style="margin-top:12px;font-size:11.5px;color:#64748b;line-height:1.6;background:#f0fdf4;border:1px solid #bbf7d0;border-radius:8px;padding:9px 11px;">
+        No card is charged and no email is sent \u2014 this only records the money as received.
+        The invoice will show <b>PAID \u2014 ACH</b> and the reference you type here.
+      </div>
+    </div>
+    <div style="padding:11px 18px;border-top:1px solid #e2e8f0;display:flex;gap:8px;">
+      <button class="btn btn-sm" id="ach-cancel" style="margin-left:auto;" onclick="achClose()">Cancel</button>
+      <button class="btn btn-sm" id="ach-go" style="background:#15803d;color:#fff;border-color:#15803d;font-weight:800;" onclick="achSave('${esc(base)}')">\u2713 Record as received</button>
+    </div></div>`;
+  document.body.appendChild(div);
+}
+async function achSave(base){
+  const b = document.getElementById('ach-go');
+  if(b && b.disabled) return;
+  const rec = (savedCache || []).find(function(s2){ return s2.base === base; });
+  if(!rec){ showToast('\u26a0 Order not found'); return; }
+  const picks = _achPicks || [];
+  if(!picks.length){ showToast('\u26a0 Nothing to record'); return; }
+  const ymd = String(((document.getElementById('ach-date') || {}).value) || '').trim();
+  const at = achAtIso(ymd);
+  if(!at){ showToast('\u26a0 Enter the date the money came in'); return; }
+  const note = achNote(((document.getElementById('ach-ref') || {}).value) || '');
+  const tot = picks.reduce(function(a, p){ return a + p.amt; }, 0);
+  const lines = picks.map(function(p){
+    return p.wh + '  ' + p.invNo + '  ' + payReqMoney(p.amt);
+  });
+  if(!confirm('\u{1F3E6} Record ' + payReqMoney(tot) + ' as received by ACH?\n\n'
+    + lines.join('\n') + '\n\n' + note + ' \u00b7 ' + ymd
+    + '\n\nNo card is charged and no email is sent \u2014 this only records the money as received.')) return;
+  if(b){ b.disabled = true; b.textContent = '\u23f3 Saving...'; }
+  const bad = [];
+  let done = 0;
+  for(const p of picks){
+    try{
+      await invAddPayment(base, p.wh, p.amt, note, at,
+        'Paid by ACH $' + p.amt.toFixed(2) + ' \u2014 ' + p.wh + ' (' + p.invNo + ') ' + note + ' ' + ymd);
+      done++;
+    }catch(e){ bad.push(p.wh + ' \u2014 ' + ((e && e.message) || e)); }
+  }
+  achClose();
+  if(bad.length){
+    try{ alert('\u26a0 NOT recorded:\n\n' + bad.join('\n')
+      + (done ? '\n\nThe other warehouses were recorded.' : '')); }catch(e){}
+  } else {
+    try{ showToast('\u{1F3E6} Recorded as paid by ACH \u2014 ' + payReqMoney(tot)); }catch(e){}
+  }
+  if(done){
+    try{ const m = document.getElementById('modal-payreq'); if(m) m.remove(); }catch(e){}
+    try{ invNpRefresh(); }catch(e){}
+    try{ renderSaved(); }catch(e){}
+    try{ if(typeof renderKpi === 'function') renderKpi(); }catch(e){}
+  }
 }
 async function markPaidWebsite(){
   const amt = parseFloat(($('cc-amt') && $('cc-amt').value) || '0');
