@@ -314,7 +314,7 @@ body.po-dragging{user-select:none;}
   </span>
   <select id="lang-sel" onchange="setLang(this.value)" style="font-size:11px;padding:3px 6px;border-radius:5px;border:none;background:#1d3f66;color:#fff;"><option value="ko">한국어</option><option value="en">English</option><option value="es">Español</option></select>
   <button id="wide-btn" class="btn btn-sm" onclick="toggleWide()" title="화면 넓게 / 좁게 — 기본은 넓게 (이 브라우저에만 저장돼)" style="padding:2px 8px;font-size:10px;background:#1d3f66;color:#cfe0f2;border-color:#2b5384;">↔ Wide</button>
-  <span id="app-ver" style="font-size:10px;color:#9fb8d4;">v1360</span>
+  <span id="app-ver" style="font-size:10px;color:#9fb8d4;">v1361</span>
 </div>
 <script>
 // ↔ 넓게 보기 — 브라우저마다 따로 저장 (v793)
@@ -15777,7 +15777,9 @@ function fcWatchStyles(){
     if(!document.getElementById('modal-freecm') || n > 40){ fcWatchStop(); return; }
     let have = 0;
     try{ have = (typeof skuStyles === 'function') ? skuStyles().length : 0; }catch(e){ have = 0; }
-    if(have > 0){ fcWatchStop(); try{ fcPaint(); }catch(e){} }
+    /* \u26a0\u26a0 fcPaint() 로 통째로 다시 그리면 **치고 있던 글자가 날아간다.**
+       제안 목록만 갈아 끼운다. */
+    if(have > 0){ fcWatchStop(); try{ fcFillStyleList(); }catch(e){} }
   }, 500);
 }
 function fcClose(){ fcWatchStop(); try{ const m = document.getElementById('modal-freecm'); if(m) m.remove(); }catch(e){} }
@@ -15847,45 +15849,79 @@ function fcDelLine(i){
   else _fcLines.splice(i, 1);
   fcPaint();
 }
-/* 스타일을 바꾸면 색 목록이 달라진다 - 그래서 다시 그린다 */
-function fcStyleChange(i){ fcRead(); const L = _fcLines[i]; if(L) L.color = ''; fcPaint(); }
+/* FREECM-4 - 이제 다시 그릴 일이 없다. 색 제안은 fcColList 가 칸에 들어갈 때 채운다.
+   \u26a0 남겨 두는 까닭: 옛 화면이 열려 있을 수 있고, 부르는 곳이 생기면 안전하게 돌아야 한다. */
+function fcStyleChange(i){ try{ fcColList(i); }catch(e){} fcCalc(); }
 function fcPaint(){
   const box = document.getElementById('fc-tbl'); if(!box) return;
-  const styles = (typeof skuStyles === 'function') ? skuStyles() : [];
-  /* 아직 안 들어왔으면 빈 칸만 보여주지 말고 말해 준다 */
-  const loading = !styles.length
-    ? '<div style="padding:7px 10px;margin-bottom:7px;background:#fffbeb;border:1px solid #fcd34d;border-radius:7px;font-size:11.5px;font-weight:700;color:#92400e;">\u23f3 Loading the style list...</div>'
-    : '';
-  const opt = function(v, sel){ return '<option value="' + esc(v) + '"' + (String(sel) === String(v) ? ' selected' : '') + '>' + esc(v) + '</option>'; };
-  box.innerHTML = loading + '<div style="border:1px solid #e5e7eb;border-radius:8px;overflow:hidden;">'
+  box.innerHTML = '<div style="border:1px solid #e5e7eb;border-radius:8px;overflow:hidden;">'
     + '<table style="width:100%;border-collapse:collapse;font-size:12px;"><thead><tr style="background:#f8fafc;">'
     + ['STYLE','COLOR','SIZE','QTY','UNIT PRICE','AMOUNT','']
         .map(function(h, i){ return '<th style="padding:5px 6px;text-align:' + (i >= 3 && i <= 5 ? 'right' : 'left')
           + ';font-size:10.5px;color:#64748b;">' + h + '</th>'; }).join('')
     + '</tr></thead><tbody>'
     + _fcLines.map(function(L, i){
-        const cols = (L.style && typeof skuColors === 'function') ? skuColors(L.style) : [];
-        const rng = (typeof STYLE_MASTER !== 'undefined' && STYLE_MASTER[L.style]) ? STYLE_MASTER[L.style][1] : '';
         return '<tr>'
-          + '<td style="padding:4px 6px;"><select class="fi fc-st" data-i="' + i + '" onchange="fcStyleChange(' + i + ')" style="width:104px;font-weight:800;">'
-          +   '<option value="">-</option>' + styles.map(function(x){ return opt(x, L.style); }).join('') + '</select>'
-          +   (rng ? ('<div style="font-size:9.5px;color:#94a3b8;margin-top:1px;">' + esc(rng) + '</div>') : '') + '</td>'
-          + '<td style="padding:4px 6px;"><select class="fi fc-co" data-i="' + i + '" onchange="fcCalc()" style="width:150px;">'
-          +   '<option value="">-</option>' + cols.map(function(x){ return opt(String(x).toUpperCase(), String(L.color).toUpperCase()); }).join('') + '</select></td>'
-          + '<td style="padding:4px 6px;"><select class="fi fc-sz" data-i="' + i + '" onchange="fcCalc()" style="width:78px;font-weight:800;">'
-          +   '<option value="">-</option>' + FC_SIZES.map(function(x){ return opt(x, L.size); }).join('') + '</select></td>'
+          /* FREECM-4 - 고르는 칸이 아니라 **치는 칸**이다. 목록은 제안(datalist)으로만 붙는다.
+             [stated] 하윤: "다 그냥 내가 적을수있게 해줘. 스크롤해서 선택하는거 오래 걸려"
+             \u26a0 목록에 없는 옛 스타일/색도 그대로 받는다 - 그게 이 창의 존재 이유다. */
+          + '<td style="padding:4px 6px;"><input class="fi fc-st" data-i="' + i + '" list="fc-styles" autocomplete="off"'
+          +   ' value="' + esc(String(L.style || '')) + '" placeholder="1210" oninput="fcCalc()" style="width:104px;font-weight:800;text-transform:uppercase;">'
+          +   '<div class="fc-rng" data-i="' + i + '" style="font-size:9.5px;color:#94a3b8;margin-top:1px;min-height:12px;"></div></td>'
+          + '<td style="padding:4px 6px;"><input class="fi fc-co" data-i="' + i + '" list="fc-col-' + i + '" autocomplete="off"'
+          +   ' value="' + esc(String(L.color || '')) + '" placeholder="BLACK" oninput="fcCalc()" onfocus="fcColList(' + i + ')" style="width:150px;text-transform:uppercase;">'
+          +   '<datalist id="fc-col-' + i + '"></datalist></td>'
+          + '<td style="padding:4px 6px;"><input class="fi fc-sz" data-i="' + i + '" list="fc-sizes" autocomplete="off"'
+          +   ' value="' + esc(String(L.size || '')) + '" placeholder="XL" oninput="fcCalc()" style="width:78px;font-weight:800;text-transform:uppercase;"></td>'
           + '<td style="padding:4px 6px;text-align:right;"><input class="fi num fc-q" data-i="' + i + '" type="number" step="1" min="0" value="' + esc(String(L.qty || '')) + '" placeholder="0" oninput="fcCalc()" style="width:80px;font-weight:800;text-align:right;"></td>'
           + '<td style="padding:4px 6px;text-align:right;"><input class="fi num fc-p" data-i="' + i + '" type="number" step="0.001" min="0" value="' + esc(String(L.price || '')) + '" placeholder="0.00" oninput="fcCalc()" style="width:90px;font-weight:800;text-align:right;"></td>'
           + '<td style="padding:4px 6px;text-align:right;font-family:Consolas,monospace;font-weight:800;color:#7c2d12;" id="fc-lt-' + i + '">\u2014</td>'
           + '<td style="padding:4px 6px;text-align:center;"><button class="btn btn-sm" onclick="fcDelLine(' + i + ')" title="Remove this line" style="color:#b91c1c;border-color:#fecaca;padding:2px 8px;">\u2715</button></td>'
           + '</tr>';
       }).join('')
-    + '</tbody></table></div>';
+    + '</tbody></table></div>'
+    + '<datalist id="fc-styles"></datalist>'
+    + '<datalist id="fc-sizes">' + FC_SIZES.map(function(x){ return '<option value="' + esc(x) + '">'; }).join('') + '</datalist>';
+  fcFillStyleList();
   fcCalc();
 }
-/* \u2b50\u2b50\u2b50 화면과 발행이 이 함수 하나를 같이 쓴다 (fcIssue 가 발행 직전에 다시 돌린다) */
+/* 제안 목록만 채운다 - 사람이 치고 있는 칸은 건드리지 않는다.
+   \u26a0\u26a0 예전처럼 fcPaint() 로 통째로 다시 그리면 **치던 글자와 커서가 날아간다.** */
+function fcFillStyleList(){
+  const dl = document.getElementById('fc-styles'); if(!dl) return;
+  let st = [];
+  try{ st = (typeof skuStyles === 'function') ? skuStyles() : []; }catch(e){ st = []; }
+  dl.innerHTML = st.map(function(x){ return '<option value="' + esc(x) + '">'; }).join('');
+}
+/* 그 줄의 색 제안 - 친 스타일을 보고 **칸에 들어갈 때** 채운다 */
+function fcColList(i){
+  const dl = document.getElementById('fc-col-' + i); if(!dl) return;
+  const inp = document.querySelector('#modal-freecm .fc-st[data-i="' + i + '"]');
+  const st = String((inp && inp.value) || '').trim();
+  let cols = [];
+  try{ cols = (st && typeof skuColors === 'function') ? skuColors(st) : []; }catch(e){ cols = []; }
+  const seen = {}, out = [];
+  cols.forEach(function(c){ const u = String(c).toUpperCase(); if(!seen[u]){ seen[u] = 1; out.push(u); } });
+  dl.innerHTML = out.map(function(x){ return '<option value="' + esc(x) + '">'; }).join('');
+}
 function fcCalc(){
   fcRead();
+  /* 친 글자는 대문자로 모은다 (종이에 그대로 찍힌다). \u26a0 칸의 value 는 건드리지 않는다 -
+     커서가 튀기 때문이다. 화면은 CSS(text-transform)가 대문자로 보여 준다. */
+  _fcLines.forEach(function(L){
+    L.style = String(L.style == null ? '' : L.style).trim().toUpperCase();
+    L.color = String(L.color == null ? '' : L.color).trim().toUpperCase();
+    L.size  = String(L.size  == null ? '' : L.size ).trim().toUpperCase();
+  });
+  /* 아는 스타일이면 사이즈 범위를 밑에 적어 준다 (막지는 않는다) */
+  try{
+    document.querySelectorAll('#modal-freecm .fc-rng').forEach(function(d){
+      const i = parseInt(d.getAttribute('data-i'), 10);
+      const st = (_fcLines[i] || {}).style || '';
+      const m = (typeof STYLE_MASTER !== 'undefined') ? STYLE_MASTER[st] : null;
+      d.textContent = m ? String(m[1] || '') : '';
+    });
+  }catch(e){}
   const lines = []; let total = 0, pcs = 0, warn = '';
   _fcLines.forEach(function(L, i){
     const cell = document.getElementById('fc-lt-' + i);
@@ -15897,9 +15933,9 @@ function fcCalc(){
       if(cell) cell.innerHTML = '<span style="color:#dc2626;font-weight:800;font-size:10.5px;">' + msg + '</span>';
       warn = warn || ('line ' + (i + 1) + ': ' + msg);
     };
-    if(!L.style){ bad('pick a style'); return; }
-    if(!L.color){ bad('pick a color'); return; }
-    if(!L.size){ bad('pick a size'); return; }
+    if(!L.style){ bad('type a style'); return; }
+    if(!L.color){ bad('type a color'); return; }
+    if(!L.size){ bad('type a size'); return; }
     if(!isFinite(q) || q <= 0){ bad('type a quantity'); return; }
     if(Math.round(q) !== q){ bad('whole pieces only'); return; }
     if(!isFinite(p) || !(p > 0)){ bad('type a unit price'); return; }
