@@ -314,7 +314,7 @@ body.po-dragging{user-select:none;}
   </span>
   <select id="lang-sel" onchange="setLang(this.value)" style="font-size:11px;padding:3px 6px;border-radius:5px;border:none;background:#1d3f66;color:#fff;"><option value="ko">한국어</option><option value="en">English</option><option value="es">Español</option></select>
   <button id="wide-btn" class="btn btn-sm" onclick="toggleWide()" title="화면 넓게 / 좁게 — 기본은 넓게 (이 브라우저에만 저장돼)" style="padding:2px 8px;font-size:10px;background:#1d3f66;color:#cfe0f2;border-color:#2b5384;">↔ Wide</button>
-  <span id="app-ver" style="font-size:10px;color:#9fb8d4;">v1357</span>
+  <span id="app-ver" style="font-size:10px;color:#9fb8d4;">v1358</span>
 </div>
 <script>
 // ↔ 넓게 보기 — 브라우저마다 따로 저장 (v793)
@@ -6823,6 +6823,26 @@ function raIsShort(r){ return !!(r && String(r.kind || '') === 'short'); }
      invStatus 는 'pending' 이고 지금 Return Stock 큐로 들어간다.
    \u26a0 종이에 찍히는 것은 크레딧 메모 번호다. 이 MR- 은 우리끼리 쓰는 참조다. */
 function raIsBulk(r){ return !!(r && String(r.kind || '') === 'bulk'); }
+/* FREECM-1 (2026-11-04) - 이 시스템에 오더가 아예 없는 옛날 PO 의 크레딧 메모.
+   [stated] 하윤: "우리가 이 시스템쓰기전에 po들을 credit memo해줘야하거든 그래서
+     어떻케 보면 credit memo를 그냥 내가 원하는 스타일 칼라 사이즈 가격 이렇케
+     자유자재로 만들수는없나?"
+   \u26a0\u26a0 레코드는 그래도 **그 거래처의 오더 하나**에 붙인다. 따로 표에 두면
+      `invScanMax()` 가 그 번호를 못 봐서 같은 번호를 인보이스로 다시 내준다.
+      붙는 오더는 그냥 집일 뿐이고, 종이에는 손으로 친 PO 가 찍힌다.
+   \u26a0 물건이 돌아왔는지는 **사람이 체크**한다 (옛 PO 라 시스템이 알 길이 없다). */
+function raIsFree(r){ return !!(r && String(r.kind || '') === 'free'); }
+/* 참조번호. \u26a0 'CM-' 은 2026-09-30 에 지어낸 가짜 번호 모양이라 안 쓴다.
+   \u26a0\u26a0 **오더 이름을 넣지 않는다** - 이 건은 상관없는 오더에 얹혀 사는 것이고
+      그 오더의 PO 가 거래처 종이에 찍히면 안 된다 (미리보기에서 잡았다).
+      크레딧 메모 번호는 유일하므로 그것으로 짓는다: MC-0265960 */
+function fcGen(cmNo, rec){
+  const base = 'MC-' + String(cmNo == null ? '' : cmNo).trim();
+  const used = recReturns(rec || {}).map(function(x){ return String((x && x.ra) || ''); });
+  if(used.indexOf(base) < 0) return base;
+  for(let i = 2; i < 50; i++){ if(used.indexOf(base + '-' + i) < 0) return base + '-' + i; }
+  return base + '-' + Date.now();
+}
 /* \u26a0 bulk 건끼리만 센다 (RA-/AL-/FR-/SH- 와 안 겹친다) */
 function bkGen(base, rec){
   const n = recReturns(rec).filter(raIsBulk).length + 1;
@@ -8521,7 +8541,9 @@ function buildCreditMemoEmailBody(rec, ret, cm){
   const isFrt = (typeof raIsFrt === 'function') ? raIsFrt(ret) : (String(ret.kind || '') === 'freight');
   /* SHORTCM-1 - 적게 보낸 건. 돌아온 물건이 없으니 RA # 가 아니라 Ref # 다 */
   const isShort = (typeof raIsShort === 'function') ? raIsShort(ret) : (String(ret.kind || '') === 'short');
-  const refLbl = (isAdj || isFrt || isShort) ? 'Ref #' : 'RA #';
+  /* FREECM-1 - 손으로 친 건도 RA 가 아니다 */
+  const isFree2 = (typeof raIsFree === 'function') ? raIsFree(ret) : (String(ret.kind || '') === 'free');
+  const refLbl = (isAdj || isFrt || isShort || isFree2) ? 'Ref #' : 'RA #';
   const src=(rc.lines&&rc.lines.length)?rc.lines:(ret.lines||[]);
   const total=Number(rc.creditAmount!=null?rc.creditAmount:src.reduce((a,l)=>a+(Number(l.receivedQty!=null?l.receivedQty:l.qty)||0)*(Number(l.price)||0),0));
   const _wh=(ret.lines&&ret.lines[0]&&(ret.lines[0].toWh||ret.lines[0].wh))||'SC';
@@ -15009,17 +15031,20 @@ function memoHistRows(base){
     const rc=r&&r.received; if(!rc||!rc.cm) return;
     /* SHORTCM-2 - 이 통에는 네 종류가 산다. 전부 「return received」 라고 적으면 안 된다.
        ⭐⭐⭐ 종류 판정은 여기 한 번뿐이고, 알약 글자(memoHistHtml)도 이 값을 읽는다. */
-    const sub = (typeof raIsShort==='function' && raIsShort(r)) ? 'short'
+    const sub = (typeof raIsFree==='function' && raIsFree(r)) ? 'free'
+              : (typeof raIsShort==='function' && raIsShort(r)) ? 'short'
               : ((typeof raIsFrt==='function' && raIsFrt(r)) ? 'freight'
-              : ((typeof raIsAdj==='function' && raIsAdj(r)) ? 'allowance' : 'return'));
+              : ((typeof raIsAdj==='function' && raIsAdj(r)) ? 'allowance'
+              : ((typeof raIsBulk==='function' && raIsBulk(r)) ? 'bulk' : 'return')));
     const pcs = (Array.isArray(rc.lines)?rc.lines:[]).reduce(function(a,l){
       return a + (Number(l && (l.receivedQty!=null?l.receivedQty:l.qty)) || 0); }, 0);
     const note = sub === 'short'     ? (r.ra + ' — short shipment · ' + pcs.toLocaleString() + ' pcs')
                : sub === 'freight'   ? (r.ra + ' — shipping charge credit')
                : sub === 'allowance' ? (r.ra + ' — price adjustment')
+               : (sub === 'free' ? (r.ra + ' \u2014 manual credit memo \u00b7 PO ' + String(r.freePo || ''))
                : (raIsBulk(r)
                    ? (r.ra + ' — multi-PO return · ' + ((r.pos && r.pos.length) || 1) + ' POs · ' + pcs.toLocaleString() + ' pcs')
-                   : ('RA ' + r.ra + ' — return received'));
+                   : ('RA ' + r.ra + ' — return received')));
     rows.push({ kind:'ra', sub:sub, wh:'', ref:rc.cm, ra:r.ra, at:rc.at||'', by:rc.by||'',
       amt:Number(rc.creditAmount)||0, note:note, lines:Array.isArray(rc.lines)?rc.lines:[], file:false });
   });
@@ -15043,7 +15068,7 @@ function memoHistHtml(base){
     return `<div style="padding:8px 12px;border-top:1px solid #e5e7eb;">
       <div style="display:flex;gap:8px;align-items:baseline;flex-wrap:wrap;">
         <span style="font-weight:800;color:#7c2d12;font-family:Consolas,monospace;">−$${r.amt.toFixed(2)}</span>
-        <span style="font-size:11px;font-weight:800;color:${r.kind==='ra'?'#7c3aed':'#0f2a4a'};background:${r.kind==='ra'?'#f5f3ff':'#eef2f7'};border-radius:10px;padding:1px 7px;">${r.kind==='ra'?({short:'Short ship',freight:'Shipping',allowance:'Price adj.'}[r.sub]||'RA return'):esc(String(r.wh))} ${esc(String(r.ref))}</span>
+        <span style="font-size:11px;font-weight:800;color:${r.kind==='ra'?'#7c3aed':'#0f2a4a'};background:${r.kind==='ra'?'#f5f3ff':'#eef2f7'};border-radius:10px;padding:1px 7px;">${r.kind==='ra'?({short:'Short ship',freight:'Shipping',allowance:'Price adj.',free:'Manual',bulk:'Multi-PO'}[r.sub]||'RA return'):esc(String(r.wh))} ${esc(String(r.ref))}</span>
         <span style="font-size:11px;color:#64748b;">${esc(d)}${r.by?' · '+esc(String(r.by).split('@')[0]):''}</span>${dl}
       </div>
       ${r.note?`<div style="font-size:11.5px;color:#334155;margin-top:3px;">📌 ${esc(r.note)}</div>`:''}
@@ -15707,6 +15732,240 @@ async function bkIssue(base, wh){
   try{ if(typeof renderKpi === 'function') renderKpi(); }catch(e){}
   showToast('\u2705 Credit memo ' + cmNo + ' issued - $' + r.total.toFixed(2)
     + ' (' + pos.length + ' POs)');
+  try{ openCreditMemo(base, ret.ra); }catch(e){}
+}
+/* \u2550\u2550\u2550 FREECM-1 - 빈 칸에 직접 치는 크레딧 메모 \u2550\u2550\u2550
+   [stated] 하윤이 고른 것: **따로 단추** + **스타일/색/사이즈는 목록에서 고르기**
+   \u2b50\u2b50\u2b50 만드는 속은 ALLOW-1 / FRTCM-1 / SHORTCM-1 / BULKCM-1 과 같다 -
+      같은 meta._returns 통에 kind:'free' 로 넣으면 번호\u00b7종이\u00b7메일\u00b7목록이 그대로 돈다.
+   \u26a0 사이즈는 스타일별로 거르지 않는다 - 옛 PO 라 우리가 아는 범위 밖일 수 있다.
+      스타일의 범위는 옆에 글자로만 적어 준다 (짐작해서 막지 않는다). */
+const FC_SIZES = ['2T','3T','4T','5T','XXS','XS','S','M','L','XL','2XL','3XL','4XL','5XL','6XL'];
+let _fcLines = [];
+/* 이 거래처의 제일 최근 오더 - 레코드가 붙을 집 */
+function fcAnchor(cust){
+  const key = (typeof custGroupName === 'function') ? custGroupName(cust || '') : String(cust || '');
+  let best = null;
+  (savedCache || []).forEach(function(r){
+    if(!r || !r.meta) return;
+    const k2 = (typeof custGroupName === 'function') ? custGroupName(r.meta.cust || '') : String(r.meta.cust || '');
+    if(k2 !== key) return;
+    if(!best || String(r.meta.date || '') > String((best.meta && best.meta.date) || '')) best = r;
+  });
+  return best;
+}
+function fcCustNames(){
+  const out = [];
+  (savedCache || []).forEach(function(r){
+    const c = String((r && r.meta && r.meta.cust) || '').trim();
+    if(c && out.indexOf(c) < 0) out.push(c);
+  });
+  out.sort(function(a, b){ return a.localeCompare(b); });
+  return out;
+}
+function fcClose(){ try{ const m = document.getElementById('modal-freecm'); if(m) m.remove(); }catch(e){} }
+function fcOpen(){
+  if(typeof skuLoaded !== 'undefined' && !skuLoaded){ try{ skuFetch(); }catch(e){} }
+  _fcLines = [{ style:'', color:'', size:'', qty:'', price:'' }];
+  fcClose();
+  const names = fcCustNames();
+  const div = document.createElement('div');
+  div.id = 'modal-freecm';
+  div.style.cssText = 'position:fixed;inset:0;background:rgba(15,23,42,.55);z-index:140;display:flex;align-items:center;justify-content:center;padding:16px;';
+  div.innerHTML = '<div style="background:#fff;border-radius:12px;width:900px;max-width:100%;max-height:90vh;display:flex;flex-direction:column;overflow:hidden;box-shadow:0 20px 60px rgba(0,0,0,.35);">'
+    + '<div style="background:#7c2d12;color:#fff;padding:11px 16px;font-weight:800;">\u{270D} New credit memo'
+    +   '<div style="font-weight:400;font-size:10.5px;color:#fed7aa;margin-top:2px;">For a PO that is not in this system. Type the lines yourself - a credit memo number is taken and the memo can be printed and emailed, exactly like the others.</div></div>'
+    + '<div style="overflow-y:auto;padding:13px 16px;flex:1;">'
+    +   '<div style="display:flex;gap:10px;flex-wrap:wrap;margin-bottom:11px;">'
+    +     '<div style="flex:2;min-width:220px;"><label style="font-size:10.5px;font-weight:800;color:#64748b;letter-spacing:.05em;">CUSTOMER</label>'
+    +       '<select class="fi" id="fc-cust" onchange="fcCalc()" style="width:100%;font-size:12.5px;padding:6px 8px;font-weight:700;">'
+    +       '<option value="">- pick a customer -</option>'
+    +       names.map(function(n){ return '<option value="' + esc(n) + '">' + esc(n) + '</option>'; }).join('')
+    +       '</select></div>'
+    +     '<div style="flex:1;min-width:150px;"><label style="font-size:10.5px;font-weight:800;color:#64748b;letter-spacing:.05em;">CUSTOMER PO</label>'
+    +       '<input class="fi" id="fc-po" placeholder="80053xxx" oninput="fcCalc()" style="width:100%;font-size:12.5px;padding:6px 8px;font-weight:700;"></div>'
+    +     '<div style="flex:0 0 96px;"><label style="font-size:10.5px;font-weight:800;color:#64748b;letter-spacing:.05em;">FROM</label>'
+    +       '<select class="fi" id="fc-wh" style="width:100%;font-size:12.5px;padding:6px 8px;font-weight:700;"><option>SC</option><option>CA</option></select></div>'
+    +   '</div>'
+    +   '<div id="fc-tbl"></div>'
+    +   '<button class="btn btn-sm" onclick="fcAddLine()" style="margin-top:8px;font-weight:800;color:#7c2d12;border-color:#fdba74;">+ Add line</button>'
+    +   '<div class="ff" style="margin-top:11px;"><label>Reason (printed on the credit memo)</label>'
+    +     '<input class="fi" id="fc-note" value="Credit memo" placeholder="Customer return / price adjustment / ..."></div>'
+    +   '<label style="display:flex;align-items:center;gap:8px;margin-top:10px;font-size:12px;font-weight:800;color:#1d4ed8;cursor:pointer;">'
+    +     '<input type="checkbox" id="fc-back" style="width:16px;height:16px;accent-color:#1d4ed8;">'
+    +     '\u{1F4E6} The goods came back - put them on the Return Stock list</label>'
+    +   '<div style="font-size:10.5px;color:#94a3b8;margin-left:24px;margin-top:2px;">Leave this off when nothing is coming back (a price adjustment, a short shipment, goods written off). Stock is never changed here either way.</div>'
+    +   '<div id="fc-msg" style="font-size:11.5px;font-weight:800;color:#b91c1c;min-height:16px;margin-top:9px;"></div>'
+    + '</div>'
+    + '<div style="padding:11px 16px;border-top:1px solid #e5e7eb;display:flex;align-items:center;gap:10px;flex-wrap:wrap;">'
+    +   '<span style="font-size:14px;font-weight:900;color:#7c2d12;">Total credit: <span id="fc-total" style="font-family:Consolas,monospace;">$0.00</span></span>'
+    +   '<span id="fc-pcs" style="font-size:11.5px;color:#64748b;font-weight:700;"></span>'
+    +   '<button class="btn btn-sm" style="margin-left:auto;" onclick="fcClose()">Cancel</button>'
+    +   '<button class="btn btn-sm" id="fc-issue" disabled style="background:#7c2d12;color:#fff;border-color:#7c2d12;font-weight:800;" onclick="fcIssue()">\u{270D} Issue Credit Memo</button>'
+    + '</div></div>';
+  document.body.appendChild(div);
+  fcPaint();
+}
+/* 화면 칸 -> _fcLines (다시 그리기 전에 사람이 친 것을 잃지 않게) */
+function fcRead(){
+  const root = document.getElementById('modal-freecm'); if(!root) return;
+  _fcLines.forEach(function(L, i){
+    const g = function(cls){ const e = root.querySelector(cls + '[data-i="' + i + '"]'); return e ? e.value : undefined; };
+    const st = g('.fc-st'); if(st !== undefined) L.style = st;
+    const co = g('.fc-co'); if(co !== undefined) L.color = co;
+    const sz = g('.fc-sz'); if(sz !== undefined) L.size = sz;
+    const q  = g('.fc-q');  if(q  !== undefined) L.qty = q;
+    const p  = g('.fc-p');  if(p  !== undefined) L.price = p;
+  });
+}
+function fcAddLine(){ fcRead(); _fcLines.push({ style:'', color:'', size:'', qty:'', price:'' }); fcPaint(); }
+function fcDelLine(i){
+  fcRead();
+  if(_fcLines.length <= 1){ _fcLines = [{ style:'', color:'', size:'', qty:'', price:'' }]; }
+  else _fcLines.splice(i, 1);
+  fcPaint();
+}
+/* 스타일을 바꾸면 색 목록이 달라진다 - 그래서 다시 그린다 */
+function fcStyleChange(i){ fcRead(); const L = _fcLines[i]; if(L) L.color = ''; fcPaint(); }
+function fcPaint(){
+  const box = document.getElementById('fc-tbl'); if(!box) return;
+  const styles = (typeof skuStyles === 'function') ? skuStyles() : [];
+  const opt = function(v, sel){ return '<option value="' + esc(v) + '"' + (String(sel) === String(v) ? ' selected' : '') + '>' + esc(v) + '</option>'; };
+  box.innerHTML = '<div style="border:1px solid #e5e7eb;border-radius:8px;overflow:hidden;">'
+    + '<table style="width:100%;border-collapse:collapse;font-size:12px;"><thead><tr style="background:#f8fafc;">'
+    + ['STYLE','COLOR','SIZE','QTY','UNIT PRICE','AMOUNT','']
+        .map(function(h, i){ return '<th style="padding:5px 6px;text-align:' + (i >= 3 && i <= 5 ? 'right' : 'left')
+          + ';font-size:10.5px;color:#64748b;">' + h + '</th>'; }).join('')
+    + '</tr></thead><tbody>'
+    + _fcLines.map(function(L, i){
+        const cols = (L.style && typeof skuColors === 'function') ? skuColors(L.style) : [];
+        const rng = (typeof STYLE_MASTER !== 'undefined' && STYLE_MASTER[L.style]) ? STYLE_MASTER[L.style][1] : '';
+        return '<tr>'
+          + '<td style="padding:4px 6px;"><select class="fi fc-st" data-i="' + i + '" onchange="fcStyleChange(' + i + ')" style="width:104px;font-weight:800;">'
+          +   '<option value="">-</option>' + styles.map(function(x){ return opt(x, L.style); }).join('') + '</select>'
+          +   (rng ? ('<div style="font-size:9.5px;color:#94a3b8;margin-top:1px;">' + esc(rng) + '</div>') : '') + '</td>'
+          + '<td style="padding:4px 6px;"><select class="fi fc-co" data-i="' + i + '" onchange="fcCalc()" style="width:150px;">'
+          +   '<option value="">-</option>' + cols.map(function(x){ return opt(String(x).toUpperCase(), String(L.color).toUpperCase()); }).join('') + '</select></td>'
+          + '<td style="padding:4px 6px;"><select class="fi fc-sz" data-i="' + i + '" onchange="fcCalc()" style="width:78px;font-weight:800;">'
+          +   '<option value="">-</option>' + FC_SIZES.map(function(x){ return opt(x, L.size); }).join('') + '</select></td>'
+          + '<td style="padding:4px 6px;text-align:right;"><input class="fi num fc-q" data-i="' + i + '" type="number" step="1" min="0" value="' + esc(String(L.qty || '')) + '" placeholder="0" oninput="fcCalc()" style="width:80px;font-weight:800;text-align:right;"></td>'
+          + '<td style="padding:4px 6px;text-align:right;"><input class="fi num fc-p" data-i="' + i + '" type="number" step="0.001" min="0" value="' + esc(String(L.price || '')) + '" placeholder="0.00" oninput="fcCalc()" style="width:90px;font-weight:800;text-align:right;"></td>'
+          + '<td style="padding:4px 6px;text-align:right;font-family:Consolas,monospace;font-weight:800;color:#7c2d12;" id="fc-lt-' + i + '">\u2014</td>'
+          + '<td style="padding:4px 6px;text-align:center;"><button class="btn btn-sm" onclick="fcDelLine(' + i + ')" title="Remove this line" style="color:#b91c1c;border-color:#fecaca;padding:2px 8px;">\u2715</button></td>'
+          + '</tr>';
+      }).join('')
+    + '</tbody></table></div>';
+  fcCalc();
+}
+/* \u2b50\u2b50\u2b50 화면과 발행이 이 함수 하나를 같이 쓴다 (fcIssue 가 발행 직전에 다시 돌린다) */
+function fcCalc(){
+  fcRead();
+  const lines = []; let total = 0, pcs = 0, warn = '';
+  _fcLines.forEach(function(L, i){
+    const cell = document.getElementById('fc-lt-' + i);
+    const q = Number(String(L.qty || '').trim());
+    const p = Number(String(L.price || '').trim());
+    const blank = !L.style && !L.color && !L.size && !String(L.qty || '').trim() && !String(L.price || '').trim();
+    if(blank){ if(cell) cell.textContent = '\u2014'; return; }
+    const bad = function(msg){
+      if(cell) cell.innerHTML = '<span style="color:#dc2626;font-weight:800;font-size:10.5px;">' + msg + '</span>';
+      warn = warn || ('line ' + (i + 1) + ': ' + msg);
+    };
+    if(!L.style){ bad('pick a style'); return; }
+    if(!L.color){ bad('pick a color'); return; }
+    if(!L.size){ bad('pick a size'); return; }
+    if(!isFinite(q) || q <= 0){ bad('type a quantity'); return; }
+    if(Math.round(q) !== q){ bad('whole pieces only'); return; }
+    if(!isFinite(p) || !(p > 0)){ bad('type a unit price'); return; }
+    const amt = Math.round(q * p * 100) / 100;
+    if(!(amt > 0)){ bad('credit is $0.00'); return; }
+    if(cell) cell.textContent = '$' + amt.toFixed(2);
+    const ppb = (typeof STYLE_MASTER !== 'undefined' && STYLE_MASTER[L.style] && Number(STYLE_MASTER[L.style][2]))
+      ? Number(STYLE_MASTER[L.style][2]) : (typeof DEFAULT_PPB !== 'undefined' ? DEFAULT_PPB : 72);
+    const wh = String(((document.getElementById('fc-wh') || {}).value) || 'SC');
+    lines.push({ style: L.style, desc: (typeof styleItem === 'function' ? (styleItem(L.style) || '') : ''),
+                 color: String(L.color).toUpperCase(), size: String(L.size).toUpperCase(),
+                 qty: q, price: p, ppb: ppb, wh: wh, toWh: wh });
+    total = Math.round((total + amt) * 100) / 100;
+    pcs += q;
+  });
+  const cust = String(((document.getElementById('fc-cust') || {}).value) || '').trim();
+  const po   = String(((document.getElementById('fc-po') || {}).value) || '').trim();
+  if(!warn && !cust) warn = 'pick a customer';
+  if(!warn && cust && !fcAnchor(cust)) warn = 'this customer has no order in psflowx yet - a credit memo cannot be filed against them here';
+  if(!warn && !po) warn = 'type the customer PO this credit is for';
+  if(!warn && !lines.length) warn = 'fill in at least one line';
+  window._fcOut = { lines: lines, total: total, pcs: pcs, warn: warn, cust: cust, po: po };
+  const tt = document.getElementById('fc-total'); if(tt) tt.textContent = '$' + total.toFixed(2);
+  const pc = document.getElementById('fc-pcs');
+  if(pc) pc.textContent = pcs ? ('\u00b7 ' + pcs.toLocaleString() + ' pcs on ' + lines.length + (lines.length === 1 ? ' line' : ' lines')) : '';
+  const ms = document.getElementById('fc-msg'); if(ms) ms.textContent = warn ? ('\u26a0 ' + warn) : '';
+  const bt = document.getElementById('fc-issue'); if(bt) bt.disabled = !!warn || !lines.length || !(total > 0);
+  return window._fcOut;
+}
+async function fcIssue(){
+  const r = fcCalc();
+  if(r.warn){ alert('\u26a0 ' + r.warn); return; }
+  if(!r.lines.length || !(r.total > 0)){ alert('\u26a0 Nothing to issue.'); return; }
+  const rec = fcAnchor(r.cust);
+  if(!rec){ alert('\u26a0 ' + r.cust + ' has no order in psflowx - nothing was issued.'); return; }
+  const back = !!((document.getElementById('fc-back') || {}).checked);
+  const note = String(((document.getElementById('fc-note') || {}).value) || '').trim() || 'Credit memo';
+  const list = r.lines.map(function(l){
+    return '  ' + l.style + '  ' + l.color + '  ' + l.size + '   ' + l.qty.toLocaleString()
+      + ' pcs   @ $' + Number(l.price).toFixed(2) + '   = $' + (Math.round(l.qty * l.price * 100) / 100).toFixed(2);
+  }).join('\n');
+  if(!confirm('Issue a credit memo?\n\n  ' + r.cust + '   PO ' + r.po + '\n\n' + list
+    + '\n\nTOTAL CREDIT   $' + r.total.toFixed(2) + '   (' + r.pcs.toLocaleString() + ' pcs)'
+    + '\n\nA credit memo number will be taken and written to our books.\n'
+    + (back ? 'The goods go to the Return Stock list so the warehouse can put them on a shelf.'
+            : 'Stock is NOT changed.'))) return;
+  const bt = document.getElementById('fc-issue');
+  if(bt){ bt.disabled = true; bt.textContent = 'Issuing...'; }
+  const undo = function(){ if(bt){ bt.disabled = false; bt.textContent = '\u{270D} Issue Credit Memo'; } };
+  /* \u26a0 번호가 없으면 아무것도 만들지 않는다 (CMGUARD-1) */
+  let cmNo = '';
+  try{ cmNo = await nextInvNo(); }catch(e){ console.warn('[FREECM-1] number failed', e); }
+  if(!cmNo){ undo(); alert('\u26a0 Could not take a credit memo number - nothing was issued. Try again.'); return; }
+  const base = rec.base;
+  const by  = (SESS && SESS.email) || '';
+  const now = new Date().toISOString();
+  const em  = (rec.meta && rec.meta.custEmail) || custEmailFor(rec.meta && rec.meta.cust) || '';
+  const rl = r.lines.map(function(l){
+    return Object.assign({}, l, { gradeA: back ? l.qty : 0, gradeB: 0, failed: 0, receivedQty: l.qty });
+  });
+  const ret = {
+    ra: fcGen(cmNo, rec), kind: 'free',
+    pos: [r.po], freePo: r.po, freeCust: r.cust, goodsBack: back,
+    status: 'received', cmStatus: 'sent', invStatus: back ? 'pending' : 'done',
+    cm: cmNo, reason: note, reasons: [],
+    custEmail: em, cc: !!(rec.meta && rec.meta.cc),
+    lines: r.lines,
+    received: { at: now, by: by, cm: cmNo, creditAmount: r.total, lines: rl,
+                restockA: back ? r.pcs : 0, restockB: 0, failedTotal: 0,
+                restockTotal: back ? r.pcs : 0, cmEmailedAt: '' },
+    createdAt: now, createdBy: by, emailedAt: null
+  };
+  const before = recReturns(rec).slice();
+  rec.meta = rec.meta || {};
+  rec.meta._returns = before.concat([ret]);
+  try{
+    await sbSaveRow('/rest/v1/pr_orders?base=eq.' + encodeURIComponent(base),
+      { meta: rec.meta, updated_at: now }, 'The credit memo');
+  }catch(e){
+    rec.meta._returns = before;
+    undo();
+    alert('\u26a0 NOTHING was issued - ' + ((e && e.message) || e));
+    return;
+  }
+  logHist(base, 'Manual credit memo ' + cmNo + ' issued - $' + r.total.toFixed(2)
+    + ' (PO ' + r.po + ', ' + r.pcs.toLocaleString() + ' pcs, ' + r.lines.length
+    + (r.lines.length === 1 ? ' line' : ' lines') + ', ' + note + ')');
+  fcClose();
+  try{ const m = document.getElementById('modal-invnp'); if(m && typeof invNpRefresh === 'function') invNpRefresh(); }catch(e){}
+  renderSaved();
+  try{ if(typeof renderKpi === 'function') renderKpi(); }catch(e){}
+  showToast('\u2705 Credit memo ' + cmNo + ' issued - $' + r.total.toFixed(2));
   try{ openCreditMemo(base, ret.ra); }catch(e){}
 }
 async function shIssue(base, wh){
@@ -16484,6 +16743,9 @@ function buildCreditMemoDoc(rec, ret){
   /* BULKCM-1 - PO 여러 개를 한 장으로 낸 건. 물건은 돌아왔으므로 RETURNED TO 는 그대로다. */
   const isBulk = (typeof raIsBulk === 'function') ? raIsBulk(ret) : (String(ret.kind || '') === 'bulk');
   const bulkPo = isBulk ? ((typeof bkPoText === 'function') ? bkPoText(ret) : '') : '';
+  /* FREECM-1 - 손으로 친 크레딧 메모. 오더가 없으니 REF ORDER 는 비운다. */
+  const isFree = (typeof raIsFree === 'function') ? raIsFree(ret) : (String(ret.kind || '') === 'free');
+  const freePo = isFree ? String(ret.freePo || (ret.pos && ret.pos[0]) || '') : '';
 
   /* 사유 — 줄마다 다 같으면 표에 칸을 만들지 않고 표 위에 한 번만 적는다.
      ⚠ 예전 종이는 같은 문장을 다섯 줄에 다섯 번 찍었다. RA 메일도 같은 병이 있다(아직). */
@@ -16557,7 +16819,8 @@ function buildCreditMemoDoc(rec, ret){
 
   let tfootHtml = '<tr class="ix-sum"><td class="tl" colspan="' + (NCOL - 3) + '">'
       + (isShort ? 'Short shipment &middot; ' : (isFrt ? 'Shipping charge &middot; ' : (isAdj ? 'Price adjustment &middot; '
-          : (isBulk ? ('Returned from ' + ((ret.pos && ret.pos.length) || 1) + ' POs &middot; ') : 'Returned &middot; '))))
+          : (isBulk ? ('Returned from ' + ((ret.pos && ret.pos.length) || 1) + ' POs &middot; ')
+          : (isFree ? 'Credit &middot; ' : 'Returned &middot; ')))))
       + src.length + (src.length === 1 ? ' line' : ' lines') + '</td>'
     + '<td class="n">' + totQ.toLocaleString() + '</td><td></td>'
     + '<td class="n">' + money(total) + '</td></tr>'
@@ -16587,13 +16850,13 @@ function buildCreditMemoDoc(rec, ret){
            ⚠ 아래 띠에서는 뺐다 - 같은 값이 두 곳에 있으면 안 된다. */
         /* BULKCM-1 - PO 여러 개를 한 장으로 낸 건은 **그 PO 를 전부** 적는다.
            이 종이가 어느 PO 들을 덮는지가 거래처 회계에게 제일 중요한 참조다. */
-        + '<div class="inv-meta-row gap"><span>Customer PO</span><span>' + esc((isBulk && bulkPo) ? bulkPo : (meta.po || '—')) + '</span></div>'
+        + '<div class="inv-meta-row gap"><span>Customer PO</span><span>' + esc(isFree ? (freePo || '—') : ((isBulk && bulkPo) ? bulkPo : (meta.po || '—'))) + '</span></div>'
       + '</div>'
     + '</div>'
     + '<div class="ix-addr' + (showRemit ? ' c3' : '') + '">'
       + '<div><div class="ix-lbl">BILL TO</div>' + invxAddrBlock(meta, 'bill') + '</div>'
       /* 물건이 돌아온 우리 창고 — 이 종이에서 실제로 쓸모있는 주소다 (추가 반품·문의) */
-      + '<div><div class="ix-lbl">' + ((isAdj || isFrt || isShort) ? 'SHIPPED FROM' : 'RETURNED TO') + '</div>'
+      + '<div><div class="ix-lbl">' + ((isAdj || isFrt || isShort || (isFree && !ret.goodsBack)) ? 'SHIPPED FROM' : 'RETURNED TO') + '</div>'
         + '<div class="ix-val">' + esc(WH_LABEL[revParentWh(wh)] || String(wh || '')) + '</div>'
         + '<div class="ix-val sub">' + esc(WH_ADDR[revParentWh(wh)] || '') + '</div></div>'
       /* CMWORD-v1 - 이름표를 바꿨다. 이 종이로 돈을 보내는 게 아니라
@@ -16606,8 +16869,9 @@ function buildCreditMemoDoc(rec, ret){
     /* INVPO-v2 - CUSTOMER PO 는 오른쪽 위 칸으로 올라갔다. 여기선 뺀다.
        ⚠ 세 칸이 항상 나온다 - RA 번호·원래 오더·거래처는 이 종이에 늘 있다. */
     + '<div class="ix-bar c3">'
-      + '<div><div class="ix-lbl">' + (isShort ? 'SHORT SHIPMENT' : (isFrt ? 'FREIGHT CREDIT' : (isAdj ? 'ADJUSTMENT' : (isBulk ? 'MULTI-PO RETURN' : 'RA NO.')))) + '</div><div class="ix-val">' + esc(ret.ra || '—') + '</div></div>'
-      + '<div><div class="ix-lbl">REF ORDER</div><div class="ix-val">' + esc(rec.base || '—') + '</div></div>'
+      + '<div><div class="ix-lbl">' + (isShort ? 'SHORT SHIPMENT' : (isFrt ? 'FREIGHT CREDIT' : (isAdj ? 'ADJUSTMENT' : (isBulk ? 'MULTI-PO RETURN' : (isFree ? 'CREDIT NO.' : 'RA NO.'))))) + '</div><div class="ix-val">' + esc(ret.ra || '—') + '</div></div>'
+      /* FREECM-1 - 이 종이가 가리키는 오더가 우리 시스템에 없다. 남의 오더 번호를 찍으면 안 된다. */
+      + '<div><div class="ix-lbl">REF ORDER</div><div class="ix-val">' + esc(isFree ? '—' : (rec.base || '—')) + '</div></div>'
       + '<div><div class="ix-lbl">CUSTOMER</div><div class="ix-val">' + esc(meta.cust || '—') + '</div></div>'
     + '</div>'
     /* 사유 띠 — 줄마다 같은 사유면 여기 한 번만. 다르면 이 띠 대신 표에 REASON 칸이 생긴다. */
@@ -53144,6 +53408,7 @@ function invNpOpen(){
     + '<div id="invnp-cmbar" style="display:none;align-items:center;gap:10px;padding:8px 12px;background:#fdf4ff;border-bottom:1px solid #e9d5ff;">'
     +   '<label style="display:flex;align-items:center;gap:7px;font-size:12px;font-weight:800;color:#7c2d12;cursor:pointer;">'
     +     '<input type="checkbox" id="cmnp-all" checked style="width:16px;height:16px;accent-color:#7c2d12;" onchange="cmToggleAll(this.checked)"> Select all to print</label>'
+    +   '<button class="btn btn-sm" onclick="fcOpen()" style="background:#fff;color:#7c2d12;border-color:#fdba74;font-weight:800;" title="A credit memo for a PO that is not in this system - type the lines yourself">\u{270D} New credit memo</button>'
     +   '<span style="margin-left:auto;display:flex;gap:8px;align-items:center;">'
     +     '<span style="font-size:11.5px;color:#7c2d12;font-weight:700;"><b id="cmnp-n">0</b> to print</span>'
     +     '<span id="cmnp-sum" style="font-family:Consolas,monospace;font-size:14px;font-weight:900;color:#be123c;background:#fff1f2;border:1px solid #fecdd3;border-radius:7px;padding:2px 11px;" title="Total of the credit memos you have checked">$0.00</span>'
@@ -55215,7 +55480,9 @@ function renderSaved(){
       ${/* FRTCM-1 - 운임 크레딧도 반품 상세로 보내면 안 된다 (돌아온 물건이 없다) */''}
       ${/* SHORTCM-1 - 적게 보낸 건도 반품 상세로 보내면 안 된다 (돌아온 물건이 없다) */''}
       ${/* BULKCM-1 - PO 여러 개짜리 반품도 크레딧 메모 창으로 보낸다 (반품 상세는 PO 하나짜리 화면이다) */''}
-      ${recReturns(s).map(r=> raIsBulk(r)
+      ${recReturns(s).map(r=> raIsFree(r)
+        ? `<button class="btn btn-sm" style="background:#9a3412;color:#fff;border-color:#9a3412;font-weight:800;" onclick="openCreditMemo('${esc(s.base)}','${esc(r.ra)}')" title="Manual credit memo (PO not in this system) - print / email">\u{270D} ${esc(retCmNo(r)||r.ra)}${(r.received&&r.received.cmEmailedAt)?' ✉':''}</button>`
+        : (raIsBulk(r)
         ? `<button class="btn btn-sm" style="background:#5b21b6;color:#fff;border-color:#5b21b6;font-weight:800;" onclick="openCreditMemo('${esc(s.base)}','${esc(r.ra)}')" title="Multi-PO return credit memo - print / email">\u{1F5C2} ${esc(retCmNo(r)||r.ra)}${(r.received&&r.received.cmEmailedAt)?' ✉':''}</button>`
         : (raIsShort(r)
         ? `<button class="btn btn-sm" style="background:#0f766e;color:#fff;border-color:#0f766e;font-weight:800;" onclick="openCreditMemo('${esc(s.base)}','${esc(r.ra)}')" title="Short shipment credit memo — print / email">📦 ${esc(retCmNo(r)||r.ra)}${(r.received&&r.received.cmEmailedAt)?' ✉':''}</button>`
@@ -55225,7 +55492,7 @@ function renderSaved(){
         /* ALLOW-1 - 가격 조정 건은 반품 상세 화면으로 보내면 안 된다 (돌아온 물건이 없다).
            누르면 바로 크레딧 메모 창 - 인쇄와 메일이 거기 있다. 딱지에는 **CM 번호**를 적는다. */
         ? `<button class="btn btn-sm" style="background:#7c2d12;color:#fff;border-color:#7c2d12;font-weight:800;" onclick="openCreditMemo('${esc(s.base)}','${esc(r.ra)}')" title="Price adjustment credit memo — print / email">💲 ${esc(retCmNo(r)||r.ra)}${(r.received&&r.received.cmEmailedAt)?' ✉':''}</button>`
-        : `<button class="btn btn-sm" style="background:${r.status==='received'?'#166534':'#ea580c'};color:#fff;border-color:${r.status==='received'?'#166534':'#ea580c'};font-weight:800;" onclick="openReturnDetail('${esc(s.base)}','${esc(r.ra)}')" title="View return details / email customer / cancel">↩ ${esc(r.ra)}${r.status==='received'?' ✓':''}</button>`)))).join('')}
+        : `<button class="btn btn-sm" style="background:${r.status==='received'?'#166534':'#ea580c'};color:#fff;border-color:${r.status==='received'?'#166534':'#ea580c'};font-weight:800;" onclick="openReturnDetail('${esc(s.base)}','${esc(r.ra)}')" title="View return details / email customer / cancel">↩ ${esc(r.ra)}${r.status==='received'?' ✓':''}</button>`))))).join('')}
       <button class="btn btn-sm" onclick="loadSaved('${esc(s.base)}')">${t('open_edit')}</button>
       ${recCancelled(s)
         ? `<button class="btn btn-sm" style="background:#0f2a4a;color:#fff;border-color:#0f2a4a;font-weight:800;" onclick="printPutBack('${esc(s.base)}')" title="Reprint the sheet the staff walk around with">\u{1F5A8} Put Back Request</button>
