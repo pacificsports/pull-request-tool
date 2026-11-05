@@ -314,7 +314,7 @@ body.po-dragging{user-select:none;}
   </span>
   <select id="lang-sel" onchange="setLang(this.value)" style="font-size:11px;padding:3px 6px;border-radius:5px;border:none;background:#1d3f66;color:#fff;"><option value="ko">한국어</option><option value="en">English</option><option value="es">Español</option></select>
   <button id="wide-btn" class="btn btn-sm" onclick="toggleWide()" title="화면 넓게 / 좁게 — 기본은 넓게 (이 브라우저에만 저장돼)" style="padding:2px 8px;font-size:10px;background:#1d3f66;color:#cfe0f2;border-color:#2b5384;">↔ Wide</button>
-  <span id="app-ver" style="font-size:10px;color:#9fb8d4;">v1363</span>
+  <span id="app-ver" style="font-size:10px;color:#9fb8d4;">v1365</span>
 </div>
 <script>
 // ↔ 넓게 보기 — 브라우저마다 따로 저장 (v793)
@@ -6837,6 +6837,25 @@ function raIsFree(r){ return !!(r && String(r.kind || '') === 'free'); }
       세 군데가 따로 고르면 반드시 어긋난다 (실제로 메일만 어긋나 있었다).
    \u26a0 손으로 친 건(free)은 얹혀 있는 오더의 PO 를 쓰면 **안 된다** - 상관없는 번호다.
    \u26a0 여러 PO 짜리(bulk)는 고른 PO 를 **전부** 적는다. */
+/* CMTOP-1 (2026-11-05) - 지금 떠 있는 창들보다 **위**로 올린다.
+   [stated] 하윤: "저기서 send누르면 저렇케 나와서 보낼수가 없는데"
+   [라이브에서 잡은 것] 뿌리: Invoice To Do 창은 z-index 130, 크레딧 메모 창은 102 였다.
+      목록에서 \u2709 send 를 누르면 크레딧 메모가 **목록 뒤에서** 열려 메일 단추를 못 눌렀다.
+   \u26a0 숫자를 손으로 올려서 고치면 안 된다 - 환불창(130)은 크레딧 메모 **위**에 떠야 한다
+      (CMREF-1). 그래서 「나중에 연 것이 위」 라는 규칙 하나로 푼다. */
+function modalTop(el){
+  if(!el) return;
+  let mx = 100;
+  try{
+    document.querySelectorAll('[id^="modal-"]').forEach(function(d){
+      if(d === el) return;
+      let z = parseInt((d.style && d.style.zIndex) || '', 10);
+      if(!isFinite(z)){ try{ z = parseInt(window.getComputedStyle(d).zIndex, 10); }catch(e){ z = NaN; } }
+      if(isFinite(z) && z > mx) mx = z;
+    });
+  }catch(e){}
+  try{ el.style.zIndex = String(mx + 1); }catch(e){}
+}
 function cmPoOf(rec, ret){
   try{
     if(typeof raIsFree === 'function' && raIsFree(ret))
@@ -8286,7 +8305,7 @@ function cmAllMemos(){
         base: rec.base, ra: r.ra, cm: rc.cm, at: rc.at||'',
         amt: Number(rc.creditAmount)||0,
         pcs: (Number(rc.restockTotal)||0) + (Number(rc.failedTotal)||0),
-        po: (rec.meta&&rec.meta.po)||'', cust: cust,
+        po: (typeof cmPoOf==='function') ? cmPoOf(rec, r) : ((rec.meta&&rec.meta.po)||''), cust: cust,
         custKey: (typeof custCanon==='function') ? custCanon(cust) : String(cust||'').trim().toUpperCase(),
         emailed: !!rc.cmEmailedAt,
         /* CMTAB-1 - 📝 Credit Memo 할 일 칸이 쓰는 칸들.
@@ -8547,6 +8566,7 @@ function openCreditMemo(base, ra){
       <button class="btn btn-primary" style="background:#16a34a;border-color:#16a34a;font-weight:800;" onclick="document.getElementById('modal-cm').remove();openReturnReceive('${esc(base)}','${esc(ra)}')">✓ Confirm &amp; Credit Memo</button>`}
     </div></div>`;
   document.body.appendChild(div);
+  modalTop(div);   /* CMTOP-1 - Invoice To Do(130) 위로 */
 }
 // 거래처에 예쁜 이메일 본문(표 기반) + Credit Memo PDF 첨부해서 발송 (v530)
 function buildCreditMemoEmailBody(rec, ret, cm){
@@ -14755,6 +14775,7 @@ function refundCharge(base, wh, dupIdx, preAmt){
     </div>
   </div>`;
   document.body.appendChild(div);
+  modalTop(div);   /* CMTOP-1 - 크레딧 메모 창 위로 */
   initModalDrag(div);
 }
 async function submitRefund(base, wh, dupIdx){
@@ -15840,10 +15861,13 @@ function fcOpen(){
     +   '<button class="btn btn-sm" tabindex="601" onclick="fcAddLine()" style="margin-top:8px;font-weight:800;color:#7c2d12;border-color:#fdba74;">+ Add line</button>'
     +   '<div class="ff" style="margin-top:11px;"><label>Reason (printed on the credit memo)</label>'
     +     '<input class="fi" id="fc-note" tabindex="602" value="Credit memo" placeholder="Customer return / price adjustment / ..."></div>'
-    +   '<label style="display:flex;align-items:center;gap:8px;margin-top:10px;font-size:12px;font-weight:800;color:#1d4ed8;cursor:pointer;">'
-    +     '<input type="checkbox" id="fc-back" tabindex="603" style="width:16px;height:16px;accent-color:#1d4ed8;">'
-    +     '\u{1F4E6} The goods came back - put them on the Return Stock list</label>'
-    +   '<div style="font-size:10.5px;color:#94a3b8;margin-left:24px;margin-top:2px;">Leave this off when nothing is coming back (a price adjustment, a short shipment, goods written off). Stock is never changed here either way.</div>'
+    +   '<div style="margin-top:12px;"><label style="font-size:10.5px;font-weight:800;color:#64748b;letter-spacing:.05em;">WHAT HAPPENED TO THE GOODS</label>'
+    +     '<div style="display:flex;flex-direction:column;gap:5px;margin-top:5px;">'
+    +       ['<label style="display:flex;align-items:flex-start;gap:8px;font-size:12px;cursor:pointer;"><input type="radio" name="fc-goods" value="none" tabindex="603" style="margin-top:2px;accent-color:#7c2d12;"><span><b>Nothing came back</b> <span style="color:#94a3b8;font-weight:400;">- a price adjustment, a short shipment, goods written off</span></span></label>',
+             '<label style="display:flex;align-items:flex-start;gap:8px;font-size:12px;cursor:pointer;"><input type="radio" name="fc-goods" value="queue" tabindex="603" checked style="margin-top:2px;accent-color:#1d4ed8;"><span><b>\u{1F4E6} It came back - put it on the Return Stock list</b> <span style="color:#94a3b8;font-weight:400;">- the warehouse gives it a bin</span></span></label>',
+             '<label style="display:flex;align-items:flex-start;gap:8px;font-size:12px;cursor:pointer;"><input type="radio" name="fc-goods" value="manual" tabindex="603" style="margin-top:2px;accent-color:#1d4ed8;"><span><b>It came back - I will fix the stock myself</b> <span style="color:#94a3b8;font-weight:400;">- in Full Box Inventory</span></span></label>'].join('')
+    +     '</div>'
+    +     '<div style="font-size:10.5px;color:#94a3b8;margin-top:4px;">Stock is never changed from this window either way. The credit memo says <b>RETURNED TO</b> on the bottom two, <b>SHIPPED FROM</b> on the first.</div></div>'
     +   '<div id="fc-msg" style="font-size:11.5px;font-weight:800;color:#b91c1c;min-height:16px;margin-top:9px;"></div>'
     + '</div>'
     + '<div style="padding:11px 16px;border-top:1px solid #e5e7eb;display:flex;align-items:center;gap:10px;flex-wrap:wrap;">'
@@ -15869,26 +15893,43 @@ function fcRead(){
     const p  = g('.fc-p');  if(p  !== undefined) L.price = p;
   });
 }
-function fcAddLine(){ fcRead(); _fcLines.push({ style:'', color:'', size:'', qty:'', price:'' }); fcPaint(); }
+function fcAddLine(){
+  fcRead();
+  _fcLines.push({ style:'', color:'', size:'', qty:'', price:'' });
+  const i = _fcLines.length - 1;
+  const tb = document.querySelector('#fc-tbl tbody');
+  /* \u26a0 표가 아직 없으면(처음 그릴 때) 예전처럼 통째로 그린다 */
+  if(!tb){ fcPaint(); return; }
+  try{ tb.insertAdjacentHTML('beforeend', fcRowHtml(_fcLines[i], i)); }
+  catch(e){ fcPaint(); return; }
+  fcCalc();
+  /* 바로 이어서 칠 수 있게 새 줄 맨 앞 칸으로 보낸다 */
+  try{
+    const el = document.querySelector('#modal-freecm .fc-st[data-i="' + i + '"]');
+    if(el){ el.focus(); el.scrollIntoView({ block:'nearest' }); }
+  }catch(e){}
+}
 function fcDelLine(i){
   fcRead();
   if(_fcLines.length <= 1){ _fcLines = [{ style:'', color:'', size:'', qty:'', price:'' }]; }
   else _fcLines.splice(i, 1);
+  /* \u26a0 지울 때는 번호가 밀리므로 통째로 다시 그린다 (자주 하는 일이 아니다).
+     그래도 어디든 포커스를 둬서 손이 공중에 뜨지 않게 한다. */
   fcPaint();
+  try{
+    const j = Math.min(i, _fcLines.length - 1);
+    const el = document.querySelector('#modal-freecm .fc-st[data-i="' + j + '"]');
+    if(el) el.focus();
+  }catch(e){}
 }
 /* FREECM-4 - 이제 다시 그릴 일이 없다. 색 제안은 fcColList 가 칸에 들어갈 때 채운다.
    \u26a0 남겨 두는 까닭: 옛 화면이 열려 있을 수 있고, 부르는 곳이 생기면 안전하게 돌아야 한다. */
 function fcStyleChange(i){ try{ fcColList(i); }catch(e){} fcCalc(); }
-function fcPaint(){
-  const box = document.getElementById('fc-tbl'); if(!box) return;
-  box.innerHTML = '<div style="border:1px solid #e5e7eb;border-radius:8px;overflow:hidden;">'
-    + '<table style="width:100%;border-collapse:collapse;font-size:12px;"><thead><tr style="background:#f8fafc;">'
-    + ['STYLE','COLOR','SIZE','QTY','UNIT PRICE','AMOUNT','']
-        .map(function(h, i){ return '<th style="padding:5px 6px;text-align:' + (i >= 3 && i <= 5 ? 'right' : 'left')
-          + ';font-size:10.5px;color:#64748b;">' + h + '</th>'; }).join('')
-    + '</tr></thead><tbody>'
-    + _fcLines.map(function(L, i){
-        return '<tr>'
+/* FREECM-6 - 줄 하나를 그리는 곳. fcPaint 와 fcAddLine 이 **같은 것**을 쓴다.
+   \u26a0\u26a0 줄을 더할 때 표를 통째로 다시 그리면 **치고 있던 칸이 사라지고 포커스가 날아간다**
+      (라이브에서 재 보니 Add line 뒤 activeElement 가 BODY 였다). 그래서 한 줄만 덧붙인다. */
+function fcRowHtml(L, i){
+  return '<tr>'
           /* FREECM-4 - 고르는 칸이 아니라 **치는 칸**이다. 목록은 제안(datalist)으로만 붙는다.
              [stated] 하윤: "다 그냥 내가 적을수있게 해줘. 스크롤해서 선택하는거 오래 걸려"
              \u26a0 목록에 없는 옛 스타일/색도 그대로 받는다 - 그게 이 창의 존재 이유다. */
@@ -15905,7 +15946,16 @@ function fcPaint(){
           + '<td style="padding:4px 6px;text-align:right;font-family:Consolas,monospace;font-weight:800;color:#7c2d12;" id="fc-lt-' + i + '">\u2014</td>'
           + '<td style="padding:4px 6px;text-align:center;"><button class="btn btn-sm" tabindex="-1" onclick="fcDelLine(' + i + ')" title="Remove this line" style="color:#b91c1c;border-color:#fecaca;padding:2px 8px;">\u2715</button></td>'
           + '</tr>';
-      }).join('')
+}
+function fcPaint(){
+  const box = document.getElementById('fc-tbl'); if(!box) return;
+  box.innerHTML = '<div style="border:1px solid #e5e7eb;border-radius:8px;overflow:hidden;">'
+    + '<table style="width:100%;border-collapse:collapse;font-size:12px;"><thead><tr style="background:#f8fafc;">'
+    + ['STYLE','COLOR','SIZE','QTY','UNIT PRICE','AMOUNT','']
+        .map(function(h, i){ return '<th style="padding:5px 6px;text-align:' + (i >= 3 && i <= 5 ? 'right' : 'left')
+          + ';font-size:10.5px;color:#64748b;">' + h + '</th>'; }).join('')
+    + '</tr></thead><tbody>'
+    + _fcLines.map(fcRowHtml).join('')
     + '</tbody></table></div>'
     + '<datalist id="fc-styles"></datalist>'
     + '<datalist id="fc-sizes">' + FC_SIZES.map(function(x){ return '<option value="' + esc(x) + '">'; }).join('') + '</datalist>';
@@ -15998,7 +16048,14 @@ async function fcIssue(){
   if(!r.lines.length || !(r.total > 0)){ alert('\u26a0 Nothing to issue.'); return; }
   const rec = fcAnchor(r.cust);
   if(!rec){ alert('\u26a0 ' + r.cust + ' has no order in psflowx - nothing was issued.'); return; }
-  const back = !!((document.getElementById('fc-back') || {}).checked);
+  /* FCGOODS-1 - 「물건이 돌아왔나」와 「큐에 올릴까」는 **다른 질문**이다.
+     [stated] 하윤: "안키고 우리가 그냥 full box에서 수정해도 되잖아 그치"
+     [stated] 하윤: "credit memo를 보니까 shipped from 이렇케 나오는데 이거는 returned to 로 나와야맞는거 아닌가?"
+     [라이브에서 잡은 것] 예전에는 체크 하나가 둘을 같이 정해서, 직접 고치겠다고 체크를 끄면
+        거래처 종이가 「SHIPPED FROM」 이 됐다 (반품인데). 그래서 갈랐다. */
+  const _g = (document.querySelector('#modal-freecm input[name="fc-goods"]:checked') || {}).value || 'queue';
+  const back = (_g === 'queue');          /* 큐에 올리나 */
+  const cameBack = (_g !== 'none');       /* 물건이 돌아왔나 (종이 글자를 정한다) */
   const note = String(((document.getElementById('fc-note') || {}).value) || '').trim() || 'Credit memo';
   const list = r.lines.map(function(l){
     return '  ' + l.style + '  ' + l.color + '  ' + l.size + '   ' + l.qty.toLocaleString()
@@ -16008,7 +16065,8 @@ async function fcIssue(){
     + '\n\nTOTAL CREDIT   $' + r.total.toFixed(2) + '   (' + r.pcs.toLocaleString() + ' pcs)'
     + '\n\nA credit memo number will be taken and written to our books.\n'
     + (back ? 'The goods go to the Return Stock list so the warehouse can put them on a shelf.'
-            : 'Stock is NOT changed.'))) return;
+            : (cameBack ? 'Stock is NOT changed here - fix it yourself in Full Box Inventory.'
+                        : 'Nothing came back - stock is NOT changed.')))) return;
   const bt = document.getElementById('fc-issue');
   if(bt){ bt.disabled = true; bt.textContent = 'Issuing...'; }
   const undo = function(){ if(bt){ bt.disabled = false; bt.textContent = '\u{270D} Issue Credit Memo'; } };
@@ -16025,7 +16083,7 @@ async function fcIssue(){
   });
   const ret = {
     ra: fcGen(cmNo, rec), kind: 'free',
-    pos: [r.po], freePo: r.po, freeCust: r.cust, goodsBack: back,
+    pos: [r.po], freePo: r.po, freeCust: r.cust, goodsBack: back, goodsReturned: cameBack,
     status: 'received', cmStatus: 'sent', invStatus: back ? 'pending' : 'done',
     cm: cmNo, reason: note, reasons: [],
     custEmail: em, cc: !!(rec.meta && rec.meta.cc),
@@ -16946,7 +17004,10 @@ function buildCreditMemoDoc(rec, ret){
     + '<div class="ix-addr' + (showRemit ? ' c3' : '') + '">'
       + '<div><div class="ix-lbl">BILL TO</div>' + invxAddrBlock(meta, 'bill') + '</div>'
       /* 물건이 돌아온 우리 창고 — 이 종이에서 실제로 쓸모있는 주소다 (추가 반품·문의) */
-      + '<div><div class="ix-lbl">' + ((isAdj || isFrt || isShort || (isFree && !ret.goodsBack)) ? 'SHIPPED FROM' : 'RETURNED TO') + '</div>'
+      /* FCGOODS-1 - 물건이 돌아왔으면 RETURNED TO. 큐에 올렸는지와는 **상관없다**.
+         \u26a0 goodsReturned 가 없는 옛 줄은 goodsBack 으로 읽는다. */
+      + '<div><div class="ix-lbl">' + ((isAdj || isFrt || isShort
+          || (isFree && !(ret.goodsReturned != null ? ret.goodsReturned : ret.goodsBack))) ? 'SHIPPED FROM' : 'RETURNED TO') + '</div>'
         + '<div class="ix-val">' + esc(WH_LABEL[revParentWh(wh)] || String(wh || '')) + '</div>'
         + '<div class="ix-val sub">' + esc(WH_ADDR[revParentWh(wh)] || '') + '</div></div>'
       /* CMWORD-v1 - 이름표를 바꿨다. 이 종이로 돈을 보내는 게 아니라
@@ -54756,7 +54817,7 @@ function cmDoneRows(){
          ⚠ 사라지게 두면 「저거 어떻게 됐더라」 를 답할 자리가 없어진다. */
       if(!r || !raCreditSettled(r)) return;
       const rc = r.received || {};
-      out.push({ base:s.base, ra:r.ra, po:(s.meta&&s.meta.po)||'', cust:(s.meta&&s.meta.cust)||'',
+      out.push({ base:s.base, ra:r.ra, po:(typeof cmPoOf==='function')?cmPoOf(s,r):((s.meta&&s.meta.po)||''), cust:(s.meta&&s.meta.cust)||'',
                  cm:rc.cm||'', amt:Number(rc.creditAmount)||0, at:rc.at||'',
                  rep:raIsReplace(r),                      /* REPLACED-1 */
                  pcs:Number(rc.restockTotal)||0, step:cmNextStep(r) });
