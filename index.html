@@ -314,7 +314,7 @@ body.po-dragging{user-select:none;}
   </span>
   <select id="lang-sel" onchange="setLang(this.value)" style="font-size:11px;padding:3px 6px;border-radius:5px;border:none;background:#1d3f66;color:#fff;"><option value="ko">한국어</option><option value="en">English</option><option value="es">Español</option></select>
   <button id="wide-btn" class="btn btn-sm" onclick="toggleWide()" title="화면 넓게 / 좁게 — 기본은 넓게 (이 브라우저에만 저장돼)" style="padding:2px 8px;font-size:10px;background:#1d3f66;color:#cfe0f2;border-color:#2b5384;">↔ Wide</button>
-  <span id="app-ver" style="font-size:10px;color:#9fb8d4;">v1365</span>
+  <span id="app-ver" style="font-size:10px;color:#9fb8d4;">v1366</span>
 </div>
 <script>
 // ↔ 넓게 보기 — 브라우저마다 따로 저장 (v793)
@@ -12016,15 +12016,37 @@ function payReqMoney(n){ return '$' + Number(n||0).toLocaleString(undefined,{min
 /* PREPAY-1 (2026-09-28) - 오더 하나를 창고 전부 합쳐서 한 링크로 청구한다.
    [stated] 하윤: "SC & CA 다 합쳐서 돈 요청해야돼"
    ⚠ 인보이스가 이미 있는 창고는 그 잔액, 없는 창고는 물건값+운임으로 잡는다. */
+/* SCPAY-1 (2026-11-06) - SC 몫이 CA 인보이스에 얹혀 나간 오더
+   ⭐⭐⭐ 「SC 가 CA 에 얹혔나」 판정은 **이 함수 하나**다 - 창고 목록과 물건값이 같이 본다.
+      두 군데에 따로 적으면 반드시 어긋난다.
+   ⚠ SC 가 **제 인보이스를 따로 받은** 오더는 그대로 둔다 - 그때는 진짜 두 장이다. */
+function payReqFoldSC(rec){
+  try{
+    if(typeof recShipFromCA !== 'function' || !recShipFromCA(rec)) return false;
+    if((((rec.inv || {}).SC) || {}).savedAt) return false;
+    return true;
+  }catch(e){ return false; }
+}
 function payReqWhs(rec){
   const out = [];
-  (rec.whs || []).forEach(w => { if((w === 'SC' || w === 'CA') && out.indexOf(w) < 0) out.push(w); });
-  Object.keys((rec.inv) || {}).forEach(w => { if(out.indexOf(w) < 0 && (rec.inv[w]||{}).savedAt) out.push(w); });
+  const fold = payReqFoldSC(rec);
+  (rec.whs || []).forEach(w => {
+    if(w === 'SC' && fold) return;
+    if((w === 'SC' || w === 'CA') && out.indexOf(w) < 0) out.push(w); });
+  Object.keys((rec.inv) || {}).forEach(w => {
+    if(w === 'SC' && fold) return;
+    if(out.indexOf(w) < 0 && (rec.inv[w]||{}).savedAt) out.push(w); });
   return out;
 }
 function payReqGoods(rec, w){
+  /* SCPAY-1 - 얹힌 오더는 CA 줄이 SC 몫까지 가진다 (인보이스 초안이 쓰는 규칙과 같다).
+     ⚠ 인보이스가 아직 안 난 얹힌 오더에서 SC 물건값이 통째로 빠지면 **덜 받는다.** */
+  const fold = payReqFoldSC(rec);
   return Math.round((rec.lines || [])
-    .filter(l => l && String(l.wh||'') === w && (Number(l.qty)||0) > 0)
+    .filter(l => {
+      if(!l || (Number(l.qty)||0) <= 0) return false;
+      const lw = String(l.wh||'');
+      return ((fold && lw === 'SC') ? 'CA' : lw) === w; })
     .reduce((a, l) => a + (Number(l.qty)||0) * (Number(l.price)||0), 0) * 100) / 100;
 }
 /* 인보이스 초안이 쓰는 것과 같은 차례로 운임을 찾는다 */
