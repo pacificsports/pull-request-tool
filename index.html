@@ -314,7 +314,7 @@ body.po-dragging{user-select:none;}
   </span>
   <select id="lang-sel" onchange="setLang(this.value)" style="font-size:11px;padding:3px 6px;border-radius:5px;border:none;background:#1d3f66;color:#fff;"><option value="ko">한국어</option><option value="en">English</option><option value="es">Español</option></select>
   <button id="wide-btn" class="btn btn-sm" onclick="toggleWide()" title="화면 넓게 / 좁게 — 기본은 넓게 (이 브라우저에만 저장돼)" style="padding:2px 8px;font-size:10px;background:#1d3f66;color:#cfe0f2;border-color:#2b5384;">↔ Wide</button>
-  <span id="app-ver" style="font-size:10px;color:#9fb8d4;">v1369</span>
+  <span id="app-ver" style="font-size:10px;color:#9fb8d4;">v1370</span>
 </div>
 <script>
 // ↔ 넓게 보기 — 브라우저마다 따로 저장 (v793)
@@ -664,6 +664,7 @@ try{ applyWide(localStorage.getItem('psx_wide') !== '0'); }catch(e){ applyWide(t
       <button class="btn btn-sm" id="bx-viewbtn" onclick="bxToggleView()" title="Toggle grid (size columns) ↔ detail (location chips)">📍 Detail view</button>
       <span id="bx-pcs-btn" onclick="bxTogglePcs()" title="Boxes or pieces - the whole table switches." style="display:inline-flex;align-items:center;border:1px solid #cbd5e1;border-radius:7px;overflow:hidden;cursor:pointer;font-size:11.5px;font-weight:800;vertical-align:middle;height:26px;"><span id="bx-pcs-b" style="padding:0 9px;line-height:24px;">📦 Boxes</span><span id="bx-pcs-p" style="padding:0 9px;line-height:24px;">🔢 Pcs</span></span>
       <button class="btn btn-sm" id="bx-locbtn" onclick="bxToggleLocView()" title="Group inventory by location bin — H* bins are 3rd party (Hodge)">🗺 By Location</button>
+      <button class="btn btn-sm" id="bx-rowcost-btn" onclick="bxCostToggle()" title="Show each row's value at the cost stamped on its boxes. Owner &amp; accounting only." style="display:none;">\uD83D\uDCB2 Cost</button>
       <button class="btn btn-sm" id="bx-usbtn" onclick="bxToggleUS()" title="Show only US-thread boxes">🇺🇸 US only</button>
       <button class="btn btn-sm" id="bx-sobtn" onclick="soListOpen()" title="Ship out requests — staff pull the boxes first, then Confirm here to deduct stock">🚚 Ship outs</button>
       <label style="display:none;align-items:center;gap:4px;font-size:11px;color:var(--text2);cursor:pointer;white-space:nowrap;" id="bx-showall-wrap"><input type="checkbox" id="bx-showall" onchange="renderBoxRoom()" style="accent-color:#0f2a4a;">All SKUs</label>
@@ -35542,6 +35543,7 @@ function bxLocModal(style, color, size, wh, loc){
         <span style="font-weight:800;">Stock Count</span>${stBadge('BX', style, color, wh+'|'+loc)}
         <button class="btn btn-sm" style="margin-left:auto;font-size:11px;" onclick="stMark('BX','${esc(String(style))}','${esc(String(color))}','${esc(wh+'|'+loc)}')">📅 Mark done today</button>
       </div>
+      ${canSeeCost() ? `<div style="display:flex;align-items:center;gap:8px;font-size:11.5px;background:#f0fdf4;border:1px solid #a7f3d0;border-radius:8px;padding:8px 10px;"><span style="font-weight:800;color:#065f46;white-space:nowrap;">\uD83D\uDCB2 Cost on these boxes</span><span id="blm-cost" style="flex:1;color:#6b7280;">loading\u2026</span></div>` : ''}
       <div style="display:flex;align-items:center;gap:8px;font-size:12px;">
         <span style="font-weight:800;min-width:60px;">Box count</span>
         <input id="blm-set" class="fi num" type="number" min="0" value="${list.length}" style="width:75px;font-weight:800;font-size:14px;">
@@ -35593,6 +35595,7 @@ function bxLocModal(style, color, size, wh, loc){
       <button class="btn" onclick="document.getElementById('modal-bxloc').remove();window._blmCtx=null;">Close</button>
     </div></div>`;
   document.body.appendChild(div);
+  try{ if(canSeeCost()) blmCostLoad(list); }catch(e){}   /* BOXCOSTVIEW-1 */
 }
 // 📜 이 bin 하나(style/color/size/wh/loc)의 이동 이력 — 들어온 것(현재 재고)과 나간 것(간 곳)을 시간순으로 (v547)
 async function bxBinHist(style, color, size, wh, loc){
@@ -36908,6 +36911,98 @@ function bxPcsBtnPaint(){
     : 'Showing boxes. Click to see the same table in pieces.';
 }
 try{ window._bxPcs = !!localStorage.getItem('pr_bx_pcs'); }catch(e){ window._bxPcs=false; }
+/* ───────── BOXCOSTGRID-1 : Full Box 격자 줄별 금액 ─────────
+   ⭐ 금액은 박스에 **찍힌** 원가다 (pr_box_cost_eff). 원가표의 지금 값이 아니다.
+   ⭐⭐⭐ 아래 bxCostKey 는 격자가 박스를 세는 열쇠
+      (bxBaseColor(color) + '|' + bxWh(b) + '|' + size) 와 **글자 그대로 같아야 한다.**
+      하나라도 어긋나면 금액이 조용히 0 이 된다.
+   ⚠ 펼친 스타일만 받아온다. */
+let _bxCostCells = {}, _bxCostBusy = {};
+
+function bxCostOn(){
+  let can = false; try{ can = canSeeCost(); }catch(e){}
+  if(!can) return false;
+  try{ return !!localStorage.getItem('pr_bx_cost'); }catch(e){ return false; }
+}
+function bxCostBtnPaint(){
+  const b = document.getElementById('bx-rowcost-btn'); if(!b) return;
+  let can = false; try{ can = canSeeCost(); }catch(e){}
+  if(!can){ b.style.display = 'none'; return; }
+  const on = bxCostOn();
+  b.style.display = '';
+  b.style.background  = on ? '#065f46' : '';
+  b.style.color       = on ? '#fff'    : '';
+  b.style.borderColor = on ? '#065f46' : '';
+  b.style.fontWeight  = on ? '800'     : '';
+  b.textContent = on ? '💲 Cost ON' : '💲 Cost';
+}
+function bxCostToggle(){
+  const on = bxCostOn();
+  try{ if(on) localStorage.removeItem('pr_bx_cost'); else localStorage.setItem('pr_bx_cost','1'); }catch(e){}
+  _bxCostCells = {}; _bxCostBusy = {};
+  bxCostBtnPaint();
+  try{ renderBoxRoom(); }catch(e){}
+}
+function bxCostKey(color, wh, size){
+  return bxBaseColor(String(color||'').toUpperCase()) + '|' + bxWh({ wh: wh }) + '|' + String(size||'').toUpperCase();
+}
+async function bxCostFetch(sty){
+  const k = String(sty);
+  if(_bxCostBusy[k] || _bxCostCells[k]) return;
+  _bxCostBusy[k] = true;
+  try{
+    const r = await sbFetch('/rest/v1/rpc/box_cost_cells', { method:'POST', body: JSON.stringify({ p_style: k }) });
+    /* 🔴 400 을 "0건" 으로 읽지 말 것 - 실패와 0 은 다르다 */
+    if(!r.ok) throw new Error('HTTP ' + r.status);
+    const j = await r.json();
+    const m = { cell:{}, tot:0, un:0 };
+    (Array.isArray(j) ? j : []).forEach(x=>{
+      const key = bxCostKey(x.color, x.wh, x.size);
+      const c = m.cell[key] = m.cell[key] || { val:0, un:0 };
+      c.val += Number(x.val)||0;  c.un += Number(x.unvalued)||0;
+      m.tot += Number(x.val)||0;  m.un += Number(x.unvalued)||0;
+    });
+    _bxCostCells[k] = m;
+  }catch(e){
+    _bxCostCells[k] = { cell:{}, tot:0, un:0, err: String((e && e.message) || e) };
+  }
+  _bxCostBusy[k] = false;
+  try{ renderBoxRoom(); }catch(e){}
+}
+function bxCostMoney(v){ return '$' + Math.round(Number(v)||0).toLocaleString(); }
+/* 한 줄(색 + 창고)의 금액 */
+function bxCostRow(sty, color, wh, sizes){
+  if(!bxCostOn()) return '';
+  const m = _bxCostCells[String(sty)];
+  if(!m || m.err) return '';
+  let v = 0;
+  (sizes||[]).forEach(sz=>{ const c = m.cell[bxCostKey(color, wh, sz)]; if(c) v += c.val; });
+  if(!(v > 0)) return '';
+  return '<div style="font-size:9.5px;font-weight:800;color:#047857;">' + bxCostMoney(v) + '</div>';
+}
+/* 색 하나의 SC + CA 합 (Total 줄 - 바탕이 짙어서 글자색이 다르다) */
+function bxCostRowBoth(sty, color, sizes){
+  if(!bxCostOn()) return '';
+  const m = _bxCostCells[String(sty)];
+  if(!m || m.err) return '';
+  let v = 0;
+  ['SC','CA'].forEach(w=>(sizes||[]).forEach(sz=>{ const c = m.cell[bxCostKey(color, w, sz)]; if(c) v += c.val; }));
+  if(!(v > 0)) return '';
+  return '<div style="font-size:9.5px;font-weight:800;color:#6ee7b7;">' + bxCostMoney(v) + '</div>';
+}
+/* 스타일 머리줄의 총액 */
+function bxCostStyleTot(sty){
+  if(!bxCostOn()) return '';
+  const m = _bxCostCells[String(sty)];
+  if(!m) return ' <span style="color:#9ca3af;font-size:10px;">…</span>';
+  if(m.err) return ' <span style="color:#b45309;font-size:10px;" title="' + esc(m.err) + '">cost unavailable</span>';
+  if(!(m.tot > 0)) return '';
+  return ' &nbsp;<span style="color:#065f46;font-weight:800;" title="Value at the cost stamped on each box. Boxes with no stamped cost are not counted.">'
+    + bxCostMoney(m.tot)
+    + (m.un ? '<span style="color:#b45309;font-size:10px;font-weight:700;"> · ' + Number(m.un).toLocaleString() + ' no cost</span>' : '')
+    + '</span>';
+}
+
 function bxGridStyle(sty, colGroups){
   // v361: 요약 줄은 항상 · 무거운 표는 펼칠 때만 (PC Room 과 같은 지연 방식)
   const baseGroups = {};
@@ -36927,10 +37022,11 @@ function bxGridStyle(sty, colGroups){
   const spTotCA = _cnt(all.filter(b=>bxWh(b)==='CA' && bxSpecLoc(b.loc,'CA')));
   if(!window._bxGridOpen) window._bxGridOpen = new Set();
   const expanded = (window._bxQExpand && all.length>0) || window._bxGridOpen.has(String(sty));
+  if(expanded && all.length && bxCostOn() && !_bxCostCells[String(sty)]) bxCostFetch(sty);   /* BOXCOSTGRID-1 */
   return `<details${expanded?' open':''} data-bxsty="${esc(String(sty))}" ontoggle="bxGridTgl(this)" style="margin-bottom:10px;border:1px solid var(--border);border-radius:8px;">
     <summary style="cursor:pointer;padding:8px 12px;font-weight:800;color:${all.length?'#0f2a4a':'#94a3b8'};background:#f1f5f9;border-radius:8px;">
       <input type="checkbox" ${colors.length&&colors.every(c=>window._bxRptSel[bxRptKey(sty,c,'TOTAL')])?'checked':''} onclick="event.stopPropagation();" onchange="bxRptStyle('${esc(sty)}', this.checked)" style="width:15px;height:15px;accent-color:#0d9488;vertical-align:-2px;margin-right:6px;cursor:pointer;" title="Add ALL colors of this style (Total) to customer stock report">${esc(sty)} <span class="muted" style="font-weight:400;">(${colors.length} colors)</span>${(()=>{ const rp = (typeof bxCommonPpb==='function' ? bxCommonPpb(sty,'') : null); return `<span onclick="event.stopPropagation();editStylePpb('${esc(String(sty))}')" title="Box quantity (pcs per box) per size — click to view / edit. Applies to all orders & shared with all staff." style="cursor:pointer;font-weight:700;font-size:10.5px;color:#0e7490;background:#ecfeff;border:1px solid #a5f3fc;border-radius:6px;padding:1px 6px;margin-left:6px;white-space:nowrap;">⚙ ${rp?rp+'/box':'set pcs/box'}</span>`; })()}
-      <span style="float:right;font-family:Consolas,monospace;">${all.length?`${_allN.toLocaleString()} ${_pcsOn?'pcs':'boxes'} <span style="color:#1d4ed8;">SC ${scN.toLocaleString()}</span>${spTotSC?`<span style="color:#b45309;font-size:10px;"> (🏭 ${spTotSC.toLocaleString()})</span>`:''} · <span style="color:#9a3412;">CA ${caN.toLocaleString()}</span>${spTotCA?`<span style="color:#7c3aed;font-size:10px;"> (🔒 ${spTotCA.toLocaleString()})</span>`:''}${(()=>{ const IN=window._bxInc||{}; let t=0; Object.keys(IN).forEach(k2=>{ if(k2.indexOf(String(sty)+'|')===0){ const _b=IN[k2].boxes||0; t += _pcsOn ? _b*bxPpbAt(sty, (k2.split('|')[2]||'')) : _b; } }); return t?` <span style="color:#0e7490;font-size:10px;" title="Shipped from Haiti — arrives into SC">(🚢 ${t.toLocaleString()})</span>`:''; })()}`:'<span style="color:#b6bfcc;">no stock</span>'}</span></summary>
+      <span style="float:right;font-family:Consolas,monospace;">${all.length?`${_allN.toLocaleString()} ${_pcsOn?'pcs':'boxes'} <span style="color:#1d4ed8;">SC ${scN.toLocaleString()}</span>${spTotSC?`<span style="color:#b45309;font-size:10px;"> (🏭 ${spTotSC.toLocaleString()})</span>`:''} · <span style="color:#9a3412;">CA ${caN.toLocaleString()}</span>${spTotCA?`<span style="color:#7c3aed;font-size:10px;"> (🔒 ${spTotCA.toLocaleString()})</span>`:''}${(()=>{ const IN=window._bxInc||{}; let t=0; Object.keys(IN).forEach(k2=>{ if(k2.indexOf(String(sty)+'|')===0){ const _b=IN[k2].boxes||0; t += _pcsOn ? _b*bxPpbAt(sty, (k2.split('|')[2]||'')) : _b; } }); return t?` <span style="color:#0e7490;font-size:10px;" title="Shipped from Haiti — arrives into SC">(🚢 ${t.toLocaleString()})</span>`:''; })()}`:'<span style="color:#b6bfcc;">no stock</span>'}${bxCostStyleTot(sty)}</span></summary>
     <div class="bxg-inner">${expanded ? bxGridInner(sty, colGroups) : ''}</div></details>`;
 }
 function bxGridTgl(d){
@@ -37035,7 +37131,7 @@ function bxGridInner(sty, colGroups){
       const lbl = expandable
         ? `<span onclick="bxToggleVar('${esc(sty)}','${esc(c)}','${w}')" style="cursor:pointer;user-select:none;" title="Click to expand/collapse${vs.length>1?' by variant (Tubular/Side Seam/US)':''}${sp?(vs.length>1?' and by bin type':' — split out '+(w==='CA'?'SPECIAL* (3rd party warehouse)':'H* (3rd Party/Hodge)')+' stock'):''}">${isExp?'▾':'▸'} ${w}</span>${spBdg}`
         : w;
-      return `<td style="font-weight:800;font-size:11px;color:${whCol};white-space:nowrap;text-align:left;padding-left:12px;"><input type="checkbox" data-bxr="${encodeURIComponent(bxRptKey(sty,c,w))}" ${window._bxRptSel[bxRptKey(sty,c,w)]?'checked':''} onchange="bxRptTgl('${esc(sty)}','${esc(c)}','${w}',this.checked)" style="width:13px;height:13px;accent-color:#0d9488;vertical-align:-2px;margin-right:5px;cursor:pointer;" title="Add to customer stock report">${lbl}</td>${cells}<td style="font-family:Consolas,monospace;font-weight:800;color:#0f172a;text-align:center;" title="${rowTot} box(es) · ${bxC(rowPcs)} pcs">${bxNum(rowTot,rowPcs)||''}</td>`;
+      return `<td style="font-weight:800;font-size:11px;color:${whCol};white-space:nowrap;text-align:left;padding-left:12px;"><input type="checkbox" data-bxr="${encodeURIComponent(bxRptKey(sty,c,w))}" ${window._bxRptSel[bxRptKey(sty,c,w)]?'checked':''} onchange="bxRptTgl('${esc(sty)}','${esc(c)}','${w}',this.checked)" style="width:13px;height:13px;accent-color:#0d9488;vertical-align:-2px;margin-right:5px;cursor:pointer;" title="Add to customer stock report">${lbl}</td>${cells}<td style="font-family:Consolas,monospace;font-weight:800;color:#0f172a;text-align:center;" title="${rowTot} box(es) · ${bxC(rowPcs)} pcs">${bxNum(rowTot,rowPcs)||''}${bxCostRow(sty, c, w, sizes)}</td>`;
     };
     // 펼쳐진 특수 bin 서브줄 — SC: 자체 bin vs H*(Hodge) · CA: 자체 bin vs SPECIAL*(거래처 창고)
     const specRows = (w)=>{
@@ -37138,7 +37234,7 @@ function bxGridInner(sty, colGroups){
       <tr style="background:#f1f5f9;">
         <td style="font-weight:800;font-size:10px;color:#0f2a4a;white-space:nowrap;text-align:left;padding-left:12px;"><input type="checkbox" data-bxr="${encodeURIComponent(bxRptKey(sty,c,'TOTAL'))}" ${window._bxRptSel[bxRptKey(sty,c,'TOTAL')]?'checked':''} onchange="bxRptTgl('${esc(sty)}','${esc(c)}','TOTAL',this.checked)" style="width:13px;height:13px;accent-color:#0d9488;vertical-align:-2px;margin-right:5px;cursor:pointer;" title="Add to customer stock report">Total</td>
         ${totCells}
-        <td style="font-family:Consolas,monospace;font-weight:800;color:#fff;background:#0f2a4a;text-align:center;" title="${colTot} box(es) · ${bxC(colPcs)} pcs">${bxNum(colTot,colPcs)||''}</td>
+        <td style="font-family:Consolas,monospace;font-weight:800;color:#fff;background:#0f2a4a;text-align:center;" title="${colTot} box(es) · ${bxC(colPcs)} pcs">${bxNum(colTot,colPcs)||''}${bxCostRowBoth(sty, c, sizes)}</td>
         <td></td>
       </tr>
       ${incRow}
@@ -39254,6 +39350,7 @@ function palletLabelPrint(){
 }
 function renderBoxRoom(){
   try{ bxPcsBtnPaint(); }catch(e){}
+  try{ bxCostBtnPaint(); }catch(e){}   /* BOXCOSTGRID-1 */
   const el = $('bx-body'); if(!el) return;
   if(el.offsetParent === null){ window._bxDirty = true; return; }   // 숨겨진 탭 — 돌아올 때 그림
   window._bxDirty = false;
@@ -40698,6 +40795,7 @@ async function bcStamp(idx){
     return;
   }
   await bcCovFetch();
+  bcValInvalidate();
   costRender((document.getElementById('cost-search')||{}).value||'');
   alert(sn + ' — done.\n\n'
     + 'Newly stamped : ' + bcNum(ins) + ' box(es)\n'
@@ -40721,6 +40819,7 @@ async function bcUnapply(idx){
     const j = await rr.json();
     const row = Array.isArray(j) ? (j[0]||{}) : (j||{});
     await bcCovFetch();
+    bcValInvalidate();
     costRender((document.getElementById('cost-search')||{}).value||'');
     alert(sn + ' — removed ' + bcNum(row.removed) + ' box(es).'
       + (Number(row.kept_adjusted)>0 ? ('\n\nKept ' + bcNum(row.kept_adjusted) + ' adjusted box(es) — undo that adjustment first if you want those gone too.') : ''));
@@ -40734,6 +40833,99 @@ async function bcUnapply(idx){
 /* 이 스타일에서 "원가가 없어서 못 찍는" 박스가 몇 개인가.
    ⭐ 두 숫자가 다를 때 사람이 바로 까닭을 볼 수 있어야 한다 - 안 그러면 사고로 읽힌다.
    ⚠ 사이즈 -> 원가 칸 규칙은 costSizesOf() 하나만 쓴다 (bcPlan 과 같은 규칙). */
+/* ───────── BOXCOSTVIEW-1 : 찍힌 원가를 보여주는 두 곳 ─────────
+   ⚠ 여기 숫자는 전부 "박스에 찍힌 원가" 다. 원가표(styles)의 지금 값이 아니다.
+      둘은 다를 수 있고, 달라야 맞다 - 박스는 입고 때의 원가를 달고 다닌다. */
+
+/* ── A. 선반 칸 창(bxLocModal) 안의 원가 한 줄 ───────────────── */
+function blmCostMoney(v, dp){ const n = Number(v)||0; return '$' + n.toLocaleString(undefined, { minimumFractionDigits: dp==null?2:dp, maximumFractionDigits: dp==null?2:dp }); }
+async function blmCostLoad(list){
+  const el = document.getElementById('blm-cost'); if(!el) return;
+  const ids = (list||[]).map(b=>String(b.id||'')).filter(Boolean);
+  const pcsOf = {}; (list||[]).forEach(b=>{ pcsOf[String(b.id||'')] = Number(b.pcs)||0; });
+  if(!ids.length){ el.innerHTML = '<span style="color:#9ca3af;">no boxes here</span>'; return; }
+  let rows = [];
+  try{
+    const CH = 120;                       /* 주소가 너무 길어지지 않게 나눠서 묻는다 */
+    for(let i=0; i<ids.length; i+=CH){
+      const part = ids.slice(i, i+CH);
+      const r = await sbFetch('/rest/v1/pr_box_cost_eff?select=box_id,eff_cost,unit_cost,adj_cost&box_id=in.(' + part.join(',') + ')');
+      /* 🔴 400 을 "0건" 으로 읽지 말 것 - 실패와 0 은 다르다 */
+      if(!r.ok) throw new Error('HTTP ' + r.status);
+      const j = await r.json();
+      if(Array.isArray(j)) rows = rows.concat(j);
+    }
+  }catch(e){
+    el.innerHTML = '<span style="color:#b45309;">could not read the cost — ' + esc(String((e&&e.message)||e)) + '</span>';
+    return;
+  }
+  if(!rows.length){
+    el.innerHTML = '<span style="color:#9ca3af;">not stamped yet</span>'
+      + '<span style="color:#9ca3af;font-size:10.5px;"> — stamp it from 💲 Cost &amp; Margin</span>';
+    return;
+  }
+  const by = {}; let pcs = 0, val = 0, adj = 0;
+  rows.forEach(c=>{
+    const v = Number(c.eff_cost)||0;
+    const p = pcsOf[String(c.box_id)] || 0;
+    const k = v.toFixed(4);
+    by[k] = (by[k]||0) + 1;
+    pcs += p; val += v*p;
+    if(c.adj_cost != null) adj++;
+  });
+  const kinds = Object.keys(by).sort((a,b)=>Number(a)-Number(b))
+    .map(k=>'<b style="font-family:Consolas,monospace;">' + blmCostMoney(k, 4) + '</b><span style="color:#6b7280;"> ×' + by[k].toLocaleString() + ' box</span>')
+    .join(' &nbsp;·&nbsp; ');
+  const miss = ids.length - rows.length;
+  el.innerHTML = '<span style="color:#047857;font-weight:800;">' + rows.length.toLocaleString() + ' / ' + ids.length.toLocaleString() + ' stamped</span>'
+    + ' &nbsp;·&nbsp; ' + kinds
+    + ' &nbsp;·&nbsp; <b style="font-family:Consolas,monospace;color:#065f46;">' + blmCostMoney(val) + '</b>'
+    + '<span style="color:#6b7280;"> (' + pcs.toLocaleString() + ' pcs)</span>'
+    + (adj ? ' &nbsp;·&nbsp; <span style="color:#b45309;" title="This cost was changed by a year-end adjustment. The original stamped cost is still on the record.">' + adj.toLocaleString() + ' adjusted</span>' : '')
+    + (miss > 0 ? ' &nbsp;·&nbsp; <span style="color:#b45309;">' + miss.toLocaleString() + ' not stamped</span>' : '');
+}
+
+/* ── B. 대시보드 창고 칸의 총액 ─────────────────────────────────
+   DB 가 창고(wh)+선반(loc)별로 묶어서 돌려준다. 어느 칸에 들어가는지는
+   아래 WH_PRED 가 정하고, 그 **같은 규칙**이 박스 수도 정한다. */
+let _bcVal = null, _bcValAt = 0, _bcValBusy = false;
+function bcValInvalidate(){ _bcVal = null; _bcValAt = 0; }
+function bcValFetch(){
+  if(_bcValBusy) return Promise.resolve(false);
+  _bcValBusy = true;
+  return sbFetch('/rest/v1/rpc/box_cost_value', { method:'POST', body:'{}' })
+    .then(r=> r.ok ? r.json() : null)
+    .then(j=>{
+      if(Array.isArray(j)){ _bcVal = j; _bcValAt = Date.now(); return true; }
+      return false;
+    })
+    .catch(()=>false)
+    .then(ok=>{ _bcValBusy = false; return ok; });
+}
+/* pred 는 {wh, loc} 만 본다 - bxWh · trIs3PLoc · bxIsLockerLoc 이 그 둘만 쓰기 때문이다. */
+function bcValOf(pred){
+  if(!Array.isArray(_bcVal)) return null;
+  let val = 0, un = 0, n = 0, bad = false;
+  _bcVal.forEach(r=>{
+    let hit = false;
+    /* ⚠ 판정식이 터지면 0 을 돌려주면 안 된다 - 그것은 "돈이 없다" 로 읽힌다. */
+    try{ hit = !!pred({ wh: r.wh, loc: r.loc }); }catch(e){ bad = true; return; }
+    if(!hit) return;
+    val += Number(r.val)||0; un += Number(r.unvalued)||0; n += Number(r.boxes)||0;
+  });
+  if(bad) return null;
+  return { val, unvalued: un, boxes: n };
+}
+/* 타일 아래 한 줄. 아무것도 안 찍혔으면 아예 안 그린다 ($0 만 줄줄이 뜨면 읽을 게 없다). */
+function bcValLine(d, accent){
+  if(!d || !(Number(d.val) > 0)) return '';
+  const money = '$' + Math.round(d.val).toLocaleString();
+  return '<div style="font-size:10px;font-family:Consolas,monospace;font-weight:800;color:' + accent + ';opacity:.9;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;"'
+    + ' title="Value at the cost stamped on each box. Boxes with no stamped cost are not counted.">' + money
+    + (d.unvalued > 0 ? '<span style="font-weight:700;color:#b45309;"> · ' + Number(d.unvalued).toLocaleString() + ' no cost</span>' : '')
+    + '</div>';
+}
+
 function bcGap(r){
   const g = { noCost:0, odd:0 };
   if(!r || !bxLoaded) return g;
@@ -55505,11 +55697,26 @@ function renderKpi(){
   // 재고 합계 (Full Box By Location 과 동일)
   const S = (typeof bxStore!=='undefined' && Array.isArray(bxStore)) ? bxStore : [];
   const sum = arr=>({b:arr.length, p:arr.reduce((s,x)=>s+(Number(x.pcs)||0),0)});
-  const wAll  = sum(S.filter(b=>bxWh(b)!=='TRANSIT'));
-  const wScOwn= sum(S.filter(b=>bxWh(b)==='SC' && !trIs3PLoc(b.loc,'SC')));
-  const wSc3P = sum(S.filter(b=>bxWh(b)==='SC' &&  trIs3PLoc(b.loc,'SC')));
-  const wCaOwn= sum(S.filter(b=>bxWh(b)==='CA' && !bxIsLockerLoc(b.loc,'CA')));
-  const wCa3P = sum(S.filter(b=>bxWh(b)==='CA' &&  bxIsLockerLoc(b.loc,'CA')));
+  /* BOXCOSTVIEW-1 - 창고를 가르는 규칙은 여기 한 번만 적는다.
+     박스 수(bxStore)도 금액(box_cost_value)도 똑같이 이것을 쓴다. */
+  const WH_PRED = {
+    all:   b=>bxWh(b)!=='TRANSIT',
+    scOwn: b=>bxWh(b)==='SC' && !trIs3PLoc(b.loc,'SC'),
+    sc3p:  b=>bxWh(b)==='SC' &&  trIs3PLoc(b.loc,'SC'),
+    caOwn: b=>bxWh(b)==='CA' && !bxIsLockerLoc(b.loc,'CA'),
+    ca3p:  b=>bxWh(b)==='CA' &&  bxIsLockerLoc(b.loc,'CA')
+  };
+  const wAll  = sum(S.filter(WH_PRED.all));
+  const wScOwn= sum(S.filter(WH_PRED.scOwn));
+  const wSc3P = sum(S.filter(WH_PRED.sc3p));
+  const wCaOwn= sum(S.filter(WH_PRED.caOwn));
+  const wCa3P = sum(S.filter(WH_PRED.ca3p));
+  /* 원가를 볼 수 있는 사람에게만. 아직 안 받아왔으면 한 번 받아오고 다시 그린다. */
+  let _canCost = false; try{ _canCost = canSeeCost(); }catch(e){}
+  if(_canCost && !_bcVal && !_bcValBusy){
+    bcValFetch().then(ok=>{ if(ok){ try{ renderKpi(); }catch(e){} } });
+  }
+  const $$ = k => _canCost ? bcValOf(WH_PRED[k]) : null;
   const rt=(typeof rsvTotals==='function')?rsvTotals():{boxes:0,items:0,refill:0};
   const CELL='min-width:0;border-radius:8px;padding:8px 13px;box-sizing:border-box;';
   const EMPTY='<div></div>';
@@ -55556,9 +55763,9 @@ function renderKpi(){
   const invCard=(wh,accent,bg,bd)=>lblTile(`🔍 ${wh} Inventory check review <span style="font-size:9px;color:#94a3b8;">click</span>`,
     `<span id="kpi-pchk-${wh.toLowerCase()}-n">${(typeof pchkPending==='function'?pchkPending(wh):0)}</span><span style="font-size:10px;font-weight:700;color:${accent};"> pending</span>`,
     `<span style="color:${accent};">staff photo checks</span>`, accent, bg, bd, `pchkReviewOpen('${wh}')`);
-  const whTile=(label,d,accent,bg,bd,click)=>lblTile(label+(click?' <span style="font-size:9px;color:#94a3b8;">🗺</span>':''),
+  const whTile=(label,d,accent,bg,bd,click,money)=>lblTile(label+(click?' <span style="font-size:9px;color:#94a3b8;">🗺</span>':''),
     `${d.b.toLocaleString()}<span style="font-size:10px;font-weight:700;color:var(--text2);"> boxes</span>`,
-    `${d.p.toLocaleString()} pcs`, accent, bg, bd, click);
+    `${d.p.toLocaleString()} pcs` + bcValLine(money, accent), accent, bg, bd, click);
   // 준비된 물량 레인 — 숫자가 있으면 배경을 그 색으로 꽉 채워서 매니저가 바로 인지 (0이면 흐리게)
   const laneTile=(label,n,color,click)=>{ const on=n>0; return `<div onclick="${click}" title="Prepared by staff, not processed yet — click to see the orders & process" style="${CELL}background:${on?color:'#f1f5f9'};border:1px solid ${color}44;border-left:5px solid ${color};cursor:pointer;${on?'box-shadow:0 2px 9px '+color+'66;':''}">
     <div style="font-size:23px;font-weight:900;color:${on?'#fff':'#94a3b8'};line-height:1;">${n.toLocaleString()}</div>
@@ -55610,11 +55817,11 @@ function renderKpi(){
     ${actTile('＋','CA Box','#c2410c','#fff7ed',"bxAddBoxes({wh:'CA'})",'Receive boxes into the CA warehouse')}
   </div>
   <div style="display:grid;grid-template-columns:repeat(6,minmax(0,1fr));gap:8px;margin-bottom:12px;align-items:stretch;">
-    ${whTile('📦 All', wAll, '#0f2a4a', '#fff', '', '')}
-    ${whTile('📍 SC Warehouse', wScOwn, '#1d4ed8', '#fff', '', "showView('box');bxOpenLoc('SC','own')")}
-    ${whTile('🏭 3rd Party Warehouse (SC)', wSc3P, '#92400e', '#fffbeb', '#fbbf24', "showView('box');bxOpenLoc('SC','3p')")}
-    ${whTile('📍 CA Warehouse', wCaOwn, '#9a3412', '#fff', '', "showView('box');bxOpenLoc('CA','own')")}
-    ${whTile('🔒 3rd Party Warehouse (CA)', wCa3P, '#5b21b6', '#faf5ff', '#c4b5fd', "showView('box');bxOpenLoc('CA','3p')")}
+    ${whTile('📦 All', wAll, '#0f2a4a', '#fff', '', '', $$('all'))}
+    ${whTile('📍 SC Warehouse', wScOwn, '#1d4ed8', '#fff', '', "showView('box');bxOpenLoc('SC','own')", $$('scOwn'))}
+    ${whTile('🏭 3rd Party Warehouse (SC)', wSc3P, '#92400e', '#fffbeb', '#fbbf24', "showView('box');bxOpenLoc('SC','3p')", $$('sc3p'))}
+    ${whTile('📍 CA Warehouse', wCaOwn, '#9a3412', '#fff', '', "showView('box');bxOpenLoc('CA','own')", $$('caOwn'))}
+    ${whTile('🔒 3rd Party Warehouse (CA)', wCa3P, '#5b21b6', '#faf5ff', '#c4b5fd', "showView('box');bxOpenLoc('CA','3p')", $$('ca3p'))}
     ${(()=>{  /* 🔒 예약 칸을 반으로 줄이고 그 옆에 🔨 파손을 붙인다 (v978) — 대시보드에 빈 자리가 없었다 */
       if(!_dmg.at && !_dmg.loading) dmgFetch().then(()=>{ try{ renderKpi(); }catch(e){} });
       const dy = dmgYtd();
