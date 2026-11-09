@@ -314,7 +314,7 @@ body.po-dragging{user-select:none;}
   </span>
   <select id="lang-sel" onchange="setLang(this.value)" style="font-size:11px;padding:3px 6px;border-radius:5px;border:none;background:#1d3f66;color:#fff;"><option value="ko">한국어</option><option value="en">English</option><option value="es">Español</option></select>
   <button id="wide-btn" class="btn btn-sm" onclick="toggleWide()" title="화면 넓게 / 좁게 — 기본은 넓게 (이 브라우저에만 저장돼)" style="padding:2px 8px;font-size:10px;background:#1d3f66;color:#cfe0f2;border-color:#2b5384;">↔ Wide</button>
-  <span id="app-ver" style="font-size:10px;color:#9fb8d4;">v1373</span>
+  <span id="app-ver" style="font-size:10px;color:#9fb8d4;">v1374</span>
 </div>
 <script>
 // ↔ 넓게 보기 — 브라우저마다 따로 저장 (v793)
@@ -49917,6 +49917,8 @@ function cmAddrRow(name, em){
           + emRow('🏦 HANA APPROVAL #', 'hanaAppr', (cs&&cs.hanaAppr)||'',
                   '10 digits',
                   'The 10-digit HANA approval number for this customer. It goes in the Approval_Number column.')
+          /* HANAHOLD-1 */
+          + ((typeof custHanaHoldRow === 'function') ? custHanaHoldRow(name, cs) : '')
         ) : '');
   }
   const fld = (f, ph, w, extra, fn) => '<input class="fi" value="'+esc((f==='email'?(em||''):(b[f]||'')))+'" placeholder="'+ph+'" '
@@ -54146,6 +54148,9 @@ function invHistHtml(){
                     hana한테 이멜 보내졌으면"
          ⚠ 「보냈다」 는 **메일이 진짜 나간 것**으로만 말한다 - 도장(factorAt)은 발송이 성공한
             뒤에만 찍히므로 ds.sent 가 그 증거다. 보낼 것도 보낸 것도 없는 날은 예전 글자 그대로 */
+      +     (ds.hold
+          ? '<span style="font-size:10.5px;font-weight:900;background:#f1f5f9;border:1px solid #cbd5e1;border-radius:7px;padding:3px 10px;color:#475569;white-space:nowrap;" title="' + ds.hold + ' document(s) belong to a customer that is on hold from HANA. They stay in the preview but cannot be ticked. Release the customer on their card.">' + ds.hold + ' on hold</span>'
+          : '')
       +     (ds.n
           ? '<button class="btn btn-sm" onclick="event.stopPropagation();factorOpen(\'' + esc(d.key) + '\')" style="background:#1e3a8a;color:#fff;border-color:#1e3a8a;font-weight:800;padding:4px 12px;white-space:nowrap;" title="' + ds.n + ' document(s) from this day have not gone to HANA yet'
             + (ds.noCode ? (' \u00b7 \u26a0 ' + ds.noCode + ' with no HANA code') : '') + '">\u{1F441} Preview the file <span style="font-weight:600;opacity:.85;">' + ds.n + ' \u00b7 ' + invNpMoney(ds.amt) + '</span></button>'
@@ -54155,7 +54160,7 @@ function invHistHtml(){
                  「아무것도 안 기다린다」 는 **거짓말**이다. 몇 건인지 말하고 어디를 고치는지 알려준다. */
               : (ds.noCode
                   ? '<span style="font-size:10.5px;font-weight:900;background:#fffbeb;border:1px solid #fcd34d;border-radius:7px;padding:3px 10px;color:#b45309;white-space:nowrap;" title="' + ds.noCode + ' invoice(s) from this day belong to a factored customer with no HANA Customer_ID on the customer card - they cannot go in the file until that is filled in.">\u26a0 ' + ds.noCode + ' with no HANA code</span>'
-                  : '<span style="font-size:10.5px;font-weight:800;background:#f0fdf4;border:1px solid #bbf7d0;border-radius:7px;padding:3px 10px;color:#166534;white-space:nowrap;" title="Nothing from this day is waiting for HANA">\u2713 nothing waiting</span>')))
+                  : (ds.hold ? '' : '<span style="font-size:10.5px;font-weight:800;background:#f0fdf4;border:1px solid #bbf7d0;border-radius:7px;padding:3px 10px;color:#166534;white-space:nowrap;" title="Nothing from this day is waiting for HANA">\u2713 nothing waiting</span>'))))
       +   '</span>'
       + '</div>'
       + '<div id="invh-d-' + d.key + '" style="display:none;background:#fff;">'
@@ -56666,6 +56671,112 @@ function factorTermCode(days){
   const d = Number(days)||0;
   return FACTOR_TERMS[d] || '';   /* 모르는 일수면 빈 칸 - 지어내지 않는다 */
 }
+/* ───────── HANAHOLD-1 : 거래처를 HANA 제출에서 잠시 빼둔다 ─────────
+   쓰는 때: 우리가 먼저 까야 할 크레딧이 있어서, 그게 다 깎일 때까지는 그 거래처 서류를
+   팩터에 넘기면 안 될 때.
+   ⭐ 막힌 줄은 **목록에 그대로 남는다** (회색 · 체크 불가). 지우면 잊어버린다.
+   ⚠ 거래처 카드(브랜드 자식이면 모회사 카드)의 `hanaHold` 한 칸만 본다. */
+function factorHoldOf(cust){
+  try{ const h = (factorCustCard(cust) || {}).hanaHold; return (h && h.at) ? h : null; }
+  catch(e){ return null; }
+}
+/* 세는 데 쓰는 줄 목록을 잠깐 쥐고 있는다 - 거래처 카드가 여러 장 그려질 때 매번 훑지 않게 */
+let _fhRows = null, _fhAt = 0;
+function factorHoldRows(){
+  if(_fhRows && (Date.now() - _fhAt) < 4000) return _fhRows;
+  try{ _fhRows = factorCandidates(400, true); }catch(e){ _fhRows = []; }
+  _fhAt = Date.now();
+  return _fhRows;
+}
+/* 보류를 건 뒤로 이 거래처 앞으로 끊은 인보이스가 얼마인가.
+   ⚠ 이건 「깎인 돈」이 아니라 **보류 뒤에 쌓인 인보이스 금액**이다. 글자도 그렇게 적는다. */
+function factorHoldProgress(cust){
+  const h = factorHoldOf(cust); if(!h) return null;
+  const since = String(h.at || '').slice(0, 10);
+  let mine = [];
+  try{
+    const k = custKey(cust);
+    mine = factorHoldRows().filter(r=> r.kind === 'inv' && !r.sentAt
+      && String(r.date) >= since && custKey(r.cust) === k);
+  }catch(e){ mine = []; }
+  const since_amt = Math.round(mine.reduce((a,r)=>a+(Number(r.amt)||0), 0) * 100) / 100;
+  const target = Number(h.amount) || 0;
+  return { n: mine.length, amt: since_amt, target: target,
+           left: target > 0 ? Math.round((target - since_amt) * 100) / 100 : 0 };
+}
+async function custHanaHoldToggle(name){
+  const k = custKey(name);
+  const cs = custStore[k] || (custStore[k] = {});
+  const on = !!(cs.hanaHold && cs.hanaHold.at);
+  if(on){
+    if(!confirm('▶ Release ' + name + ' back into the HANA file?\n\n'
+      + 'Their documents can be ticked again from now on.\n'
+      + 'Nothing is emailed right now — you still send the file the normal way.')) return;
+    delete cs.hanaHold;
+  }else{
+    if(!confirm('Hold ' + name + ' out of the HANA file?\n\n'
+      + 'Their documents stay visible in the preview but cannot be ticked.\n'
+      + 'Anything already sent to HANA is not touched.')) return;
+    cs.hanaHold = { at: new Date().toISOString(), by: (SESS && SESS.email) || '', amount: 0, note: '' };
+  }
+  const ok = await saveCustomer(k, cs);
+  if(!ok){ alert('⚠ The hold did NOT save — nothing changed on the server. Try again.'); return; }
+  _fhRows = null;
+  try{ if(typeof renderCustomers === 'function') renderCustomers(); }catch(e){}
+  try{ if(typeof invNpRender === 'function') invNpRender(); }catch(e){}
+  try{ showToast(on ? ('▶ ' + name + ' released') : ('— ' + name + ' held from HANA')); }catch(e){}
+}
+async function custHanaHoldSet(name, field, val){
+  const k = custKey(name);
+  const cs = custStore[k] || {};
+  if(!cs.hanaHold || !cs.hanaHold.at) return;
+  if(field === 'amount'){
+    const n = Number(String(val || '').replace(/[^0-9.]/g, ''));
+    cs.hanaHold.amount = isFinite(n) ? n : 0;
+  }else{
+    cs.hanaHold.note = String(val || '').slice(0, 120);
+  }
+  const ok = await saveCustomer(k, cs);
+  if(!ok){ alert('⚠ That did NOT save — try again.'); return; }
+  _fhRows = null;
+  try{ if(typeof renderCustomers === 'function') renderCustomers(); }catch(e){}
+}
+/* 거래처 카드에 들어가는 한 줄 */
+function custHanaHoldRow(name, cs){
+  const h = (cs && cs.hanaHold && cs.hanaHold.at) ? cs.hanaHold : null;
+  const nm = esc(String(name || '').replace(/'/g, "\\'"));
+  const btn = '<button class="btn btn-sm" onclick="custHanaHoldToggle(\'' + nm + '\')" '
+    + 'title="' + (h ? 'Let this customer go into the HANA file again' : 'Keep this customer out of the HANA file until you release them') + '" '
+    + 'style="font-weight:800;white-space:nowrap;' + (h ? 'background:#b45309;color:#fff;border-color:#b45309;' : '') + '">'
+    + (h ? 'ON HOLD — release' : 'Hold from HANA') + '</button>';
+  if(!h){
+    return '<div style="margin-top:6px;display:flex;align-items:center;gap:7px;max-width:430px;">'
+      + '<span style="flex:0 0 108px;font-size:9.5px;font-weight:800;color:#64748b;letter-spacing:.04em;">\u{1F3E6} HANA HOLD</span>'
+      + btn + '</div>';
+  }
+  const p = factorHoldProgress(name) || { n:0, amt:0, target:0, left:0 };
+  const line = 'Held since ' + esc(factorDate(h.at))
+    + (h.by ? (' by ' + esc(String(h.by).split('@')[0])) : '')
+    + ' · ' + p.n + ' invoice(s) since then ' + esc(factorMoney(p.amt))
+    + (p.target > 0 ? (' of ' + esc(factorMoney(p.target))
+        + (p.left > 0 ? (' · ' + esc(factorMoney(p.left)) + ' to go')
+                      : ' · <b>covered — you can release</b>')) : '');
+  return '<div style="margin-top:6px;display:flex;align-items:center;gap:7px;max-width:430px;">'
+    + '<span style="flex:0 0 108px;font-size:9.5px;font-weight:800;color:#b45309;letter-spacing:.04em;">\u{1F3E6} HANA HOLD</span>'
+    + btn + '</div>'
+    + '<div style="margin-top:4px;display:flex;align-items:center;gap:7px;max-width:430px;">'
+    + '<span style="flex:0 0 108px;font-size:9.5px;font-weight:800;color:#64748b;letter-spacing:.04em;">WORK OFF</span>'
+    + '<input class="fi" value="' + esc(h.amount ? String(h.amount) : '') + '" placeholder="25333.42" '
+    + 'title="How much we owe them back. It is only a reminder - nothing is calculated from it." '
+    + 'onchange="custHanaHoldSet(\'' + nm + '\',\'amount\',this.value)" '
+    + 'style="flex:0 0 110px;font-size:12px;padding:3px 6px;text-align:right;font-family:Consolas,monospace;font-weight:700;">'
+    + '<input class="fi" value="' + esc(h.note || '') + '" placeholder="why (e.g. CM 0265923)" '
+    + 'onchange="custHanaHoldSet(\'' + nm + '\',\'note\',this.value)" '
+    + 'style="flex:1;min-width:0;font-size:12px;padding:3px 6px;">'
+    + '</div>'
+    + '<div style="margin-top:3px;font-size:10.5px;color:#b45309;font-weight:700;max-width:430px;">' + line + '</div>';
+}
+
 function factorCustCard(cust){
   try{ return ((typeof custGroupStore==='function') ? custGroupStore(cust) : custStore[custKey(cust)]) || {}; }
   catch(e){ return {}; }
@@ -56769,6 +56880,7 @@ function factorCandidates(days, withSent){
         hana:String(cs.hanaCode||'').trim(), appr:String(cs.hanaAppr||'').trim(),
         date:dt, amt:amt, no:no, term:ti?factorTermCode(ti.days):'', termLabel:ti?ti.label:'',
         due:due, po:String(meta.po||''), factored:!!fac, sentAt:String(iv.factorAt||''),
+        hold:!!(cs && cs.hanaHold && cs.hanaHold.at),
         dlAt:String(iv.factorDlAt||'') });
     });
     /* 크레딧 메모 - 마이너스 줄 */
@@ -56787,6 +56899,7 @@ function factorCandidates(days, withSent){
         date:dt, amt:-Math.round(Number(m.amt)*100)/100, no:ref,
         term:ti?factorTermCode(ti.days):'', termLabel:ti?ti.label:'', due:dt,
         po:String(meta.po||''), factored:!!fac, ref:ref, sentAt:String(done[ref]||''),
+        hold:!!(cs && cs.hanaHold && cs.hanaHold.at),
         dlAt:String(((meta._factorCmDl && typeof meta._factorCmDl==='object') ? meta._factorCmDl[ref] : '')||'') });
     });
   });
@@ -56814,7 +56927,8 @@ function factorDayRows(dayKey, withSent){
 function factorDaySummary(dayKey){
   let rows = [];
   try{ rows = factorDayRows(dayKey); }catch(e){ rows = []; }
-  const live = rows.filter(r=>r.factored && r.hana && r.kind !== 'cm');
+  /* HANAHOLD-1 - 보류된 줄은 보낼 수가 없으니 「기다리는 것」에서 뺀다. 따로 센다. */
+  const live = rows.filter(r=>r.factored && r.hana && r.kind !== 'cm' && !r.hold);
   /* HANADL-1 - 그 날 **이미 보낸** 서류가 몇 장인가 (다시 뽑기 단추가 쓴다)
      HANADL-3 - 「내려받았지만 아직 안 보낸」 것도 같이 센다 */
   let sent = 0, dl = 0, dlAmt = 0;
@@ -56826,7 +56940,9 @@ function factorDaySummary(dayKey){
   }catch(e){ sent = 0; dl = 0; dlAmt = 0; }
   return { n:live.length, amt:Math.round(live.reduce((a,r)=>a+r.amt,0)*100)/100,
            noCode:rows.filter(r=>r.factored && !r.hana).length,
-           cm:rows.filter(r=>r.kind==='cm').length, sent:sent, dl:dl, dlAmt:dlAmt };
+           cm:rows.filter(r=>r.kind==='cm').length, sent:sent, dl:dl, dlAmt:dlAmt,
+           hold:rows.filter(r=>r.hold).length,
+           holdAmt:Math.round(rows.filter(r=>r.hold).reduce((a,r)=>a+r.amt,0)*100)/100 };
 }
 /* HANADL-1 - 그 날 **보낸 파일을 그대로 다시** 만들어 내려받는다. 메일은 안 간다.
    ⚠ 보낸 줄만 담는다 - 그 뒤에 새로 생긴 인보이스가 섞이면 보낸 파일과 달라진다.
@@ -56859,6 +56975,15 @@ function factorOpen(dayKey){
   factorReset();                                   /* HANAUI-1 - 새로 열면 늘 1단계 */
   _factorRows = factorDayRows(_factorDay);
   const noCode = _factorRows.filter(r=>r.factored && !r.hana);
+  /* HANAHOLD-2 - 보류된 거래처의 남은 크레딧. 거래처당 한 번만 센다. */
+  const holdLeft = {};
+  _factorRows.forEach(r=>{
+    if(!r.hold) return;
+    let k = ''; try{ k = custKey(r.cust); }catch(e){ k = String(r.cust||''); }
+    if(holdLeft[k] !== undefined) return;
+    try{ holdLeft[k] = factorHoldProgress(r.cust); }catch(e){ holdLeft[k] = null; }
+  });
+  const holdLeftOf = (cust)=>{ try{ return holdLeft[custKey(cust)] || null; }catch(e){ return null; } };
   const body = `
     <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-bottom:10px;">
       <span style="font-size:12px;font-weight:900;color:#1e3a8a;background:#eff6ff;border:1px solid #bfdbfe;border-radius:7px;padding:3px 11px;">\u{1F4C5} ${esc(invHistDayLabel(_factorDay))}</span>
@@ -56869,6 +56994,15 @@ function factorOpen(dayKey){
         <button class="btn btn-sm" onclick="factorPick(0)">Clear</button>
       </span>
     </div>
+    ${_factorRows.some(r=>r.hold) ? `<div style="margin-bottom:10px;padding:8px 12px;background:#f8fafc;border:1.5px solid #cbd5e1;border-radius:8px;font-size:12px;font-weight:700;color:#475569;">
+      ${[...new Set(_factorRows.filter(r=>r.hold).map(r=>r.cust))].map(c=>{
+         const p = holdLeftOf(c);
+         return esc(c) + (p && p.target > 0
+           ? (' — <span style="color:' + (p.left > 0 ? '#b45309' : '#166534') + ';">'
+              + (p.left > 0 ? ('credit left ' + esc(factorMoney(p.left))) : 'credit covered — you can release them') + '</span>')
+           : '');
+       }).join(' · ')}
+      <span style="font-weight:600;color:#94a3b8;">· on hold, so these rows cannot be ticked. Release on the customer card.</span></div>` : ''}
     ${noCode.length ? `<div style="margin-bottom:10px;padding:8px 12px;background:#fef2f2;border:1.5px solid #fca5a5;border-radius:8px;font-size:12px;font-weight:700;color:#b91c1c;">
       ⚠ ${noCode.length} document(s) belong to a factored customer with no HANA code yet — they cannot be selected.
       Open Customers, find the customer and fill in 🏦 HANA CODE.</div>` : ''}
@@ -56887,13 +57021,22 @@ function factorOpen(dayKey){
           <th style="padding:6px 8px;text-align:left;">PO_Number</th>
         </tr></thead>
         <tbody>${_factorRows.map((r,i)=>{
-          const bad = !r.hana, cm = r.kind==='cm';
-          return `<tr style="border-top:1px solid #f1f5f9;${bad?'background:#fef2f2;':(cm?'background:#fff7ed;':'')}">
+          const held = !!r.hold, bad = !r.hana || held, cm = r.kind==='cm';
+          return `<tr style="border-top:1px solid #f1f5f9;${held?'background:#f1f5f9;opacity:.72;':(bad?'background:#fef2f2;':(cm?'background:#fff7ed;':''))}">
             <td style="padding:5px 8px;text-align:center;"><input type="checkbox" class="fct-cb" data-i="${i}" ${(!bad && r.factored && r.kind!=='cm')?'checked':''} ${bad?'disabled':''} onchange="factorReset();factorSum()" style="width:14px;height:14px;cursor:${bad?'not-allowed':'pointer'};"></td>
-            <td style="padding:5px 8px;font-weight:800;color:${bad?'#b91c1c':'#0f2a4a'};font-family:Consolas,monospace;">${bad?'— no code':esc(r.hana)}</td>
-            <td style="padding:5px 8px;color:#475569;">${esc(r.cust)}${cm?' <span style="font-size:10px;font-weight:800;color:#c2410c;">CREDIT MEMO</span>':''}${r.factored?'':' <span style="font-size:10px;color:#94a3b8;">not factored</span>'}</td>
+            <td style="padding:5px 8px;font-weight:800;color:${r.hana?'#0f2a4a':'#b91c1c'};font-family:Consolas,monospace;">${r.hana?esc(r.hana):'— no code'}</td>
+            <td style="padding:5px 8px;color:#475569;">${esc(r.cust)}${cm?' <span style="font-size:10px;font-weight:800;color:#c2410c;">CREDIT MEMO</span>':''}${held?' <span style="font-size:10px;font-weight:900;color:#475569;background:#e2e8f0;border-radius:6px;padding:0 5px;">ON HOLD</span>':''}${r.factored?'':' <span style="font-size:10px;color:#94a3b8;">not factored</span>'}</td>
             <td style="padding:5px 8px;text-align:center;font-family:Consolas,monospace;">${esc(factorDate(r.date))}</td>
-            <td style="padding:5px 8px;text-align:right;font-family:Consolas,monospace;font-weight:800;color:${r.amt<0?'#b91c1c':'#0f2a4a'};">${factorMoney(r.amt)}</td>
+            <td style="padding:5px 8px;text-align:right;font-family:Consolas,monospace;font-weight:800;color:${r.amt<0?'#b91c1c':'#0f2a4a'};">${factorMoney(r.amt)}${(()=>{
+              if(!held) return '';
+              const p = holdLeftOf(r.cust);
+              if(!p || !(p.target > 0)) return '';
+              const left = Math.max(0, p.left);
+              return '<div style="font-size:9.5px;font-weight:800;color:' + (left > 0 ? '#b45309' : '#166534') + ';" '
+                + 'title="We still owe this customer money back. It goes down as new invoices are raised while they are on hold. '
+                + 'Started at ' + esc(factorMoney(p.target)) + ', ' + p.n + ' invoice(s) since then.">'
+                + (left > 0 ? ('credit left ' + esc(factorMoney(left))) : 'credit covered') + '</div>';
+            })()}</td>
             <td style="padding:5px 8px;text-align:center;font-family:Consolas,monospace;">${esc(r.no)}</td>
             <td style="padding:5px 8px;text-align:center;font-weight:700;color:${r.term?'#0f2a4a':'#b45309'};" title="${esc(r.termLabel||'')}">${r.term?esc(r.term):'⚠ none'}</td>
             <td style="padding:5px 8px;text-align:center;font-family:Consolas,monospace;">${esc(factorDate(r.due))}</td>
