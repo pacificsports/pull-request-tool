@@ -314,7 +314,7 @@ body.po-dragging{user-select:none;}
   </span>
   <select id="lang-sel" onchange="setLang(this.value)" style="font-size:11px;padding:3px 6px;border-radius:5px;border:none;background:#1d3f66;color:#fff;"><option value="ko">한국어</option><option value="en">English</option><option value="es">Español</option></select>
   <button id="wide-btn" class="btn btn-sm" onclick="toggleWide()" title="화면 넓게 / 좁게 — 기본은 넓게 (이 브라우저에만 저장돼)" style="padding:2px 8px;font-size:10px;background:#1d3f66;color:#cfe0f2;border-color:#2b5384;">↔ Wide</button>
-  <span id="app-ver" style="font-size:10px;color:#9fb8d4;">v1376</span>
+  <span id="app-ver" style="font-size:10px;color:#9fb8d4;">v1377</span>
 </div>
 <script>
 // ↔ 넓게 보기 — 브라우저마다 따로 저장 (v793)
@@ -16402,6 +16402,12 @@ function openBOL(){
   plFieldsToDraft();
   const d = plDrafts[plWh] || {};
   const b = d.bol || ((rec.pl && rec.pl[plWh] && rec.pl[plWh].bol) || {});
+  /* LTLWT-1 - 무게 칸이 비어 있으면 잰 박스 무게로 채워 둔다 (직원이 고칠 수 있다).
+     ⚠ 이미 적힌 값은 건드리지 않는다. */
+  let _bolW = (b.weight == null) ? '' : String(b.weight);
+  if(!_bolW.trim()){
+    try{ const _lw = ltlWeightOf(ltlLinesOf(rec, plWh)); if(_lw.lbs > 0) _bolW = String(_lw.lbs); }catch(e){}
+  }
   const ex = document.getElementById('modal-bol'); if(ex) ex.remove();
   const div = document.createElement('div');
   div.id = 'modal-bol';
@@ -16413,7 +16419,7 @@ function openBOL(){
       <div class="ff"><label>Trailer #</label><input class="fi" id="bol-trailer" value="${esc(b.trailer||'')}"></div>
       <div class="ff"><label>Seal #</label><input class="fi" id="bol-seal" value="${esc(b.seal||'')}"></div>
       <div class="ff"><label>Pallets</label><input class="fi num" id="bol-pallets" value="${esc(b.pallets||'')}" style="text-align:center;"></div>
-      <div class="ff"><label>Total Weight (lbs)</label><input class="fi num" id="bol-weight" value="${esc(b.weight||'')}" style="text-align:center;"></div>
+      <div class="ff"><label>Total Weight (lbs)</label><input class="fi num" id="bol-weight" value="${esc(_bolW||'')}" style="text-align:center;"></div>
       <div class="ff"><label>NMFC Class</label><input class="fi" id="bol-cls" value="${esc(b.cls||'')}" placeholder="77.5" style="text-align:center;"></div>
       <div class="ff"><label>Freight Terms</label><div style="display:flex;gap:10px;align-items:center;min-height:34px;font-size:12px;font-weight:700;">
         ${[['prepaid','Prepaid'],['collect','Collect'],['3rd','3rd Party']].map(x=>`<label style="display:flex;align-items:center;gap:4px;cursor:pointer;"><input type="radio" name="bol-terms" value="${x[0]}" ${b.terms===x[0]?'checked':''} style="accent-color:#374151;">${x[1]}</label>`).join('')}
@@ -36954,6 +36960,43 @@ async function bxWtLoad(force){
   _bxWtBusy = false;
   try{ renderBoxRoom(); }catch(e){}
 }
+/* LTLWT-1 - 트럭 짐의 무게. 저울에 단 값 그대로다 (5% 도 +1lb 도 없다).
+   [stated] 하윤 "LTL은 어짜피 우리가 돈 안내니까 5%안붙이고" */
+const LTL_UNKNOWN_LBS = 33;   // 아직 안 잰 스타일 - 전부터 쓰던 짐작값 그대로
+function ltlLineLbs(l){
+  const qty = Number(l && l.qty) || 0;
+  if(qty <= 0) return { lbs: 0, boxes: 0, known: false };
+  const sty = (typeof bxStyleFor === 'function') ? bxStyleFor(l) : String((l && l.style) || '');
+  const sz  = String((l && l.size) || '').trim().toUpperCase();
+  const ppb = Number(l && l.ppb) || DEFAULT_PPB;
+  const bc  = (typeof boxCalc === 'function') ? boxCalc(l)
+            : { full: Math.floor(qty / ppb), loose: qty % ppb };
+  const full = Number(bc.full) || 0, loose = Number(bc.loose) || 0;
+  const boxes = full + (loose > 0 ? 1 : 0);
+  const caseLb = (typeof bxWtAt === 'function') ? bxWtAt(sty, sz) : 0;
+  if(!(caseLb > 0)) return { lbs: boxes * LTL_UNKNOWN_LBS, boxes: boxes, known: false };
+  /* 꽉 찬 박스는 잰 값 그대로. 남은 낱장은 장수만큼만.
+     ⚠ 낱장 박스는 빈 박스 무게만큼 가볍게 잡힌다 - 빈 박스를 재면 그때 맞출 것. */
+  const lbs = full * caseLb + (loose > 0 ? (loose * caseLb / ppb) : 0);
+  return { lbs: lbs, boxes: boxes, known: true };
+}
+function ltlWeightOf(lines){
+  let lbs = 0, boxes = 0, known = 0, unknown = 0;
+  (lines || []).forEach(l=>{
+    const r = ltlLineLbs(l);
+    lbs += r.lbs; boxes += r.boxes;
+    if(r.boxes > 0){ if(r.known) known += r.boxes; else unknown += r.boxes; }
+  });
+  return { lbs: Math.round(lbs), boxes: boxes, known: known, unknown: unknown };
+}
+/* 그 창고의 줄 - Packing List 가 있으면 그것, 없으면 오더 줄.
+   ⚠ Inform Customer 가 박스를 세는 것과 **같은 고르기**다. */
+function ltlLinesOf(rec, wh){
+  if(!rec) return [];
+  const pl = rec.pl && rec.pl[wh];
+  if(pl && Array.isArray(pl.lines) && pl.lines.length) return pl.lines;
+  return (rec.lines || []).filter(l=>l.wh === wh);
+}
 function bxWtAt(sty, size){
   if(!_bxWt) return 0;
   const m = _bxWt[String(sty == null ? '' : sty).trim().toUpperCase()];
@@ -53110,22 +53153,30 @@ function openInformCustomer(){
   if(!cbs.length && !window._icPreload){ showToast('⚠ Check the orders to include first'); return; }
   if(!window._icPreload) window._icBatchId = null;   // 배치에서 연 게 아니면(수동 선택) 배치 연결 해제 — 엉뚱한 배치 SHIPPED 방지 (v733)
   const seen=new Set(); const orders=[]; let boxes=0;
+  let _ltlLbs=0, _ltlUnk=0;   /* LTLWT-1 - 잰 무게로 센 합계 */
   cbs.forEach(c=>{ const b=c.dataset.base, w=c.dataset.wh; const r=(savedCache||[]).find(s=>s.base===b); if(!r) return;
     // 총 박스수 = Print PR(1st)/Packing List/BOL 과 동일 로직: full 합 + 서로 다른 P.Box# + pbox 미지정 loose 라인 (주문·창고별로 계산 후 합산)
     const src=(r.pl && r.pl[w] && Array.isArray(r.pl[w].lines) && r.pl[w].lines.length) ? r.pl[w].lines : (r.lines||[]).filter(l=>l.wh===w);
     let full=0; const pset=new Set(); let looseNoBox=0;
     src.forEach(l=>{ if((Number(l.qty)||0)<=0) return; const bc=(typeof boxCalc==='function')?boxCalc(l):{full:0,loose:0}; full+=bc.full||0; if((bc.loose||0)>0){ if(l.pbox) pset.add(String(l.pbox).trim()); else looseNoBox++; } });
     boxes += full + pset.size + looseNoBox;
+    const _lw = ltlWeightOf(src); _ltlLbs += _lw.lbs; _ltlUnk += _lw.unknown;   /* LTLWT-1 */
     if(!seen.has(b)){ seen.add(b); orders.push(r); }
   });
   const custs=[...new Set(orders.map(r=>String((r.meta&&r.meta.cust)||'').trim()).filter(Boolean))];
   const pos=orders.map(r=>{ const po=String((r.meta&&r.meta.po)||r.base); const rep=(typeof recIsReplace==='function'&&recIsReplace(r)); return po+(rep?' (replacement)':''); });
   const emails=[...new Set(orders.flatMap(r=>{ const e1=(r.meta&&r.meta.custEmail)||''; const e2=(typeof custPlEmailFor==='function')?(custPlEmailFor((r.meta&&r.meta.cust)||'')||''):''; return [e1,e2]; }).map(x=>String(x||'').trim()).filter(x=>x.includes('@')))];   // 거래처 이메일 자동 채움 (v725)
   const whs=[...new Set(cbs.map(c=>String(c.dataset.wh||'').toUpperCase()).filter(Boolean))];
-  window._ic={ cust: custs.length===1?custs[0]:'', time:'3pm', pos:pos.join('\n'), boxes, lbsPer:33, pallets:[{l:48,w:43,h:84,bx:0}], emails, wh: whs.join(' + ') };
+  /* LTLWT-1 - 화면이 전부 `박스수 x lbsPer` 로 세니까, 곱했을 때 진짜 무게가 나오도록
+     평균을 거꾸로 낸다. 잰 무게가 하나도 없으면 전처럼 33 으로 시작한다. */
+  const _ltlPer = (boxes > 0 && _ltlLbs > 0) ? Math.round(_ltlLbs / boxes * 10) / 10 : 33;
+  window._ic={ cust: custs.length===1?custs[0]:'', time:'3pm', pos:pos.join('\n'), boxes, lbsPer:_ltlPer, pallets:[{l:48,w:43,h:84,bx:0}], emails, wh: whs.join(' + ') };
+  window._icLtl = { lbs:_ltlLbs, unknownBoxes:_ltlUnk };
   // 🚛 직원이 /pic에서 LTL로 넣은 정보(pr_bulkship) 자동 채움 — 총박스·팔레트(수·치수·박스수)
   if(window._icPreload){ const pl=window._icPreload;
-    if(pl.boxes!=null && Number(pl.boxes)>0) window._ic.boxes=Number(pl.boxes);
+    if(pl.boxes!=null && Number(pl.boxes)>0){ window._ic.boxes=Number(pl.boxes);
+      /* LTLWT-1 - 직원이 센 박스 수로 바뀌면 평균도 다시 낸다 (곱이 무게와 맞게) */
+      if(_ltlLbs > 0) window._ic.lbsPer = Math.round(_ltlLbs / Number(pl.boxes) * 10) / 10; }
     if(pl.lbsPer!=null) window._ic.lbsPer=Number(pl.lbsPer);
     if(pl.pos) window._ic.pos=pl.pos;
     if(pl.cust) window._ic.cust=pl.cust;
