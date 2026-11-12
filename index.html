@@ -314,7 +314,7 @@ body.po-dragging{user-select:none;}
   </span>
   <select id="lang-sel" onchange="setLang(this.value)" style="font-size:11px;padding:3px 6px;border-radius:5px;border:none;background:#1d3f66;color:#fff;"><option value="ko">한국어</option><option value="en">English</option><option value="es">Español</option></select>
   <button id="wide-btn" class="btn btn-sm" onclick="toggleWide()" title="화면 넓게 / 좁게 — 기본은 넓게 (이 브라우저에만 저장돼)" style="padding:2px 8px;font-size:10px;background:#1d3f66;color:#cfe0f2;border-color:#2b5384;">↔ Wide</button>
-  <span id="app-ver" style="font-size:10px;color:#9fb8d4;">v1388</span>
+  <span id="app-ver" style="font-size:10px;color:#9fb8d4;">v1389</span>
 </div>
 <script>
 // ↔ 넓게 보기 — 브라우저마다 따로 저장 (v793)
@@ -41344,6 +41344,7 @@ function ccPpbSet(sty, size, v){
     try{ window._bxPpbMemo = null; }catch(e){}
   }
   ccRefresh();
+  ccAutoCost(sty, false);
 }
 /* 소비량 장당 = 셔츠 무게 x (1 + fabric loss%).
    ⭐ loss% 를 고치면 이 값이 같이 바뀐다 - 어디에도 저장하지 않고 그때그때 센다. */
@@ -41400,15 +41401,21 @@ function ccKey(ev, el){
 /* ── 저절로 저장 (SAVEFIX-1) ─────────────────────────────
    🔴 [stated] 하윤: "껏다 키면 다 사라지는거야" - 단추를 누르게 두면 안 된다.
    칸에서 빠져나오는 순간 저장한다. 저장됐는지 글자로 보여준다. */
-function ccMark(st){
+function ccMark(st, note){
   const txt = (st === 'saving') ? '\u2026 saving'
             : (st === 'dirty')  ? '\u25cf not saved yet'
             : (st === 'fail')   ? '\u26a0 NOT SAVED'
             : '\u2714 saved';
   const col = (st === 'dirty') ? '#b45309' : (st === 'fail') ? '#b91c1c'
             : (st === 'saving') ? '#6b7280' : '#047857';
+  /* 실패했을 때만 다시 해 보는 단추를 낸다 - 평소에는 누를 것이 없어야 한다 */
+  const tail = (st === 'fail')
+    ? ' <button class="btn btn-sm" onclick="ccSaveInputs()" style="font-size:10px;padding:0 6px;">try again</button>'
+    : (note ? (' <span style="color:#b45309;font-weight:600;">' + note + '</span>') : '');
   const list = document.getElementsByClassName('cc-saved');
-  for(let i = 0; i < list.length; i++){ list[i].textContent = txt; list[i].style.color = col; }
+  for(let i = 0; i < list.length; i++){
+    list[i].innerHTML = '<span style="color:' + col + ';">' + txt + '</span>' + tail;
+  }
 }
 function ccTouch(){ _ccDirty = true; ccMark('dirty'); }
 async function ccAutoSave(){
@@ -41420,6 +41427,106 @@ async function ccAutoSave(){
   ccMark((a && b) ? 'ok' : 'fail');
   if(!(a && b)) showToast('\u26a0 Could not save \u2014 the numbers are still on the screen, try once more');
   return a && b;
+}
+/* ── 원가표에 저절로 쓰기 (AUTOCOST-1) ──────────────────
+   ⛔ 확인된 스타일은 안 건드린다.  ⛔ 반쪽 원가(noFab)는 안 넣는다. */
+let _ccPriceStale = false, _ccSweepT = null;
+function ccCostPatch(row){
+  const sty = String(row.style_number).trim();
+  const patch = {}; let put = 0, skip = 0;
+  costSizesOf(row).forEach(pair => {
+    const got = ccCalc(sty, pair[0]);
+    if(!got || got.noFab){ skip++; return; }
+    const val = Number(got.out.toFixed(2));
+    const raw = row[pair[1]];
+    const cur = (raw == null || raw === '') ? null : Number(raw);
+    if(cur !== null && Math.abs(cur - val) < 0.0001) return;   /* 안 바뀌었으면 안 보낸다 */
+    patch[pair[1]] = val; put++;
+  });
+  return { patch: patch, put: put, skip: skip };
+}
+async function ccCostWrite(row, allowPartial){
+  const p = ccCostPatch(row);
+  if(allowPartial && !p.put && p.skip){
+    /* 사람이 「그래도 넣어라」 한 경우에만 반쪽 원가를 넣는다 */
+    const sty = String(row.style_number).trim();
+    costSizesOf(row).forEach(pair => {
+      const got = ccCalc(sty, pair[0]); if(!got) return;
+      p.patch[pair[1]] = Number(got.out.toFixed(2)); p.put++;
+    });
+  }
+  if(!p.put){ p.ok = null; return p; }
+  p.ok = await ccStylePut(row, p.patch);
+  return p;
+}
+/* ⭐⭐⭐ styles 표에 쓰는 곳은 **여기 하나뿐이다.** 두 군데가 되면 반드시 어긋난다. */
+async function ccStylePut(row, patch){
+  patch.cost_updated_at = new Date().toISOString();
+  patch.cost_updated_by = (SESS && SESS.email) || '';
+  try{
+    const r = await sbFetch('/rest/v1/styles?style_number=eq.' + encodeURIComponent(String(row.style_number)),
+      { method:'PATCH', headers:{ 'Content-Type':'application/json', Prefer:'return=representation' },
+        body: JSON.stringify(patch) });
+    if(!r.ok) throw new Error('HTTP ' + r.status);
+    const j = await r.json();
+    /* ⚠⚠ 200 은 0줄일 때도 온다 - 돌아온 줄을 센다 */
+    if(!(Array.isArray(j) && j.length === 1)) throw new Error('0 rows');
+    Object.assign(row, j[0]);
+    _ccPriceStale = true;
+    return true;
+  }catch(e){ return false; }
+}
+/* ✔ 확인 - 원가표 탭의 그 도장과 **같은 칸**을 찍는다 (cost_confirmed_at/by).
+   확인하면 그 스타일은 더 이상 저절로 안 바뀌고, 📌 Stamp 가 살아난다. */
+async function ccConfirm(sty){
+  const row = ccRowOf(sty); if(!row) return;
+  const on = !costLocked(row);
+  if(!on && !confirm('Unlock ' + String(sty) + ' ?\n\n'
+      + 'The cost will start following the Costing numbers again, and you will not be able to stamp it onto boxes until you confirm it again.')) return;
+  ccMark('saving');
+  /* 얼리기 전에 지금 숫자를 한 번 더 넣어 둔다 */
+  if(on) await ccCostWrite(row, false);
+  const done = await ccStylePut(row, {
+    cost_confirmed_at: on ? new Date().toISOString() : null,
+    cost_confirmed_by: on ? ((SESS && SESS.email) || '') : null });
+  ccMark(done ? 'ok' : 'fail');
+  if(!done){ showToast('\u26a0 Could not save - try once more'); return; }
+  showToast(on ? ('\u2714 ' + sty + ' confirmed - you can stamp it onto boxes now')
+               : ('\u21ba ' + sty + ' unlocked'));
+  ccPaint();
+}
+function ccRowOf(sty){
+  const k = String(sty || '').trim();
+  return _costRows.find(r => String(r.style_number).trim() === k) || null;
+}
+async function ccAutoCost(sty, allowPartial){
+  const row = ccRowOf(sty);
+  if(!row) return;
+  if(costLocked(row)){ ccMark('ok', 'cost sheet not touched \u2014 this style is \u2714 Confirmed'); return; }
+  const p = await ccCostWrite(row, allowPartial);
+  if(p.ok === false){ ccMark('fail'); return; }
+  ccMark('ok', p.skip && !allowPartial ? (p.skip + ' size(s) need a fabric price or a box weight') : '');
+  ccRefresh();
+}
+/* 기본값 줄을 고치면 전부에 쓴다. 치는 동안 몇 번이고 돌지 않게 1.2초 기다린다. */
+function ccAutoCostAll(){
+  clearTimeout(_ccSweepT);
+  _ccSweepT = setTimeout(async function(){
+    ccMark('saving');
+    let done = 0, bad = 0, lock = 0;
+    for(const row of _costRows){
+      if(costLocked(row)){ lock++; continue; }
+      const p = await ccCostWrite(row, false);
+      if(p.ok === true) done++; else if(p.ok === false) bad++;
+    }
+    ccMark(bad ? 'fail' : 'ok', done ? (done + ' style(s) updated') : '');
+    ccRefresh();
+  }, 1200);
+}
+/* 칸에서 빠져나왔을 때 하는 일 한 군데 */
+async function ccSaved(sty){
+  if(!(await ccAutoSave())) return;
+  if(String(sty) === CC_ALL) ccAutoCostAll(); else await ccAutoCost(sty, false);
 }
 function ccMoney(v, dp){ return '$' + (Number(v) || 0).toFixed(dp == null ? 3 : dp); }
 /* 입력칸은 그대로 두고 **계산된 자리만** 고쳐 쓴다. */
@@ -41462,44 +41569,6 @@ function ccStamp(sty){
   if(i < 0){ showToast('\u26a0 Style not found'); return; }
   bcStamp(i);
 }
-function ccApply(sty){
-  const row = _costRows.find(r => String(r.style_number).trim() === String(sty).trim());
-  if(!row){ showToast('\u26a0 Style not found'); return; }
-  let n = 0, nf = 0;
-  costSizesOf(row).forEach(pair => {
-    const got = ccCalc(sty, pair[0]); if(!got) return;
-    const sn = String(row.style_number);
-    _costEdits[sn] = _costEdits[sn] || {};
-    _costEdits[sn][pair[1]] = got.out.toFixed(2);
-    n++; if(got.noFab) nf++;
-  });
-  if(!n){ showToast('\u26a0 Nothing to apply - no fees and no fabric price yet'); return; }
-  const b = document.getElementById('cost-save'); if(b) b.disabled = false;
-  /* ⚠ 원단값이 빠진 줄은 **반드시 말해 준다** - 조용히 넣으면 원가가 싸게 박힌다 */
-  showToast('\u2714 ' + n + ' size(s) sent to the cost sheet'
-          + (nf ? ' \u2014 ' + nf + ' of them WITHOUT the fabric cost' : '')
-          + ' - press Save changes');
-}
-/* 계산이 되는 **모든** 스타일의 칸을 한 번에 채운다 */
-function ccApplyAll(){
-  let styles = 0, cells = 0, nf = 0;
-  _costRows.forEach(row => {
-    const sn = String(row.style_number).trim();
-    let n = 0;
-    costSizesOf(row).forEach(pair => {
-      const got = ccCalc(sn, pair[0]); if(!got) return;
-      _costEdits[sn] = _costEdits[sn] || {};
-      _costEdits[sn][pair[1]] = got.out.toFixed(2);
-      n++; if(got.noFab) nf++;
-    });
-    if(n){ styles++; cells += n; }
-  });
-  if(!styles){ showToast('\u26a0 Nothing to apply - no fees, no fabric price, no weights'); return; }
-  const b = document.getElementById('cost-save'); if(b) b.disabled = false;
-  showToast('\u2714 ' + styles + ' styles / ' + cells + ' cells sent to the cost sheet'
-          + (nf ? ' \u2014 ' + nf + ' of them WITHOUT the fabric cost' : '')
-          + ' - press Save changes');
-}
 async function ccSaveInputs(){
   _ccDirty = true;                       /* 눌렀으면 무조건 한 번 보낸다 */
   const done = await ccAutoSave();
@@ -41513,7 +41582,7 @@ function ccInput(sty, key, val, ph, w){
   return '<input id="' + ((sty === CC_ALL) ? 'ccd-' : 'ccs-') + key + '" class="fi num" type="number" step="0.001" value="' + shown + '"'
        + ' placeholder="' + (ph === '' ? '0' : ph) + '"'
        + ' oninput="ccFld(\'' + esc(sty) + '\',\'' + key + '\',this.value)"'
-       + ' onchange="ccAutoSave()"'
+       + ' onchange="ccSaved(\'' + esc(sty) + '\')"'
        + ' style="width:' + (w || 84) + 'px;text-align:right;font-size:12px;padding:3px 6px;'
        + (shown === '' ? 'color:#94a3b8;' : 'font-weight:700;') + '">';
 }
@@ -41530,10 +41599,7 @@ function ccDefHtml(){
        + (hint ? ' <span style="font-weight:500;color:#9ca3af;">' + hint + '</span>' : '') + '</div>'
        + ccInput(CC_ALL, f[0], d[f[0]], '') + '</div>';
   });
-  h += '<div style="margin-left:auto;display:flex;gap:7px;align-items:center;">'
-     + '<span class="cc-saved" style="font-size:11px;font-weight:700;color:#047857;">\u2714 saved</span>'
-     + '<button class="btn btn-sm" onclick="ccSaveInputs()" title="Everything here saves by itself when you leave a box. This is only if you want to make sure.">\uD83D\uDCBE Save now</button></div>';
-  h += '<button class="btn btn-sm btn-primary" onclick="ccApplyAll()">\u2192 Send ALL to cost sheet</button>';
+  h += '<div style="margin-left:auto;"><span class="cc-saved" style="font-size:11px;font-weight:700;color:#047857;">\u2714 saved</span></div>';
   h += '</div></div>';
   return h;
 }
@@ -41569,10 +41635,7 @@ function ccPanelHtml(){
        + ccInput(sty, f[0], ccHas(sty, f[0]) ? c[f[0]] : '', String(d[f[0]])) + '</div>';
   });
   /* [stated] 하윤이 헷갈려 한 자리다 - 「삯을 저장」과 「원가표로 보내기」를 나란히 둔다 */
-  h += '<div style="margin-left:auto;display:flex;gap:7px;align-items:center;">'
-     + '<span class="cc-saved" style="font-size:11px;font-weight:700;color:#047857;">\u2714 saved</span>'
-     + '<button class="btn btn-sm btn-primary" onclick="ccApply(\'' + esc(sty) + '\')">'
-     + '\u2192 Send to cost sheet</button></div>';
+  h += '<div style="margin-left:auto;"><span class="cc-saved" style="font-size:11px;font-weight:700;color:#047857;">\u2714 saved</span></div>';
   h += '</div>';
   h += '<div style="margin:8px 0 5px;font-size:11px;color:#6b7280;">'
      + 'Consumption / pc = (lbs per box &minus; ' + LTL_CARTON_LBS + ' lb box) &divide; pcs per box &times; (1 + fabric loss %)'
@@ -41599,7 +41662,7 @@ function ccPanelHtml(){
        + (perLb > 0 ? ccMoney(perLb) : '<span style="color:#b45309;font-weight:600;">not yet</span>') + '</td>';
     h += '<td style="text-align:center;"><input id="ccw-' + esc(sz) + '" class="fi num" type="number" step="0.01" value="' + (lb > 0 ? lb : '')
        + '" oninput="ccWtSet(\'' + esc(sty) + '\',\'' + esc(sz) + '\',this.value)"'
-       + ' onchange="ccAutoSave()"'
+       + ' onchange="ccSaved(\'' + esc(sty) + '\')"'
        + ' onkeydown="ccKey(event,this)" title="Tab goes to the size below"'
        + ' style="width:76px;text-align:right;font-size:12px;padding:2px 5px;'
        + (lb > 0 ? 'font-weight:700;' : 'background:#fff7ed;') + '"></td>';
@@ -41617,17 +41680,38 @@ function ccPanelHtml(){
     h += '<td class="tl" style="color:#6b7280;">' + (cur == null ? '&mdash;' : ccMoney(cur, 2)) + '</td></tr>';
   });
   h += '</table>';
-  h += '<div style="margin-top:9px;display:flex;gap:8px;align-items:center;flex-wrap:wrap;">'
-     + '<button class="btn btn-sm btn-primary" onclick="ccApply(\'' + esc(sty) + '\')">\u2192 Send to cost sheet</button>'
-     + '<button class="btn btn-sm" onclick="ccStamp(\'' + esc(sty) + '\')"'
-     + ' title="Write the saved cost onto the boxes of this style that are in stock now. A box that already has a cost is never changed."'
-     + ' style="background:#065f46;color:#fff;border-color:#065f46;font-weight:700;">\uD83D\uDCCC Stamp onto boxes</button>'
-     + '</div>';
-  /* 세 걸음 - 어느 단추가 무엇을 하는지 한 번에 보이게 (네모 칸 없이 줄과 여백으로) */
+  const miss   = ccCostPatch(row || { style_number: sty }).skip;
+  const locked = row ? costLocked(row) : false;
+  h += '<div style="margin-top:9px;display:flex;gap:8px;align-items:center;flex-wrap:wrap;">';
+  h += '<button class="btn btn-sm" onclick="ccConfirm(\'' + esc(sty) + '\')"'
+     + ' title="' + (locked ? 'Unlock it so the cost follows the Costing numbers again.'
+                            : 'Freeze this cost. Until you do, it keeps following the numbers above and cannot be stamped onto boxes.') + '"'
+     + ' style="font-weight:700;' + (locked ? 'background:#ecfdf5;color:#065f46;border-color:#6ee7b7;' : 'background:#0f766e;color:#fff;border-color:#0f766e;') + '">'
+     + (locked ? '\u21ba Unlock' : '\u2714 Confirm this cost') + '</button>';
+  h += '<button class="btn btn-sm" onclick="ccStamp(\'' + esc(sty) + '\')"' + (locked ? '' : ' disabled')
+     + ' title="' + (locked ? 'Write the confirmed cost onto the boxes of this style that are in stock now. A box that already has a cost is never changed.'
+                            : 'Confirm the cost first.') + '"'
+     + ' style="font-weight:700;' + (locked ? 'background:#065f46;color:#fff;border-color:#065f46;'
+                                            : 'background:#e5e7eb;color:#9ca3af;border-color:#e5e7eb;cursor:not-allowed;') + '">'
+     + '\uD83D\uDCCC Stamp onto boxes</button>';
+  if(locked){
+    h += '<span style="font-size:11px;color:#047857;">\u2714 confirmed '
+       + esc(String(costConfirmedAt(row) || '').slice(0, 10))
+       + (costConfirmedBy(row) ? (' by ' + esc(String(costConfirmedBy(row)).split('@')[0])) : '')
+       + ' \u2014 this cost no longer follows the numbers above</span>';
+  }
+  h += '</div>';
+  /* 반쪽 원가는 저절로 안 들어간다 - 그럴 때만 여기에 줄이 뜬다 */
+  if(miss > 0){
+    h += '<div style="margin-top:7px;font-size:11.5px;color:#b45309;">'
+       + '\u26a0 <b>' + miss + ' size(s)</b> have no fabric price or no box weight yet, so their cost is <b>not</b> in the cost sheet. '
+       + '<button class="btn btn-sm" onclick="ccAutoCost(\'' + esc(sty) + '\',true)" style="font-size:10.5px;padding:1px 7px;">'
+       + 'put the fee-only cost in anyway</button></div>';
+  }
   h += '<div style="margin-top:8px;padding-top:7px;border-top:1px solid var(--border);font-size:11px;color:#6b7280;line-height:1.75;">'
-     + '<div><b style="color:#374151;">1</b> &nbsp;The <b>lbs per box</b> and the <b>fees</b> save by themselves as soon as you leave the box \u2014 watch the <b>\u2714 saved</b> mark above.</div>'
-     + '<div><b style="color:#374151;">2</b> &nbsp;<b>\u2192 Send to cost sheet</b> &mdash; puts <b>Cost / pc</b> on the Adult / Kids tab. Nothing is saved until you press <b>\uD83D\uDCBE Save changes</b> at the top.</div>'
-     + '<div><b style="color:#374151;">3</b> &nbsp;<b>\uD83D\uDCCC Stamp onto boxes</b> &mdash; writes the <b>saved</b> cost onto the boxes in stock. A box that already has a cost is never changed.</div>'
+     + '<div><b style="color:#374151;">1</b> &nbsp;Type a number and leave the box \u2014 it saves by itself, <b>and the cost sheet is updated with it</b>. Watch the <b>\u2714 saved</b> mark above.</div>'
+     + '<div><b style="color:#374151;">2</b> &nbsp;<b>\u2714 Confirm this cost</b> &mdash; freezes it. From then on it no longer follows the numbers above. This is the same tick as on the Adult / Kids tab.</div>'
+     + '<div><b style="color:#374151;">3</b> &nbsp;<b>\uD83D\uDCCC Stamp onto boxes</b> &mdash; only after it is confirmed. Writes the cost onto the boxes in stock; a box that already has a cost is never changed.</div>'
      + '</div>';
   h += '</div>';
   return h;
@@ -42028,6 +42112,8 @@ async function costCloseSave(){
         + 'Close anyway and lose them?\n\nCancel = stay open and try again.')) return;
     }
   }catch(e){}
+  /* 원가가 바뀌었으면 주문화면 최소가 경고도 새 원가를 쓰게 한다 */
+  if(_ccPriceStale){ _ccPriceStale = false; try{ await loadPriceList(); }catch(e){} }
   if(!n){ close(); return; }
   const x = document.getElementById('cost-close'); if(x){ x.disabled=true; x.textContent='💾…'; }
   let res = null;
