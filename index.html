@@ -314,7 +314,7 @@ body.po-dragging{user-select:none;}
   </span>
   <select id="lang-sel" onchange="setLang(this.value)" style="font-size:11px;padding:3px 6px;border-radius:5px;border:none;background:#1d3f66;color:#fff;"><option value="ko">한국어</option><option value="en">English</option><option value="es">Español</option></select>
   <button id="wide-btn" class="btn btn-sm" onclick="toggleWide()" title="화면 넓게 / 좁게 — 기본은 넓게 (이 브라우저에만 저장돼)" style="padding:2px 8px;font-size:10px;background:#1d3f66;color:#cfe0f2;border-color:#2b5384;">↔ Wide</button>
-  <span id="app-ver" style="font-size:10px;color:#9fb8d4;">v1385</span>
+  <span id="app-ver" style="font-size:10px;color:#9fb8d4;">v1386</span>
 </div>
 <script>
 // ↔ 넓게 보기 — 브라우저마다 따로 저장 (v793)
@@ -41160,6 +41160,24 @@ function fabPctHtml(p){
   return '<b style="color:'+col+';">'+ar+' '+(p>0?'+':'')+p.toFixed(1)+'%</b>';
 }
 
+/* ── 원단 평균값 ──────────────────────────────────────────
+   ⭐ Costing 이 쓰는 값은 「제일 최근 값」이 아니라 **이 평균값**이다.
+   ⭐ 손으로 적은 값이 있으면 그것이 이긴다 - 더 이상 안 사는 원단에 쓰려고 둔 것.
+   ⚠ 언제나 $/kg 다. */
+const CC_AVG = '@avg';
+function fabAvgCalc(code){
+  const v = fabRowsOf(code).map(r => Number(r.price_kg) || 0).filter(n => n > 0);
+  if(!v.length) return 0;
+  return v.reduce((a, b) => a + b, 0) / v.length;
+}
+function fabAvgOvr(code){
+  const m = (typeof _ccAll !== 'undefined' && _ccAll && _ccAll[CC_AVG]) || null;
+  return (m && Number(m[String(code)]) > 0) ? Number(m[String(code)]) : 0;
+}
+function fabAvgKg(code){
+  const o = fabAvgOvr(code);
+  return (o > 0) ? o : fabAvgCalc(code);
+}
 async function fabFetch(){
   try{
     const a = await sbFetch('/rest/v1/fabric_master?select=code,name,sort_order&order=sort_order.asc');
@@ -41184,7 +41202,7 @@ const CC_ALL = '*';
 const CC_DEF = { loss:15, sew:0, hx:0, frH:0, frCA:0, adj:0 };
 const CC_FLDS = [['loss','Fabric loss %',''],['sew','Sewing','per piece'],['hx','Haiti extra','per piece'],
                  ['frH','Haiti \u2192 SC','per piece'],['frCA','SC \u2192 CA','per piece'],['adj','Adjust %','+ or -']];
-let _ccAll = null, _ccBusy = false, _ccStyle = '';
+let _ccAll = null, _ccBusy = false, _ccStyle = '', _ccSizes = [];
 
 async function ccLoad(force){
   if(_ccBusy) return;
@@ -41253,10 +41271,11 @@ function ccFabCode(sty){
   const hit = Object.keys(FAB_STYLES).find(c => (FAB_STYLES[c] || []).some(x => String(x).toUpperCase() === s));
   return hit || '';
 }
+/* ⭐ 제일 최근 값이 아니라 **평균값**을 쓴다 ([stated] 하윤).
+   손으로 적은 값이 있으면 그것, 없으면 기록들의 평균. */
 function ccFabPerLb(sty){
   const code = ccFabCode(sty); if(!code) return 0;
-  const rows = fabRowsOf(code);
-  const kg = Number(rows[0] && rows[0].price_kg) || 0;
+  const kg = (typeof fabAvgKg === 'function') ? fabAvgKg(code) : 0;
   return (kg > 0) ? fabLb(kg) : 0;
 }
 /* ── 박스 무게 (web_box_weights) ──
@@ -41321,17 +41340,50 @@ function ccConsPc(sty, size){
   if(!(s > 0)) return 0;
   return s * (1 + (Number(ccOf(sty).loss) || 0) / 100);
 }
+/* ⭐ [stated] 하윤: "fabric cost가 아직 안들어가있어도 저기 정해진 cost는 apply 되게"
+   그래서 원단값이나 박스무게가 없어도 **삯만으로** 셈을 돌려준다.
+   ⚠ 그때는 `noFab` 이 켜진다 - 표에도 toast 에도 「+ fabric」 을 적어서
+     원단값이 빠진 숫자라는 것이 반드시 보이게 할 것. */
 function ccCalc(sty, size){
   const c = ccOf(sty);
   const perLb = ccFabPerLb(sty);
   const cons = ccConsPc(sty, size);
-  if(!(cons > 0) || !(perLb > 0)) return null;
-  const fab = cons * perLb;
+  const fab = (cons > 0 && perLb > 0) ? (cons * perLb) : 0;
   /* 금액은 전부 **장당**이다 ([stated] 하윤 "다 그냥 pc로 계산하면 되니까") */
   const rest = (Number(c.sew) || 0) + (Number(c.hx) || 0)
              + (Number(c.frH) || 0) + (Number(c.frCA) || 0);
+  if(!(fab > 0) && !(rest > 0)) return null;   /* 원단값도 삯도 없으면 아무것도 없는 것 */
   const sub = fab + rest;
-  return { fab: fab, rest: rest, sub: sub, out: sub * (1 + (Number(c.adj) || 0) / 100), cons: cons };
+  return { fab: fab, rest: rest, sub: sub, out: sub * (1 + (Number(c.adj) || 0) / 100),
+           cons: cons, noFab: !(fab > 0) };
+}
+/* 원단값이 빠진 숫자는 **눈에 보이게** 적는다 */
+function ccFabHtml(got){
+  if(!got) return '&mdash;';
+  return got.noFab ? '<span style="color:#b45309;font-weight:600;">not yet</span>' : ccMoney(got.fab);
+}
+function ccOutHtml(got){
+  if(!got) return '&mdash;';
+  if(!got.noFab) return ccMoney(got.out, 2);
+  return '<span style="color:#b45309;" title="The fabric cost is NOT in this number yet">' + ccMoney(got.out, 2)
+       + ' <span style="font-size:10px;font-weight:700;">+ fabric</span></span>';
+}
+/* Tab 은 **아래 칸**으로 (같은 줄의 옆칸이 아니라). Shift+Tab 은 위로.
+   [stated] 하윤 "저기서도 tab 하면 아래칸으로 가게 해줘" */
+function ccKey(ev, el){
+  if(ev.key !== 'Tab') return;
+  const parts = String(el.id || '').split('-');
+  const col = parts.shift(), sz = parts.join('-');
+  if(col !== 'ccw' && col !== 'ccp') return;
+  const i = _ccSizes.indexOf(sz);
+  if(i < 0) return;
+  const j = ev.shiftKey ? (i - 1) : (i + 1);
+  if(j < 0 || j >= _ccSizes.length) return;    /* 맨 위/맨 아래면 평소대로 둔다 */
+  const nx = document.getElementById(col + '-' + _ccSizes[j]);
+  if(!nx) return;
+  ev.preventDefault();
+  nx.focus();
+  try{ nx.select(); }catch(e){}
 }
 function ccMoney(v, dp){ return '$' + (Number(v) || 0).toFixed(dp == null ? 3 : dp); }
 /* 입력칸은 그대로 두고 **계산된 자리만** 고쳐 쓴다. */
@@ -41352,10 +41404,10 @@ function ccRefresh(){
     const cons = ccConsPc(sty, sz), got = ccCalc(sty, sz);
     const put = (id, html) => { const el = document.getElementById(id + '-' + sz); if(el) el.innerHTML = html; };
     put('ccc', cons > 0 ? (cons.toFixed(4) + ' lb') : '<span style="color:#b45309;font-weight:500;">weigh a box</span>');
-    put('ccf', got ? ccMoney(got.fab) : '&mdash;');
+    put('ccf', ccFabHtml(got));
     put('ccr', got ? ccMoney(got.rest) : '&mdash;');
     put('ccb', got ? ccMoney(got.sub) : '&mdash;');
-    put('cco', got ? ccMoney(got.out, 2) : '&mdash;');
+    put('cco', ccOutHtml(got));
   });
   const l = document.getElementById('cc-list');
   if(l) l.innerHTML = ccListHtml((document.getElementById('cost-search') || {}).value || '');
@@ -41369,21 +41421,24 @@ function ccPaint(){
 function ccApply(sty){
   const row = _costRows.find(r => String(r.style_number).trim() === String(sty).trim());
   if(!row){ showToast('\u26a0 Style not found'); return; }
-  let n = 0;
+  let n = 0, nf = 0;
   costSizesOf(row).forEach(pair => {
     const got = ccCalc(sty, pair[0]); if(!got) return;
     const sn = String(row.style_number);
     _costEdits[sn] = _costEdits[sn] || {};
     _costEdits[sn][pair[1]] = got.out.toFixed(2);
-    n++;
+    n++; if(got.noFab) nf++;
   });
-  if(!n){ showToast('\u26a0 Nothing to apply - fabric price or consumption is missing'); return; }
+  if(!n){ showToast('\u26a0 Nothing to apply - no fees and no fabric price yet'); return; }
   const b = document.getElementById('cost-save'); if(b) b.disabled = false;
-  showToast('\u2714 ' + n + ' size(s) filled in - press Save changes');
+  /* ⚠ 원단값이 빠진 줄은 **반드시 말해 준다** - 조용히 넣으면 원가가 싸게 박힌다 */
+  showToast('\u2714 ' + n + ' size(s) filled in'
+          + (nf ? ' \u2014 ' + nf + ' of them WITHOUT the fabric cost' : '')
+          + ' - press Save changes');
 }
 /* 계산이 되는 **모든** 스타일의 칸을 한 번에 채운다 */
 function ccApplyAll(){
-  let styles = 0, cells = 0;
+  let styles = 0, cells = 0, nf = 0;
   _costRows.forEach(row => {
     const sn = String(row.style_number).trim();
     let n = 0;
@@ -41391,13 +41446,15 @@ function ccApplyAll(){
       const got = ccCalc(sn, pair[0]); if(!got) return;
       _costEdits[sn] = _costEdits[sn] || {};
       _costEdits[sn][pair[1]] = got.out.toFixed(2);
-      n++;
+      n++; if(got.noFab) nf++;
     });
     if(n){ styles++; cells += n; }
   });
-  if(!styles){ showToast('\u26a0 Nothing to apply - no fabric price or no weights yet'); return; }
+  if(!styles){ showToast('\u26a0 Nothing to apply - no fees, no fabric price, no weights'); return; }
   const b = document.getElementById('cost-save'); if(b) b.disabled = false;
-  showToast('\u2714 ' + styles + ' styles / ' + cells + ' cells filled in - press Save changes');
+  showToast('\u2714 ' + styles + ' styles / ' + cells + ' cells filled in'
+          + (nf ? ' \u2014 ' + nf + ' of them WITHOUT the fabric cost' : '')
+          + ' - press Save changes');
 }
 async function ccSaveInputs(){
   const a = await ccSave();
@@ -41431,7 +41488,7 @@ function ccDefHtml(){
        + ccInput(CC_ALL, f[0], d[f[0]], '') + '</div>';
   });
   h += '<button class="btn btn-sm" onclick="ccSaveInputs()" style="margin-left:auto;">\uD83D\uDCBE Save inputs</button>';
-  h += '<button class="btn btn-sm btn-primary" onclick="ccApplyAll()">\u2192 Fill ALL styles</button>';
+  h += '<button class="btn btn-sm btn-primary" onclick="ccApplyAll()">\u2192 Apply to ALL styles</button>';
   h += '</div></div>';
   return h;
 }
@@ -41456,7 +41513,7 @@ function ccPanelHtml(){
   h += '<div style="margin:6px 0 8px;font-size:12px;">\uD83E\uDDF5 <b>' + esc(code || '-') + '</b> &nbsp; '
      + (perLb > 0 ? ('<b style="color:#047857;">' + ccMoney(perLb) + ' / lb</b>')
                   : '<span style="color:#b91c1c;font-weight:700;">no fabric price yet</span>')
-     + ' <span style="color:#9ca3af;">(from the Fabric price tab)</span></div>';
+     + ' <span style="color:#9ca3af;">(average, from the Fabric price tab)</span></div>';
   /* 덮어쓴 칸 안내 - 치는 동안 이 줄만 고쳐 쓴다 */
   h += '<div id="cc-own" style="font-size:11.5px;margin-bottom:5px;">' + ccOwnHtml(sty) + '</div>';
   h += '<div style="display:flex;flex-wrap:wrap;gap:10px 16px;align-items:flex-end;border-top:1px solid var(--border);padding-top:8px;">';
@@ -41466,13 +41523,18 @@ function ccPanelHtml(){
        + (hint ? ' <span style="font-weight:500;color:#9ca3af;">' + hint + '</span>' : '') + '</div>'
        + ccInput(sty, f[0], ccHas(sty, f[0]) ? c[f[0]] : '', String(d[f[0]])) + '</div>';
   });
+  /* [stated] 하윤: "저기 옆에 apply to this style 버튼 만들어서" */
+  h += '<button class="btn btn-sm btn-primary" onclick="ccApply(\'' + esc(sty) + '\')" style="margin-left:auto;">'
+     + '\u2192 Apply to this style</button>';
   h += '</div>';
   h += '<div style="margin:8px 0 5px;font-size:11px;color:#6b7280;">'
      + 'Consumption / pc = (lbs per box &minus; ' + LTL_CARTON_LBS + ' lb box) &divide; pcs per box &times; (1 + fabric loss %)'
      + ' <b style="color:#0f766e;">&mdash; change the loss % above and these move with it</b></div>';
   const sizes = row ? costSizesOf(row) : [];
+  _ccSizes = sizes.map(p => p[0]);          /* Tab 이 아래 칸으로 갈 때 쓰는 차례 */
   h += '<table class="etbl" style="width:auto;font-size:12px;"><tr>'
      + '<th class="tl">Size</th>'
+     + '<th title="The average price from the Fabric price tab. The same for every size of this style.">Fabric $ / lb</th>'
      + '<th style="background:#0f766e;color:#fff;">Lbs / box</th>'
      + '<th>Pcs / box</th>'
      + '<th>Consumption / pc</th>'
@@ -41486,25 +41548,29 @@ function ccPanelHtml(){
     const got  = ccCalc(sty, sz);
     const cur  = row ? costEff(row, col) : null;
     h += '<tr><td class="tl" style="font-weight:700;">' + esc(sz) + '</td>';
+    h += '<td style="text-align:right;color:#6b7280;">'
+       + (perLb > 0 ? ccMoney(perLb) : '<span style="color:#b45309;font-weight:600;">not yet</span>') + '</td>';
     h += '<td style="text-align:center;"><input id="ccw-' + esc(sz) + '" class="fi num" type="number" step="0.01" value="' + (lb > 0 ? lb : '')
        + '" oninput="ccWtSet(\'' + esc(sty) + '\',\'' + esc(sz) + '\',this.value)"'
+       + ' onkeydown="ccKey(event,this)" title="Tab goes to the size below"'
        + ' style="width:76px;text-align:right;font-size:12px;padding:2px 5px;'
        + (lb > 0 ? 'font-weight:700;' : 'background:#fff7ed;') + '"></td>';
     h += '<td style="text-align:center;"><input id="ccp-' + esc(sz) + '" class="fi num" type="number" step="1" value="' + (ppb > 0 ? ppb : '')
        + '" onchange="ccPpbSet(\'' + esc(sty) + '\',\'' + esc(sz) + '\',this.value)"'
-       + ' title="Pieces per box. Changing it here changes it everywhere."'
+       + ' onkeydown="ccKey(event,this)"'
+       + ' title="Pieces per box. Changing it here changes it everywhere. Tab goes to the size below."'
        + ' style="width:58px;text-align:center;font-size:12px;padding:2px 4px;color:#475569;"></td>';
     h += '<td id="ccc-' + esc(sz) + '" style="text-align:right;font-weight:700;color:#0f766e;">'
        + (cons > 0 ? cons.toFixed(4) + ' lb' : '<span style="color:#b45309;font-weight:500;">weigh a box</span>') + '</td>';
-    h += '<td id="ccf-' + esc(sz) + '" style="text-align:right;">' + (got ? ccMoney(got.fab) : '&mdash;') + '</td>';
+    h += '<td id="ccf-' + esc(sz) + '" style="text-align:right;">' + ccFabHtml(got) + '</td>';
     h += '<td id="ccr-' + esc(sz) + '" style="text-align:right;">' + (got ? ccMoney(got.rest) : '&mdash;') + '</td>';
     h += '<td id="ccb-' + esc(sz) + '" style="text-align:right;">' + (got ? ccMoney(got.sub) : '&mdash;') + '</td>';
-    h += '<td id="cco-' + esc(sz) + '" style="text-align:right;font-weight:800;color:#047857;">' + (got ? ccMoney(got.out, 2) : '&mdash;') + '</td>';
+    h += '<td id="cco-' + esc(sz) + '" style="text-align:right;font-weight:800;color:#047857;">' + ccOutHtml(got) + '</td>';
     h += '<td class="tl" style="color:#6b7280;">' + (cur == null ? '&mdash;' : ccMoney(cur, 2)) + '</td></tr>';
   });
   h += '</table>';
-  h += '<div style="margin-top:9px;"><button class="btn btn-sm btn-primary" onclick="ccApply(\'' + esc(sty) + '\')">\u2192 Fill this style</button></div>';
-  h += '<div style="margin-top:6px;font-size:11px;color:#6b7280;">Filling does not save \u2014 press <b>Save changes</b> at the top for the costs, and <b>Save inputs</b> above for the weights and the fees.</div>';
+  h += '<div style="margin-top:9px;"><button class="btn btn-sm btn-primary" onclick="ccApply(\'' + esc(sty) + '\')">\u2192 Apply to this style</button></div>';
+  h += '<div style="margin-top:6px;font-size:11px;color:#6b7280;">Applying does not save \u2014 press <b>Save changes</b> at the top for the costs, and <b>Save inputs</b> above for the weights and the fees.</div>';
   h += '</div>';
   return h;
 }
@@ -41533,6 +41599,21 @@ function ccBodyHtml(filter){
        + '<div id="cc-list" style="width:230px;min-width:230px;max-height:52vh;overflow:auto;border-right:1px solid var(--border);">'
        + ccListHtml(filter) + '</div>'
        + '<div id="cc-panel" style="flex:1;overflow:auto;max-height:52vh;">' + ccPanelHtml() + '</div></div>';
+}
+/* 손으로 적은 평균값. 비우면 기록들의 평균으로 돌아간다.
+   ⚠ 바로 저장한다 - 이 화면에는 「저장」 단추가 따로 없다. */
+async function fabAvgSet(code, v){
+  if(!_ccAll) _ccAll = {};
+  const k = String(code || '').trim();
+  const n = Number(v) || 0;
+  if(!_ccAll[CC_AVG]) _ccAll[CC_AVG] = {};
+  if(n > 0) _ccAll[CC_AVG][k] = n;
+  else delete _ccAll[CC_AVG][k];
+  if(!Object.keys(_ccAll[CC_AVG]).length) delete _ccAll[CC_AVG];
+  const done = await ccSave();
+  showToast(done ? ('\u2714 ' + k + (n > 0 ? (' average set to ' + fabMoney(n, 4) + ' / kg') : ' back to the average of the records'))
+                 : '\u26a0 Could not save - try again');
+  costRender((document.getElementById('cost-search') || {}).value || '');
 }
 function fabToggle(code){ _fabOpen = (_fabOpen===code) ? '' : code; costRender((document.getElementById('cost-search')||{}).value||''); }
 
@@ -41598,8 +41679,9 @@ function fabRender(filter){
   }
   let h = '<table class="etbl" style="width:100%;font-size:12px;"><tr>'
     + '<th class="tl">Fabric</th><th class="tl">Styles</th>'
-    + '<th style="background:#047857;color:#fff;">Latest $/kg</th>'
-    + '<th style="background:#0f766e;color:#fff;">= $/lb</th>'
+    + '<th style="background:#047857;color:#fff;" title="The price Costing uses. Leave it empty to use the average of the records; type a number to set it by hand.">Average $/kg</th>'
+    + '<th style="background:#0f766e;color:#fff;" title="The same average, per pound. This is the number the Costing tab shows.">= $/lb</th>'
+    + '<th>Latest $/kg</th>'
     + '<th>As of</th><th>Change</th><th>History</th></tr>';
   list.forEach(m=>{
     const rows = fabRowsOf(m.code);
@@ -41607,14 +41689,21 @@ function fabRender(filter){
     const sts  = FAB_STYLES[m.code] || [];
     const pct  = rows.length ? fabChangePct(rows, 0) : null;
     const open = (_fabOpen === m.code);
+    const calc = fabAvgCalc(m.code), ovr = fabAvgOvr(m.code), avg = fabAvgKg(m.code);
     h += '<tr>'
       + '<td class="tl"><b>'+esc(m.name)+'</b><div style="font-size:10px;color:#9ca3af;">'+esc(m.code)+'</div></td>'
       + '<td class="tl" style="font-size:10.5px;color:#6b7280;max-width:230px;">'+sts.join(' ')
         +'<span style="color:#9ca3af;"> ('+sts.length+')</span></td>'
-      + '<td style="text-align:right;font-family:Consolas,monospace;font-weight:800;">'
+      + '<td style="text-align:right;"><input id="fav-' + esc(m.code) + '" class="num" value="' + (ovr > 0 ? ovr : '')
+        + '" placeholder="' + (calc > 0 ? calc.toFixed(4) : '—') + '"'
+        + ' onchange="fabAvgSet(\'' + esc(m.code) + '\',this.value)"'
+        + ' title="Leave it empty to use the average of the records below. Type a number to set it by hand - use this for a fabric we do not buy any more."'
+        + ' style="width:94px;text-align:right;font-family:Consolas,monospace;font-size:11.5px;padding:3px 5px;'
+        + (ovr > 0 ? 'font-weight:800;color:#065f46;' : 'color:#94a3b8;') + '"></td>'
+      + '<td style="text-align:right;font-family:Consolas,monospace;color:#0f766e;font-weight:700;">'
+        + (avg > 0 ? fabMoney(fabLb(avg),4) : '<span style="color:#9ca3af;">&mdash;</span>') + '</td>'
+      + '<td style="text-align:right;font-family:Consolas,monospace;color:#6b7280;">'
         + (top ? fabMoney(top.price_kg,4) : '<span style="color:#9ca3af;">&mdash;</span>') + '</td>'
-      + '<td style="text-align:right;font-family:Consolas,monospace;color:#0f766e;">'
-        + (top ? fabMoney(fabLb(top.price_kg),4) : '<span style="color:#9ca3af;">&mdash;</span>') + '</td>'
       + '<td style="text-align:center;white-space:nowrap;">'
         + (top ? esc(String(top.as_of)) : '<span style="color:#9ca3af;">&mdash;</span>') + '</td>'
       + '<td style="text-align:center;">' + fabPctHtml(pct) + '</td>'
@@ -41649,7 +41738,7 @@ function fabRender(filter){
         + '<input id="fab-n-'+m.code+'" placeholder="note (optional)" style="flex:1;min-width:120px;font-size:11.5px;padding:3px 6px;border:1px solid #cbd5e1;border-radius:5px;">'
         + '<button class="btn btn-sm" style="background:#047857;color:#fff;border-color:#047857;font-weight:700;" onclick="fabAdd(\''+m.code+'\')">Save</button>'
         + '</div>';
-      h += '<tr><td colspan="7" style="background:#f8fafc;padding:8px 10px;">'+inner+'</td></tr>';
+      h += '<tr><td colspan="8" style="background:#f8fafc;padding:8px 10px;">'+inner+'</td></tr>';
     }
   });
   h += '</table>';
