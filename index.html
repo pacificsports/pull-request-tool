@@ -314,7 +314,7 @@ body.po-dragging{user-select:none;}
   </span>
   <select id="lang-sel" onchange="setLang(this.value)" style="font-size:11px;padding:3px 6px;border-radius:5px;border:none;background:#1d3f66;color:#fff;"><option value="ko">한국어</option><option value="en">English</option><option value="es">Español</option></select>
   <button id="wide-btn" class="btn btn-sm" onclick="toggleWide()" title="화면 넓게 / 좁게 — 기본은 넓게 (이 브라우저에만 저장돼)" style="padding:2px 8px;font-size:10px;background:#1d3f66;color:#cfe0f2;border-color:#2b5384;">↔ Wide</button>
-  <span id="app-ver" style="font-size:10px;color:#9fb8d4;">v1395</span>
+  <span id="app-ver" style="font-size:10px;color:#9fb8d4;">v1396</span>
 </div>
 <script>
 // ↔ 넓게 보기 — 브라우저마다 따로 저장 (v793)
@@ -40866,17 +40866,34 @@ function bcPlan(r){
 
 function bcNum(n){ return Number(n||0).toLocaleString(); }
 
-async function bcStamp(idx){
+async function bcStamp(idx, startOn){
   const r = _costRows[idx]; if(!r) return;
   const sn = String(r.style_number||'').trim();
+  const eff = (typeof ccToday === 'function' && /^\d{4}-\d{2}-\d{2}$/.test(String(startOn || '')))
+            ? String(startOn) : (typeof ccToday === 'function' ? ccToday() : '');
+  const future = (typeof ccToday === 'function') && eff > ccToday();
   if(!costLocked(r)){ alert('Tick ✔ Confirmed on ' + sn + ' first.\n\nOnly a cost you have checked gets stamped onto boxes.'); return; }
   if(Object.keys(_costEdits||{}).length){ alert('You have unsaved changes.\n\nPress 💾 Save changes first, then stamp.'); return; }
   if(!bxLoaded){ alert('Stock list is still loading. Try again in a moment.'); return; }
 
+  /* ⭐ 미래 날짜면 지금 선반 박스는 **안 건드린다** - 그 박스들은 지금 값으로 들어온 것이다 */
+  if(future){
+    const later = await ccConfirmedPut(r, eff);
+    alert(sn + ' \u2014 set for later.\n\n'
+      + (later.ok
+          ? ('From ' + eff + ' on, boxes of this style that arrive will be stamped at this cost ('
+             + later.n + ' size(s)).\n\nNothing in stock was touched, and nothing changes until that date.')
+          : 'WARNING: it did NOT save. Press the button again.'));
+    delete _ccSched[sn];
+    await ccSchedLoad(sn);
+    costRender((document.getElementById('cost-search')||{}).value||'');
+    return;
+  }
+
   const p = bcPlan(r);
   if(!p.rows.length){
     /* ⚠ 찍을 박스가 없어도 **앞으로 들어올 박스에 쓸 가격**은 세워야 한다 (STAMPGOING-1) */
-    const only = await ccConfirmedPut(r);
+    const only = await ccConfirmedPut(r, eff);
     alert(sn + ' \u2014 no box in stock to stamp right now.\n\n'
       + 'Boxes in stock: ' + bcNum(p.total) + '\n'
       + (p.noCost ? ('No cost for that size: ' + bcNum(p.noCost) + ' box(es)\n') : '')
@@ -40938,7 +40955,9 @@ async function bcStamp(idx){
   }
   /* ⭐⭐⭐ 여기가 「이 가격으로 간다」가 실제로 정해지는 한 군데다 ([stated] 하윤).
      앞으로 들어오는 박스는 DB 방아쇠가 이 값으로 찍는다. */
-  const going = await ccConfirmedPut(r);
+  const going = await ccConfirmedPut(r, eff);
+  delete _ccSched[sn];
+  await ccSchedLoad(sn);
   await bcCovFetch();
   bcValInvalidate();
   costRender((document.getElementById('cost-search')||{}).value||'');
@@ -41520,21 +41539,34 @@ async function ccStylePut(row, patch){
    pr_cost_confirmed 에 줄이 있으면, 그 스타일+사이즈 박스가 **입고되는 순간**
    DB 방아쇠가 그 원가를 찍는다. 원가를 고쳐 다시 확인하면 그때부터 새 값이 찍힌다. */
 let _ccHist = {}, _ccHistOpen = '';
-async function ccConfirmedPut(row){
+/* 오늘 날짜 (그 컴퓨터 기준). ⚠ toISOString 은 UTC 라 밤에는 하루가 밀린다. */
+function ccToday(){
+  const d = new Date();
+  return d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0') + '-' + String(d.getDate()).padStart(2, '0');
+}
+function ccStartOn(){
+  const el = document.getElementById('cc-starton');
+  const v = String((el && el.value) || '').trim();
+  return /^\d{4}-\d{2}-\d{2}$/.test(v) ? v : ccToday();
+}
+async function ccConfirmedPut(row, effFrom){
   const sn = String(row.style_number).trim();
   const who = (SESS && SESS.email) || '';
   const at = new Date().toISOString();
+  const eff = /^\d{4}-\d{2}-\d{2}$/.test(String(effFrom || '')) ? String(effFrom) : ccToday();
   const rows = [], costs = {};
   costSizesOf(row).forEach(pair => {
     const v = costEff(row, pair[1]);
     if(v == null || !(Number(v) > 0)) return;
     costs[pair[0]] = Number(v);
-    rows.push({ style_number: sn, size: pair[0], unit_cost: Number(v), confirmed_at: at, confirmed_by: who });
+    rows.push({ style_number: sn, size: pair[0], unit_cost: Number(v),
+                confirmed_at: at, confirmed_by: who, effective_from: eff });
   });
   if(!rows.length) return { ok:false, n:0, why:'no cost' };
   try{
-    /* 그 스타일의 옛 줄은 먼저 치운다 - 사이즈가 줄었을 수도 있다 */
-    const d = await sbFetch('/rest/v1/pr_cost_confirmed?style_number=eq.' + encodeURIComponent(sn),
+    /* ⚠ **그 날짜의 줄만** 갈아 끼운다. 지난 날짜·예약해 둔 날짜는 그대로 둔다. */
+    const d = await sbFetch('/rest/v1/pr_cost_confirmed?style_number=eq.' + encodeURIComponent(sn)
+      + '&effective_from=eq.' + eff,
       { method:'DELETE', headers:{ Prefer:'return=representation' } });
     if(!d.ok) throw new Error('HTTP ' + d.status);
     await d.json();
@@ -41547,11 +41579,43 @@ async function ccConfirmedPut(row){
     /* 이력 한 줄 */
     const h = await sbFetch('/rest/v1/pr_cost_history', { method:'POST',
       headers:{ 'Content-Type':'application/json', Prefer:'return=representation' },
-      body: JSON.stringify([{ style_number: sn, costs: costs, confirmed_at: at, confirmed_by: who }]) });
+      body: JSON.stringify([{ style_number: sn, costs: costs, confirmed_at: at, confirmed_by: who,
+                              note: 'from ' + eff }]) });
     if(h.ok) await h.json();
-    delete _ccHist[sn];
-    return { ok:true, n:rows.length };
+    delete _ccHist[sn]; delete _ccSched[sn];
+    return { ok:true, n:rows.length, eff: eff };
   }catch(e){ return { ok:false, n:0, why:String(e && e.message || e) }; }
+}
+/* 그 스타일에 정해 둔 「언제부터 얼마」 목록 */
+let _ccSched = {};
+async function ccSchedLoad(sty){
+  const sn = String(sty || '').trim();
+  if(_ccSched[sn]) return _ccSched[sn];
+  try{
+    const r = await sbFetch('/rest/v1/pr_cost_confirmed?select=size,unit_cost,effective_from'
+      + '&style_number=eq.' + encodeURIComponent(sn) + '&order=effective_from.desc&limit=200');
+    if(!r.ok) throw new Error('HTTP ' + r.status);
+    _ccSched[sn] = await r.json();
+  }catch(e){ _ccSched[sn] = null; }
+  return _ccSched[sn];
+}
+function ccSchedHtml(sty){
+  const sn = String(sty || '').trim();
+  const list = _ccSched[sn];
+  if(list === undefined) return '';
+  if(list === null) return '<span style="color:#b91c1c;">Could not read what is set.</span>';
+  if(!list.length) return '<span style="color:#9ca3af;">Nothing is being stamped on this style yet \u2014 press \uD83D\uDCCC to start.</span>';
+  const by = {};
+  list.forEach(r => { const d = String(r.effective_from); (by[d] = by[d] || []).push(Number(r.unit_cost)); });
+  const today = ccToday();
+  return Object.keys(by).sort().reverse().map(d => {
+    const v = by[d], lo = Math.min.apply(null, v), hi = Math.max.apply(null, v);
+    const future = d > today;
+    return '<span style="color:' + (future ? '#b45309' : '#047857') + ';">'
+         + (future ? '\uD83D\uDCC5 ' : '\u2714 ') + ccMoney(lo, 2) + (hi > lo ? ('\u2013' + ccMoney(hi, 2)) : '')
+         + ' <b>from ' + esc(d) + '</b>'
+         + ' <span style="color:#9ca3af;">(' + v.length + ' size' + (v.length > 1 ? 's' : '') + ')</span></span>';
+  }).join(' &nbsp;\u00b7&nbsp; ');
 }
 async function ccHistLoad(sty){
   const sn = String(sty || '').trim();
@@ -41714,7 +41778,15 @@ function ccRefresh(){
   const l = document.getElementById('cc-list');
   if(l) l.innerHTML = ccListHtml((document.getElementById('cost-search') || {}).value || '');
 }
-function ccPick(sty){ _ccStyle = String(sty || '').trim(); ccPaint(); }
+function ccPick(sty){
+  _ccStyle = String(sty || '').trim();
+  ccPaint();
+  /* 「언제부터 얼마」 목록은 뒤늦게 와서 그 줄만 고쳐 쓴다 */
+  ccSchedLoad(_ccStyle).then(() => {
+    const el = document.getElementById('cc-sched');
+    if(el && _ccStyle === String(sty || '').trim()) el.innerHTML = ccSchedHtml(_ccStyle);
+  });
+}
 function ccPaint(){
   const d = document.getElementById('cc-def'); if(d) d.innerHTML = ccDefHtml();
   const el = document.getElementById('cc-panel'); if(el) el.innerHTML = ccPanelHtml();
@@ -41726,7 +41798,7 @@ function ccStamp(sty){
   const k = String(sty || '').trim();
   const i = _costRows.findIndex(r => String(r.style_number).trim() === k);
   if(i < 0){ showToast('\u26a0 Style not found'); return; }
-  bcStamp(i);
+  bcStamp(i, ccStartOn());
 }
 async function ccSaveInputs(){
   _ccDirty = true;                       /* 눌렀으면 무조건 한 번 보낸다 */
@@ -41843,6 +41915,7 @@ function ccPanelHtml(){
   });
   h += '</table>';
   h += '<div id="cc-avgpct" style="margin-top:6px;font-size:12px;color:#374151;">' + ccAvgPctHtml(sty, row) + '</div>';
+  h += '<div id="cc-sched" style="margin-top:5px;font-size:11.5px;">' + ccSchedHtml(sty) + '</div>';
   const miss   = ccCostPatch(row || { style_number: sty }).skip;
   const locked = row ? costLocked(row) : false;
   h += '<div style="margin-top:9px;display:flex;gap:8px;align-items:center;flex-wrap:wrap;">';
@@ -41851,6 +41924,10 @@ function ccPanelHtml(){
                             : 'Freeze this cost. Until you do, it keeps following the numbers above and cannot be stamped onto boxes.') + '"'
      + ' style="font-weight:700;' + (locked ? 'background:#ecfdf5;color:#065f46;border-color:#6ee7b7;' : 'background:#0f766e;color:#fff;border-color:#0f766e;') + '">'
      + (locked ? '\u21ba Unlock' : '\u2714 Confirm this cost') + '</button>';
+  h += '<label style="font-size:11px;color:#6b7280;margin-left:4px;">Start on</label>'
+     + '<input type="date" id="cc-starton" value="' + ccToday() + '"'
+     + ' title="From this date on, boxes that arrive are stamped at this cost. Today = also stamp the boxes in stock now."'
+     + ' style="font-size:11.5px;padding:3px 6px;border:1px solid #cbd5e1;border-radius:5px;">';
   h += '<button class="btn btn-sm" onclick="ccStamp(\'' + esc(sty) + '\')"' + (locked ? '' : ' disabled')
      + ' title="' + (locked ? 'Write the confirmed cost onto the boxes of this style that are in stock now. A box that already has a cost is never changed.'
                             : 'Confirm the cost first.') + '"'
@@ -41879,8 +41956,8 @@ function ccPanelHtml(){
   h += '<div style="margin-top:8px;padding-top:7px;border-top:1px solid var(--border);font-size:11px;color:#6b7280;line-height:1.75;">'
      + '<div><b style="color:#374151;">1</b> &nbsp;Type a number and leave the box \u2014 it saves by itself, <b>and the cost sheet is updated with it</b>. Watch the <b>\u2714 saved</b> mark above.</div>'
      + '<div><b style="color:#374151;">2</b> &nbsp;<b>\u2714 Confirm this cost</b> &mdash; your tick that the number is right. Nothing happens to any box yet; it only makes the next button live.</div>'
-     + '<div><b style="color:#374151;">3</b> &nbsp;<b>\uD83D\uDCCC Stamp onto boxes</b> &mdash; <b>this is where the cost starts being used.</b> It writes the cost onto the boxes in stock, <b>and every box that arrives from now on is stamped at this cost</b> until you press it again. A box that already has a cost is never changed.</div>'
-     + '<div style="color:#374151;">\u2605 &nbsp;To change the cost later: unlock, type the new number, \u2714 Confirm, then \uD83D\uDCCC Stamp. New boxes get the new cost; the old boxes keep theirs.</div>'
+     + '<div><b style="color:#374151;">3</b> &nbsp;<b>\uD83D\uDCCC Stamp onto boxes</b> &mdash; <b>this is where the cost starts being used.</b> With <b>Start on = today</b> it writes the cost onto the boxes in stock and onto every box that arrives from now on. A box that already has a cost is never changed.</div>'
+     + '<div style="color:#374151;">\uD83D\uDCC5 &nbsp;<b>Start on a future date</b> (for example 2027-01-01) and nothing happens until that day \u2014 the boxes in stock are not touched, and arrivals keep the cost you set before. From that day on, new boxes get this one.</div>'
      + '</div>';
   h += '</div>';
   return h;
