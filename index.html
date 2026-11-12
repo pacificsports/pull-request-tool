@@ -314,7 +314,7 @@ body.po-dragging{user-select:none;}
   </span>
   <select id="lang-sel" onchange="setLang(this.value)" style="font-size:11px;padding:3px 6px;border-radius:5px;border:none;background:#1d3f66;color:#fff;"><option value="ko">한국어</option><option value="en">English</option><option value="es">Español</option></select>
   <button id="wide-btn" class="btn btn-sm" onclick="toggleWide()" title="화면 넓게 / 좁게 — 기본은 넓게 (이 브라우저에만 저장돼)" style="padding:2px 8px;font-size:10px;background:#1d3f66;color:#cfe0f2;border-color:#2b5384;">↔ Wide</button>
-  <span id="app-ver" style="font-size:10px;color:#9fb8d4;">v1398</span>
+  <span id="app-ver" style="font-size:10px;color:#9fb8d4;">v1399</span>
 </div>
 <script>
 // ↔ 넓게 보기 — 브라우저마다 따로 저장 (v793)
@@ -36944,10 +36944,13 @@ let _bxCostCells = {}, _bxCostBusy = {};
 
 /* BOXWT-1 - 박스 한 개 무게 (lb, 박스 포함). 출처는 pr_config.web_box_weights 한 줄뿐이다.
    ⭐ 웹샵 운임 계산(WEBWT-1)도 같은 줄을 본다 - 베끼지 않는다. */
-let _bxWt = null, _bxWtBusy = false;
+let _bxWt = null, _bxWtBusy = false, _bxWtP = null;
+/* ⚠ WTSAFE-1 - 전에는 읽는 중에 또 부르면 그냥 돌아가서 `_bxWt` 가 null 로 남았다.
+   그 틈에 무게를 치면 빈 것에서 시작해 저장이 남의 줄을 지웠다. 이제 끝나기를 기다린다. */
 async function bxWtLoad(force){
-  if(_bxWtBusy) return;
   if(_bxWt && !force) return;
+  if(_bxWtP) return _bxWtP;
+  _bxWtP = (async function(){
   _bxWtBusy = true;
   try{
     const r = await sbFetch('/rest/v1/pr_config?select=v&k=eq.web_box_weights');
@@ -36960,6 +36963,8 @@ async function bxWtLoad(force){
     _bxWt = m;
   }catch(e){ _bxWt = {}; }
   _bxWtBusy = false;
+  })();
+  try{ await _bxWtP; }finally{ _bxWtP = null; }
   try{ renderBoxRoom(); }catch(e){}
 }
 /* LTLWT-1 - 트럭 짐의 무게. 저울에 단 값 그대로다 (5% 도 +1lb 도 없다).
@@ -41353,7 +41358,7 @@ function ccFabPerLb(sty){
 }
 /* ── 박스 무게 (web_box_weights) ──
    ⭐⭐⭐ Full Box 화면과 웹 운임이 보는 **바로 그 줄**을 고친다. 원가용 사본을 만들지 않는다. */
-let _bxWtDirty = false;
+let _bxWtDirty = false, _bxWtTouch = {};
 function ccWtSet(sty, size, v){
   if(!_bxWt) _bxWt = {};
   const k = String(sty || '').trim().toUpperCase(), sz = String(size || '').trim().toUpperCase();
@@ -41361,20 +41366,44 @@ function ccWtSet(sty, size, v){
   if(v === '' || v == null) delete _bxWt[k][sz];
   else _bxWt[k][sz] = Number(v) || 0;
   if(!Object.keys(_bxWt[k]).length) delete _bxWt[k];
+  /* ⭐⭐⭐ WTSAFE-1 - **사람이 실제로 고친 칸**만 적어 둔다. 저장은 이 칸들만 얹는다. */
+  _bxWtTouch[k + '|' + sz] = 1;
   _bxWtDirty = true;
   ccMark('dirty');
   ccRefresh();
 }
+/* ⭐⭐⭐ WTSAFE-1 - 저장은 「라이브 줄을 다시 읽어서 내가 고친 칸만 얹기」다.
+   🔴🔴🔴 2026-11-12: `_bxWt` 를 통째로 POST 했다가 화면이 아직 무게를 안 읽은 상태에서
+      한 스타일만 저장돼 **나머지 스타일 무게가 전부 날아갔다.**
+   ⚠ 화면이 무엇을 들고 있든, DB 에서 지워지는 칸은 **사람이 비운 그 칸뿐**이어야 한다. */
 async function ccWtSave(){
-  if(!_bxWt) return true;
+  const keys = Object.keys(_bxWtTouch || {});
+  if(!keys.length){ _bxWtDirty = false; return true; }
   try{
+    const r0 = await sbFetch('/rest/v1/pr_config?select=v&k=eq.web_box_weights');
+    /* 🔴 못 읽었으면 **아무것도 쓰지 않는다** - 모르는 채로 쓰면 남의 줄이 죽는다 */
+    if(!r0.ok) throw new Error('read HTTP ' + r0.status);
+    const j0 = await r0.json();
+    const live = (Array.isArray(j0) && j0[0] && j0[0].v && typeof j0[0].v === 'object') ? j0[0].v : {};
+    const out = {};
+    Object.keys(live).forEach(k => { out[String(k).trim().toUpperCase()] = Object.assign({}, live[k]); });
+    keys.forEach(tk => {
+      const p = String(tk).split('|'), st = p[0], sz = p[1];
+      const mine = (_bxWt && _bxWt[st]) ? _bxWt[st] : null;
+      const val = mine ? mine[sz] : undefined;
+      if(val == null || !(Number(val) > 0)){ if(out[st]) delete out[st][sz]; }
+      else { if(!out[st]) out[st] = {}; out[st][sz] = Number(val); }
+      if(out[st] && !Object.keys(out[st]).length) delete out[st];
+    });
     const r = await sbFetch('/rest/v1/pr_config?on_conflict=k', { method:'POST',
       headers:{ 'Content-Type':'application/json', Prefer:'resolution=merge-duplicates,return=representation' },
-      body: JSON.stringify([{ k:'web_box_weights', v:_bxWt, updated_at: new Date().toISOString() }]) });
+      body: JSON.stringify([{ k:'web_box_weights', v:out, updated_at: new Date().toISOString() }]) });
     /* ⚠ 204/200 만 보고 되었다고 하지 말 것 - 돌려받은 줄을 센다 */
     if(!r.ok) throw new Error('HTTP ' + r.status);
     const j = await r.json();
     if(!(Array.isArray(j) && j.length === 1)) return false;
+    _bxWt = out;               /* 머릿속을 라이브와 같게 맞춘다 */
+    _bxWtTouch = {};
     _bxWtDirty = false;
     return true;
   }catch(e){ return false; }
@@ -41396,7 +41425,7 @@ function ccPpb(sty, size){
    ⭐ 안 고르면 전과 똑같이 CC_CARTON_LBS(2.0). 그래서 고르기 전까지 숫자가 안 바뀐다.
    🔴 열쇠 이름에 web_ 을 쓰지 말 것 - 손님 쪽 anon 키가 pr_config 에서 web_ 줄을 읽는다. */
 const CCBOX_KEY = 'box_types';
-let _ccBox = null, _ccBoxDirty = false;
+let _ccBox = null, _ccBoxDirty = false, _ccBoxTouch = {};
 async function ccBoxLoad(force){
   if(_ccBox && !force) return;
   try{
@@ -41428,21 +41457,40 @@ function ccBoxSet(sty, size, v){
   if(!_ccBox[k]) _ccBox[k] = {};
   if(!v) delete _ccBox[k][sz]; else _ccBox[k][sz] = String(v);
   if(!Object.keys(_ccBox[k]).length) delete _ccBox[k];
+  _ccBoxTouch[k + '|' + sz] = 1;   /* WTSAFE-1 - 고친 칸만 저장한다 */
   _ccBoxDirty = true;
   ccMark('dirty');
   ccRefresh();
   ccSaved(sty);
 }
+/* ⭐⭐⭐ WTSAFE-1 - 무게와 똑같이 「다시 읽어서 고친 칸만 얹기」 */
 async function ccBoxSave(){
-  if(!_ccBox) return true;
+  const keys = Object.keys(_ccBoxTouch || {});
+  if(!keys.length){ _ccBoxDirty = false; return true; }
   try{
+    const r0 = await sbFetch('/rest/v1/pr_config?select=v&k=eq.' + encodeURIComponent(CCBOX_KEY));
+    if(!r0.ok) throw new Error('read HTTP ' + r0.status);
+    const j0 = await r0.json();
+    const live = (Array.isArray(j0) && j0[0] && j0[0].v && typeof j0[0].v === 'object') ? j0[0].v : {};
+    const out = {};
+    Object.keys(live).forEach(k => { out[String(k).trim().toUpperCase()] = Object.assign({}, live[k]); });
+    keys.forEach(tk => {
+      const p = String(tk).split('|'), st = p[0], sz = p[1];
+      const mine = (_ccBox && _ccBox[st]) ? _ccBox[st] : null;
+      const val = mine ? mine[sz] : undefined;
+      if(!val){ if(out[st]) delete out[st][sz]; }
+      else { if(!out[st]) out[st] = {}; out[st][sz] = String(val); }
+      if(out[st] && !Object.keys(out[st]).length) delete out[st];
+    });
     const r = await sbFetch('/rest/v1/pr_config?on_conflict=k', { method:'POST',
       headers:{ 'Content-Type':'application/json', Prefer:'resolution=merge-duplicates,return=representation' },
-      body: JSON.stringify([{ k:CCBOX_KEY, v:_ccBox, updated_at: new Date().toISOString() }]) });
+      body: JSON.stringify([{ k:CCBOX_KEY, v:out, updated_at: new Date().toISOString() }]) });
     /* ⚠ 204/200 만 보고 되었다고 하지 말 것 - 돌려받은 줄을 센다 */
     if(!r.ok) throw new Error('HTTP ' + r.status);
     const j = await r.json();
     if(!(Array.isArray(j) && j.length === 1)) return false;
+    _ccBox = out;
+    _ccBoxTouch = {};
     _ccBoxDirty = false;
     return true;
   }catch(e){ return false; }
@@ -42289,6 +42337,9 @@ async function costOpen(){
   await bcCovFetch();                   /* APPLYCOST-1 */
   await ccLoad();                       /* COSTCALC-1 */
   await ccBoxLoad();                    /* BOXTYPE-1 */
+  /* 🔴🔴 WTSAFE-1 - 이것을 안 읽으면 Lbs/box 칸이 전부 빈 채로 보이고,
+     거기에 치면 저장이 남의 줄을 지웠다 (2026-11-12 사고). */
+  await bxWtLoad();
   if(!bxLoaded){ try{ await bxFetchStore(); }catch(e){} }
   costRender('');
 }
