@@ -314,7 +314,7 @@ body.po-dragging{user-select:none;}
   </span>
   <select id="lang-sel" onchange="setLang(this.value)" style="font-size:11px;padding:3px 6px;border-radius:5px;border:none;background:#1d3f66;color:#fff;"><option value="ko">한국어</option><option value="en">English</option><option value="es">Español</option></select>
   <button id="wide-btn" class="btn btn-sm" onclick="toggleWide()" title="화면 넓게 / 좁게 — 기본은 넓게 (이 브라우저에만 저장돼)" style="padding:2px 8px;font-size:10px;background:#1d3f66;color:#cfe0f2;border-color:#2b5384;">↔ Wide</button>
-  <span id="app-ver" style="font-size:10px;color:#9fb8d4;">v1389</span>
+  <span id="app-ver" style="font-size:10px;color:#9fb8d4;">v1390</span>
 </div>
 <script>
 // ↔ 넓게 보기 — 브라우저마다 따로 저장 (v793)
@@ -41476,6 +41476,104 @@ async function ccStylePut(row, patch){
     return true;
   }catch(e){ return false; }
 }
+/* ── 확인된 원가를 「저절로 찍히는 표」에 적는다 (COSTHIST-1) ──
+   pr_cost_confirmed 에 줄이 있으면, 그 스타일+사이즈 박스가 **입고되는 순간**
+   DB 방아쇠가 그 원가를 찍는다. 원가를 고쳐 다시 확인하면 그때부터 새 값이 찍힌다. */
+let _ccHist = {}, _ccHistOpen = '';
+async function ccConfirmedPut(row){
+  const sn = String(row.style_number).trim();
+  const who = (SESS && SESS.email) || '';
+  const at = new Date().toISOString();
+  const rows = [], costs = {};
+  costSizesOf(row).forEach(pair => {
+    const v = costEff(row, pair[1]);
+    if(v == null || !(Number(v) > 0)) return;
+    costs[pair[0]] = Number(v);
+    rows.push({ style_number: sn, size: pair[0], unit_cost: Number(v), confirmed_at: at, confirmed_by: who });
+  });
+  if(!rows.length) return { ok:false, n:0, why:'no cost' };
+  try{
+    /* 그 스타일의 옛 줄은 먼저 치운다 - 사이즈가 줄었을 수도 있다 */
+    const d = await sbFetch('/rest/v1/pr_cost_confirmed?style_number=eq.' + encodeURIComponent(sn),
+      { method:'DELETE', headers:{ Prefer:'return=representation' } });
+    if(!d.ok) throw new Error('HTTP ' + d.status);
+    await d.json();
+    const r = await sbFetch('/rest/v1/pr_cost_confirmed', { method:'POST',
+      headers:{ 'Content-Type':'application/json', Prefer:'return=representation' },
+      body: JSON.stringify(rows) });
+    if(!r.ok) throw new Error('HTTP ' + r.status);
+    const j = await r.json();
+    if(!(Array.isArray(j) && j.length === rows.length)) throw new Error('wrote ' + (j && j.length));
+    /* 이력 한 줄 */
+    const h = await sbFetch('/rest/v1/pr_cost_history', { method:'POST',
+      headers:{ 'Content-Type':'application/json', Prefer:'return=representation' },
+      body: JSON.stringify([{ style_number: sn, costs: costs, confirmed_at: at, confirmed_by: who }]) });
+    if(h.ok) await h.json();
+    delete _ccHist[sn];
+    return { ok:true, n:rows.length };
+  }catch(e){ return { ok:false, n:0, why:String(e && e.message || e) }; }
+}
+/* 잠금을 풀면 그 줄을 지운다 - 안 그러면 옛 원가가 계속 찍힌다 */
+async function ccConfirmedDel(row){
+  const sn = String(row.style_number).trim();
+  try{
+    const d = await sbFetch('/rest/v1/pr_cost_confirmed?style_number=eq.' + encodeURIComponent(sn),
+      { method:'DELETE', headers:{ Prefer:'return=representation' } });
+    if(!d.ok) throw new Error('HTTP ' + d.status);
+    const j = await d.json();
+    return { ok:true, n: Array.isArray(j) ? j.length : 0 };
+  }catch(e){ return { ok:false, n:0 }; }
+}
+async function ccHistLoad(sty){
+  const sn = String(sty || '').trim();
+  if(_ccHist[sn]) return _ccHist[sn];
+  try{
+    const r = await sbFetch('/rest/v1/pr_cost_history?select=id,costs,confirmed_at,confirmed_by'
+      + '&style_number=eq.' + encodeURIComponent(sn) + '&order=confirmed_at.desc&limit=24');
+    if(!r.ok) throw new Error('HTTP ' + r.status);
+    _ccHist[sn] = await r.json();
+  }catch(e){ _ccHist[sn] = null; }     /* null = 못 읽음 (0줄과 다르다) */
+  return _ccHist[sn];
+}
+async function ccHistToggle(sty){
+  const sn = String(sty || '').trim();
+  _ccHistOpen = (_ccHistOpen === sn) ? '' : sn;
+  if(_ccHistOpen) await ccHistLoad(sn);
+  ccPaint();
+}
+/* 이력 표. 앞 줄과 견주어 바뀐 칸만 색을 준다. */
+function ccHistHtml(sty, row){
+  const sn = String(sty || '').trim();
+  const list = _ccHist[sn];
+  if(list === undefined) return '';
+  if(list === null) return '<div style="font-size:11px;color:#b91c1c;padding:6px 0;">Could not read the history.</div>';
+  if(!list.length) return '<div style="font-size:11px;color:#6b7280;padding:6px 0;">No confirmed cost yet. The first \u2714 Confirm starts the history.</div>';
+  const sizes = row ? costSizesOf(row).map(p => p[0]) : [];
+  let h = '<table class="etbl" style="width:auto;font-size:11.5px;margin-top:6px;"><tr>'
+        + '<th class="tl">Confirmed</th><th class="tl">By</th>';
+  sizes.forEach(z => { h += '<th>' + esc(z) + '</th>'; });
+  h += '</tr>';
+  list.forEach((rec, i) => {
+    const prev = list[i + 1] ? (list[i + 1].costs || {}) : null;
+    const cur = rec.costs || {};
+    h += '<tr><td class="tl" style="white-space:nowrap;">' + esc(String(rec.confirmed_at || '').slice(0, 10)) + '</td>'
+       + '<td class="tl" style="color:#6b7280;">' + esc(String(rec.confirmed_by || '').split('@')[0]) + '</td>';
+    sizes.forEach(z => {
+      const v = cur[z], p = prev ? prev[z] : undefined;
+      let col = '#374151', mark = '';
+      if(v != null && p != null && Math.abs(Number(v) - Number(p)) > 0.0001){
+        const up = Number(v) > Number(p);
+        col = up ? '#b91c1c' : '#047857';
+        mark = ' <span style="font-size:9px;">' + (up ? '\u25b2' : '\u25bc') + '</span>';
+      }
+      h += '<td style="text-align:right;font-family:Consolas,monospace;color:' + col + ';">'
+         + (v == null ? '<span style="color:#d1d5db;">&mdash;</span>' : (ccMoney(Number(v), 2) + mark)) + '</td>';
+    });
+    h += '</tr>';
+  });
+  h += '</table>';
+  return h;
+}
 /* ✔ 확인 - 원가표 탭의 그 도장과 **같은 칸**을 찍는다 (cost_confirmed_at/by).
    확인하면 그 스타일은 더 이상 저절로 안 바뀌고, 📌 Stamp 가 살아난다. */
 async function ccConfirm(sty){
@@ -41491,8 +41589,15 @@ async function ccConfirm(sty){
     cost_confirmed_by: on ? ((SESS && SESS.email) || '') : null });
   ccMark(done ? 'ok' : 'fail');
   if(!done){ showToast('\u26a0 Could not save - try once more'); return; }
-  showToast(on ? ('\u2714 ' + sty + ' confirmed - you can stamp it onto boxes now')
-               : ('\u21ba ' + sty + ' unlocked'));
+  /* ⭐ 여기서부터 「입고되면 저절로 찍기」가 걸리거나 풀린다 */
+  const side = on ? await ccConfirmedPut(row) : await ccConfirmedDel(row);
+  if(on && !side.ok){
+    showToast('\u26a0 Confirmed, but the auto-stamp list did not save'
+      + (side.why ? (' (' + side.why + ')') : '') + ' - press Confirm again');
+  } else {
+    showToast(on ? ('\u2714 ' + sty + ' confirmed - ' + side.n + ' size(s) will be stamped onto new boxes by themselves')
+                 : ('\u21ba ' + sty + ' unlocked - new boxes will no longer be stamped'));
+  }
   ccPaint();
 }
 function ccRowOf(sty){
@@ -41708,10 +41813,16 @@ function ccPanelHtml(){
        + '<button class="btn btn-sm" onclick="ccAutoCost(\'' + esc(sty) + '\',true)" style="font-size:10.5px;padding:1px 7px;">'
        + 'put the fee-only cost in anyway</button></div>';
   }
+  /* \uD83D\uDCDC 원가 이력 */
+  h += '<div style="margin-top:9px;">'
+     + '<button class="btn btn-sm" onclick="ccHistToggle(\'' + esc(sty) + '\')" style="font-size:11px;padding:2px 9px;">'
+     + (_ccHistOpen === sty ? '\u25b2 hide cost history' : '\uD83D\uDCDC Cost history') + '</button>'
+     + (_ccHistOpen === sty ? ccHistHtml(sty, row) : '') + '</div>';
   h += '<div style="margin-top:8px;padding-top:7px;border-top:1px solid var(--border);font-size:11px;color:#6b7280;line-height:1.75;">'
      + '<div><b style="color:#374151;">1</b> &nbsp;Type a number and leave the box \u2014 it saves by itself, <b>and the cost sheet is updated with it</b>. Watch the <b>\u2714 saved</b> mark above.</div>'
      + '<div><b style="color:#374151;">2</b> &nbsp;<b>\u2714 Confirm this cost</b> &mdash; freezes it. From then on it no longer follows the numbers above. This is the same tick as on the Adult / Kids tab.</div>'
-     + '<div><b style="color:#374151;">3</b> &nbsp;<b>\uD83D\uDCCC Stamp onto boxes</b> &mdash; only after it is confirmed. Writes the cost onto the boxes in stock; a box that already has a cost is never changed.</div>'
+     + '<div><b style="color:#374151;">3</b> &nbsp;<b>\uD83D\uDCCC Stamp onto boxes</b> &mdash; only after it is confirmed. Writes the cost onto the <b>boxes already in stock</b>; a box that already has a cost is never changed.</div>'
+     + '<div style="color:#374151;">\u2605 &nbsp;<b>Boxes that arrive from now on are stamped by themselves</b> \u2014 as long as the style is confirmed. Change the cost and confirm again, and new boxes get the new cost while the old boxes keep theirs.</div>'
      + '</div>';
   h += '</div>';
   return h;
