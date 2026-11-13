@@ -314,7 +314,7 @@ body.po-dragging{user-select:none;}
   </span>
   <select id="lang-sel" onchange="setLang(this.value)" style="font-size:11px;padding:3px 6px;border-radius:5px;border:none;background:#1d3f66;color:#fff;"><option value="ko">한국어</option><option value="en">English</option><option value="es">Español</option></select>
   <button id="wide-btn" class="btn btn-sm" onclick="toggleWide()" title="화면 넓게 / 좁게 — 기본은 넓게 (이 브라우저에만 저장돼)" style="padding:2px 8px;font-size:10px;background:#1d3f66;color:#cfe0f2;border-color:#2b5384;">↔ Wide</button>
-  <span id="app-ver" style="font-size:10px;color:#9fb8d4;">v1405</span>
+  <span id="app-ver" style="font-size:10px;color:#9fb8d4;">v1406</span>
 </div>
 <script>
 // ↔ 넓게 보기 — 브라우저마다 따로 저장 (v793)
@@ -41582,7 +41582,7 @@ function ccBoxSel(sty, size){
   const cur = ccBoxOf(sty, size);
   let h = '<select class="fi" onchange="ccBoxSet(\'' + esc(sty) + '\',\'' + esc(size) + '\',this.value)"'
         + ' title="Which carton this size is packed in. Its real empty weight comes off instead of the default."'
-        + ' style="font-size:11px;padding:2px 3px;max-width:168px;'
+        + ' style="font-size:11px;padding:2px 3px;min-width:150px;max-width:190px;'
         + (cur ? 'font-weight:700;' : 'color:#6b7280;') + '">';
   h += '<option value=""' + (cur ? '' : ' selected') + '>' + CC_CARTON_LBS + ' lb (default)</option>';
   ccBoxList().forEach(p => {
@@ -41659,7 +41659,7 @@ function ccKey(ev, el){
   if(ev.key !== 'Tab') return;
   const parts = String(el.id || '').split('-');
   const col = parts.shift(), sz = parts.join('-');
-  if(col !== 'ccw' && col !== 'ccp') return;
+  if(col !== 'ccw' && col !== 'ccp' && col !== 'ccv') return;   /* TYPECOST-1 */
   const i = _ccSizes.indexOf(sz);
   if(i < 0) return;
   const j = ev.shiftKey ? (i - 1) : (i + 1);
@@ -41717,6 +41717,8 @@ function ccCostPatch(row){
     const cur = (raw == null || raw === '') ? null : Number(raw);
     if(cur !== null && Math.abs(cur - val) < 0.0001) return;   /* 안 바뀌었으면 안 보낸다 */
     patch[pair[1]] = val; put++;
+    /* ⭐ 계산기가 제 값을 쓰면 손으로 친 기억은 지운다 - 안 지우면 옛 숫자가 칸에 남는다 */
+    try{ delete _ccTyped[ccTypedKey(sty, pair[0])]; }catch(e){}
   });
   return { patch: patch, put: put, skip: skip };
 }
@@ -41991,7 +41993,14 @@ function ccRefresh(){
     put('ccf', ccFabHtml(got));
     put('ccr', got ? ccMoney(got.rest) : '&mdash;');
     put('ccb', got ? ccMoney(got.sub) : '&mdash;');
-    put('cco', ccOutHtml(got));
+    /* ⚠ TYPECOST-1 - 'cco' 는 이제 입력칸이다. 치는 동안 다시 그리면 커서가 날아가므로
+       값만 조용히 맞춘다 (사람이 그 칸에 들어가 있으면 건드리지 않는다). */
+    const vEl = document.getElementById('ccv-' + sz);
+    if(vEl && vEl !== document.activeElement && !_ccTyped[ccTypedKey(sty, sz)]){
+      const want = ccCellVal(sty, sz, row, got);
+      const now = (vEl.value === '') ? '' : Number(vEl.value);
+      if(String(want) !== String(now)) vEl.value = (want === '' ? '' : costPad2(want));
+    }
     put('ccdf', ccPctHtml(ccDiffPct(sty, sz, row)));
   });
   const ap = document.getElementById('cc-avgpct');
@@ -42020,6 +42029,45 @@ function ccStamp(sty){
   const i = _costRows.findIndex(r => String(r.style_number).trim() === k);
   if(i < 0){ showToast('\u26a0 Style not found'); return; }
   bcStamp(i, ccStartOn());
+}
+/* ══════════ TYPECOST-1 - New cost 칸을 손으로 치기 ══════════
+   [stated] 하윤: "저기를 그냥 고치거나 손으로칠수있게 만들면 되는거아닌가?"
+   ⭐ 계산기가 숫자를 못 내는 스타일(원단값·무게가 없는 것)에 원가를 넣는 유일한 길이다.
+   ⚠ 친 값은 이 창에서만 기억한다 - 진짜 값은 styles 표에 바로 들어간다. */
+let _ccTyped = {};
+function ccTypedKey(sty, size){
+  return String(sty || '').trim().toUpperCase() + '|' + String(size || '').trim().toUpperCase();
+}
+/* 그 칸에 보일 값. 사람이 친 것 > 계산기 > 원가표 차례. */
+function ccCellVal(sty, size, row, got){
+  const t = _ccTyped[ccTypedKey(sty, size)];
+  if(t != null) return t;
+  if(got) return Number(got.out.toFixed(2));
+  if(row){
+    const col = (costSizesOf(row).find(p => p[0] === size) || [])[1];
+    if(col){ const c = costEff(row, col); if(c != null) return Number(Number(c).toFixed(2)); }
+  }
+  return '';
+}
+/* ⭐⭐⭐ 원가표에 쓰는 길은 ccStylePut 하나뿐이다. 여기서 따로 PATCH 하지 않는다. */
+async function ccCostSet(sty, size, v){
+  const row = ccRowOf(sty);
+  if(!row){ showToast('\u26a0 Style not found'); return; }
+  if(costLocked(row)){ showToast('\u26a0 This style is confirmed \u2014 press \u21ba Unlock first'); return; }
+  const col = (costSizesOf(row).find(p => p[0] === size) || [])[1];
+  if(!col){ showToast('\u26a0 That size is not on the cost sheet'); return; }
+  const s = String(v == null ? '' : v).trim();
+  const n = (s === '') ? null : Number(s);
+  if(s !== '' && !(isFinite(n) && n > 0)){ showToast('\u26a0 Cost must be a number above 0'); return; }
+  ccMark('saving');
+  const ok = await ccStylePut(row, (function(){ const p = {}; p[col] = n; return p; })());
+  ccMark(ok ? 'ok' : 'fail');
+  if(!ok){ showToast('\u26a0 That cost did NOT save \u2014 try again'); return; }
+  row[col] = n;                                   /* 화면이 보는 줄도 같이 맞춘다 */
+  if(n == null) delete _ccTyped[ccTypedKey(sty, size)];
+  else _ccTyped[ccTypedKey(sty, size)] = n;       /* 다시 그려도 안 사라지게 */
+  _ccPriceStale = true;
+  ccRefresh();
 }
 /* NEWCOST-1 - Min margin % 를 저장한다.
    ⭐⭐⭐ styles 표에 쓰는 곳은 ccStylePut 하나뿐이어야 한다 - 여기서 따로 PATCH 하지 않는다. */
@@ -42200,7 +42248,25 @@ function ccPanelHtml(){
     h += '<td id="ccf-' + esc(sz) + '" style="text-align:right;">' + ccFabHtml(got) + '</td>';
     h += '<td id="ccr-' + esc(sz) + '" style="text-align:right;">' + (got ? ccMoney(got.rest) : '&mdash;') + '</td>';
     h += '<td id="ccb-' + esc(sz) + '" style="text-align:right;">' + (got ? ccMoney(got.sub) : '&mdash;') + '</td>';
-    h += '<td id="cco-' + esc(sz) + '" style="text-align:right;font-weight:800;color:#047857;">' + ccOutHtml(got) + '</td>';
+    /* ══ TYPECOST-1 - 손으로 칠 수 있는 New cost 칸 ══ */
+    const shown = ccCellVal(sty, sz, row, got);
+    const typed = _ccTyped[ccTypedKey(sty, sz)] != null;
+    /* ⚠ 바깥 `locked` 는 이 표 **아래에서** 선언된다 - 여기서 직접 센다 (한 번 걸렸다) */
+    const lk = row ? costLocked(row) : false;
+    h += '<td id="cco-' + esc(sz) + '" style="text-align:right;white-space:nowrap;">'
+       + '<input id="ccv-' + esc(sz) + '" class="fi num" type="text" inputmode="decimal" value="' + (shown === '' ? '' : costPad2(shown)) + '"'
+       + (lk ? ' disabled' : '')
+       + ' onchange="costPadCell(this);ccCostSet(\'' + esc(sty) + '\',\'' + esc(sz) + '\',this.value)"'
+       + ' onkeydown="ccKey(event,this)"'
+       + ' title="' + (lk ? 'This style is confirmed - press Unlock to change it.'
+                              : 'The calculator fills this in. Type over it to set the cost by hand. Tab goes to the size below.') + '"'
+       + ' style="width:78px;text-align:right;font-size:12px;padding:2px 5px;font-weight:800;color:#047857;'
+       + (lk ? 'background:#f1f5f9;color:#64748b;' : (typed ? 'background:#fffbeb;border-color:#fcd34d;' : '')) + '"'
+       + ' placeholder="\u2014">'
+       + (got && got.noFab ? '<div style="font-size:9.5px;font-weight:700;color:#b45309;line-height:1.1;"'
+            + ' title="The fabric cost is NOT in this number yet">+ fabric</div>' : '')
+       + (typed ? '<div style="font-size:9px;color:#b45309;line-height:1.1;">by hand</div>' : '')
+       + '</td>';
     h += '<td class="tl" style="color:#6b7280;">' + (cur == null ? '&mdash;' : ccMoney(cur, 2)) + '</td>';
     h += '<td id="ccdf-' + esc(sz) + '" style="text-align:right;white-space:nowrap;">'
        + ccPctHtml(ccDiffPct(sty, sz, row)) + '</td></tr>';
@@ -42256,6 +42322,9 @@ function ccPanelHtml(){
      + (_ccHistOpen === sty ? ccHistHtml(sty, row) : '') + '</div>';
   h += '<div style="margin-top:8px;padding-top:7px;border-top:1px solid var(--border);font-size:11px;color:#6b7280;line-height:1.75;">'
      + '<div><b style="color:#374151;">1</b> &nbsp;Type a number and leave the box \u2014 it saves by itself, <b>and the cost sheet is updated with it</b>. Watch the <b>\u2714 saved</b> mark above.</div>'
+     + '<div style="color:#374151;">\u270E &nbsp;<b>New cost</b> can be typed over by hand \u2014 use that for a style the calculator cannot work out (no fabric price or no box weight). '
+     + 'A hand-typed cost shows <b style="color:#b45309;">by hand</b>. '
+     + '<b>Careful:</b> on a style the calculator CAN work out, changing a fee or a box weight writes the calculated cost over it again \u2014 press <b>\u2714 Confirm this cost</b> to keep yours.</div>'
      + '<div><b style="color:#374151;">2</b> &nbsp;<b>\u2714 Confirm this cost</b> &mdash; your tick that the number is right. Nothing happens to any box yet; it only makes the next button live.</div>'
      + '<div><b style="color:#374151;">3</b> &nbsp;<b>\uD83D\uDCCC Stamp \u2014 apply new cost</b> &mdash; <b>this is where the cost starts being used.</b> With <b>Start on = today</b> it writes the cost onto the boxes in stock and onto every box that arrives from now on. A box that already has a cost is never changed.</div>'
      + '<div style="color:#374151;">\uD83D\uDCC5 &nbsp;<b>Start on a future date</b> (for example 2027-01-01) and nothing happens until that day \u2014 the boxes in stock are not touched, and arrivals keep the cost you set before. From that day on, new boxes get this one.</div>'
@@ -42505,7 +42574,7 @@ async function costOpen(){
   const ex=document.getElementById('modal-cost'); if(ex) ex.remove();
   const div=document.createElement('div'); div.id='modal-cost';
   div.style.cssText='position:fixed;inset:0;background:rgba(0,0,0,.55);z-index:9999;display:flex;align-items:center;justify-content:center;';
-  div.innerHTML=`<div style="background:#fff;border-radius:12px;width:1200px;max-width:97vw;max-height:92vh;display:flex;flex-direction:column;overflow:hidden;box-shadow:0 20px 60px rgba(0,0,0,.35);">
+  div.innerHTML=`<div style="background:#fff;border-radius:12px;width:1560px;max-width:98vw;max-height:94vh;display:flex;flex-direction:column;overflow:hidden;box-shadow:0 20px 60px rgba(0,0,0,.35);">
     <div style="background:#065f46;color:#fff;padding:11px 16px;font-weight:800;font-size:13.5px;display:flex;align-items:center;gap:10px;">💲 Cost &amp; Margin <span style="font-size:11px;font-weight:600;color:#a7f3d0;">Per style / size cost + min margin — owner &amp; accounting only</span>
       <input id="cost-search" placeholder="🔍 style / desc" oninput="costRender(this.value)" style="margin-left:auto;font-size:12px;padding:5px 10px;border-radius:7px;border:1px solid #34d399;width:170px;">
       <button class="btn btn-sm" id="cost-save" onclick="costSave()" style="background:#f59e0b;color:#fff;border-color:#f59e0b;font-weight:800;" disabled>💾 Save changes</button>
