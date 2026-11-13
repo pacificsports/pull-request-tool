@@ -314,7 +314,7 @@ body.po-dragging{user-select:none;}
   </span>
   <select id="lang-sel" onchange="setLang(this.value)" style="font-size:11px;padding:3px 6px;border-radius:5px;border:none;background:#1d3f66;color:#fff;"><option value="ko">한국어</option><option value="en">English</option><option value="es">Español</option></select>
   <button id="wide-btn" class="btn btn-sm" onclick="toggleWide()" title="화면 넓게 / 좁게 — 기본은 넓게 (이 브라우저에만 저장돼)" style="padding:2px 8px;font-size:10px;background:#1d3f66;color:#cfe0f2;border-color:#2b5384;">↔ Wide</button>
-  <span id="app-ver" style="font-size:10px;color:#9fb8d4;">v1404</span>
+  <span id="app-ver" style="font-size:10px;color:#9fb8d4;">v1405</span>
 </div>
 <script>
 // ↔ 넓게 보기 — 브라우저마다 따로 저장 (v793)
@@ -42021,6 +42021,21 @@ function ccStamp(sty){
   if(i < 0){ showToast('\u26a0 Style not found'); return; }
   bcStamp(i, ccStartOn());
 }
+/* NEWCOST-1 - Min margin % 를 저장한다.
+   ⭐⭐⭐ styles 표에 쓰는 곳은 ccStylePut 하나뿐이어야 한다 - 여기서 따로 PATCH 하지 않는다. */
+async function ccMarginSet(sty, v){
+  const row = ccRowOf(sty);
+  if(!row){ showToast('\u26a0 Style not found'); return; }
+  const s = String(v == null ? '' : v).trim();
+  const n = (s === '') ? null : Number(s);
+  if(s !== '' && !(isFinite(n) && n >= 0)){ showToast('\u26a0 Min margin % must be a number'); return; }
+  ccMark('saving');
+  const ok = await ccStylePut(row, { min_margin_pct: n });
+  ccMark(ok ? 'ok' : 'fail');
+  if(!ok){ showToast('\u26a0 Min margin did NOT save \u2014 try again'); return; }
+  row.min_margin_pct = n;                 /* 화면이 보는 줄도 같이 맞춘다 */
+  _ccPriceStale = true;                   /* 닫을 때 주문화면 최소가를 다시 읽는다 */
+}
 /* STAMPONE-1 - 도장 떼기. 목록 줄에 있던 \u21ba 를 여기로 옮겼다. */
 function ccUnapply(sty){
   const k = String(sty || '').trim();
@@ -42106,6 +42121,21 @@ function ccPanelHtml(){
        + (hint ? ' <span style="font-weight:500;color:#9ca3af;">' + hint + '</span>' : '') + '</div>'
        + ccInput(sty, f[0], ccHas(sty, f[0]) ? c[f[0]] : '', String(d[f[0]])) + '</div>';
   });
+  /* NEWCOST-1 - Min margin % 를 여기로 옮겨 왔다 ([stated] 하윤: 목록을 지우기 전에 먼저 옮기자).
+     ⚠ 이 값은 pr_config 가 아니라 **styles 표**의 칸이다. 그래서 저장은 ccStylePut 으로 간다. */
+  if(sty !== CC_ALL){
+    const mmRow = ccRowOf(sty);
+    const mm = mmRow ? costEff(mmRow, 'min_margin_pct') : null;
+    const mmLock = mmRow ? costLocked(mmRow) : false;
+    h += '<div><div style="font-size:10px;font-weight:700;color:#475569;">Min margin %'
+       + ' <span style="font-weight:500;color:#9ca3af;">price guard</span></div>'
+       + '<input class="fi num" type="number" step="1" value="' + (mm != null ? mm : '') + '"'
+       + (mmLock ? ' disabled' : '')
+       + ' onchange="ccMarginSet(\'' + esc(sty) + '\',this.value)"'
+       + ' title="If an order line is priced under cost x (1 + this %), that Price cell turns red. It never sets a price."'
+       + ' style="width:70px;text-align:right;font-size:12px;padding:2px 5px;'
+       + (mmLock ? 'background:#f1f5f9;color:#64748b;' : '') + '" placeholder="\u2014"></div>';
+  }
   /* [stated] 하윤이 헷갈려 한 자리다 - 「삯을 저장」과 「원가표로 보내기」를 나란히 둔다 */
   h += '<div style="margin-left:auto;"><span class="cc-saved" style="font-size:11px;font-weight:700;color:#047857;">\u2714 saved</span></div>';
   h += '</div>';
@@ -42128,8 +42158,9 @@ function ccPanelHtml(){
      + '<th title="Which carton this size is packed in. Its empty weight is what comes off the case weight.">Box</th>'
      + '<th>Consumption / pc</th>'
      + '<th>Fabric</th><th>Sew + freight</th><th>Subtotal</th>'
-     + '<th style="background:#047857;color:#fff;">Cost / pc</th><th class="tl">Now</th>'
-     + '<th title="How the new cost compares with what is in the cost sheet now.">Diff</th></tr>';
+     + '<th style="background:#047857;color:#fff;" title="What the calculator works out from the numbers above.">New cost</th>'
+     + '<th class="tl" title="What is saved in the cost sheet right now.">Previous cost</th>'
+     + '<th title="New cost against the previous cost.">Diff</th></tr>';
   sizes.forEach(pair => {
     const sz = pair[0], col = pair[1];
     /* ══ SIZEOFF-1 - 안 만드는 사이즈는 칸을 통째로 없앤다 (실수로 못 치게) ══ */
@@ -42203,7 +42234,7 @@ function ccPanelHtml(){
                             : 'Confirm the cost first.') + '"'
      + ' style="font-weight:700;' + (locked ? 'background:#065f46;color:#fff;border-color:#065f46;'
                                             : 'background:#e5e7eb;color:#9ca3af;border-color:#e5e7eb;cursor:not-allowed;') + '">'
-     + '\uD83D\uDCCC Stamp onto boxes</button>';
+     + '\uD83D\uDCCC Stamp \u2014 apply new cost</button>';
   if(locked){
     h += '<span style="font-size:11px;color:#047857;">\u2714 confirmed '
        + esc(String(costConfirmedAt(row) || '').slice(0, 10))
@@ -42226,7 +42257,7 @@ function ccPanelHtml(){
   h += '<div style="margin-top:8px;padding-top:7px;border-top:1px solid var(--border);font-size:11px;color:#6b7280;line-height:1.75;">'
      + '<div><b style="color:#374151;">1</b> &nbsp;Type a number and leave the box \u2014 it saves by itself, <b>and the cost sheet is updated with it</b>. Watch the <b>\u2714 saved</b> mark above.</div>'
      + '<div><b style="color:#374151;">2</b> &nbsp;<b>\u2714 Confirm this cost</b> &mdash; your tick that the number is right. Nothing happens to any box yet; it only makes the next button live.</div>'
-     + '<div><b style="color:#374151;">3</b> &nbsp;<b>\uD83D\uDCCC Stamp onto boxes</b> &mdash; <b>this is where the cost starts being used.</b> With <b>Start on = today</b> it writes the cost onto the boxes in stock and onto every box that arrives from now on. A box that already has a cost is never changed.</div>'
+     + '<div><b style="color:#374151;">3</b> &nbsp;<b>\uD83D\uDCCC Stamp \u2014 apply new cost</b> &mdash; <b>this is where the cost starts being used.</b> With <b>Start on = today</b> it writes the cost onto the boxes in stock and onto every box that arrives from now on. A box that already has a cost is never changed.</div>'
      + '<div style="color:#374151;">\uD83D\uDCC5 &nbsp;<b>Start on a future date</b> (for example 2027-01-01) and nothing happens until that day \u2014 the boxes in stock are not touched, and arrivals keep the cost you set before. From that day on, new boxes get this one.</div>'
      + '</div>';
   h += '</div>';
