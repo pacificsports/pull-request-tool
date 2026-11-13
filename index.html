@@ -314,7 +314,7 @@ body.po-dragging{user-select:none;}
   </span>
   <select id="lang-sel" onchange="setLang(this.value)" style="font-size:11px;padding:3px 6px;border-radius:5px;border:none;background:#1d3f66;color:#fff;"><option value="ko">한국어</option><option value="en">English</option><option value="es">Español</option></select>
   <button id="wide-btn" class="btn btn-sm" onclick="toggleWide()" title="화면 넓게 / 좁게 — 기본은 넓게 (이 브라우저에만 저장돼)" style="padding:2px 8px;font-size:10px;background:#1d3f66;color:#cfe0f2;border-color:#2b5384;">↔ Wide</button>
-  <span id="app-ver" style="font-size:10px;color:#9fb8d4;">v1403</span>
+  <span id="app-ver" style="font-size:10px;color:#9fb8d4;">v1404</span>
 </div>
 <script>
 // ↔ 넓게 보기 — 브라우저마다 따로 저장 (v793)
@@ -41153,14 +41153,12 @@ function bcCell(r, idx){
     if(g.odd)    bits.push('<span style="color:#b45309;" title="These boxes carry a size this style does not have on the cost sheet.">' + bcNum(g.odd) + ' odd size</span>');
     if(bits.length) line2 = '<div style="font-size:8.5px;line-height:1.15;">' + bits.join(' · ') + '</div>';
   }
-  const un = (cov && Number(cov.stamped) > 0)
-    ? '<button onclick="bcUnapply(' + idx + ')" title="Remove the stamped cost from this style again (boxes in stock only)" style="border:1px solid #e5e7eb;background:#fff;color:#9ca3af;border-radius:4px;padding:0 4px;font-size:10px;cursor:pointer;">↺</button>'
-    : '';
-  return '<td style="white-space:nowrap;background:#f0fdf4;">'
-    + '<div style="display:flex;gap:3px;align-items:center;justify-content:center;">'
-    + '<button id="bc-btn-' + idx + '" onclick="bcStamp(' + idx + ')" title="Stamp this cost onto every box of this style now in stock. Already-stamped boxes are skipped, never overwritten." '
-      + 'style="border:1px solid #6ee7b7;background:#065f46;color:#fff;border-radius:5px;padding:2px 7px;font-size:10.5px;font-weight:800;cursor:pointer;">📌 Stamp</button>'
-    + un + '</div><div style="text-align:center;line-height:1.1;">' + line1 + line2 + '</div></td>';
+  /* ⭐⭐⭐ STAMPONE-1 - 이 칸은 이제 **보여주기만** 한다.
+     찍고 떼는 것은 🧮 Costing 화면 한 군데에서만 ([stated] 하윤).
+     ⚠ 여기 다시 단추를 달지 말 것 - 그 화면에서는 어떤 숫자가 찍히는지 안 보인다. */
+  return '<td style="white-space:nowrap;background:#f0fdf4;text-align:center;"'
+    + ' title="How many boxes of this style carry a stamped cost. Stamping is done in the Costing tab.">'
+    + '<div style="line-height:1.1;">' + line1 + line2 + '</div></td>';
 }
 
 const KG_PER_LB = 2.20462;
@@ -41822,7 +41820,12 @@ function ccSchedHtml(sty){
   const list = _ccSched[sn];
   if(list === undefined) return '';
   if(list === null) return '<span style="color:#b91c1c;">Could not read what is set.</span>';
-  if(!list.length) return '<span style="color:#9ca3af;">Nothing is being stamped on this style yet \u2014 press \uD83D\uDCCC to start.</span>';
+  /* 🔴 2026-11-13: 옛 글자는 박스 얘기처럼 읽혔다. 그런데 이 줄은 **박스가 아니라**
+     「앞으로 들어올 박스에 쓸 가격」(pr_cost_confirmed) 얘기다. 1388 은 박스 227개가
+     이미 찍혀 있었는데도 그렇게 떠서 하윤도 나도 속았다.
+     ⚠ 찍힌 박스 수는 바로 위 ccCovHtml 이 말한다 - 두 군데서 말하지 않는다.
+     ⚠⚠ 옛 문구를 주석에 베껴 적지 말 것 - 시험의 count() 에 같이 잡힌다. */
+  if(!list.length) return '<span style="color:#9ca3af;">No going-forward cost set yet &mdash; press \uD83D\uDCCC so that boxes arriving later get stamped too.</span>';
   const by = {};
   list.forEach(r => { const d = String(r.effective_from); (by[d] = by[d] || []).push(Number(r.unit_cost)); });
   const today = ccToday();
@@ -42018,6 +42021,26 @@ function ccStamp(sty){
   if(i < 0){ showToast('\u26a0 Style not found'); return; }
   bcStamp(i, ccStartOn());
 }
+/* STAMPONE-1 - 도장 떼기. 목록 줄에 있던 \u21ba 를 여기로 옮겼다. */
+function ccUnapply(sty){
+  const k = String(sty || '').trim();
+  const i = _costRows.findIndex(r => String(r.style_number).trim() === k);
+  if(i < 0){ showToast('\u26a0 Style not found'); return; }
+  bcUnapply(i);
+}
+/* 지금 몇 박스에 원가가 찍혀 있나.
+   ⭐⭐⭐ 세는 것은 DB(box_cost_coverage) 하나뿐이다 - 여기서 또 세지 않는다. */
+function ccCovHtml(sty){
+  const cov = (typeof bcCovOf === 'function') ? bcCovOf(sty) : null;
+  if(!cov) return '';
+  const N = Number(cov.in_boxes) || 0, n = Number(cov.stamped) || 0;
+  if(!(N > 0)) return '<span style="color:#9ca3af;">no box in stock</span>';
+  const all = (n > 0) && (n >= N);
+  return '<span title="Boxes of this style in stock that carry a stamped cost. Counted by the database."'
+       + ' style="font-weight:800;color:' + (all ? '#047857' : '#6b7280') + ';">'
+       + (all ? '\u2714 ' : '') + bcNum(n) + ' / ' + bcNum(N) + '</span>'
+       + ' <span style="color:#9ca3af;">box(es) stamped</span>';
+}
 async function ccSaveInputs(){
   _ccDirty = true;                       /* 눌렀으면 무조건 한 번 보낸다 */
   const done = await ccAutoSave();
@@ -42153,6 +42176,15 @@ function ccPanelHtml(){
   });
   h += '</table>';
   h += '<div id="cc-avgpct" style="margin-top:6px;font-size:12px;color:#374151;">' + ccAvgPctHtml(sty, row) + '</div>';
+  /* STAMPONE-1 - 찍힌 박스 수 + 도장 떼기 (목록 줄에서 옮겨 왔다) */
+  h += '<div style="margin-top:6px;font-size:11.5px;display:flex;gap:10px;align-items:center;flex-wrap:wrap;">'
+     + ccCovHtml(sty);
+  const covNow = (typeof bcCovOf === 'function') ? bcCovOf(sty) : null;
+  if(covNow && Number(covNow.stamped) > 0)
+    h += '<button class="btn btn-sm" onclick="ccUnapply(\'' + esc(sty) + '\')"'
+       + ' title="Take the stamped cost off the boxes in stock, so you can stamp a new one. Boxes already shipped keep theirs."'
+       + ' style="font-size:11px;padding:2px 9px;color:#b45309;border-color:#fcd34d;">\u21ba Remove the stamps</button>';
+  h += '</div>';
   h += '<div id="cc-sched" style="margin-top:5px;font-size:11.5px;">' + ccSchedHtml(sty) + '</div>';
   const miss   = ccCostPatch(row || { style_number: sty }).skip;
   const locked = row ? costLocked(row) : false;
@@ -42529,8 +42561,10 @@ function costRender(filter){
     const m=costEff(r,'min_margin_pct');
     const cAt=costConfirmedAt(r), cBy=String(costConfirmedBy(r)||'').split('@')[0];
     const stamp = cAt ? new Date(cAt).toLocaleDateString('en-US',{month:'numeric',day:'numeric',year:'2-digit'}) : '';
-    const confirmCell = `<td style="white-space:nowrap;${lock?'background:#ecfdf5;':''}">`
-      + `<button class="btn btn-sm" onclick="costConfirm(${idx})" title="${lock?('Confirmed '+esc(stamp)+(cBy?(' by '+esc(cBy)):'')+' — click to unlock and edit again'):'Mark this style checked and lock the row'}" style="border:none;padding:1px 6px;font-size:12px;font-weight:900;color:${lock?'#047857':'#cbd5e1'};">${lock?'✔':'○'}</button>`
+    /* ⭐ STAMPONE-1 - 표시만 한다. 잠그고 푸는 것은 🧮 Costing 화면에서 ([stated] 하윤) */
+    const confirmCell = `<td style="white-space:nowrap;text-align:center;${lock?'background:#ecfdf5;':''}"`
+      + ` title="${lock?('Confirmed '+esc(stamp)+(cBy?(' by '+esc(cBy)):'')+' — unlock it in the Costing tab'):'Not confirmed yet — confirm it in the Costing tab'}">`
+      + `<span style="padding:1px 6px;font-size:12px;font-weight:900;color:${lock?'#047857':'#cbd5e1'};">${lock?'✔':'○'}</span>`
       + (lock?`<span style="font-size:9.5px;color:#047857;font-weight:700;">${esc(stamp)}</span><div style="font-size:8.5px;color:#94a3b8;line-height:1.1;">${esc(cBy)}</div>`:'')
       + `</td>`;
     const stampCell = bcCell(r, idx);            /* APPLYCOST-1 */
