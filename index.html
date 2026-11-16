@@ -314,7 +314,7 @@ body.po-dragging{user-select:none;}
   </span>
   <select id="lang-sel" onchange="setLang(this.value)" style="font-size:11px;padding:3px 6px;border-radius:5px;border:none;background:#1d3f66;color:#fff;"><option value="ko">한국어</option><option value="en">English</option><option value="es">Español</option></select>
   <button id="wide-btn" class="btn btn-sm" onclick="toggleWide()" title="화면 넓게 / 좁게 — 기본은 넓게 (이 브라우저에만 저장돼)" style="padding:2px 8px;font-size:10px;background:#1d3f66;color:#cfe0f2;border-color:#2b5384;">↔ Wide</button>
-  <span id="app-ver" style="font-size:10px;color:#9fb8d4;">v1406</span>
+  <span id="app-ver" style="font-size:10px;color:#9fb8d4;">v1407</span>
 </div>
 <script>
 // ↔ 넓게 보기 — 브라우저마다 따로 저장 (v793)
@@ -19184,19 +19184,47 @@ async function upsAdPrint(){
   let zpl = '';
   try{ zpl = R.labels.map(b64=>atob(b64)).join('\n'); }
   catch(e){ showToast('Label decode error'); return; }
-  await sendToZebraBrowserPrint(zpl, R.labels.length);
+  /* UADFIX-1 - 4x6 프린터로 보낸다. 없으면 sendToZebraBrowserPrint 가 물어본다.
+     ⚠ 2x2 롤에 4x6 을 쏘면 롤을 버린다 ([stated] 하윤). 샘플 라벨도 같은 '.62' 를 쓴다. */
+  await sendToZebraBrowserPrint(zpl, R.labels.length, UAD_PRN_4X6);
+}
+/* ══════════ UADFIX-1 (2026-11-16) ══════════
+   4x6 라벨을 쏘는 프린터. 이름이나 uid 에 이 글자가 든 것을 고른다. */
+const UAD_PRN_4X6 = '.62';
+/* ⭐⭐⭐ labelary 를 부르는 **한 군데**. 두 군데 적으면 반드시 어긋난다 (실제로 어긋나 있었다).
+   ⚠⚠ ZPL 은 **multipart 의 file 칸**으로 보내야 한다 - 몸통에 그냥 담으면 415 가 떨어진다.
+   ⚠ 200 이 와도 PDF 가 아닐 수 있다 - 크기와 종류를 보고 거른다
+     (안 보면 .pdf 이름을 단 쓰레기 파일을 쥐여 주게 된다). */
+async function uadPdfBlob(zpl){
+  const fd = new FormData();
+  fd.append('file', new Blob([String(zpl)], { type:'text/plain' }), 'label.zpl');
+  const r = await fetch('https://api.labelary.com/v1/printers/8dpmm/labels/4x6/',
+    { method:'POST', headers:{ 'Accept':'application/pdf' }, body: fd });
+  if(!r.ok){
+    const t = await r.text().catch(()=>'');
+    throw new Error('HTTP ' + r.status + (t ? ' ' + t.slice(0, 80) : ''));
+  }
+  const blob = await r.blob();
+  if(blob.size < 300 || (blob.type && blob.type.indexOf('pdf') < 0 && blob.type.indexOf('octet') < 0))
+    throw new Error('not a PDF (' + (blob.type || '?') + ', ' + blob.size + ' bytes)');
+  return blob;
+}
+function uadPdfName(R){
+  const t = (R && (R.tracking || [])[0]) || 'label';
+  return 'label-' + String(t).replace(/[^A-Za-z0-9_-]/g, '') ;
 }
 async function upsAdPdf(){
   const R = _upsAd && _upsAd.res;
   if(!R || !(R.labels||[]).length){ showToast('No label'); return; }
-  let zpl=''; try{ zpl = R.labels.map(b64=>atob(b64)).join('\n'); }catch(e){ return; }
+  let zpl=''; try{ zpl = R.labels.map(b64=>atob(b64)).join('\n'); }catch(e){ showToast('Label decode error'); return; }
+  showToast('\u23f3 Building PDF\u2026');
   try{
-    const r = await fetch('https://api.labelary.com/v1/printers/8dpmm/labels/4x6/',
-      { method:'POST', headers:{ 'Accept':'application/pdf' }, body:zpl });
-    if(!r.ok) throw new Error('labelary ' + r.status);
-    _lblSaveBlob(await r.blob(), 'ups-' + (R.tracking||['label'])[0] + '.pdf');
+    _lblSaveBlob(await uadPdfBlob(zpl), uadPdfName(R) + '.pdf');
+    showToast('\u2b07 PDF downloaded');
   }catch(e){
-    _lblSaveBlob(new Blob([zpl],{type:'text/plain'}), 'ups-' + (R.tracking||['label'])[0] + '.zpl');
+    /* ⚠ 조용히 .zpl 을 떨구지 않는다 - 왜 PDF 가 아닌지 말해 준다 */
+    _lblSaveBlob(new Blob([zpl],{type:'text/plain'}), uadPdfName(R) + '.zpl');
+    showToast('\u26a0 Could not make the PDF (' + (e.message || e) + ') \u2014 saved the raw ZPL instead');
   }
 }
 /* UPSAD-v5 (2026-09-23) - 만든 라벨을 바로 이메일로 보낸다.
@@ -19211,10 +19239,9 @@ async function upsAdLabelPdfB64(labelsIn){
   let zpl = '';
   try{ zpl = R.labels.map(b64=>atob(b64)).join('\n'); }catch(e){ return null; }
   try{
-    const r = await fetch('https://api.labelary.com/v1/printers/8dpmm/labels/4x6/',
-      { method:'POST', headers:{ 'Accept':'application/pdf' }, body:zpl });
-    if(!r.ok) return null;
-    const buf = new Uint8Array(await r.arrayBuffer());
+    /* UADFIX-1 - 전에는 몸통에 ZPL 을 그대로 담아 415 가 났고, 그래서 **붙임 없이** 메일이 나갔다 */
+    const blob = await uadPdfBlob(zpl);
+    const buf = new Uint8Array(await blob.arrayBuffer());
     let s = ''; for(let i=0;i<buf.length;i++) s += String.fromCharCode(buf[i]);
     return btoa(s);
   }catch(e){ return null; }
@@ -19401,7 +19428,7 @@ async function upsAdHistPrint(id){
   if(!(row.labels||[]).length){ showToast('\u26a0 This label was made before we started keeping the label image \u2014 tracking only'); return; }
   let zpl = '';
   try{ zpl = row.labels.map(b64=>atob(b64)).join('\n'); }catch(e){ showToast('Label decode error'); return; }
-  await sendToZebraBrowserPrint(zpl, row.labels.length);
+  await sendToZebraBrowserPrint(zpl, row.labels.length, UAD_PRN_4X6);   /* UADFIX-1 */
 }
 async function upsAdHistPdf(id){
   const row = upsAdHistFind(id); if(!row) return;
