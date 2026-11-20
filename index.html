@@ -314,7 +314,7 @@ body.po-dragging{user-select:none;}
   </span>
   <select id="lang-sel" onchange="setLang(this.value)" style="font-size:11px;padding:3px 6px;border-radius:5px;border:none;background:#1d3f66;color:#fff;"><option value="ko">한국어</option><option value="en">English</option><option value="es">Español</option></select>
   <button id="wide-btn" class="btn btn-sm" onclick="toggleWide()" title="화면 넓게 / 좁게 — 기본은 넓게 (이 브라우저에만 저장돼)" style="padding:2px 8px;font-size:10px;background:#1d3f66;color:#cfe0f2;border-color:#2b5384;">↔ Wide</button>
-  <span id="app-ver" style="font-size:10px;color:#9fb8d4;">v1420</span>
+  <span id="app-ver" style="font-size:10px;color:#9fb8d4;">v1422</span>
 </div>
 <script>
 // ↔ 넓게 보기 — 브라우저마다 따로 저장 (v793)
@@ -41221,7 +41221,7 @@ const FAB_STYLES = {
   CTN30:['1311','1314','1315','1315R','1322','2310','2312','2316','3310','5310'],
   CVC30:['1348','1362','1364','1368','1388','2382','2388','8368','9368'],
   SNOW:['1350','1351','1352','1354','2350','3350','5350'],
-  TRICOLOR:['1230','1232','1234'],
+  TRICOLOR:['1230','1232','1234','2234'],
   HTR22:['1260','1262','1264','2260','2262','2264','3260','3262','5260','5262'],
   PFD30:['1390','1392','1394'],
   TRIBLEND:['1530','1532'],
@@ -41457,6 +41457,21 @@ function ccWtCommit(sty, size, v){
    🔴🔴🔴 2026-11-12: `_bxWt` 를 통째로 POST 했다가 화면이 아직 무게를 안 읽은 상태에서
       한 스타일만 저장돼 **나머지 스타일 무게가 전부 날아갔다.**
    ⚠ 화면이 무엇을 들고 있든, DB 에서 지워지는 칸은 **사람이 비운 그 칸뿐**이어야 한다. */
+/* ⭐⭐⭐ WTRACE-2 (2026-11-20) - 「보냈으니 지운다」 가 아니라 「보낸 값 그대로면 지운다」.
+   저장은 await 가 둘(읽기·쓰기)라 0.3~1초가 걸린다. 그 사이에 사람이 그 칸을 또 치면,
+   전에는 보냈다는 이유만으로 표시를 지워서, 바로 뒤에 오는 `기억 = out` 이
+   그 칸을 **보낸 옛 값으로 되돌렸다**. 2234 의 L 이 18 -> 1 로 돌아가
+   DB 에도 1 이 들어간 것이 이것이다 (2026-11-20).
+   값이 달라진 칸은 표시를 남겨 둔다 - pend 가 기억을 지키고 다음 저장이 다시 보낸다. */
+function ccSentClear(touch, store, sent){
+  Object.keys(sent || {}).forEach(function(tk){
+    const p = String(tk).split('|'), st = p[0], sz = p[1];
+    const now = (store && store[st]) ? store[st][sz] : undefined;
+    const a = (now == null) ? '' : String(now);
+    const b = (sent[tk] == null) ? '' : String(sent[tk]);
+    if(a === b) delete touch[tk];
+  });
+}
 async function ccWtSave(){
   const keys = Object.keys(_bxWtTouch || {});
   if(!keys.length){ _bxWtDirty = false; return true; }
@@ -41466,14 +41481,14 @@ async function ccWtSave(){
     if(!r0.ok) throw new Error('read HTTP ' + r0.status);
     const j0 = await r0.json();
     const live = (Array.isArray(j0) && j0[0] && j0[0].v && typeof j0[0].v === 'object') ? j0[0].v : {};
-    const out = {};
+    const out = {}, sent = {};
     Object.keys(live).forEach(k => { out[String(k).trim().toUpperCase()] = Object.assign({}, live[k]); });
     keys.forEach(tk => {
       const p = String(tk).split('|'), st = p[0], sz = p[1];
       const mine = (_bxWt && _bxWt[st]) ? _bxWt[st] : null;
       const val = mine ? mine[sz] : undefined;
-      if(val == null || !(Number(val) > 0)){ if(out[st]) delete out[st][sz]; }
-      else { if(!out[st]) out[st] = {}; out[st][sz] = Number(val); }
+      if(val == null || !(Number(val) > 0)){ if(out[st]) delete out[st][sz]; sent[tk] = null; }
+      else { if(!out[st]) out[st] = {}; out[st][sz] = Number(val); sent[tk] = Number(val); }
       if(out[st] && !Object.keys(out[st]).length) delete out[st];
     });
     const r = await sbFetch('/rest/v1/pr_config?on_conflict=k', { method:'POST',
@@ -41487,15 +41502,17 @@ async function ccWtSave(){
        keys 는 맨 위에서 찍은 것이고 그 뒤로 await 가 둘(읽기·쓰기) 있다.
        그 사이에 친 칸은 keys 에 없어서 DB 에 안 써지는데, 전에는 여기서
        기억(_bxWt)과 표시(_bxWtTouch)를 **둘 다** 지워 흔적도 없이 사라졌다. */
-    const pend = {};
-    keys.forEach(k => { delete _bxWtTouch[k]; });          /* 내가 보낸 것만 지운다 */
-    Object.keys(_bxWtTouch).forEach(tk => {                /* 아직 안 보낸 칸을 챙긴다 */
-      const p = String(tk).split('|'), st = p[0], sz = p[1];
-      const mine = (_bxWt && _bxWt[st]) ? _bxWt[st][sz] : undefined;
-      if(mine != null){ if(!pend[st]) pend[st] = {}; pend[st][sz] = mine; }
-    });
+    /* ⭐⭐⭐ WTRACE-2 - out 으로 맞추되, **아직 표시가 남은 칸**(= 보낸 뒤에 또 바뀐 칸)은
+       지금 기억을 그대로 둔다. 사람이 지운 칸은 지운 채로 둔다 - 그래야 옛 값으로 안 돌아간다. */
+    ccSentClear(_bxWtTouch, _bxWt, sent);
+    const mine0 = _bxWt || {};
     _bxWt = out;
-    Object.keys(pend).forEach(st => { _bxWt[st] = Object.assign({}, _bxWt[st] || {}, pend[st]); });
+    Object.keys(_bxWtTouch).forEach(tk => {
+      const p = String(tk).split('|'), st = p[0], sz = p[1];
+      const mine = (mine0[st] || {})[sz];
+      if(mine == null){ if(_bxWt[st]){ delete _bxWt[st][sz]; if(!Object.keys(_bxWt[st]).length) delete _bxWt[st]; } }
+      else { if(!_bxWt[st]) _bxWt[st] = {}; _bxWt[st][sz] = mine; }
+    });
     _bxWtDirty = Object.keys(_bxWtTouch).length > 0;            /* 남았으면 다음에 또 보낸다 */
     return true;
   }catch(e){ return false; }
@@ -41561,7 +41578,12 @@ async function ccOffToggle(sty, size){
     if(keepId){
       const back = document.getElementById(keepId);
       if(back){
-        if(keepVal !== null && keepVal !== undefined) back.value = keepVal;
+        if(keepVal !== null && keepVal !== undefined){
+          back.value = keepVal;
+          /* WTRACE-2 - 화면만 되돌리면 기억이 뒤처져 있을 때 화면이 거짓말을 한다.
+             보이는 숫자를 기억에도 같이 적어 둔다 (빈칸·0 은 ccWtSet 가 알아서 거른다). */
+          try{ ccWtSet(sty, keepId.slice(4), keepVal); }catch(e){}
+        }
         try{ back.focus(); }catch(e){}
         try{ if(keepPos != null && back.setSelectionRange) back.setSelectionRange(keepPos, keepPos); }catch(e){}
       }
@@ -41578,13 +41600,13 @@ async function ccOffSave(){
     if(!r0.ok) throw new Error('read HTTP ' + r0.status);
     const j0 = await r0.json();
     const live = (Array.isArray(j0) && j0[0] && j0[0].v && typeof j0[0].v === 'object') ? j0[0].v : {};
-    const out = {};
+    const out = {}, sent = {};
     Object.keys(live).forEach(k => { out[String(k).trim().toUpperCase()] = Object.assign({}, live[k]); });
     keys.forEach(tk => {
       const p = String(tk).split('|'), st = p[0], sz = p[1];
       const mine = (_ccOff && _ccOff[st]) ? _ccOff[st] : null;
-      if(mine && mine[sz]){ if(!out[st]) out[st] = {}; out[st][sz] = 1; }
-      else if(out[st]) delete out[st][sz];
+      if(mine && mine[sz]){ if(!out[st]) out[st] = {}; out[st][sz] = 1; sent[tk] = 1; }
+      else { if(out[st]) delete out[st][sz]; sent[tk] = null; }
       if(out[st] && !Object.keys(out[st]).length) delete out[st];
     });
     const r = await sbFetch('/rest/v1/pr_config?on_conflict=k', { method:'POST',
@@ -41597,15 +41619,17 @@ async function ccOffSave(){
        keys 는 맨 위에서 찍은 것이고 그 뒤로 await 가 둘(읽기·쓰기) 있다.
        그 사이에 친 칸은 keys 에 없어서 DB 에 안 써지는데, 전에는 여기서
        기억(_ccOff)과 표시(_ccOffTouch)를 **둘 다** 지워 흔적도 없이 사라졌다. */
-    const pend = {};
-    keys.forEach(k => { delete _ccOffTouch[k]; });          /* 내가 보낸 것만 지운다 */
-    Object.keys(_ccOffTouch).forEach(tk => {                /* 아직 안 보낸 칸을 챙긴다 */
-      const p = String(tk).split('|'), st = p[0], sz = p[1];
-      const mine = (_ccOff && _ccOff[st]) ? _ccOff[st][sz] : undefined;
-      if(mine != null){ if(!pend[st]) pend[st] = {}; pend[st][sz] = mine; }
-    });
+    /* ⭐⭐⭐ WTRACE-2 - out 으로 맞추되, **아직 표시가 남은 칸**(= 보낸 뒤에 또 바뀐 칸)은
+       지금 기억을 그대로 둔다. 사람이 지운 칸은 지운 채로 둔다 - 그래야 옛 값으로 안 돌아간다. */
+    ccSentClear(_ccOffTouch, _ccOff, sent);
+    const mine0 = _ccOff || {};
     _ccOff = out;
-    Object.keys(pend).forEach(st => { _ccOff[st] = Object.assign({}, _ccOff[st] || {}, pend[st]); });
+    Object.keys(_ccOffTouch).forEach(tk => {
+      const p = String(tk).split('|'), st = p[0], sz = p[1];
+      const mine = (mine0[st] || {})[sz];
+      if(mine == null){ if(_ccOff[st]){ delete _ccOff[st][sz]; if(!Object.keys(_ccOff[st]).length) delete _ccOff[st]; } }
+      else { if(!_ccOff[st]) _ccOff[st] = {}; _ccOff[st][sz] = mine; }
+    });
     _ccOffDirty = Object.keys(_ccOffTouch).length > 0;            /* 남았으면 다음에 또 보낸다 */
     return true;
   }catch(e){ return false; }
@@ -41674,14 +41698,14 @@ async function ccBoxSave(){
     if(!r0.ok) throw new Error('read HTTP ' + r0.status);
     const j0 = await r0.json();
     const live = (Array.isArray(j0) && j0[0] && j0[0].v && typeof j0[0].v === 'object') ? j0[0].v : {};
-    const out = {};
+    const out = {}, sent = {};
     Object.keys(live).forEach(k => { out[String(k).trim().toUpperCase()] = Object.assign({}, live[k]); });
     keys.forEach(tk => {
       const p = String(tk).split('|'), st = p[0], sz = p[1];
       const mine = (_ccBox && _ccBox[st]) ? _ccBox[st] : null;
       const val = mine ? mine[sz] : undefined;
-      if(!val){ if(out[st]) delete out[st][sz]; }
-      else { if(!out[st]) out[st] = {}; out[st][sz] = String(val); }
+      if(!val){ if(out[st]) delete out[st][sz]; sent[tk] = null; }
+      else { if(!out[st]) out[st] = {}; out[st][sz] = String(val); sent[tk] = String(val); }
       if(out[st] && !Object.keys(out[st]).length) delete out[st];
     });
     const r = await sbFetch('/rest/v1/pr_config?on_conflict=k', { method:'POST',
@@ -41695,15 +41719,17 @@ async function ccBoxSave(){
        keys 는 맨 위에서 찍은 것이고 그 뒤로 await 가 둘(읽기·쓰기) 있다.
        그 사이에 친 칸은 keys 에 없어서 DB 에 안 써지는데, 전에는 여기서
        기억(_ccBox)과 표시(_ccBoxTouch)를 **둘 다** 지워 흔적도 없이 사라졌다. */
-    const pend = {};
-    keys.forEach(k => { delete _ccBoxTouch[k]; });          /* 내가 보낸 것만 지운다 */
-    Object.keys(_ccBoxTouch).forEach(tk => {                /* 아직 안 보낸 칸을 챙긴다 */
-      const p = String(tk).split('|'), st = p[0], sz = p[1];
-      const mine = (_ccBox && _ccBox[st]) ? _ccBox[st][sz] : undefined;
-      if(mine != null){ if(!pend[st]) pend[st] = {}; pend[st][sz] = mine; }
-    });
+    /* ⭐⭐⭐ WTRACE-2 - out 으로 맞추되, **아직 표시가 남은 칸**(= 보낸 뒤에 또 바뀐 칸)은
+       지금 기억을 그대로 둔다. 사람이 지운 칸은 지운 채로 둔다 - 그래야 옛 값으로 안 돌아간다. */
+    ccSentClear(_ccBoxTouch, _ccBox, sent);
+    const mine0 = _ccBox || {};
     _ccBox = out;
-    Object.keys(pend).forEach(st => { _ccBox[st] = Object.assign({}, _ccBox[st] || {}, pend[st]); });
+    Object.keys(_ccBoxTouch).forEach(tk => {
+      const p = String(tk).split('|'), st = p[0], sz = p[1];
+      const mine = (mine0[st] || {})[sz];
+      if(mine == null){ if(_ccBox[st]){ delete _ccBox[st][sz]; if(!Object.keys(_ccBox[st]).length) delete _ccBox[st]; } }
+      else { if(!_ccBox[st]) _ccBox[st] = {}; _ccBox[st][sz] = mine; }
+    });
     _ccBoxDirty = Object.keys(_ccBoxTouch).length > 0;            /* 남았으면 다음에 또 보낸다 */
     return true;
   }catch(e){ return false; }
@@ -53752,7 +53778,7 @@ async function psLinkIms(){
 const STYLE_FABRIC = {
   "1180":"18/1 100% Combed Ring Spun Cotton","1280":"22/1 100% Combed Ring Spun Cotton",
   "1210":"22/1 100% Cotton","1212":"22/1 100% Cotton","1214":"22/1 100% Cotton","2210":"22/1 100% Cotton","3210":"22/1 100% Cotton","5210":"22/1 100% Cotton",
-  "1230":"Tri Color","1232":"Tri Color","1234":"Tri Color",
+  "1230":"Tri Color","1232":"Tri Color","1234":"Tri Color","2234":"Tri Color",
   "1240":"24/1 Slub","1248":"24/1 Slub",
   "1260":"22/1 Color Htr","1262":"22/1 Color Htr","1264":"22/1 Color Htr",
   "1290":"20/1 100% Cotton PFD","1292":"20/1 100% Cotton PFD",
