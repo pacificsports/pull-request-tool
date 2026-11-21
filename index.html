@@ -314,7 +314,7 @@ body.po-dragging{user-select:none;}
   </span>
   <select id="lang-sel" onchange="setLang(this.value)" style="font-size:11px;padding:3px 6px;border-radius:5px;border:none;background:#1d3f66;color:#fff;"><option value="ko">한국어</option><option value="en">English</option><option value="es">Español</option></select>
   <button id="wide-btn" class="btn btn-sm" onclick="toggleWide()" title="화면 넓게 / 좁게 — 기본은 넓게 (이 브라우저에만 저장돼)" style="padding:2px 8px;font-size:10px;background:#1d3f66;color:#cfe0f2;border-color:#2b5384;">↔ Wide</button>
-  <span id="app-ver" style="font-size:10px;color:#9fb8d4;">v1425</span>
+  <span id="app-ver" style="font-size:10px;color:#9fb8d4;">v1426</span>
 </div>
 <script>
 // ↔ 넓게 보기 — 브라우저마다 따로 저장 (v793)
@@ -53549,14 +53549,11 @@ function pshField(st, sz){
   if(cat.indexOf('kid') >= 0)     return /^[2-5]T$/.test(s2) ? 'price_2t' : 'base_price';
   return PSH_BIG[s2] || 'base_price';
 }
-/* 지금 열린 거래처의 지난 오더를 훑어 **제안 목록**을 만든다. 아무것도 안 쓴다. */
-function psHistScan(){
-  const ps = _imsPS[_psGk];
-  if(!ps || !_psGk || !Array.isArray(savedCache)) return [];
-  const valid = {};
-  [SAFE_MAP, PRICE_MAP, STYLE_MASTER].forEach(function(M){
-    Object.keys(M || {}).forEach(function(k){ valid[k] = 1; }); });
-  const seen = {};
+/* ⭐⭐⭐ PSHIST2-1 - 「어느 오더가 지금 열린 거래처 것인가」 판정은 **여기 한 군데뿐**이다.
+   전에는 psHistScan 안에만 있었는데, 스타일별 이력도 같은 판정이 필요해서 빼냈다.
+   두 군데 적으면 반드시 어꺋난다. 단가가 있는 줄만 돌려준다. */
+function psOrderWalk(fn){
+  if(!_psGk || !Array.isArray(savedCache)) return;
   savedCache.forEach(function(r){
     const m = r.meta || {};
     const nm = custCanon(m.cust); if(!nm) return;
@@ -53566,14 +53563,28 @@ function psHistScan(){
       salesLines(r, wh).forEach(function(l){
         const st = String(l.style || '').trim();
         const p = Number(l.price) || 0;
-        if(!st || !valid[st] || !(p > 0)) return;
-        const f = pshField(st, l.size);
-        const key = st + '|' + f;
-        const c = seen[key] = seen[key] || { st:st, f:f, last:{ d:'', p:0 }, set:{} };
-        c.set[p.toFixed(2)] = 1;
-        if(d >= c.last.d) c.last = { d:d, p:p };
+        if(!st || !(p > 0)) return;
+        fn({ st:st, size:String(l.size || '').toUpperCase().trim(), price:p,
+             qty:Number(l.qty) || 0, date:d, po:String(r.base || ''), wh:wh });
       });
     });
+  });
+}
+/* 지금 열린 거래처의 지난 오더를 훑어 **제안 목록**을 만든다. 아무것도 안 쓴다. */
+function psHistScan(){
+  const ps = _imsPS[_psGk];
+  if(!ps || !_psGk || !Array.isArray(savedCache)) return [];
+  const valid = {};
+  [SAFE_MAP, PRICE_MAP, STYLE_MASTER].forEach(function(M){
+    Object.keys(M || {}).forEach(function(k){ valid[k] = 1; }); });
+  const seen = {};
+  psOrderWalk(function(x){
+    if(!valid[x.st]) return;
+    const f = pshField(x.st, x.size);
+    const key = x.st + '|' + f;
+    const c = seen[key] = seen[key] || { st:x.st, f:f, last:{ d:'', p:0 }, set:{} };
+    c.set[x.price.toFixed(2)] = 1;
+    if(x.date >= c.last.d) c.last = { d:x.date, p:x.price };
   });
   const out = [];
   Object.keys(seen).forEach(function(key){
@@ -53645,6 +53656,120 @@ function psHistOpen(){
 }
 function psHistAll(on){
   _pshRows.forEach(function(x, i){ const c = document.getElementById('psh-' + i); if(c) c.checked = !!on; });
+}
+/* ══════ PSHIST2-1 - 스타일 한 개의 가격 이력 ══════
+   [stated] 하윤: "각 스타일 마다 history … 가격이 얼떠케 변화해서 줬는지를 쉽게 보고 알수있게"
+   ⚠ 여기서 말하는 값은 **실제로 판 단가**다 (오더에 찍힌 것). 가격표 숫자가 아니다.
+   사이즈를 가격표 칸으로 묶는 것은 pshField() 그대로 쓴다 - 두 번 적지 않는다. */
+function psStyHistRows(st){
+  const want = String(st || '').trim();
+  const out = [];
+  psOrderWalk(function(x){ if(x.st === want) out.push(x); });
+  return out;
+}
+/* 칸마다 「값이 바뀜 지점」만 남긴다. 같은 값이 연속되면 한 줄로 접는다. */
+function psStyHistTrack(rows){
+  const by = {};
+  rows.forEach(function(x){
+    const f = pshField(x.st, x.size);
+    (by[f] = by[f] || []).push(x);
+  });
+  const out = {};
+  Object.keys(by).forEach(function(f){
+    const list = by[f].slice().sort(function(a, b){ return a.date < b.date ? -1 : a.date > b.date ? 1 : 0; });
+    const steps = [];
+    list.forEach(function(x){
+      const last = steps[steps.length - 1];
+      if(last && Math.abs(last.price - x.price) < 0.005){
+        last.to = x.date; last.qty += x.qty; last.n++;
+        if(last.pos.indexOf(x.po) < 0 && last.pos.length < 40) last.pos.push(x.po);
+        return;
+      }
+      steps.push({ price:x.price, from:x.date, to:x.date, qty:x.qty, n:1, pos:[x.po] });
+    });
+    out[f] = steps;
+  });
+  return out;
+}
+function psStyHistOpen(st){
+  const style = String(st || '').trim();
+  let rows = [];
+  try{ rows = psStyHistRows(style); }catch(e){ rows = []; }
+  const track = psStyHistTrack(rows);
+  const ps = _imsPS[_psGk] || { rows:{} };
+  const cur = (ps.rows && ps.rows[style]) || {};
+  const money = function(v){ return '$' + Number(v || 0).toFixed(2); };
+  const ORDER = ['base_price','price_2xl','price_3xl','price_4xl','price_5xl',
+                 'price_toddler','price_juvy','price_youth','price_2t'];
+  const fields = ORDER.filter(function(f){ return track[f] && track[f].length; });
+
+  /* 칸별 띄 - 왼쪽이 예날, 오른쪽이 최근. 대비 올랐나 내렸나를 같이 적는다 */
+  const trackHtml = fields.length ? fields.map(function(f){
+    const steps = track[f];
+    const chips = steps.map(function(sp, i){
+      const prev = i ? steps[i - 1].price : null;
+      const dir = prev == null ? '' : (sp.price > prev + 0.005
+        ? '<span style="color:#b91c1c;font-weight:800;">\u25b2</span> '
+        : (sp.price < prev - 0.005 ? '<span style="color:#047857;font-weight:800;">\u25bc</span> ' : ''));
+      const span = (sp.from === sp.to) ? sp.from : (sp.from + ' \u2192 ' + sp.to);
+      const last = (i === steps.length - 1);
+      return '<span style="display:inline-block;border:1px solid ' + (last ? '#1d4ed8' : '#d8dee6')
+        + ';border-radius:7px;padding:3px 9px;margin:2px 4px 2px 0;background:' + (last ? '#eff6ff' : '#fff') + ';">'
+        + dir + '<b style="font-family:Consolas,monospace;font-size:13px;">' + money(sp.price) + '</b>'
+        + ' <span style="color:#64748b;font-size:10.5px;">' + esc(span) + '</span>'
+        + ' <span style="color:#94a3b8;font-size:10.5px;">' + sp.qty.toLocaleString() + ' pcs</span></span>';
+    }).join('');
+    const now = cur[f];
+    const nowTxt = (now == null || now === '' || !(Number(now) > 0))
+      ? '<span style="color:#b45309;">not on the sheet</span>'
+      : ('<b style="font-family:Consolas,monospace;">' + money(now) + '</b>');
+    const lastSold = track[f][track[f].length - 1].price;
+    const gap = (Number(now) > 0 && Math.abs(Number(now) - lastSold) >= 0.005)
+      ? ' <span style="color:#b91c1c;font-size:10.5px;font-weight:700;">\u26a0 sheet and last sold differ</span>' : '';
+    return '<tr><td class="tl" style="white-space:nowrap;font-weight:800;color:#0f2a4a;vertical-align:top;padding-top:9px;">'
+      + esc(PSH_LBL[f] || f) + '<div style="font-weight:400;font-size:10.5px;color:#64748b;">sheet ' + nowTxt + gap + '</div></td>'
+      + '<td class="tl">' + chips + '</td></tr>';
+  }).join('') : '';
+
+  /* 아래는 낱장 목록 - 새 것부터 */
+  const det = rows.slice().sort(function(a, b){ return a.date < b.date ? 1 : a.date > b.date ? -1 : 0; });
+  const CAP = 120;
+  const detHtml = det.slice(0, CAP).map(function(x){
+    return '<tr><td style="font-family:Consolas,monospace;">' + esc(x.date) + '</td>'
+      + '<td class="tl" style="font-family:Consolas,monospace;font-size:11px;">' + esc(x.po) + '</td>'
+      + '<td>' + esc(x.wh) + '</td><td style="font-weight:700;">' + esc(x.size) + '</td>'
+      + '<td style="text-align:right;font-family:Consolas,monospace;font-weight:800;">' + money(x.price) + '</td>'
+      + '<td style="text-align:right;font-family:Consolas,monospace;">' + x.qty.toLocaleString() + '</td></tr>';
+  }).join('');
+
+  const meta = psMeta(style);
+  const ex = document.getElementById('modal-psstyh'); if(ex) ex.remove();
+  const div = document.createElement('div');
+  div.id = 'modal-psstyh';
+  div.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,.5);z-index:150;display:flex;align-items:center;justify-content:center;';
+  div.innerHTML = '<div style="background:#fff;border-radius:12px;width:860px;max-width:96vw;max-height:88vh;display:flex;flex-direction:column;overflow:hidden;box-shadow:0 20px 60px rgba(0,0,0,.35);">'
+    + '<div style="background:#0f2a4a;color:#fff;padding:11px 16px;display:flex;align-items:center;gap:10px;">'
+      + '<span style="font-size:15px;">\u{1F4DC}</span>'
+      + '<span style="font-weight:800;font-size:15px;font-family:Consolas,monospace;">' + esc(style) + '</span>'
+      + '<span style="font-size:12px;color:#93c5fd;">' + esc(meta.desc || '') + '</span>'
+      + '<span style="font-size:12px;color:#cbd5e1;margin-left:6px;">' + esc(_psCust) + '</span>'
+      + '<button class="btn btn-sm" style="margin-left:auto;background:transparent;color:#cbd5e1;border-color:#475569;" '
+      + 'onclick="document.getElementById(\'modal-psstyh\').remove()">\u2715</button></div>'
+    + '<div style="padding:10px 16px 0;font-size:11.5px;color:#64748b;">'
+      + 'What this customer was actually charged, taken from past orders. The price sheet is not a record \u2014 it only keeps one number per style.</div>'
+    + '<div style="flex:1;overflow:auto;padding:10px 16px 14px;">'
+      + (fields.length
+        ? ('<table class="etbl" style="font-size:12px;width:100%;"><thead><tr><th class="tl" style="width:150px;">PRICE BAND</th><th class="tl">OLDEST \u2192 NEWEST</th></tr></thead><tbody>' + trackHtml + '</tbody></table>')
+        : '<div class="muted" style="padding:16px 2px;">No past order has a price for this style yet.</div>')
+      + (detHtml
+        ? ('<div style="margin-top:16px;font-weight:800;font-size:12px;color:#0f2a4a;">Every order line'
+            + (det.length > CAP ? (' <span style="font-weight:400;color:#64748b;">\u2014 newest ' + CAP + ' of ' + det.length + '</span>') : '')
+            + '</div><table class="etbl" style="font-size:11.5px;width:100%;margin-top:5px;"><thead><tr>'
+            + '<th>DATE</th><th class="tl">PO</th><th>WH</th><th>SIZE</th><th>PRICE</th><th>QTY</th></tr></thead><tbody>'
+            + detHtml + '</tbody></table>')
+        : '')
+    + '</div></div>';
+  document.body.appendChild(div);
 }
 async function psHistApply(){
   const pick = [];
@@ -53877,7 +54002,8 @@ function renderPsSheet(){
     const on = !!p.included;
     const common = `
       <td style="text-align:center;"><input type="checkbox" ${on?'checked':''} onchange="psSet('${esc(x.st)}','included',this.checked,this)" style="width:15px;height:15px;accent-color:#1a56a0;cursor:pointer;"></td>
-      <td style="font-family:Consolas,monospace;font-weight:800;font-size:13px;">${esc(x.st)}</td>
+      <td style="font-family:Consolas,monospace;font-weight:800;font-size:13px;white-space:nowrap;">${esc(x.st)}`
+      + `<a href="javascript:void(0)" onclick="psStyHistOpen('${esc(x.st)}')" title="Price history \u2014 what this customer was actually charged, from past orders" style="text-decoration:none;margin-left:5px;font-size:12px;opacity:.55;">\u{1F4DC}</a></td>
       <td class="tl" style="font-size:11.5px;color:var(--text2);max-width:210px;">${esc(x.desc)}</td>
       <td class="tl"><input class="fi" value="${esc(psFabric(x.st))}" placeholder="fabric…" onchange="setStyleFabric('${esc(x.st)}',this.value)" title="Editable — saved for all customers &amp; staff" style="width:150px;font-size:11px;padding:4px;color:#0e7490;font-weight:700;"></td>`;
     const tail = `
