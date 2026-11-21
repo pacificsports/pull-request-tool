@@ -314,7 +314,7 @@ body.po-dragging{user-select:none;}
   </span>
   <select id="lang-sel" onchange="setLang(this.value)" style="font-size:11px;padding:3px 6px;border-radius:5px;border:none;background:#1d3f66;color:#fff;"><option value="ko">한국어</option><option value="en">English</option><option value="es">Español</option></select>
   <button id="wide-btn" class="btn btn-sm" onclick="toggleWide()" title="화면 넓게 / 좁게 — 기본은 넓게 (이 브라우저에만 저장돼)" style="padding:2px 8px;font-size:10px;background:#1d3f66;color:#cfe0f2;border-color:#2b5384;">↔ Wide</button>
-  <span id="app-ver" style="font-size:10px;color:#9fb8d4;">v1428</span>
+  <span id="app-ver" style="font-size:10px;color:#9fb8d4;">v1429</span>
 </div>
 <script>
 // ↔ 넓게 보기 — 브라우저마다 따로 저장 (v793)
@@ -53695,6 +53695,63 @@ function psStyHistTrack(rows){
   });
   return out;
 }
+/* ══════ PSHLOG-1 - 가격표를 언제 얼마로 바꿨나 ══════
+   위쪽 띄가 「실제로 판 값」이라면 이것은 「가격표에 적어 둔 숫자」가 바뀜 기록이다.
+   ⚠ DB 트리거가 적는다 - 화면에서 적지 않는다. 그래야 어느 길로 바꿔도 빠지지 않는다.
+   ⚠ 표를 못 읽어도 창은 멀줦해야 한다 - 안내 글만 띄운다. */
+const PSHLOG_LBL = { base_price:'XS-XL', price_2xl:'2XL', price_3xl:'3XL', price_4xl:'4XL', price_5xl:'5XL',
+  price_toddler:'TODDLER', price_juvy:'JUVY', price_youth:'YOUTH', price_2t:'KIDS 2T-5T',
+  price_3t:'KIDS 3T', price_4t:'KIDS 4T', price_5t:'KIDS 5T',
+  included:'On the price list', effective_date:'Effective date', notes:'Notes' };
+const PSHLOG_MONEY = { base_price:1, price_2xl:1, price_3xl:1, price_4xl:1, price_5xl:1,
+  price_toddler:1, price_juvy:1, price_youth:1, price_2t:1, price_3t:1, price_4t:1, price_5t:1 };
+function pshLogVal(field, v){
+  if(v == null || v === '') return '<span style="color:#b45309;">(blank)</span>';
+  if(field === 'included') return (v === 'true' || v === true) ? '\u2714 yes' : 'no';
+  if(PSHLOG_MONEY[field]){
+    const n = Number(v);
+    if(!isFinite(n)) return esc(String(v));
+    if(!(n > 0)) return '<span style="color:#b45309;">(blank)</span>';   /* 이 표에서 0 은 「없음」이다 */
+    return '<b style="font-family:Consolas,monospace;">$' + n.toFixed(2) + '</b>';
+  }
+  return esc(String(v));
+}
+async function psStyLogLoad(style){
+  const box = document.getElementById('psh-log'); if(!box) return;
+  const ps = _imsPS[_psGk];
+  if(!ps || !ps.custId){ box.innerHTML = '<div class="muted">No IMS customer linked.</div>'; return; }
+  let rows = null;
+  try{
+    const r = await sbFetch('/rest/v1/customer_price_log?select=field,old_value,new_value,changed_by,changed_at'
+      + '&customer_id=eq.' + encodeURIComponent(ps.custId)
+      + '&style_number=eq.' + encodeURIComponent(style)
+      + '&order=changed_at.desc&limit=300');
+    if(!r.ok) throw new Error('HTTP ' + r.status);
+    rows = await r.json();
+  }catch(e){ rows = null; }
+  if(!document.getElementById('modal-psstyh')) return;          /* 창을 닫았다 */
+  const note = '<div style="font-size:11px;color:#94a3b8;margin-top:3px;">'
+    + 'Only changes made from now on \u2014 the price sheet keeps one number per style, so earlier edits were not kept anywhere.</div>';
+  if(rows === null){
+    box.innerHTML = '<div class="muted">Change log is not available.</div>' + note; return;
+  }
+  if(!rows.length){
+    box.innerHTML = '<div class="muted">No change recorded for this style yet.</div>' + note; return;
+  }
+  const body = rows.map(function(x){
+    const when = String(x.changed_at || '').replace('T', ' ').slice(0, 16);
+    const who = String(x.changed_by || '').split('@')[0];
+    return '<tr><td style="font-family:Consolas,monospace;white-space:nowrap;">' + esc(when) + '</td>'
+      + '<td class="tl" style="font-weight:800;color:#0f2a4a;white-space:nowrap;">' + esc(PSHLOG_LBL[x.field] || x.field) + '</td>'
+      + '<td style="text-align:right;color:#64748b;">' + pshLogVal(x.field, x.old_value) + '</td>'
+      + '<td style="color:#94a3b8;">\u2192</td>'
+      + '<td style="text-align:left;">' + pshLogVal(x.field, x.new_value) + '</td>'
+      + '<td class="tl" style="font-size:11px;color:#64748b;">' + esc(who) + '</td></tr>';
+  }).join('');
+  box.innerHTML = '<table class="etbl" style="font-size:11.5px;width:100%;"><thead><tr>'
+    + '<th>WHEN</th><th class="tl">WHAT</th><th colspan="3">WAS \u2192 NOW</th><th class="tl">WHO</th>'
+    + '</tr></thead><tbody>' + body + '</tbody></table>' + note;
+}
 /* PSHPO-1 - 이력 창에서 PO 를 열면 그 창(z-index 150) 위로 올려야 보인다.
    오더 요약창의 osumViewPO 와 같은 방식이다 - 보는 창은 viewSavedPO 하나뿐. */
 async function psViewPO(base){
@@ -53778,6 +53835,8 @@ function psStyHistOpen(st){
       + (fields.length
         ? ('<table class="etbl" style="font-size:12px;width:100%;"><thead><tr><th class="tl" style="width:150px;">PRICE BAND</th><th class="tl">OLDEST \u2192 NEWEST</th></tr></thead><tbody>' + trackHtml + '</tbody></table>')
         : '<div class="muted" style="padding:16px 2px;">No past order has a price for this style yet.</div>')
+      + '<div style="margin-top:18px;font-weight:800;font-size:12px;color:#0f2a4a;">Price sheet changes</div>'
+      + '<div id="psh-log" style="margin-top:5px;"><span class="muted">Loading\u2026</span></div>'
       + (detHtml
         ? ('<div style="margin-top:16px;font-weight:800;font-size:12px;color:#0f2a4a;">Every order line'
             + (det.length > CAP ? (' <span style="font-weight:400;color:#64748b;">\u2014 newest ' + CAP + ' of ' + det.length + '</span>') : '')
@@ -53788,6 +53847,8 @@ function psStyHistOpen(st){
         : '')
     + '</div></div>';
   document.body.appendChild(div);
+  /* 기록은 DB 에서 읽어오므로 창을 먼저 띄우고 뒤늦게 채운다 */
+  try{ psStyLogLoad(style); }catch(e){}
 }
 async function psHistApply(){
   const pick = [];
