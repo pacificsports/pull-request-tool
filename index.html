@@ -314,7 +314,7 @@ body.po-dragging{user-select:none;}
   </span>
   <select id="lang-sel" onchange="setLang(this.value)" style="font-size:11px;padding:3px 6px;border-radius:5px;border:none;background:#1d3f66;color:#fff;"><option value="ko">한국어</option><option value="en">English</option><option value="es">Español</option></select>
   <button id="wide-btn" class="btn btn-sm" onclick="toggleWide()" title="화면 넓게 / 좁게 — 기본은 넓게 (이 브라우저에만 저장돼)" style="padding:2px 8px;font-size:10px;background:#1d3f66;color:#cfe0f2;border-color:#2b5384;">↔ Wide</button>
-  <span id="app-ver" style="font-size:10px;color:#9fb8d4;">v1432</span>
+  <span id="app-ver" style="font-size:10px;color:#9fb8d4;">v1433</span>
 </div>
 <script>
 // ↔ 넓게 보기 — 브라우저마다 따로 저장 (v793)
@@ -42140,6 +42140,71 @@ function ccPctHtml(p){
   const a = up ? '\u25b2' : (dn ? '\u25bc' : '');
   return '<b style="color:' + c + ';">' + a + ' ' + (p > 0 ? '+' : '') + p.toFixed(1) + '%</b>';
 }
+/* ══════ TIERSHEET-1 - 등급 하나를 거래처 가격표 양식으로 ══════
+   [stated] 큰 사이즈는 지금 거래처 가격표와 똑같이 추가금을 더해서 찍는다. */
+const TP_SHEET_NAME = { website:'WEBSITE PRICE LIST', tier3:'TIER 3 PRICE LIST',
+  tier2:'TIER 2 PRICE LIST', tier1:'TIER 1 PRICE LIST', best:'BEST PRICE LIST' };
+function tpSheetLevel(){
+  const el = document.getElementById('tp-sheet-lvl');
+  const v = el ? String(el.value || '') : 'best';
+  return TP_SHEET_NAME[v] ? v : 'best';
+}
+/* 그 등급에 값이 있는 스타일만. 줄 모양은 psRows() 와 똑같이 맞춘다. */
+function tpSheetRows(lvl){
+  const out = [];
+  (_costRows || []).forEach(function(r){
+    const st = String(r.style_number).trim();
+    const row = (_tp && _tp[st] && _tp[st][lvl]) || null;
+    if(!row) return;
+    const kid = tpIsKid(r);
+    const fld = tpFieldOf(r, false);
+    const main = row[fld];
+    const small = kid ? row.price_2t : null;
+    if(!(Number(main) > 0) && !(Number(small) > 0)) return;
+    const mt = psMeta(st);
+    const p = { included: true };
+    if(Number(main) > 0) p[fld] = Number(main);
+    if(kid && Number(small) > 0) p.price_2t = Number(small);
+    out.push({ st: st, desc: mt.desc, cat: mt.cat, sr: mt.sr,
+               row: (typeof PRICE_MAP === 'object' && PRICE_MAP[st]) || {}, p: p });
+  });
+  return out;
+}
+function tpSheetCount(lvl){ return tpSheetRows(lvl).length; }
+async function tpSheetPdf(){
+  const lvl = tpSheetLevel();
+  const rows = tpSheetRows(lvl);
+  const doc = await psDocHtml({ rows: rows, who: TP_SHEET_NAME[lvl] });
+  if(!doc) return;
+  const btn = document.getElementById('tp-sheet-btn');
+  await downloadPdfHtml(doc.html, 'PACIFICSPORTS-' + lvl.toUpperCase() + '-PRICESHEET.pdf',
+                        btn || null, null, 'Volume Pricing Available');
+}
+function tpSheetBarHtml(){
+  const lvl = tpSheetLevel();
+  let h = '<div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;padding:7px 2px;'
+    + 'border-top:1px solid var(--border);border-bottom:1px solid var(--border);margin:4px 0 6px;">';
+  h += '<b style="font-size:12px;color:#0f2a4a;">\u{1F5A8} Print a price sheet</b>';
+  h += '<select id="tp-sheet-lvl" onchange="tpSheetBarSync()" style="font-size:12px;padding:3px 7px;border-radius:6px;border:1px solid var(--border);">';
+  TP_LEVELS.forEach(function(p){
+    h += '<option value="' + p[0] + '"' + (p[0] === lvl ? ' selected' : '') + '>' + p[1] + '</option>';
+  });
+  h += '</select>';
+  h += '<button class="btn btn-sm" id="tp-sheet-btn" onclick="tpSheetPdf()"'
+    + ' style="background:#065f46;color:#fff;border-color:#065f46;font-weight:800;">\u2b07 Download PDF</button>';
+  h += '<span id="tp-sheet-n" style="font-size:11.5px;color:#6b7280;"></span>';
+  h += '<span style="font-size:11px;color:#9ca3af;">Same sheet we send customers \u2014 only the styles that have a price at that level. '
+    + '2XL +$0.60 \u00b7 3XL +$1.20 \u00b7 4XL +$2.00 \u00b7 5XL +$3.20 are added the same way.</span>';
+  h += '</div>';
+  return h;
+}
+function tpSheetBarSync(){
+  const el = document.getElementById('tp-sheet-n');
+  if(!el) return;
+  const lvl = tpSheetLevel();
+  const n = tpSheetCount(lvl);
+  el.innerHTML = '<b>' + n + '</b> style' + (n === 1 ? '' : 's') + ' will print';
+}
 /* ══════ CCAVG-1 - New cost / Previous cost 의 평균 ══════
    모두 한 군데에서 센다. 밑줄의 Average % 도 이것을 부른다. */
 function ccAvgOf(sty, row){
@@ -42361,6 +42426,7 @@ function tpBodyHtml(filter){
     + 'Cost is the average of <b>S to 2XL</b> (2T-5T for toddler and for the smaller kids line). '
     + 'MARGIN is the <b>best price</b> over that cost \u2014 red under +10%, amber under +35%. '
     + 'A card order keeps 96.5% of the price, so take another 3.5% off before you trust a thin one.</div>';
+  h += tpSheetBarHtml();
   h += '<table class="etbl" style="width:auto;font-size:12px;"><tr>'
     + '<th class="tl">Style</th><th class="tl">Description</th><th>Sizes</th>'
     + '<th title="Average cost of the sizes this line covers (S-2XL)">Cost</th>';
@@ -43047,6 +43113,7 @@ function costRender(filter){
   }
   if(_costTab==='CPRICE'){
     body.innerHTML = tpBodyHtml(filter);
+    try{ tpSheetBarSync(); }catch(e){}
     const note = document.getElementById('cost-tab-note');
     if(note) note.textContent = 'What we charge \u2014 one price per style per level. The customer\u2019s own price still wins over this.';
     ['ADULT','KIDS','FABRIC','COSTING','CPRICE'].forEach(t=>{ const b=document.getElementById('cost-tab-'+t); if(!b) return;
@@ -54474,8 +54541,10 @@ async function psDocHtml(opts){
   opts = opts || {};
   const forEmail = !!opts.email;
   const W = w => forEmail ? (' width="' + w + '"') : '';
-  const all = psRows().filter(x=>x.p && x.p.included);
-  if(!all.length){ showToast('⚠ No styles selected — use the checkboxes'); return null; }
+  /* TIERSHEET-1 - 줄을 밖에서 넣어 줄 수 있다. 안 넣으면 전과 똑같이 화면의 체크된 줄. */
+  const all = opts.rows ? opts.rows : psRows().filter(x=>x.p && x.p.included);
+  if(!all.length){ showToast(opts.rows ? '\u26a0 No style has a price at that level' : '\u26a0 No styles selected \u2014 use the checkboxes'); return null; }
+  const who = opts.who || _psCust;
   const kids = all.filter(psIsKid);
   const adult = all.filter(x=>!psIsKid(x));
   const num = v => (v==null||v===''||isNaN(parseFloat(v))) ? null : parseFloat(v);
@@ -54512,7 +54581,7 @@ async function psDocHtml(opts){
       <td style="padding:2px 0 8px;text-align:right;vertical-align:top;"><div style="font-size:19px;font-weight:800;letter-spacing:2px;color:#1a56a0;">PRICE SHEET</div><div style="font-size:11px;color:#6b7280;">${esc(dateStr)}</div></td>
     </tr></table>
     <table width="100%" cellpadding="0" cellspacing="0" style="background:#f0f7ff;border:1px solid #bfdbfe;border-radius:6px;margin:10px 0 2px;"><tr>
-      <td style="padding:8px 14px;font-size:13px;font-weight:800;color:#1e40af;">${esc(_psCust)}</td>
+      <td style="padding:8px 14px;font-size:13px;font-weight:800;color:#1e40af;">${esc(who)}</td>
       <td style="padding:8px 14px;text-align:right;font-size:11px;color:#374151;">2XL +$0.60&nbsp; | &nbsp;3XL +$1.20&nbsp; | &nbsp;4XL +$2.00&nbsp; | &nbsp;5XL +$3.20 (cumulative)</td>
     </tr></table>
     <div style="height:4px;"></div>
