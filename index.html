@@ -314,7 +314,7 @@ body.po-dragging{user-select:none;}
   </span>
   <select id="lang-sel" onchange="setLang(this.value)" style="font-size:11px;padding:3px 6px;border-radius:5px;border:none;background:#1d3f66;color:#fff;"><option value="ko">한국어</option><option value="en">English</option><option value="es">Español</option></select>
   <button id="wide-btn" class="btn btn-sm" onclick="toggleWide()" title="화면 넓게 / 좁게 — 기본은 넓게 (이 브라우저에만 저장돼)" style="padding:2px 8px;font-size:10px;background:#1d3f66;color:#cfe0f2;border-color:#2b5384;">↔ Wide</button>
-  <span id="app-ver" style="font-size:10px;color:#9fb8d4;">v1443</span>
+  <span id="app-ver" style="font-size:10px;color:#9fb8d4;">v1444</span>
 </div>
 <script>
 // ↔ 넓게 보기 — 브라우저마다 따로 저장 (v793)
@@ -39110,7 +39110,7 @@ function trBarHtml(){
       const oShip = (r.meta && Array.isArray(r.meta.orderShip)) ? r.meta.orderShip.filter(Boolean) : [];
       const _is3P = trDstKind(trRoute(r)) === '3P';
       const act = r.status==='TRANSIT'
-        ? `<button class="btn btn-sm btn-primary" style="background:#0f766e;border-color:#0f766e;font-weight:800;" onclick="trRecvOpen('${r.id}')" title="Boxes arrived — assign ${trKindShort(trDstKind(trRoute(r)))} bin">📦 Receive</button> <button class="btn btn-sm" style="font-size:10px;" onclick="trCancelTransit('${r.id}')" title="Cancel departure — revert to Draft">↩</button>`
+        ? `<button class="btn btn-sm btn-primary" style="background:#0f766e;border-color:#0f766e;font-weight:800;" onclick="trRecvOpen('${r.id}')" title="Boxes arrived — assign ${trKindShort(trDstKind(trRoute(r)))} bin">📦 Receive</button>${trCxlOrderBtn(r)} <button class="btn btn-sm" style="font-size:10px;" onclick="trCancelTransit('${r.id}')" title="Cancel departure — revert to Draft">↩</button>`
         : `<button class="btn btn-sm" onclick="trBuilderOpen('${r.id}')" title="Keep editing this Draft">✏️ Edit</button> `
           + (_is3P
             ? `<button class="btn btn-sm btn-primary" style="background:#7b1fa2;border-color:#7b1fa2;font-weight:800;" onclick="trShipped3P('${r.id}')" title="The truck picked it up — move each pallet into its H bin and close this shipment">🚚 Depart</button>`
@@ -44239,7 +44239,7 @@ function trRenderList(){
         + (trDstKind(trRoute(r))==='3P'
           ? `<button class="btn btn-sm btn-primary" style="background:#7b1fa2;border-color:#7b1fa2;font-weight:800;" onclick="trShipped3P('${r.id}')" title="Picked up — move each pallet into its H bin and close this shipment">🚚 Depart</button>`
           : `<button class="btn btn-sm btn-primary" style="background:#7b1fa2;border-color:#7b1fa2;font-weight:800;" onclick="trPostFromList('${r.id}')" title="The truck left — mark In Transit">🚚 Depart</button>`);
-      else if(r.status==='TRANSIT') act = `<button class="btn btn-sm btn-primary" style="background:#0f766e;border-color:#0f766e;" onclick="trRecvOpen('${r.id}')">📦 Receive ${trStopsOf(r).length ? ('('+trStopProgress(r)+')') : ('('+trKindShort(trDstKind(trRoute(r)))+')')}</button> <button class="btn btn-sm" style="font-size:10px;" onclick="trCancelTransit('${r.id}')" title="Cancel departure — back to Draft, boxes stay reserved">↩</button>`;
+      else if(r.status==='TRANSIT') act = `<button class="btn btn-sm btn-primary" style="background:#0f766e;border-color:#0f766e;" onclick="trRecvOpen('${r.id}')">📦 Receive ${trStopsOf(r).length ? ('('+trStopProgress(r)+')') : ('('+trKindShort(trDstKind(trRoute(r)))+')')}</button>${trCxlOrderBtn(r)} <button class="btn btn-sm" style="font-size:10px;" onclick="trCancelTransit('${r.id}')" title="Cancel departure — back to Draft, boxes stay reserved">↩</button>`;
       else act = `<span style="font-size:10px;color:#15803d;font-weight:800;">✓ Done</span>`;
       return `<tr>
       <td class="tl"><span style="font-family:Consolas,monospace;font-weight:700;color:#7b1fa2;text-decoration:underline;cursor:pointer;" onclick="${r.status==='LOADING'?`trBuilderOpen('${r.id}')`:`trView('${r.id}')`}">${esc(r.ref||'(no number)')}</span></td>
@@ -49294,21 +49294,65 @@ async function trView(id){
   document.body.appendChild(div);
 }
 // ── CA Receive (통째로 / 해체) ──
-/* ═══ CXLRECV-1 - 받기 화면에서 「이 PO 는 취소됐다 → 재고로 받는다」 ═══
-   ⭐ 취소 판정·물건 되돌리기는 ❌ Cancel 창이 전부 한다. 여기서는 그 창을 열어 주고,
-      끝나면 짐을 다시 읽어 받기 화면을 새로 연다. */
-async function trRecvCancelOrder(base){
+/* ═══ CXLRECV-1 + CXLBTN-1 - 「가는 중에 거래처가 PO 를 취소했다」 ═══
+   ⭐ 취소 판정·물건 되돌리기는 ❌ Cancel 창이 전부 한다. 여기서는 그 창을 열어 줄 뿐이다.
+   [stated] 하윤: 단추는 「받기 창 안」이 아니라 「Receive 옆」이다 - 취소는 가는 중에 생기는 일이다. */
+function cxlOrderFromTruck(base, after){
   const b = String(base || '');
   const rec = (typeof savedCache !== 'undefined' ? (savedCache || []) : []).find(function(s){ return String(s.base) === b; });
-  if(!rec){ alert('\u26A0 That order is not loaded on this screen.\n\nOpen it from the Orders list and press \u274C Cancel there.'); return; }
+  if(!rec){ alert('\u26A0 That order is not loaded.\n\nOpen it from the Orders list and press \u274C Cancel there.'); return; }
   if(typeof recCancelled === 'function' && recCancelled(rec)){
     showToast('\u26A0 That order is already cancelled');
     return;
   }
-  const id = _trRecvRec && _trRecvRec.id;
-  /* 취소가 끝나면 짐을 다시 읽어 이 화면을 새로 연다 (그 몫이 화물 줄로 바뀌어 있다) */
-  window._cxlAfter = function(){ try{ if(id) trRecvOpen(id); }catch(e){} };
+  window._cxlAfter = function(){ try{ if(typeof after === 'function') after(); }catch(e){} };
   cancelOrderOpen(b);
+}
+/* Receive 옆 단추 - 그 트럭에 거래처 오더가 실려 있을 때만 */
+function trCxlOrderBtn(r){
+  try{
+    if(!r || (r.status !== 'TRANSIT' && r.status !== 'LOADING')) return '';
+    const os = ((r.meta || {}).orderShip) || [];
+    if(!os.length) return '';
+    const n = osGroupByOrder(os).length;
+    return ' <button class="btn btn-sm" style="background:#fff;color:#b91c1c;border-color:#fecaca;font-weight:800;font-size:10.5px;white-space:nowrap;"'
+      + ' onclick="trCxlOrderPick(\'' + r.id + '\')"'
+      + ' title="The customer cancelled a PO that is on this truck \u2014 cancel the order here and its goods become normal cargo, so CA receives them into stock when the truck arrives.">'
+      + '\u274C PO cancelled' + (n > 1 ? (' (' + n + ')') : '') + '</button>';
+  }catch(e){ return ''; }
+}
+function trCxlAfter(){
+  /* 목록을 다시 읽는다 - 그 오더 몫이 이제 화물 줄이라 숫자가 달라진다 */
+  try{ if(document.getElementById('modal-tr')) trOpen(); }catch(e){}
+  try{ if(typeof trBarUpd === 'function') trBarUpd(); }catch(e){}
+}
+async function trCxlOrderPick(id){
+  let rec = null;
+  try{ rec = await trGet(id); }catch(e){}
+  if(!rec){ showToast('\u26A0 Load failed'); return; }
+  const gs = osGroupByOrder(((rec.meta || {}).orderShip) || []);
+  if(!gs.length){ showToast('\u26A0 No customer order on this truck'); return; }
+  if(gs.length === 1){ cxlOrderFromTruck(gs[0].base, trCxlAfter); return; }
+  const ex = document.getElementById('modal-cxlpick'); if(ex) ex.remove();
+  const div = document.createElement('div');
+  div.id = 'modal-cxlpick';
+  div.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,.5);z-index:135;display:flex;align-items:center;justify-content:center;';
+  div.innerHTML = '<div style="background:#fff;border-radius:12px;width:560px;max-width:94vw;box-shadow:0 20px 60px rgba(0,0,0,.35);">'
+    + '<div style="background:#7f1d1d;color:#fff;border-radius:12px 12px 0 0;padding:11px 16px;font-weight:800;display:flex;justify-content:space-between;align-items:center;">'
+      + '<span>\u274C Which PO did the customer cancel?</span>'
+      + '<button onclick="document.getElementById(\'modal-cxlpick\').remove()" style="background:none;border:none;color:#fff;font-size:17px;cursor:pointer;">\u2715</button></div>'
+    + '<div style="padding:14px 16px;">'
+      + '<div style="font-size:11.5px;color:#64748b;margin-bottom:8px;">' + esc(rec.ref || '') + ' \u00b7 ' + gs.length + ' customer orders are on this truck.</div>'
+      + gs.map(function(g){
+          return '<div style="display:flex;align-items:center;gap:9px;padding:7px 0;border-bottom:1px solid #e2e8f0;">'
+            + '<div style="font-size:12.5px;"><b>' + esc(g.cust || '\u2014') + '</b> <span style="color:#a78bfa;font-weight:700;">' + esc(g.po || '') + '</span>'
+            + '<div style="font-size:11px;color:#64748b;">' + g.boxes + ' box \u00b7 ' + g.pcs.toLocaleString() + ' pcs</div></div>'
+            + '<button class="btn btn-sm" style="margin-left:auto;background:#b91c1c;color:#fff;border-color:#b91c1c;font-weight:800;white-space:nowrap;"'
+            + ' onclick="document.getElementById(\'modal-cxlpick\').remove();cxlOrderFromTruck(\'' + esc(g.base) + '\', trCxlAfter)">\u274C Cancel this PO</button></div>';
+        }).join('')
+    + '</div></div>';
+  document.body.appendChild(div);
+  if(typeof initModalDrag === 'function') initModalDrag(div);
 }
 let _trRecvRec = null, _trRecvPallets = [];
 async function trRecvOpen(id){
@@ -49359,9 +49403,9 @@ async function trRecvOpen(id){
       </div>
       ${(function(){ const _os=(Array.isArray(M.orderShip)?M.orderShip.filter(Boolean):[]); if(!_os.length) return ''; const _ob=_os.reduce((s,o)=>s+(Number(o.boxes)||0),0), _op=_os.reduce((s,o)=>s+(Number(o.pcs)||0),0); const _og=osGroupByOrder(_os);   /* OSCOUNT-1 - 몫이 아니라 오더를 센다 */ return `<div style="margin-bottom:10px;padding:10px 14px;background:#faf5ff;border:1px solid #ddd6fe;border-radius:8px;font-size:12px;color:#6d28d9;">
         <div style="font-weight:800;margin-bottom:5px;">🧾 + ${_og.length} customer order${_og.length>1?'s':''} also on this truck <span style="font-weight:600;color:#7c3aed;">(${_ob} box · ${_op.toLocaleString()} pcs — prepped at SC, NOT warehouse stock; route to their order)</span></div>
-        <div style="display:flex;flex-direction:column;gap:3px;">${_og.map(g=>`<div style="display:flex;align-items:center;gap:7px;">• <b>${esc(g.cust||'—')}</b> <span style="color:#a78bfa;font-weight:700;">${esc(g.po||'')}</span> — ${g.boxes} box · ${g.pcs.toLocaleString()} pcs${g.pals.length?` <span style="color:#9ca3af;">(${esc(g.pals.join(', '))})</span>`:''}
-          <!-- CXLRECV-1 - 거래처가 가는 중에 취소했을 때 -->
-          <button class="btn btn-sm" style="margin-left:auto;background:#fff;color:#b91c1c;border-color:#fecaca;font-weight:800;font-size:10.5px;white-space:nowrap;" onclick="trRecvCancelOrder('${esc(g.base||'')}')" title="The customer cancelled this PO. Cancel the order and turn these boxes into normal cargo so you can receive them into stock right here.">\u274C PO cancelled \u2014 take into stock</button></div>`).join('')}</div></div>`; })()}
+        <div style="display:flex;flex-direction:column;gap:2px;">${_og.map(g=>`<div>• <b>${esc(g.cust||'—')}</b> <span style="color:#a78bfa;font-weight:700;">${esc(g.po||'')}</span> — ${g.boxes} box · ${g.pcs.toLocaleString()} pcs${g.pals.length?` <span style="color:#9ca3af;">(${esc(g.pals.join(', '))})</span>`:''}</div>`).join('')}</div>
+        <!-- CXLBTN-1 - 취소는 **가는 중**에 하는 일이다. 단추는 Transfers 목록의 📦 Receive 옆에 있다 -->
+        <div style="font-size:11px;color:#7c3aed;margin-top:5px;">A customer cancelled one of these? Close this and press <b>\u274C PO cancelled</b> next to \📦 Receive in the transfer list \u2014 then its goods come back here as normal cargo.</div></div>`; })()}
       <datalist id="trr-ca-bins">${caLocs.map(L=>'<option value="'+esc(L)+'">').join('')}</datalist>
       <datalist id="trr-h-bins">${hLocs.map(L=>'<option value="'+esc(L)+'">').join('')}</datalist>
       <div style="margin-bottom:8px;display:flex;gap:8px;align-items:center;flex-wrap:wrap;">
