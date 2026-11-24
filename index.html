@@ -314,7 +314,7 @@ body.po-dragging{user-select:none;}
   </span>
   <select id="lang-sel" onchange="setLang(this.value)" style="font-size:11px;padding:3px 6px;border-radius:5px;border:none;background:#1d3f66;color:#fff;"><option value="ko">한국어</option><option value="en">English</option><option value="es">Español</option></select>
   <button id="wide-btn" class="btn btn-sm" onclick="toggleWide()" title="화면 넓게 / 좁게 — 기본은 넓게 (이 브라우저에만 저장돼)" style="padding:2px 8px;font-size:10px;background:#1d3f66;color:#cfe0f2;border-color:#2b5384;">↔ Wide</button>
-  <span id="app-ver" style="font-size:10px;color:#9fb8d4;">v1438</span>
+  <span id="app-ver" style="font-size:10px;color:#9fb8d4;">v1439</span>
 </div>
 <script>
 // ↔ 넓게 보기 — 브라우저마다 따로 저장 (v793)
@@ -8911,6 +8911,167 @@ function cxlGroup(rows, kind){
 }
 var PB_SZ_ORD = ['2T','3T','4T','5T','XS','S','M','L','XL','2XL','3XL','4XL','5XL','6XL','OS'];
 
+/* ═══ CXLTRUCK-1 - 취소한 오더의 물건이 트럭 위에 있을 때 ═══
+   오더 박스를 트럭에 태우는 길(`meta.orderShip`)은 **재고를 안 건드린다.**
+   오더가 ✅ Complete 될 때 빠지게 되어 있어서, 취소하면 그 몫이 갈 곳을 잃는다:
+   SC 선반에 있는 것으로 남고, CA 에서는 받을 줄이 없다.
+   여기서 그 몫을 **트럭의 보통 화물 줄**로 바꿔 준다. 받는 쪽은 예전 그대로 돈다. */
+async function cxlTruckFind(rec){
+  try{
+    const sc = (rec && rec.meta && rec.meta._scToCA) || null;
+    const ref = sc && String(sc.ship || '').trim();
+    if(!ref) return null;
+    const r = await sbFetch('/rest/v1/pr_transfers?select=id,ref,status,meta&ref=eq.' + encodeURIComponent(ref));
+    if(!r.ok) return null;
+    const t = (await r.json())[0];
+    if(!t || t.status === 'RECEIVED') return null;     /* 다 받은 트럭은 여기서 손댈 일이 아니다 */
+    const os = (((t.meta || {}).orderShip) || []).filter(o => String(o.base) === String(rec.base));
+    if(!os.length) return null;
+    return { id: t.id, ref: t.ref, status: t.status,
+             pallet: String(os[0].pallet || 'Pallet 1'),
+             boxes: os.reduce((a, o) => a + (Number(o.boxes) || 0), 0),
+             pcs:   os.reduce((a, o) => a + (Number(o.pcs)   || 0), 0) };
+  }catch(e){ return null; }
+}
+/* 오더 줄에서 화물 줄 후보를 만든다. pickLocs 가 있으면 그 빈·개수를 그대로 쓴다. */
+function cxlTruckPlan(rec){
+  const out = [];
+  ((rec && rec.lines) || []).forEach(function(L){
+    if(String(L.wh || '').toUpperCase() !== 'SC') return;
+    const ppb = Number(L.ppb) || 72;
+    const pl = Array.isArray(L.pickLocs) ? L.pickLocs.filter(p => Number(p.n) > 0) : [];
+    if(pl.length){
+      pl.forEach(function(p){
+        out.push({ style: String(L.style), color: String(p.col || L.color || '').toUpperCase(),
+                   size: String(L.size), bin: String(p.loc || '').toUpperCase(),
+                   boxes: Number(p.n) || 0, ppb: ppb });
+      });
+    }else{
+      out.push({ style: String(L.style), color: String(L.color || '').toUpperCase(),
+                 size: String(L.size), bin: '',
+                 boxes: Math.floor((Number(L.qty) || 0) / ppb), ppb: ppb });
+    }
+  });
+  return out;
+}
+/* 어느 박스를 보낼지 고른다 - 그 빈의 **오래된 것부터**. 다른 트럭이 쥔 것은 건너뛴다.
+   ⚠ bxStore 에는 선반에 있는(IN) 박스만 들어 있다. */
+function cxlTruckPickIds(r, n, used){
+  const want = Math.max(0, parseInt(n, 10) || 0);
+  if(!want) return [];
+  const bin = String(r.bin || '').trim().toUpperCase();
+  let cand = bxFindBase(r.style, r.color, r.size, 'SC');
+  if(bin){
+    const exact = cand.filter(b => String(b.loc || '').toUpperCase() === bin);
+    if(exact.length) cand = exact;                     /* 빈이 비었으면 그 스타일 전체에서 고른다 */
+  }
+  cand = cand.filter(b => !(used && used.has(b.id)) && !txHeld(b.id));
+  cand = cand.slice().sort(function(a, b){ return String(a.in_at || '').localeCompare(String(b.in_at || '')); });
+  return cand.slice(0, want).map(b => b.id);
+}
+function cxlTruckSum(){
+  const el = document.getElementById('cxl-truck-sum'); if(!el) return;
+  let nb = 0;
+  [].slice.call(document.querySelectorAll('#cxl-truck-tbl input.cxl-tb')).forEach(function(i){ nb += parseInt(i.value, 10) || 0; });
+  const want = Number(el.getAttribute('data-want')) || 0;
+  el.innerHTML = nb + ' box(es) will move to the truck'
+    + (want ? (' <span style="color:' + (nb === want ? '#0f766e' : '#b45309') + ';">\u00b7 the truck is recorded as ' + want + '</span>') : '');
+}
+/* 화면에서 읽는다. ⚠ 모달을 지우기 **전에** 불러야 한다 (v1125 의 교훈). */
+function cxlTruckRead(){
+  const cb = document.getElementById('cxl-truck');
+  if(!cb || !cb.checked) return null;
+  const rows = [];
+  [].slice.call(document.querySelectorAll('#cxl-truck-tbl tr[data-i]')).forEach(function(tr){
+    const i = Number(tr.getAttribute('data-i'));
+    const p = (window._cxlTruckPlan || [])[i]; if(!p) return;
+    const bx = tr.querySelector('input.cxl-tb'), bn = tr.querySelector('input.cxl-tn');
+    const n = parseInt(bx && bx.value, 10) || 0;
+    if(n <= 0) return;
+    rows.push({ style: p.style, color: p.color, size: p.size, ppb: p.ppb, boxes: n,
+                bin: String((bn && bn.value) || p.bin || '').trim().toUpperCase() });
+  });
+  return rows.length ? rows : null;
+}
+async function cxlTruckApply(rec, info, rows){
+  if(!info || !rows || !rows.length) return '';
+  /* 최신 기록을 다시 읽는다 - 창을 열어 둔 사이에 누가 짐을 고쳤을 수 있다 */
+  const r0 = await sbFetch('/rest/v1/pr_transfers?select=id,ref,status,lines,meta&id=eq.' + info.id);
+  if(!r0.ok) throw new Error('shipment read HTTP ' + r0.status);
+  const t = (await r0.json())[0];
+  if(!t) throw new Error('shipment not found');
+  if(t.status === 'RECEIVED') throw new Error('that shipment has already been received');
+  if(typeof bxLoaded !== 'undefined' && !bxLoaded) await bxFetchStore();
+  const used = new Set(), add = [];
+  for(const r of rows){
+    const ids = cxlTruckPickIds(r, r.boxes, used);
+    if(ids.length < r.boxes){
+      throw new Error(r.style + ' ' + r.color + ' ' + r.size + ': only ' + ids.length
+        + ' free box(es) at SC, need ' + r.boxes);
+    }
+    ids.forEach(function(x){ used.add(x); });
+    add.push({ style: r.style, color: r.color, size: r.size, bin: r.bin,
+               ids: ids, ppb: Number(r.ppb) || 72, pallet: String(info.pallet || 'Pallet 1') });
+  }
+  /* 떠난 트럭이면 박스를 트럭 안으로. 아직 Draft 면 🚚 Depart 가 할 일이라 안 건드린다. */
+  if(t.status === 'TRANSIT'){
+    const ids = add.reduce(function(a, l){ return a.concat(l.ids); }, []);
+    if(ids.length){
+      await trPatchBoxes(ids, { wh: 'TRANSIT' });
+      const st = new Set(ids);
+      (typeof bxStore !== 'undefined' ? (bxStore || []) : []).forEach(function(b){ if(st.has(b.id)) b.wh = 'TRANSIT'; });
+    }
+  }
+  const lines = (Array.isArray(t.lines) ? t.lines : []).concat(add);
+  const meta  = Object.assign({}, t.meta || {});
+  meta.orderShip = (meta.orderShip || []).filter(function(o){ return String(o.base) !== String(rec.base); });
+  const r2 = await sbFetch('/rest/v1/pr_transfers?id=eq.' + info.id,
+    { method: 'PATCH', headers: { Prefer: 'return=representation' },
+      body: JSON.stringify({ lines: lines, meta: meta }) });
+  if(!r2.ok) throw new Error('shipment save HTTP ' + r2.status);
+  const back = await r2.json();
+  if(!back.length) throw new Error('the shipment did not save');
+  /* 이 오더는 더는 「트럭에 실려 CA 로 가는 중」 이 아니다 */
+  rec.meta = rec.meta || {};
+  if(rec.meta._scToCA) rec.meta._scToCA = Object.assign({}, rec.meta._scToCA, { status: 'cancelled' });
+  const nb = add.reduce(function(a, l){ return a + l.ids.length; }, 0);
+  rec.meta._cxlTruck = { at: new Date().toISOString(), ref: t.ref, pallet: String(info.pallet || ''), boxes: nb, lines: add };
+  return nb + ' box(es) \u2192 ' + (t.ref || 'the truck');
+}
+function cxlTruckPanelHtml(info, plan){
+  if(!info || !plan || !plan.length) return '';
+  const cell = 'padding:5px 8px;border-bottom:1px solid #e2e8f0;';
+  const rows = plan.map(function(p, i){
+    return '<tr data-i="' + i + '">'
+      + '<td style="' + cell + '">' + esc(p.style) + ' \u00b7 ' + esc(p.color) + ' \u00b7 ' + esc(p.size) + '</td>'
+      + '<td style="' + cell + '"><input class="fi cxl-tn" value="' + esc(p.bin) + '" placeholder="from bin" style="width:92px;font-family:Consolas,monospace;font-size:12px;padding:3px 5px;"></td>'
+      + '<td style="' + cell + 'text-align:right;"><input class="fi cxl-tb num" type="number" min="0" value="' + (Number(p.boxes) || 0) + '" oninput="cxlTruckSum()" style="width:62px;text-align:right;font-family:Consolas,monospace;font-size:12px;padding:3px 5px;"></td>'
+      + '</tr>';
+  }).join('');
+  const nb = plan.reduce(function(a, p){ return a + (Number(p.boxes) || 0); }, 0);
+  return '<div style="border-left:4px solid #b45309;padding:4px 0 4px 12px;margin:14px 0 2px;">'
+    + '<div style="font-size:12.5px;font-weight:800;color:#92400e;">\uD83D\uDE9A These goods are on a truck right now</div>'
+    + '<div style="font-size:11.5px;color:#475569;margin-top:2px;">'
+      + esc(info.ref) + ' \u00b7 ' + esc(info.pallet) + ' \u00b7 ' + info.boxes + ' box(es) \u00b7 '
+      + Number(info.pcs || 0).toLocaleString() + ' pcs \u00b7 ' + esc(info.status) + '</div>'
+    + '<div style="font-size:11.5px;color:#475569;margin-top:4px;">Order boxes ride along without leaving stock \u2014 they only come off when the order is completed. '
+      + 'Cancel it and nothing is left for CA to receive, so the goods stay counted at SC.</div>'
+    + '<label style="display:flex;align-items:center;gap:8px;margin-top:9px;font-size:12.5px;font-weight:800;color:#334155;cursor:pointer;">'
+      + '<input type="checkbox" id="cxl-truck" checked onchange="cxlTruckSum()" style="width:16px;height:16px;accent-color:#b45309;">'
+      + 'Turn them into truck cargo so CA can receive them into stock</label>'
+    + '<table id="cxl-truck-tbl" style="width:100%;border-collapse:collapse;font-size:12px;margin-top:7px;">'
+      + '<thead><tr style="color:#64748b;font-size:10.5px;text-transform:uppercase;letter-spacing:.4px;">'
+      + '<th style="text-align:left;padding:3px 8px;">Style \u00b7 Color \u00b7 Size</th>'
+      + '<th style="text-align:left;padding:3px 8px;">From bin</th>'
+      + '<th style="text-align:right;padding:3px 8px;">Boxes</th></tr></thead>'
+      + '<tbody>' + rows + '</tbody></table>'
+    + '<div id="cxl-truck-sum" data-want="' + (Number(info.boxes) || 0) + '" style="font-size:11.5px;font-weight:800;color:#334155;margin-top:5px;">'
+      + nb + ' box(es) will move to the truck'
+      + (Number(info.boxes) ? (' <span style="color:' + (nb === Number(info.boxes) ? '#0f766e' : '#b45309') + ';">· the truck is recorded as ' + Number(info.boxes) + '</span>') : '')
+      + '</div>'
+    + '<div style="font-size:11px;color:#64748b;margin-top:3px;">CA types the bin when the truck arrives \u2014 nothing else changes.</div>'
+    + '</div>';
+}
 /* ─── 취소 화면 ─── */
 async function cancelOrderOpen(base){
   const rec = (savedCache||[]).find(s=>s.base===base);
@@ -8933,6 +9094,12 @@ async function cancelOrderOpen(base){
 
   const scan = await cxlScan(rec);
   window._cxlScan = scan;
+  /* CXLTRUCK-1 - 이 오더 물건이 트럭 위에 있나 */
+  window._cxlTruck = null; window._cxlTruckPlan = null;
+  try{
+    const _ti = await cxlTruckFind(rec);
+    if(_ti){ window._cxlTruck = _ti; window._cxlTruckPlan = cxlTruckPlan(rec); }
+  }catch(e){}
   /* 🌐 웹 주문이면 카드·손님메일까지 여기서 끝낸다 (v1124) — 화면을 왔다 갔다 하지 않게 */
   window._cxlWebRow = null;
   try{ const _po = webPoOf(rec); if(_po) window._cxlWebRow = await webRowForCancel(_po); }catch(e){}
@@ -8963,6 +9130,7 @@ async function cancelOrderOpen(base){
     ${(()=>{ const shipped=(rec.whs||[]).filter(w=>rec.pl&&rec.pl[w]&&rec.pl[w].savedAt);
       return shipped.length ? `<div style="background:#fef2f2;border:2px solid #dc2626;border-radius:8px;padding:9px 12px;margin:8px 0;font-size:12.5px;font-weight:800;color:#b91c1c;">\u26A0 This order already has a saved Packing List for ${shipped.join(' + ')} \u2014 the goods may have shipped.<div style="font-weight:600;margin-top:3px;">Putting stock back now would add goods that are no longer in the building. Use \u21A9 Return instead if it already left.</div></div>` : ''; })()}
     ${nothing?'<div style="font-size:12px;color:#64748b;">The order will just be marked cancelled — there is nothing to put back.</div>':''}
+    ${cxlTruckPanelHtml(window._cxlTruck, window._cxlTruckPlan)}
     ${tbl(gFull,'📦 Full boxes — back to the bin they came from')}
     ${tbl(gMove,'📦→🧺 Boxes that went to the PC Room — back to their bin','These also come off the PC Room count.')}
     ${tbl(gLoose,'🧺 Loose pcs — back onto the PC Room shelf')}
@@ -9010,6 +9178,8 @@ async function cancelOrderDo(base){
      v1124 는 아래에서 읽어서 둘 다 false 가 되고 웹 절반이 통째로 안 돌았다. */
   const wantWebRefund = !!(document.getElementById('cxl-web-refund')||{}).checked;
   const wantWebMail   = !!(document.getElementById('cxl-web-mail')||{}).checked;
+  /* CXLTRUCK-1 - 칸을 **여기서** 읽는다. 아래쪽은 모달을 지운 뒤라 칸이 없다 */
+  const truckRows = (typeof cxlTruckRead === 'function') ? cxlTruckRead() : null;
   const btn = document.getElementById('cxl-go');
   if(btn){ btn.disabled = true; btn.textContent = 'Putting the stock back…'; }
   const poN = scan.poN, by = (SESS&&SESS.email)||'';
@@ -9059,6 +9229,22 @@ async function cancelOrderDo(base){
                       : ('PO '+poN+' auto-deduct restore (order cancelled)'));
     }
   }catch(e){ err = e.message||String(e); }
+
+  /* CXLTRUCK-1 - 트럭 위에 있는 몫을 보통 화물로 돌린다.
+     ⚠ 아래 ④ 가 rec.meta 를 저장하므로 **그 전에** 부른다 (_scToCA·_cxlTruck 이 같이 저장된다). */
+  let _truckMsg = '';
+  try{
+    if(window._cxlTruck && truckRows && truckRows.length){
+      _truckMsg = await cxlTruckApply(rec, window._cxlTruck, truckRows);
+    }
+  }catch(e){
+    const _m = '\u26A0 The order was NOT cancelled \u2014 the goods on the truck could not be moved:\n\n'
+      + (e.message || String(e)) + '\n\nNothing was changed. Fix the boxes/bins and try again.';
+    alert(_m);
+    const b2 = document.getElementById('cxl-go');
+    if(b2){ b2.disabled = false; b2.textContent = '\u274C Cancel this order'; }
+    return;
+  }
 
   /* ④ 오더에 취소 도장 — 지우지 않는다. 되돌린 내역도 같이 남겨서
         나중에 "뭘 얼마나 도로 넣었나" 를 종이 없이도 다시 뽑을 수 있게 한다. */
@@ -9116,7 +9302,8 @@ async function cancelOrderDo(base){
   }
   window._cxlWebRow = null;
   showToast((err ? ('⚠ Cancelled, but the stock did not fully go back: '+err)
-                 : ('❌ Cancelled' + (n ? ' · stock put back' : ''))) + _webMsg);
+                 : ('❌ Cancelled' + (n ? ' · stock put back' : ''))) + _webMsg
+                 + (_truckMsg ? (' \u00b7 \uD83D\uDE9A ' + _truckMsg) : ''));
   if(wantPrint && n) printPutBack(base);
 }
 
