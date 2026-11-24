@@ -314,7 +314,7 @@ body.po-dragging{user-select:none;}
   </span>
   <select id="lang-sel" onchange="setLang(this.value)" style="font-size:11px;padding:3px 6px;border-radius:5px;border:none;background:#1d3f66;color:#fff;"><option value="ko">한국어</option><option value="en">English</option><option value="es">Español</option></select>
   <button id="wide-btn" class="btn btn-sm" onclick="toggleWide()" title="화면 넓게 / 좁게 — 기본은 넓게 (이 브라우저에만 저장돼)" style="padding:2px 8px;font-size:10px;background:#1d3f66;color:#cfe0f2;border-color:#2b5384;">↔ Wide</button>
-  <span id="app-ver" style="font-size:10px;color:#9fb8d4;">v1442</span>
+  <span id="app-ver" style="font-size:10px;color:#9fb8d4;">v1443</span>
 </div>
 <script>
 // ↔ 넓게 보기 — 브라우저마다 따로 저장 (v793)
@@ -8998,6 +8998,25 @@ function cxlTruckPickIds(r, n, used){
   cand = cand.slice().sort(function(a, b){ return String(a.in_at || '').localeCompare(String(b.in_at || '')); });
   return cand.slice(0, want).map(b => b.id);
 }
+/* CXLSPLIT-1 - 체크 상태에 맞춰 아래쪽 표·인쇄 칸·단추 글자를 맞춘다.
+   트럭으로 보내면 SC 로 돌아가는 것이 없으므로 되돌림 표도 인쇄도 띄우지 않는다. */
+function cxlTruckToggle(){
+  const on = cxlTruckRead();
+  const go = document.getElementById('cxl-loose-go');
+  if(go) go.style.display = on ? 'none' : '';
+  const row = document.getElementById('cxl-print-row');
+  let any = true;
+  if(row){
+    const nStay = Number(row.getAttribute('data-stay')) || 0;
+    const nGo   = Number(row.getAttribute('data-go')) || 0;
+    any = nStay > 0 || (!on && nGo > 0);
+    row.style.display = any ? 'flex' : 'none';
+    const cb = document.getElementById('cxl-print');
+    if(cb && !any) cb.checked = false;
+  }
+  const btn = document.getElementById('cxl-go');
+  if(btn) btn.innerHTML = any ? '\u274C Cancel this order &amp; put the stock back' : '\u274C Cancel this order';
+}
 /* 화면에서 읽는 것은 체크 하나뿐이다. ⚠ 모달을 지우기 **전에** 불러야 한다 (v1125 의 교훈). */
 function cxlTruckRead(){
   const cb = document.getElementById('cxl-truck');
@@ -9087,7 +9106,7 @@ function cxlTruckPanelHtml(info, plan, loose, rec){
     + '<div style="font-size:11.5px;color:#475569;margin-top:4px;">Order boxes ride along without leaving stock \u2014 they only come off when the order is completed. '
       + 'Cancel it and nothing is left for CA to receive, so the goods stay counted at SC.</div>'
     + '<label style="display:flex;align-items:center;gap:8px;margin-top:9px;font-size:12.5px;font-weight:800;color:#334155;cursor:pointer;">'
-      + '<input type="checkbox" id="cxl-truck" checked style="width:16px;height:16px;accent-color:#b45309;">'
+      + '<input type="checkbox" id="cxl-truck" checked onchange="cxlTruckToggle()" style="width:16px;height:16px;accent-color:#b45309;">'
       + 'Take all of it into CA stock \u2014 it is already on the way there</label>'
     + '<table style="width:100%;border-collapse:collapse;font-size:12px;margin-top:7px;"><tbody>' + rows + '</tbody></table>'
     + '<div style="font-size:11.5px;font-weight:800;color:' + sumCol + ';margin-top:5px;">'
@@ -9131,7 +9150,13 @@ async function cancelOrderOpen(base){
   /* 🌐 웹 주문이면 카드·손님메일까지 여기서 끝낸다 (v1124) — 화면을 왔다 갔다 하지 않게 */
   window._cxlWebRow = null;
   try{ const _po = webPoOf(rec); if(_po) window._cxlWebRow = await webRowForCancel(_po); }catch(e){}
-  const gFull = cxlGroup(scan.full,'full'), gMove = cxlGroup(scan.move,'move'), gLoose = cxlGroup(scan.loose,'loose');
+  const gFull = cxlGroup(scan.full,'full'), gMove = cxlGroup(scan.move,'move');
+  /* CXLSPLIT-1 - 트럭으로 가는 낱장은 **위 칸에만** 적는다. 아래 되돌림 표에 또 적으면
+     같은 화면이 두 가지 말을 한다 (체크를 끄면 아래 표가 다시 나온다). */
+  const _trGo = new Set(((window._cxlTruckLoose) || []).map(function(x){ return x.key; }));
+  const _looseStay = (scan.loose || []).filter(function(L){ return !_trGo.has(L.key); });
+  const _looseGo   = (scan.loose || []).filter(function(L){ return  _trGo.has(L.key); });
+  const gLoose = cxlGroup(_looseStay, 'loose'), gLooseGo = cxlGroup(_looseGo, 'loose');
   const nFull = scan.full.length, nMove = scan.move.length;
   const nLoose = scan.loose.reduce((a,x)=>a+x.pcs,0);
   const tbl = (rows, head, note) => !rows.length ? '' : `
@@ -9162,11 +9187,13 @@ async function cancelOrderOpen(base){
     ${tbl(gFull,'📦 Full boxes — back to the bin they came from')}
     ${tbl(gMove,'📦→🧺 Boxes that went to the PC Room — back to their bin','These also come off the PC Room count.')}
     ${tbl(gLoose,'🧺 Loose pcs — back onto the PC Room shelf')}
+    <!-- CXLSPLIT-1 - 트럭으로 보내기를 끄면 이 낱장은 SC 선반으로 돌아간다 -->
+    <div id="cxl-loose-go" style="display:none;">${tbl(gLooseGo,'🧺 Loose pcs — back onto the PC Room shelf','Shown because \u201cTake all of it into CA stock\u201d is off.')}</div>
     <div style="margin-top:16px;">
       <div style="font-size:11.5px;font-weight:800;color:#334155;margin-bottom:4px;">Why was it cancelled? <span style="font-weight:400;color:#94a3b8;">(optional — shows on the order and the sheet)</span></div>
       <input id="cxl-why" class="fi" type="text" placeholder="e.g. customer cancelled — wrong colour ordered" style="width:100%;font-size:13px;">
     </div>
-    <label style="display:flex;align-items:center;gap:8px;margin-top:12px;font-size:12.5px;font-weight:700;color:#334155;cursor:pointer;">
+    <label id="cxl-print-row" data-stay="${gFull.length + gMove.length + gLoose.length}" data-go="${gLooseGo.length}" style="display:flex;align-items:center;gap:8px;margin-top:12px;font-size:12.5px;font-weight:700;color:#334155;cursor:pointer;">
       <input type="checkbox" id="cxl-print" checked style="width:16px;height:16px;accent-color:#7f1d1d;">
       Print the Put Back Request right away
     </label>
@@ -9195,6 +9222,8 @@ async function cancelOrderOpen(base){
       <button class="btn" onclick="document.getElementById('modal-cxl').remove()">Keep the order</button>
       <button class="btn" id="cxl-go" style="margin-left:auto;background:#b91c1c;color:#fff;border-color:#b91c1c;font-weight:800;" onclick="cancelOrderDo('${esc(base)}')">❌ Cancel this order${nothing?'':' &amp; put the stock back'}</button>
     </div>`;
+  /* CXLSPLIT-1 - 그린 직후 한 번 맞춘다 (트럭 칸이 있으면 아래쪽이 거기에 따라간다) */
+  try{ if(window._cxlTruck) cxlTruckToggle(); }catch(e){}
 }
 
 async function cancelOrderDo(base){
