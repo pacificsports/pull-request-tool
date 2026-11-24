@@ -314,7 +314,7 @@ body.po-dragging{user-select:none;}
   </span>
   <select id="lang-sel" onchange="setLang(this.value)" style="font-size:11px;padding:3px 6px;border-radius:5px;border:none;background:#1d3f66;color:#fff;"><option value="ko">한국어</option><option value="en">English</option><option value="es">Español</option></select>
   <button id="wide-btn" class="btn btn-sm" onclick="toggleWide()" title="화면 넓게 / 좁게 — 기본은 넓게 (이 브라우저에만 저장돼)" style="padding:2px 8px;font-size:10px;background:#1d3f66;color:#cfe0f2;border-color:#2b5384;">↔ Wide</button>
-  <span id="app-ver" style="font-size:10px;color:#9fb8d4;">v1439</span>
+  <span id="app-ver" style="font-size:10px;color:#9fb8d4;">v1441</span>
 </div>
 <script>
 // ↔ 넓게 보기 — 브라우저마다 따로 저장 (v793)
@@ -9305,6 +9305,12 @@ async function cancelOrderDo(base){
                  : ('❌ Cancelled' + (n ? ' · stock put back' : ''))) + _webMsg
                  + (_truckMsg ? (' \u00b7 \uD83D\uDE9A ' + _truckMsg) : ''));
   if(wantPrint && n) printPutBack(base);
+  /* CXLRECV-1 - 받기 화면에서 불러온 취소였으면 그 화면을 다시 열어 준다 */
+  try{
+    if(typeof window._cxlAfter === 'function'){
+      const _f = window._cxlAfter; window._cxlAfter = null; _f();
+    }
+  }catch(e){}
 }
 
 async function cancelUndo(base){
@@ -49226,6 +49232,22 @@ async function trView(id){
   document.body.appendChild(div);
 }
 // ── CA Receive (통째로 / 해체) ──
+/* ═══ CXLRECV-1 - 받기 화면에서 「이 PO 는 취소됐다 → 재고로 받는다」 ═══
+   ⭐ 취소 판정·물건 되돌리기는 ❌ Cancel 창이 전부 한다. 여기서는 그 창을 열어 주고,
+      끝나면 짐을 다시 읽어 받기 화면을 새로 연다. */
+async function trRecvCancelOrder(base){
+  const b = String(base || '');
+  const rec = (typeof savedCache !== 'undefined' ? (savedCache || []) : []).find(function(s){ return String(s.base) === b; });
+  if(!rec){ alert('\u26A0 That order is not loaded on this screen.\n\nOpen it from the Orders list and press \u274C Cancel there.'); return; }
+  if(typeof recCancelled === 'function' && recCancelled(rec)){
+    showToast('\u26A0 That order is already cancelled');
+    return;
+  }
+  const id = _trRecvRec && _trRecvRec.id;
+  /* 취소가 끝나면 짐을 다시 읽어 이 화면을 새로 연다 (그 몫이 화물 줄로 바뀌어 있다) */
+  window._cxlAfter = function(){ try{ if(id) trRecvOpen(id); }catch(e){} };
+  cancelOrderOpen(b);
+}
 let _trRecvRec = null, _trRecvPallets = [];
 async function trRecvOpen(id){
   const rec = await trGet(id); if(!rec){ showToast('⚠ Load failed'); return; }
@@ -49275,7 +49297,9 @@ async function trRecvOpen(id){
       </div>
       ${(function(){ const _os=(Array.isArray(M.orderShip)?M.orderShip.filter(Boolean):[]); if(!_os.length) return ''; const _ob=_os.reduce((s,o)=>s+(Number(o.boxes)||0),0), _op=_os.reduce((s,o)=>s+(Number(o.pcs)||0),0); const _og=osGroupByOrder(_os);   /* OSCOUNT-1 - 몫이 아니라 오더를 센다 */ return `<div style="margin-bottom:10px;padding:10px 14px;background:#faf5ff;border:1px solid #ddd6fe;border-radius:8px;font-size:12px;color:#6d28d9;">
         <div style="font-weight:800;margin-bottom:5px;">🧾 + ${_og.length} customer order${_og.length>1?'s':''} also on this truck <span style="font-weight:600;color:#7c3aed;">(${_ob} box · ${_op.toLocaleString()} pcs — prepped at SC, NOT warehouse stock; route to their order)</span></div>
-        <div style="display:flex;flex-direction:column;gap:2px;">${_og.map(g=>`<div>• <b>${esc(g.cust||'—')}</b> <span style="color:#a78bfa;font-weight:700;">${esc(g.po||'')}</span> — ${g.boxes} box · ${g.pcs.toLocaleString()} pcs${g.pals.length?` <span style="color:#9ca3af;">(${esc(g.pals.join(', '))})</span>`:''}</div>`).join('')}</div></div>`; })()}
+        <div style="display:flex;flex-direction:column;gap:3px;">${_og.map(g=>`<div style="display:flex;align-items:center;gap:7px;">• <b>${esc(g.cust||'—')}</b> <span style="color:#a78bfa;font-weight:700;">${esc(g.po||'')}</span> — ${g.boxes} box · ${g.pcs.toLocaleString()} pcs${g.pals.length?` <span style="color:#9ca3af;">(${esc(g.pals.join(', '))})</span>`:''}
+          <!-- CXLRECV-1 - 거래처가 가는 중에 취소했을 때 -->
+          <button class="btn btn-sm" style="margin-left:auto;background:#fff;color:#b91c1c;border-color:#fecaca;font-weight:800;font-size:10.5px;white-space:nowrap;" onclick="trRecvCancelOrder('${esc(g.base||'')}')" title="The customer cancelled this PO. Cancel the order and turn these boxes into normal cargo so you can receive them into stock right here.">\u274C PO cancelled \u2014 take into stock</button></div>`).join('')}</div></div>`; })()}
       <datalist id="trr-ca-bins">${caLocs.map(L=>'<option value="'+esc(L)+'">').join('')}</datalist>
       <datalist id="trr-h-bins">${hLocs.map(L=>'<option value="'+esc(L)+'">').join('')}</datalist>
       <div style="margin-bottom:8px;display:flex;gap:8px;align-items:center;flex-wrap:wrap;">
@@ -52148,6 +52172,37 @@ function cmAddrRow(name, em){
     + '</div>';
 }
 /* 💳 · 🌐 는 이름 바로 옆에 (v1006) — 이 거래처가 어떤 거래처인지 제일 먼저 보이게 */
+/* ═══ CUSTTIER-1 - 거래처 가격 등급 ═══
+   저장 칸은 `priceTier` 하나. 값은 TP_LEVELS 의 열쇠(website/tier3/tier2/tier1/best) 뿐이고,
+   모르는 값이 들어 있으면 **안 고른 것**으로 본다 (멋대로 등급을 만들지 않는다). */
+const CUST_TIER_COLOR = { website:'#0e7490', tier3:'#7c3aed', tier2:'#b45309', tier1:'#be123c', best:'#047857' };
+function custTierLevels(){ try{ return (typeof TP_LEVELS !== 'undefined' && TP_LEVELS.length) ? TP_LEVELS : []; }catch(e){ return []; } }
+function custTierOf(cs){
+  const v = String((cs && cs.priceTier) || '').trim().toLowerCase();
+  return custTierLevels().some(function(x){ return x[0] === v; }) ? v : '';
+}
+function custTierLabel(v){
+  const f = custTierLevels().filter(function(x){ return x[0] === v; })[0];
+  return f ? f[1] : '';
+}
+function cmTierSelHtml(k, cs, extra){
+  const cur = custTierOf(cs);
+  const col = CUST_TIER_COLOR[cur] || '#64748b';
+  const opts = ['<option value="">\u2014 not set \u2014</option>'].concat(custTierLevels().map(function(x){
+    return '<option value="' + x[0] + '"' + (cur === x[0] ? ' selected' : '') + '>' + x[1] + '</option>';
+  })).join('');
+  return '<select class="fi" title="Which price level this customer gets. Writing it down here does NOT change any price \u2014 use \uD83D\uDCB2 Prices for that."'
+    + ' onchange="cmSet(\'' + k + '\',\'priceTier\',this.value)"'
+    + ' style="' + (extra || '') + 'font-size:11px;font-weight:800;padding:3px 7px;border-radius:7px;cursor:pointer;'
+    + 'border:1px solid ' + (cur ? col : '#cbd5e1') + ';background:' + (cur ? (col + '14') : '#fff') + ';color:' + (cur ? col : '#64748b') + ';">'
+    + opts + '</select>';
+}
+/* 칩줄에 붙는 모양 - 글자 + 고르는 칸 */
+function cmTierChipHtml(k, cs){
+  return '<span style="display:inline-flex;align-items:center;gap:5px;vertical-align:middle;margin-left:2px;">'
+    + '<span style="font-size:11px;font-weight:800;color:#475569;">\uD83D\uDCB2 Price tier</span>'
+    + cmTierSelHtml(k, cs, '') + '</span>';
+}
 function cmTypeChips(name, cs, isCC){
   const k = esc(custKey(name));
   const chip = (on, color, label, onch, title) =>
@@ -52172,7 +52227,9 @@ function cmTypeChips(name, cs, isCC){
        카드번호는 Authorize.Net 이 갖고 있고 우리는 지갑 번호와 뒷 4자리만 안다. */
     /* CONSENT-2 + CARDPILL-1 - 카드 저장과 동의를 한 묶음으로 보여 준다.
        카드가 안 저장돼도 동의는 남을 수 있어서, 그 경우는 경고 알약만 나간다. */
-    + cardPillGroup(k, cs);
+    + cardPillGroup(k, cs)
+    /* CUSTTIER-1 - 가격 등급. 고르기만 하고 가격은 안 건드린다 */
+    + ' ' + cmTierChipHtml(k, cs);
 }
 /* INHOUSE-1 - 🏦 Factored | 🏠 In-House 두 단추. 하나만 켜진다.
    누르면 바로 저장된다 (cmSet 이 서버 응답을 보고 Saved / NOT saved 를 띄운다). */
@@ -53221,6 +53278,8 @@ function renderCustomers(){
           <label style="display:inline-flex;align-items:center;gap:4px;margin-left:6px;font-size:11px;font-weight:700;color:#0e7490;cursor:pointer;vertical-align:middle;" title="Website customer — new orders auto-check 🌐 Website Customer"><input type="checkbox" ${cs.webCust?'checked':''} onchange="cmSet('${esc(k)}','webCust',this.checked)" style="width:13px;height:13px;accent-color:#0e7490;cursor:pointer;">🌐 Website</label>
           <!-- PAYCARD-v1 - 조건과 따로. 「카드로 받는 거래처」 표시 -->
           <label style="display:inline-flex;align-items:center;gap:4px;margin-left:6px;font-size:11px;font-weight:700;color:#065f46;cursor:pointer;vertical-align:middle;" title="Card on file — this customer pays by card. Terms are the separate column."><input type="checkbox" ${custPaysCardEff(custNameOfKey(k), cs)?'checked':''} onchange="cmSet('${esc(k)}','payCard',this.checked)" style="width:13px;height:13px;accent-color:#065f46;cursor:pointer;">💳 Card on File</label>
+          <!-- CUSTTIER-1 - Detail 카드와 **같은** 칸 -->
+          <span style="display:inline-flex;align-items:center;gap:4px;margin-left:6px;vertical-align:middle;"><span style="font-size:11px;font-weight:700;color:#475569;">💲 Tier</span>${cmTierSelHtml(esc(k), cs, 'width:104px;')}</span>
           <button class="btn btn-sm" style="border:none;padding:0 5px;margin-left:2px;" onclick="openCustLink('${esc(m.name)}')" title="Link/unlink as another brand of the same company">🔗</button>
           <button class="btn btn-sm" style="border:none;padding:0 5px;margin-left:2px;" onclick="cmDelete('${esc(m.name)}')" title="Delete this customer">🗑</button></td>
       </tr>`;
@@ -54691,6 +54750,29 @@ async function psSelectAll(on){
   }
   renderPsSheet();
 }
+/* ═══ PSFOCUS-1 - 표를 다시 그려도 치고 있던 칸으로 돌아간다 ═══
+   칸의 신원은 onchange 글자에 이미 있다: psSet('<스타일>','<칸>',...)
+   ⚠ 다시 그리기 **직전**에 집어야 한다 - 그려 버리면 그 칸은 이미 없다. */
+function psFocusKey(el){
+  try{
+    const a = el && el.getAttribute && el.getAttribute('onchange');
+    const m = a && a.match(/psSet\('([^']*)','([^']*)'/);
+    return m ? (m[1] + '|' + m[2]) : '';
+  }catch(e){ return ''; }
+}
+function psFocusGrab(){ try{ return psFocusKey(document.activeElement); }catch(e){ return ''; } }
+function psFocusRestore(key){
+  if(!key) return false;
+  const body = document.getElementById('ps-body'); if(!body) return false;
+  const list = [].slice.call(body.querySelectorAll('input[onchange]'));
+  for(const el of list){
+    if(psFocusKey(el) === key){
+      try{ el.focus(); if(el.select && el.type !== 'checkbox') el.select(); }catch(e){}
+      return true;
+    }
+  }
+  return false;
+}
 async function psSet(style, field, val, elm){
   const ps = _imsPS[_psGk]; if(!ps){ showToast('⚠ IMS not linked'); return; }
   let row = ps.rows[style];
@@ -54723,7 +54805,12 @@ async function psSet(style, field, val, elm){
           try{ await sbFetch('/rest/v1/customer_prices?id=eq.'+cur.id, {method:'PATCH', headers:{Prefer:'return=minimal'}, body:JSON.stringify(clr)}); }catch(e){} }
       }
     }
-    if(field === 'base_price' || field === 'included') renderPsSheet(); else psFootUpdate();
+    /* PSFOCUS-1 - 다시 그리면 포커스가 날아간다. 그린 뒤 같은 칸으로 돌려놓는다. */
+    if(field === 'base_price' || field === 'included'){
+      const _fk = psFocusGrab();
+      renderPsSheet();
+      psFocusRestore(_fk);
+    } else psFootUpdate();
   }catch(e){ showToast('⚠ Save failed: ' + (e.message||e)); }
 }
 // 🧵 원단 노출 순서 (거래처 지정) — 목록에 없는 원단은 뒤에, 그다음 이름순 (v738)
