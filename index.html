@@ -314,7 +314,7 @@ body.po-dragging{user-select:none;}
   </span>
   <select id="lang-sel" onchange="setLang(this.value)" style="font-size:11px;padding:3px 6px;border-radius:5px;border:none;background:#1d3f66;color:#fff;"><option value="ko">한국어</option><option value="en">English</option><option value="es">Español</option></select>
   <button id="wide-btn" class="btn btn-sm" onclick="toggleWide()" title="화면 넓게 / 좁게 — 기본은 넓게 (이 브라우저에만 저장돼)" style="padding:2px 8px;font-size:10px;background:#1d3f66;color:#cfe0f2;border-color:#2b5384;">↔ Wide</button>
-  <span id="app-ver" style="font-size:10px;color:#9fb8d4;">v1444</span>
+  <span id="app-ver" style="font-size:10px;color:#9fb8d4;">v1445</span>
 </div>
 <script>
 // ↔ 넓게 보기 — 브라우저마다 따로 저장 (v793)
@@ -8985,7 +8985,7 @@ function cxlTruckTotals(plan, loose, rec){
 }
 /* 어느 박스를 보낼지 고른다 - 그 빈의 **오래된 것부터**. 다른 트럭이 쥔 것은 건너뛴다.
    ⚠ bxStore 에는 선반에 있는(IN) 박스만 들어 있다. */
-function cxlTruckPickIds(r, n, used){
+function cxlTruckPickBoxes(r, n, used){
   const want = Math.max(0, parseInt(n, 10) || 0);
   if(!want) return [];
   const bin = String(r.bin || '').trim().toUpperCase();
@@ -8996,8 +8996,10 @@ function cxlTruckPickIds(r, n, used){
   }
   cand = cand.filter(b => !(used && used.has(b.id)) && !txHeld(b.id));
   cand = cand.slice().sort(function(a, b){ return String(a.in_at || '').localeCompare(String(b.in_at || '')); });
-  return cand.slice(0, want).map(b => b.id);
+  return cand.slice(0, want);
 }
+/* 예전 이름 - id 만 돌려준다 */
+function cxlTruckPickIds(r, n, used){ return cxlTruckPickBoxes(r, n, used).map(function(b){ return b.id; }); }
 /* CXLSPLIT-1 - 체크 상태에 맞춰 아래쪽 표·인쇄 칸·단추 글자를 맞춘다.
    트럭으로 보내면 SC 로 돌아가는 것이 없으므로 되돌림 표도 인쇄도 띄우지 않는다. */
 function cxlTruckToggle(){
@@ -9035,20 +9037,30 @@ async function cxlTruckApply(rec, info, rows, loose){
   if(typeof bxLoaded !== 'undefined' && !bxLoaded) await bxFetchStore();
   const used = new Set(), add = [];
   for(const r of rows){
-    const ids = cxlTruckPickIds(r, r.boxes, used);
-    if(ids.length < (Number(r.boxes) || 0)){
-      throw new Error(r.style + ' ' + r.color + ' ' + r.size + ': only ' + ids.length
+    const got = cxlTruckPickBoxes(r, r.boxes, used);
+    if(got.length < (Number(r.boxes) || 0)){
+      throw new Error(r.style + ' ' + r.color + ' ' + r.size + ': only ' + got.length
         + ' free box(es) at SC, need ' + r.boxes);
     }
-    ids.forEach(function(x){ used.add(x); });
-    add.push({ style: r.style, color: r.color, size: r.size, bin: r.bin,
-               ids: ids, ppb: Number(r.ppb) || 72, pallet: String(info.pallet || 'Pallet 1') });
+    got.forEach(function(b){ used.add(b.id); });
+    /* FROMBIN-1 - **고른 박스의 진짜 선반**을 적는다. 여러 선반에서 왔으면 선반마다 줄을 나눈다 -
+       창고 사람이 가지러 갈 자리가 줄마다 하나여야 한다. */
+    const byLoc = {}, order = [];
+    got.forEach(function(b){
+      const k = String(b.loc || '').trim().toUpperCase() || String(r.bin || '').trim().toUpperCase();
+      if(!byLoc[k]){ byLoc[k] = []; order.push(k); }
+      byLoc[k].push(b.id);
+    });
+    order.forEach(function(k){
+      add.push({ style: r.style, color: r.color, size: r.size, bin: k,
+                 ids: byLoc[k], ppb: Number(r.ppb) || 72, pallet: String(info.pallet || 'Pallet 1') });
+    });
   }
   /* CXLLOOSE-1 - 낱장은 박스 기록이 없다. 손으로 적은 줄(is_manual)로 보낸다.
      받을 때 🧺 PC Room 을 고르면 그 장수가 그대로 CA PC Room 에 들어간다. */
   _lo.forEach(function(L){
     add.push({ is_manual: true, loose: true, act: 'pc',
-               style: L.style, color: L.color, size: L.size, bin: '',
+               style: L.style, color: L.color, size: L.size, bin: 'PC ROOM',
                boxes: 1, ppb: L.pcs, pcs: L.pcs, pallet: String(info.pallet || 'Pallet 1'),
                note: 'loose pcs from PC Room' });
   });
@@ -49276,7 +49288,7 @@ async function trView(id){
             <td class="tl" style="font-weight:700;">${esc(l.style)}</td>
             <td class="tl">${esc(bxBaseColor(l.color))}</td>
             <td style="text-align:center;">${esc(l.size)}</td>
-            <td style="text-align:center;"><span style="background:#e8f0fb;color:#1a56a0;padding:1px 8px;border-radius:8px;font-size:10.5px;font-weight:700;">${esc(l.bin||'?')}</span></td>
+            <td style="text-align:center;"><span style="background:#e8f0fb;color:#1a56a0;padding:1px 8px;border-radius:8px;font-size:10.5px;font-weight:700;">${esc(trLineFromBin(l))}</span></td>
             <td style="text-align:center;font-family:Consolas,monospace;font-weight:700;">${_lb(l)}</td>
             <td style="text-align:right;font-family:Consolas,monospace;font-weight:700;">${_lp(l).toLocaleString()}</td>
             ${_rcv?`<td style="text-align:center;">${(()=>{ const ds=trDoneSummary(l); if(!ds.length) return '—'; return ds.map(x=>{ const c = x.lbl.indexOf('🚚')===0?'#b45309':(x.lbl.indexOf('🧺')===0?'#6d28d9':(x.lbl.indexOf('🗑')===0?'#b91c1c':(x.lbl.indexOf('↩')===0?'#9a3412':'#15803d'))); const bg = x.lbl.indexOf('🚚')===0?'#fef3c7':(x.lbl.indexOf('🧺')===0?'#f3e8ff':(x.lbl.indexOf('🗑')===0?'#fee2e2':(x.lbl.indexOf('↩')===0?'#ffedd5':'#dcfce7'))); return `<span style="display:inline-block;background:${bg};color:${c};padding:1px 8px;border-radius:8px;font-size:10.5px;font-weight:700;margin:1px 2px;white-space:nowrap;">${esc(x.lbl)}${x.n!=null?(' ×'+x.n):''}</span>`; }).join(''); })()}</td>`:''}
@@ -49355,6 +49367,30 @@ async function trCxlOrderPick(id){
   if(typeof initModalDrag === 'function') initModalDrag(div);
 }
 let _trRecvRec = null, _trRecvPallets = [];
+/* FROMBIN-1 - 이 줄의 물건이 **어디서 왔나**. 한 군데에서 정한다.
+   · 낱장 줄(loose)      -> PC ROOM (선반 번호가 없는 물건이다)
+   · bin 이 적힌 줄       -> 그대로
+   · 안 적힌 줄           -> 실린 박스에서 찾아 쓴다 (박스의 loc 은 원래 선반 번호 그대로다)
+   ⚠ 그래도 모르면 예전처럼 '?' 다 - 지어내지 않는다. */
+function trLineFromBin(l){
+  try{
+    if(l && l.loose) return 'PC ROOM';
+    const b = String((l && l.bin) || '').trim();
+    if(b) return b.toUpperCase();
+    const ids = (l && l.ids) || [];
+    if(ids.length && typeof bxStore !== 'undefined' && bxStore){
+      const seen = [];
+      ids.forEach(function(id){
+        const x = bxStore.find(function(y){ return y.id === id; });
+        const lo = x ? String(x.loc || '').trim().toUpperCase() : '';
+        if(lo && seen.indexOf(lo) < 0) seen.push(lo);
+      });
+      if(seen.length === 1) return seen[0];
+      if(seen.length > 1) return seen.slice(0, 2).join(' + ') + (seen.length > 2 ? (' +' + (seen.length - 2)) : '');
+    }
+  }catch(e){}
+  return '?';
+}
 async function trRecvOpen(id){
   const rec = await trGet(id); if(!rec){ showToast('⚠ Load failed'); return; }
   if(!bxLoaded) await bxFetchStore();
@@ -49458,14 +49494,14 @@ function trRecvRender(){
           if(_done){ return `<tr style="opacity:.62;">
             <td class="tl" style="font-family:Consolas,monospace;">${esc(l.style)}</td>
             <td class="tl">${esc(bxBaseColor(l.color))} / ${esc(l.size)}</td>
-            <td style="text-align:center;font-size:10.5px;">${esc(l.bin||'?')}</td>
+            <td style="text-align:center;font-size:10.5px;">${esc(trLineFromBin(l))}</td>
             <td style="text-align:center;font-family:Consolas,monospace;font-weight:700;color:#15803d;">${Number(l._doneN)||0}</td>
             <td class="tl" style="font-size:10px;color:#15803d;font-weight:700;white-space:nowrap;">→ ${esc((l._log||[]).join(' · ')||'done')} <button class="btn btn-sm" style="border-color:#fca5a5;color:#b91c1c;font-weight:800;padding:0 5px;" onclick="trRecvReverseLine(${pi},${li})" title="Reverse this — restore boxes to their original bin (${esc(l.bin||'?')})">↩</button></td>
           </tr>`; }
           return `<tr>
           <td class="tl" style="font-weight:700;font-family:Consolas,monospace;">${esc(l.style)}</td>
           <td class="tl">${esc(bxBaseColor(l.color))} / ${esc(l.size)}</td>
-          <td style="text-align:center;font-size:10.5px;">${esc(l.bin||'?')}</td>
+          <td style="text-align:center;font-size:10.5px;">${esc(trLineFromBin(l))}</td>
           <td style="text-align:center;font-family:Consolas,monospace;font-weight:700;">${trLineBoxes(l)}</td>
           <td style="text-align:right;font-family:Consolas,monospace;font-weight:700;">${trLinePcs(l).toLocaleString()}${l.loose?' <span style="color:#92400e;font-weight:800;font-size:10px;white-space:nowrap;">\uD83E\uDDFA \u2192 PC Room</span>':''}</td>
         </tr>`; }).join('')}</tbody></table>`;
